@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    load_state,
+    write_state,
+)
 from shisad.core.events import SkillToolRegistrationDropped
+from shisad.core.storage_platform import StorageCapability
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolRetryClass
 from shisad.core.types import Capability, ToolName
@@ -46,6 +55,8 @@ class SkillInstallDecision(BaseModel):
 
 
 class InstalledSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     version: str
     path: str
@@ -53,6 +64,36 @@ class InstalledSkill(BaseModel):
     state: ArtifactState
     author: str
     tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
+    bundle_digest: str
+
+
+class _LegacyInstalledSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    version: str
+    path: str
+    manifest_hash: str
+    state: ArtifactState
+    author: str
+    tool_schema_hashes: dict[str, str]
+
+
+def _inventory_entries(value: list[InstalledSkill]) -> dict[str, InstalledSkill]:
+    entries = {entry.name: entry for entry in value}
+    if len(entries) != len(value):
+        raise ValueError("skill inventory contains duplicate names")
+    return entries
+
+
+def _legacy_inventory(raw: bytes) -> list[InstalledSkill]:
+    legacy = TypeAdapter(list[_LegacyInstalledSkill]).validate_json(raw)
+    entries = [
+        InstalledSkill.model_validate({**entry.model_dump(mode="json"), "bundle_digest": ""})
+        for entry in legacy
+    ]
+    _inventory_entries(entries)
+    return entries
 
 
 class SkillManager:
@@ -83,6 +124,9 @@ class SkillManager:
             skills_root=self._storage_dir.parent / "skills",
             config_root=self._storage_dir.parent,
         )
+        self._state_status = StateLoadStatus.MISSING
+        self._state_reason = ""
+        self._storage_capability = StorageCapability()
         self._inventory = self._load_inventory()
         self._skill_tool_map: dict[str, list[ToolName]] = {}
         self._pending_registration_events: list[SkillToolRegistrationDropped] = []
@@ -236,17 +280,20 @@ class SkillManager:
         return profiler
 
     def list_installed(self) -> list[InstalledSkill]:
+        self._require_inventory("list_installed")
         return sorted(self._inventory.values(), key=lambda item: item.name)
 
     def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
+        self._require_inventory("revoke")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return None
         if installed.state == ArtifactState.REVOKED:
             return installed
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
-        self._inventory[skill_name] = updated
-        self._persist_inventory()
+        candidate = dict(self._inventory)
+        candidate[skill_name] = updated
+        self._publish_inventory(candidate, transition="revoke")
         self._unregister_skill_tools(skill_name)
         _ = reason
         return updated
@@ -257,11 +304,11 @@ class SkillManager:
         *,
         state: ArtifactState = ArtifactState.PUBLISHED,
     ) -> InstalledSkill | None:
+        self._require_inventory("activate_bundle")
         bundle = load_skill_bundle(
             skill_path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
-        self._unregister_skill_tools(bundle.manifest.name)
         installed = InstalledSkill(
             name=bundle.manifest.name,
             version=bundle.manifest.version,
@@ -270,9 +317,12 @@ class SkillManager:
             state=state,
             author=bundle.manifest.author,
             tool_schema_hashes=_declared_tool_schema_hashes(bundle.manifest),
+            bundle_digest=_bundle_digest(bundle),
         )
-        self._inventory[bundle.manifest.name] = installed
-        self._persist_inventory()
+        candidate = dict(self._inventory)
+        candidate[bundle.manifest.name] = installed
+        self._publish_inventory(candidate, transition="activate_bundle")
+        self._unregister_skill_tools(bundle.manifest.name)
         if state == ArtifactState.PUBLISHED:
             self._register_skill_tools(
                 bundle.manifest,
@@ -295,6 +345,7 @@ class SkillManager:
         skill_name: str,
         request: SkillExecutionRequest,
     ) -> SkillSandboxDecision:
+        self._require_inventory("authorize_runtime")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return SkillSandboxDecision(allowed=False, reason="unknown_skill")
@@ -303,16 +354,24 @@ class SkillManager:
         path = Path(installed.path)
         if not path.exists():
             return SkillSandboxDecision(allowed=False, reason="skill_path_missing")
-        bundle = load_skill_bundle(
-            path,
-            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-        )
+        try:
+            bundle = load_skill_bundle(
+                path,
+                allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+            )
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            return SkillSandboxDecision(allowed=False, reason="skill_bundle_drift")
+        bundle_digest = _bundle_digest(bundle)
+        if not installed.bundle_digest:
+            return SkillSandboxDecision(allowed=False, reason="skill_bundle_drift")
         manifest_hash = bundle.manifest.manifest_hash()
         if manifest_hash != installed.manifest_hash:
             return SkillSandboxDecision(allowed=False, reason="skill_manifest_drift")
         current_tool_hashes = _declared_tool_schema_hashes(bundle.manifest)
         if current_tool_hashes != dict(installed.tool_schema_hashes):
             return SkillSandboxDecision(allowed=False, reason="skill_tool_schema_drift")
+        if bundle_digest != installed.bundle_digest:
+            return SkillSandboxDecision(allowed=False, reason="skill_bundle_drift")
         return self._runtime_sandbox.authorize(
             bundle.manifest,
             request.model_copy(update={"skill_name": bundle.manifest.name}),
@@ -326,20 +385,71 @@ class SkillManager:
         findings.extend(self._capability.analyze(bundle))
         return findings
 
-    def _load_inventory(self) -> dict[str, InstalledSkill]:
-        if not self._inventory_path.exists():
-            return {}
-        payload = json.loads(self._inventory_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            return {}
-        entries = [
-            InstalledSkill.model_validate(item) for item in payload if isinstance(item, dict)
-        ]
-        return {entry.name: entry for entry in entries}
+    def _require_inventory(self, transition: str) -> None:
+        if self._state_status in {StateLoadStatus.MISSING, StateLoadStatus.OK}:
+            return
+        raise StatePersistenceDegradedError(
+            authority="skills",
+            transition=transition,
+            stage="state_load",
+            reason=self._state_reason or "restore known-good skill inventory",
+        )
 
-    def _persist_inventory(self) -> None:
-        payload = [entry.model_dump(mode="json") for entry in self.list_installed()]
-        self._inventory_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    def state_health(self) -> dict[str, str]:
+        status = {
+            StateLoadStatus.MISSING: "missing",
+            StateLoadStatus.OK: "ok",
+            StateLoadStatus.CORRUPT: "corrupt",
+            StateLoadStatus.UNSUPPORTED_SCHEMA: "unsupported",
+        }[self._state_status]
+        return {
+            "component": "skills",
+            "status": status,
+            "reason": self._state_reason,
+            "durability": self._storage_capability.parent_sync,
+            "permissions": self._storage_capability.permissions,
+            "remains_usable": "conversation, built-in tools, and static skill review",
+        }
+
+    def _load_inventory(self) -> dict[str, InstalledSkill]:
+        result = load_state(
+            self._inventory_path,
+            list[InstalledSkill],
+            legacy_decoder=_legacy_inventory,
+        )
+        self._state_status = result.status
+        if result.status is not StateLoadStatus.OK or result.value is None:
+            if result.status not in {StateLoadStatus.MISSING, StateLoadStatus.OK}:
+                self._state_reason = (
+                    "skill inventory is invalid; restore a known-good inventory snapshot"
+                )
+            return {}
+        try:
+            return _inventory_entries(result.value)
+        except ValueError:
+            self._state_status = StateLoadStatus.CORRUPT
+            self._state_reason = "skill inventory contains conflicting entries"
+            return {}
+
+    def _publish_inventory(self, candidate: dict[str, InstalledSkill], *, transition: str) -> None:
+        payload = [
+            entry.model_dump(mode="json")
+            for entry in sorted(candidate.values(), key=lambda x: x.name)
+        ]
+        try:
+            self._storage_capability = write_state(self._inventory_path, payload)
+        except (AtomicWriteError, OSError, TypeError, ValueError, ValidationError) as exc:
+            self._state_status = StateLoadStatus.CORRUPT
+            self._state_reason = "skill inventory publication failed; restore known-good state"
+            raise StatePersistenceDegradedError(
+                authority="skills",
+                transition=transition,
+                stage=str(getattr(exc, "stage", "encode")),
+                reason=self._state_reason,
+            ) from exc
+        self._inventory = {name: entry.model_copy(deep=True) for name, entry in candidate.items()}
+        self._state_status = StateLoadStatus.OK
+        self._state_reason = ""
 
     def _installed_bundles(self) -> list[SkillBundle]:
         bundles: list[SkillBundle] = []
@@ -359,8 +469,13 @@ class SkillManager:
         return bundles
 
     def _register_inventory_tools(self) -> None:
-        if self._tool_registry is None:
+        if self._state_status not in {
+            StateLoadStatus.MISSING,
+            StateLoadStatus.OK,
+        }:
             return
+        bundles: dict[str, SkillBundle] = {}
+        candidate = dict(self._inventory)
         inventory_migrated = False
         for installed in self._inventory.values():
             if installed.state != ArtifactState.PUBLISHED:
@@ -375,16 +490,58 @@ class SkillManager:
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
-            expected_hashes = getattr(installed, "tool_schema_hashes", {})
-            previous_hashes = dict(expected_hashes)
+            bundles[installed.name] = bundle
+            digest = _bundle_digest(bundle)
+            expected_hashes = _migrate_legacy_tool_hashes(
+                bundle.manifest, dict(installed.tool_schema_hashes)
+            )
+            hashes_migrated = expected_hashes != installed.tool_schema_hashes
+            if (
+                not installed.bundle_digest
+                and bundle.manifest.manifest_hash() == installed.manifest_hash
+            ) or (digest == installed.bundle_digest and hashes_migrated):
+                candidate[installed.name] = installed.model_copy(
+                    update={"bundle_digest": digest, "tool_schema_hashes": expected_hashes},
+                    deep=True,
+                )
+                inventory_migrated = True
+        if inventory_migrated:
+            try:
+                self._publish_inventory(candidate, transition="legacy_migration")
+            except StatePersistenceDegradedError:
+                return
+        if self._tool_registry is None:
+            return
+        for installed in self._inventory.values():
+            if installed.state != ArtifactState.PUBLISHED:
+                continue
+            loaded_bundle = bundles.get(installed.name)
+            if loaded_bundle is None:
+                continue
+            if _bundle_digest(loaded_bundle) != installed.bundle_digest:
+                self._record_bundle_drift(installed, loaded_bundle)
+                continue
             self._register_skill_tools(
-                bundle.manifest,
-                expected_hashes=expected_hashes,
+                loaded_bundle.manifest,
+                expected_hashes=dict(installed.tool_schema_hashes),
                 registration_source="inventory_reload",
             )
-            inventory_migrated = inventory_migrated or expected_hashes != previous_hashes
-        if inventory_migrated:
-            self._persist_inventory()
+
+    def _record_bundle_drift(self, installed: InstalledSkill, bundle: SkillBundle) -> None:
+        actual_hashes = _declared_tool_schema_hashes(bundle.manifest)
+        actual_digest = _bundle_digest(bundle)
+        for name in sorted(set(installed.tool_schema_hashes) | set(actual_hashes)):
+            expected_hash = installed.tool_schema_hashes.get(name, "")
+            actual_hash = actual_hashes.get(name, "")
+            schema_drift = bool(expected_hash and expected_hash != actual_hash)
+            self._record_registration_drop(
+                manifest=bundle.manifest,
+                tool_name=ToolName(f"skill.{installed.name}.{name}"),
+                registration_source="inventory_reload",
+                expected_hash=expected_hash if schema_drift else installed.bundle_digest,
+                actual_hash=actual_hash if schema_drift else actual_digest,
+                reason_code="skill:tool_schema_drift" if schema_drift else "skill:bundle_drift",
+            )
 
     def _register_skill_tools(
         self,
@@ -395,21 +552,10 @@ class SkillManager:
     ) -> list[ToolName]:
         if self._tool_registry is None:
             return []
-        required_caps = _skill_tool_capabilities(manifest)
         registered: list[ToolName] = []
         for declared_tool in getattr(manifest, "tools", []):
             tool_name = ToolName(f"skill.{manifest.name}.{declared_tool.name}")
-            tool_def = ToolDefinition(
-                name=tool_name,
-                description=declared_tool.description,
-                parameters=list(declared_tool.parameters),
-                capabilities_required=sorted(required_caps, key=str),
-                destinations=list(declared_tool.destinations),
-                require_confirmation=bool(declared_tool.require_confirmation),
-                registration_source="skill",
-                registration_source_id=str(manifest.name),
-                upstream_tool_name=str(declared_tool.name),
-            )
+            tool_def = _tool_definition(manifest, declared_tool)
             expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
             actual_hash = tool_def.schema_hash()
             if expected_hash and expected_hash != actual_hash:
@@ -457,22 +603,25 @@ class SkillManager:
         registration_source: str,
         expected_hash: str,
         actual_hash: str,
+        reason_code: str = "skill:tool_schema_drift",
     ) -> None:
         event = SkillToolRegistrationDropped(
             actor="skill_manager",
             skill_name=str(getattr(manifest, "name", "")),
             version=str(getattr(manifest, "version", "")),
             tool_name=tool_name,
-            reason_code="skill:tool_schema_drift",
+            reason_code=reason_code,
             registration_source=registration_source or "registration",
             expected_hash_prefix=_hash_prefix(expected_hash),
             actual_hash_prefix=_hash_prefix(actual_hash),
         )
         self._pending_registration_events.append(event)
+        drift_label = "schema drift" if reason_code == "skill:tool_schema_drift" else "bundle drift"
         logger.warning(
-            "Dropping reviewed skill tool during %s due to schema drift: skill=%s version=%s "
+            "Dropping reviewed skill tool during %s due to %s: skill=%s version=%s "
             "tool=%s expected=%s actual=%s",
             event.registration_source,
+            drift_label,
             event.skill_name,
             event.version,
             event.tool_name,
@@ -521,23 +670,53 @@ def _skill_tool_capabilities(manifest: Any) -> set[Capability]:
     return capabilities
 
 
+def _tool_definition(manifest: Any, declared_tool: Any) -> ToolDefinition:
+    return ToolDefinition(
+        name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
+        description=declared_tool.description,
+        parameters=list(declared_tool.parameters),
+        capabilities_required=sorted(_skill_tool_capabilities(manifest), key=str),
+        destinations=list(declared_tool.destinations),
+        require_confirmation=bool(declared_tool.require_confirmation),
+        registration_source="skill",
+        registration_source_id=str(manifest.name),
+        upstream_tool_name=str(declared_tool.name),
+    )
+
+
 def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
-    required_caps = _skill_tool_capabilities(manifest)
     hashes: dict[str, str] = {}
     for declared_tool in getattr(manifest, "tools", []):
-        tool_def = ToolDefinition(
-            name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
-            description=declared_tool.description,
-            parameters=list(declared_tool.parameters),
-            capabilities_required=sorted(required_caps, key=str),
-            destinations=list(declared_tool.destinations),
-            require_confirmation=bool(declared_tool.require_confirmation),
-            registration_source="skill",
-            registration_source_id=str(manifest.name),
-            upstream_tool_name=str(declared_tool.name),
-        )
-        hashes[declared_tool.name] = tool_def.schema_hash()
+        hashes[declared_tool.name] = _tool_definition(manifest, declared_tool).schema_hash()
     return hashes
+
+
+def _migrate_legacy_tool_hashes(manifest: Any, expected: dict[str, str]) -> dict[str, str]:
+    migrated = dict(expected)
+    for declared_tool in getattr(manifest, "tools", []):
+        tool_def = _tool_definition(manifest, declared_tool)
+        stored = expected.get(declared_tool.name, "")
+        if (
+            tool_def.retry_class is ToolRetryClass.UNKNOWN
+            and stored == tool_def.legacy_schema_hash_without_retry_metadata()
+        ):
+            migrated[declared_tool.name] = tool_def.schema_hash()
+    return migrated
+
+
+def _bundle_digest(bundle: SkillBundle) -> str:
+    payload = {
+        "manifest": bundle.manifest.model_dump(mode="json"),
+        "files": sorted((item.path, item.sha256) for item in bundle.files),
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _hash_prefix(value: str) -> str:

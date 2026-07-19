@@ -498,7 +498,7 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow_with_encrypted_arti
             assert ref_id
 
             index_path = config.data_dir / "sessions" / "evidence" / "refs_index.json"
-            index = json.loads(index_path.read_text(encoding="utf-8"))
+            index = json.loads(index_path.read_text(encoding="utf-8"))["payload"]
             content_hash = str(index[sid][ref_id]["content_hash"])
             blob_path = config.data_dir / "sessions" / "evidence" / "blobs" / f"{content_hash}.txt"
             assert _UNIQUE_MARKER.encode("utf-8") not in blob_path.read_bytes()

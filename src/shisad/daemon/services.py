@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
+
 from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.channels.base import Channel
 from shisad.channels.delivery import ChannelDeliveryService
@@ -547,6 +549,7 @@ class DaemonServices:
     """Container for initialized daemon subsystems."""
 
     config: DaemonConfig
+    data_lock: BaseFileLock
     audit_log: AuditLog
     event_bus: EventBus
     policy_loader: PolicyLoader
@@ -622,6 +625,25 @@ class DaemonServices:
 
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
+        """Acquire data-root ownership before constructing mutable services."""
+        config.data_dir.mkdir(parents=True, exist_ok=True)
+        data_lock = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+        try:
+            data_lock.acquire(timeout=0)
+        except Timeout:
+            raise RuntimeError("daemon data root is locked by another running instance") from None
+        except OSError:
+            raise RuntimeError("daemon data-root lock could not be acquired") from None
+        try:
+            return await cls._build_locked(config, data_lock)
+        except BaseException:
+            data_lock.release()
+            raise
+
+    @classmethod
+    async def _build_locked(
+        cls, config: DaemonConfig, data_lock: BaseFileLock
+    ) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
         audit_log = AuditLog(config.data_dir / "audit.jsonl")
         event_bus = EventBus(persister=audit_log)
@@ -1056,6 +1078,7 @@ class DaemonServices:
             }
             services = cls(
                 config=config,
+                data_lock=data_lock,
                 audit_log=audit_log,
                 event_bus=event_bus,
                 policy_loader=policy_loader,
@@ -1397,6 +1420,17 @@ class DaemonServices:
             raise
 
     async def shutdown(self) -> None:
+        """Close services before releasing lifetime data-root ownership."""
+        try:
+            await self._shutdown_services()
+        finally:
+            lock_path = Path(self.data_lock.lock_file)
+            self.data_lock.release()
+            if not isinstance(self.data_lock, SoftFileLock):
+                with contextlib.suppress(OSError):
+                    lock_path.touch(exist_ok=True)
+
+    async def _shutdown_services(self) -> None:
         """Close async/sync resources in reverse runtime order."""
         shutdown_ops: list[tuple[str, Any]] = []
 

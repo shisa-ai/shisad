@@ -48,6 +48,12 @@ Note:
   manifests that are not readable through the default evidence read/promote
   path.
 - The file.read, attachment, note, todo, and reminder rows use direct `tool.execute` probe payloads and show the configured control-plane gate for synthetic control API calls. User-requested session flows for these tools are covered separately by behavioral tests.
+- Assistant `fs.*` and `git.*` tools reject the daemon-managed data root and
+  exact configured external approval, signer, and operator `SOUL.md` control
+  files (including adjacent lock files). Unrelated paths under configured
+  filesystem roots remain available. `shisad doctor check --component storage`
+  reports redacted lock and finite-store health separately from this tool
+  snapshot.
 - Thread control tools (`thread.list`, `thread.inspect`, `thread.resume`,
   `thread.close`, and `thread.why`) are live control/API surfaces, but this
   static snapshot omits them until the live probe seeds an `open_thread`

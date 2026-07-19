@@ -282,6 +282,91 @@ def test_s9_fs_git_toolkit_blocks_hard_link_to_configured_soul_path(tmp_path: Pa
     assert alias_path.read_text(encoding="utf-8") == "trusted persona"
 
 
+@pytest.mark.parametrize("operation", ["list", "read", "write", "git"])
+def test_f3_fs_git_toolkit_blocks_all_managed_data_root_targets(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    managed = workspace / ".shisad-data"
+    managed.mkdir(parents=True)
+    (managed / "secret.json").write_text("control state", encoding="utf-8")
+    (managed / ".git").mkdir()
+    toolkit = FsGitToolkit(
+        roots=[workspace],
+        max_read_bytes=1024,
+        protected_roots=(managed,),
+    )
+
+    if operation == "list":
+        result = toolkit.list_dir(path=str(managed))
+    elif operation == "read":
+        result = toolkit.read_file(path=str(managed / "secret.json"))
+    elif operation == "write":
+        result = toolkit.write_file(
+            path=str(managed / "secret.json"),
+            content="attacker overwrite",
+            confirm=True,
+        )
+    else:
+        result = toolkit.git_status(repo_path=str(managed))
+
+    assert result["ok"] is False
+    assert result["error"] == "protected_control_plane_path"
+    assert (managed / "secret.json").read_text(encoding="utf-8") == "control state"
+
+
+@pytest.mark.parametrize("operation", ["list", "read", "write", "git"])
+def test_f3_fs_git_toolkit_blocks_exact_external_control_files_and_adjacent_locks(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    soul = workspace / "SOUL.md"
+    soul.write_text("trusted persona", encoding="utf-8")
+    soul_lock = workspace / "SOUL.md.lock"
+    soul_lock.write_text("", encoding="utf-8")
+    toolkit = FsGitToolkit(
+        roots=[workspace],
+        max_read_bytes=1024,
+        protected_paths=(soul, soul_lock),
+    )
+    target = soul_lock if operation == "list" else soul
+
+    if operation == "list":
+        result = toolkit.list_dir(path=str(target))
+    elif operation == "read":
+        result = toolkit.read_file(path=str(target))
+    elif operation == "write":
+        result = toolkit.write_file(path=str(target), content="attacker", confirm=True)
+    else:
+        result = toolkit.git_status(repo_path=str(target))
+
+    assert result["ok"] is False
+    assert result["error"] == "protected_control_plane_path"
+    assert soul.read_text(encoding="utf-8") == "trusted persona"
+
+
+def test_f3_fs_git_toolkit_keeps_unrelated_authorized_paths_usable(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    managed = workspace / ".shisad-data"
+    managed.mkdir(parents=True)
+    notes = workspace / "notes.txt"
+    notes.write_text("healthy", encoding="utf-8")
+    toolkit = FsGitToolkit(
+        roots=[workspace],
+        max_read_bytes=1024,
+        protected_roots=(managed,),
+    )
+
+    assert toolkit.read_file(path=str(notes))["content"] == "healthy"
+    written = toolkit.write_file(path=str(notes), content="still healthy", confirm=True)
+
+    assert written["ok"] is True
+    assert notes.read_text(encoding="utf-8") == "still healthy"
+
+
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)

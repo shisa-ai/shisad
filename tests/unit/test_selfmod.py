@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 import shisad.selfmod.manager as selfmod_manager_module
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.tools.registry import ToolRegistry
 from shisad.security.policy import SkillPolicy
 from shisad.selfmod import SelfModificationManager
@@ -562,6 +563,10 @@ def test_m1_behavior_pack_apply_and_rollback_updates_planner_overlay(tmp_path: P
     assert planner.defaults[-2] == ("strict", "Keep responses terse.")
     assert rolled_back.rolled_back is True
     assert planner.defaults[-1] == ("neutral", "")
+    envelope = json.loads((tmp_path / "selfmod" / "inventory.yaml").read_text(encoding="utf-8"))
+    assert set(envelope) == {"schema", "sha256", "payload"}
+    entry = envelope["payload"]["behavior_packs"]["operator-tone"]
+    assert entry["artifact_digest"]
 
 
 def test_m1_selfmod_rollback_rechecks_previous_artifact_integrity(tmp_path: Path) -> None:
@@ -617,6 +622,188 @@ def test_m1_selfmod_rollback_rechecks_previous_artifact_integrity(tmp_path: Path
     assert rolled_back.rolled_back is False
     assert rolled_back.reason == "integrity_mismatch"
     assert planner.defaults[-1] == ("strict", "Stay strict.")
+
+
+def test_f3_selfmod_artifact_drift_on_restart_disables_only_overlay(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+    assert applied.applied is True
+    assert planner.defaults[-1] == ("strict", "Stay strict.")
+    stored = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "behavior_packs"
+        / "operator-tone"
+        / "1.0.0"
+        / "instructions.yaml"
+    )
+    stored.write_text("tone: friendly\ncustom_persona_text: tampered\n", encoding="utf-8")
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert restarted.state_health()["status"] == "corrupt"
+    assert restarted_planner.defaults[-1] == ("neutral", "")
+    assert restarted.status()["behavior_packs"]["operator-tone"]["active_version"] == "1.0.0"
+
+
+def test_f3_corrupt_selfmod_inventory_preserves_bytes_and_default_planner(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir(parents=True)
+    inventory = root / "inventory.yaml"
+    corrupt = b"{not-json"
+    inventory.write_bytes(corrupt)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert manager.state_health()["status"] == "corrupt"
+    assert inventory.read_bytes() == corrupt
+    assert planner.defaults[-1] == ("neutral", "")
+    assert manager.apply("missing", confirm=True).reason == "state_persistence_degraded"
+    assert manager.rollback("missing").reason == "state_persistence_degraded"
+
+
+def test_f3_selfmod_exact_legacy_inventory_migrates_after_publication(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    assert manager.apply(manager.propose(artifact).proposal_id, confirm=True).applied
+    inventory_path = tmp_path / "selfmod" / "inventory.yaml"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    envelope["payload"]["behavior_packs"]["operator-tone"].pop("artifact_digest")
+    inventory_path.write_text(
+        yaml.safe_dump(envelope["payload"], sort_keys=False),
+        encoding="utf-8",
+    )
+
+    migrated, migrated_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert migrated.state_health()["status"] == "ok"
+    assert migrated_planner.defaults[-1] == ("strict", "Stay strict.")
+    assert set(json.loads(inventory_path.read_text(encoding="utf-8"))) == {
+        "schema",
+        "sha256",
+        "payload",
+    }
+
+
+def test_f3_selfmod_partial_legacy_inventory_is_preserved_and_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir()
+    inventory_path = root / "inventory.yaml"
+    raw = b"skills: {}\n"
+    inventory_path.write_bytes(raw)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert manager.state_health()["status"] == "corrupt"
+    assert inventory_path.read_bytes() == raw
+    assert planner.defaults[-1] == ("neutral", "")
+
+
+def test_f3_selfmod_unknown_nested_legacy_shape_is_preserved_and_rejected(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir()
+    inventory_path = root / "inventory.yaml"
+    raw = (
+        b"skills:\n"
+        b"  helper:\n"
+        b"    enabled: false\n"
+        b"    active_version: ''\n"
+        b"    unexpected: ignored\n"
+        b"behavior_packs: {}\n"
+    )
+    inventory_path.write_bytes(raw)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert manager.state_health()["status"] == "corrupt"
+    assert inventory_path.read_bytes() == raw
+    assert planner.defaults[-1] == ("neutral", "")
+
+
+def test_f3_selfmod_inventory_publication_precedes_live_behavior_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    proposal = manager.propose(artifact)
+    before_defaults = list(planner.defaults)
+
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AtomicWriteError(
+            path=tmp_path / "selfmod" / "inventory.yaml",
+            stage=AtomicWriteStage.FILE_FSYNC,
+            publication_may_have_committed=False,
+        )
+
+    monkeypatch.setattr(selfmod_manager_module, "write_state", _fail, raising=False)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "inventory_persist_failed"
+    assert planner.defaults == before_defaults
+    assert manager.state_health()["status"] == "corrupt"
 
 
 def test_m1_selfmod_integrity_mismatch_keeps_last_known_good(tmp_path: Path) -> None:

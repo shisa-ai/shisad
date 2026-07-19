@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.core.action_state import reminder_status_view_for_task
+from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
@@ -1209,8 +1210,13 @@ def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None
     (storage / "pending_confirmations.json").write_bytes(b"\xff")
 
     restarted = SchedulerManager(storage_dir=storage)
-    assert restarted.list_tasks() == []
-    assert restarted.pending_confirmations("missing-task") == []
+    assert restarted.state_health()["status"] == "corrupt"
+    with pytest.raises(StatePersistenceDegradedError):
+        restarted.list_tasks()
+    with pytest.raises(StatePersistenceDegradedError):
+        restarted.pending_confirmations("missing-task")
+    assert (storage / "tasks.json").read_bytes() == b"\xff"
+    assert (storage / "pending_confirmations.json").read_bytes() == b"\xff"
 
 
 def test_m2_scheduler_interval_due_runs_once_per_interval() -> None:

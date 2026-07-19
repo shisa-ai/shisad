@@ -12,7 +12,16 @@ import pytest
 import yaml
 from textguard import Finding as TextGuardFinding
 
+import shisad.skills.manager as skills_manager_module
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StatePersistenceDegradedError,
+)
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition
+from shisad.core.types import ToolName
 from shisad.security.firewall import classifier as classifier_module
 from shisad.security.policy import SkillPolicy
 from shisad.skills import (
@@ -694,3 +703,234 @@ async def test_m4_rr8_signature_required_policy_blocks_auto_install(tmp_path: Pa
     assert decision.allowed is False
     assert decision.status == "review"
     assert decision.reason == "signature_required_policy"
+
+
+def _runtime_skill(root: Path, *, name: str) -> Path:
+    manifest = _manifest_payload(name=name)
+    manifest["capabilities"]["network"] = [{"domain": "api.good.example", "reason": "calendar api"}]
+    manifest["tools"] = [
+        {
+            "name": "lookup",
+            "description": "Look up calendar entries.",
+            "parameters": [{"name": "query", "type": "string", "required": True}],
+            "destinations": ["api.good.example"],
+        }
+    ]
+    return _write_skill(
+        root,
+        manifest=manifest,
+        files={"SKILL.md": f"Use {name} only for schedule reads.\n"},
+    )
+
+
+def test_f3_skill_inventory_healthy_lifecycle_wraps_and_reloads(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "calendar", name="calendar-helper")
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    installed = manager.activate_bundle(skill)
+
+    assert installed is not None
+    assert installed.bundle_digest
+    assert manager.authorize_runtime(
+        skill_name="calendar-helper",
+        request=SkillExecutionRequest(
+            skill_name="calendar-helper",
+            network_hosts=["api.good.example"],
+        ),
+    ).allowed
+    assert registry.has_tool(ToolName("skill.calendar-helper.lookup"))
+    envelope = json.loads((storage / "inventory.json").read_text(encoding="utf-8"))
+    assert set(envelope) == {"schema", "sha256", "payload"}
+    assert envelope["payload"][0]["bundle_digest"] == installed.bundle_digest
+
+    reloaded_registry = ToolRegistry()
+    reloaded = SkillManager(storage_dir=storage, tool_registry=reloaded_registry)
+    assert reloaded.state_health()["status"] == "ok"
+    assert reloaded.list_installed()[0].bundle_digest == installed.bundle_digest
+    assert reloaded_registry.has_tool(ToolName("skill.calendar-helper.lookup"))
+
+    revoked = reloaded.revoke(skill_name="calendar-helper", reason="operator_request")
+    assert revoked is not None
+    assert revoked.state.value == "revoked"
+    assert not reloaded_registry.has_tool(ToolName("skill.calendar-helper.lookup"))
+
+
+def test_f3_skill_bundle_drift_blocks_only_drifted_dynamic_skill(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    drifted = _runtime_skill(tmp_path / "drifted", name="drifted-skill")
+    healthy = _runtime_skill(tmp_path / "healthy", name="healthy-skill")
+    manager = SkillManager(storage_dir=storage, tool_registry=ToolRegistry())
+    manager.activate_bundle(drifted)
+    manager.activate_bundle(healthy)
+    (drifted / "SKILL.md").write_text("offline drift\n", encoding="utf-8")
+
+    restarted_registry = ToolRegistry()
+    restarted = SkillManager(storage_dir=storage, tool_registry=restarted_registry)
+
+    drift_decision = restarted.authorize_runtime(
+        skill_name="drifted-skill",
+        request=SkillExecutionRequest(skill_name="drifted-skill"),
+    )
+    healthy_decision = restarted.authorize_runtime(
+        skill_name="healthy-skill",
+        request=SkillExecutionRequest(skill_name="healthy-skill"),
+    )
+    assert drift_decision.allowed is False
+    assert drift_decision.reason == "skill_bundle_drift"
+    assert healthy_decision.allowed is True
+    assert not restarted_registry.has_tool(ToolName("skill.drifted-skill.lookup"))
+    assert restarted_registry.has_tool(ToolName("skill.healthy-skill.lookup"))
+    events = restarted.drain_registration_events()
+    assert len(events) == 1
+    assert events[0].reason_code == "skill:bundle_drift"
+
+
+def test_f3_invalid_runtime_skill_bundle_returns_local_drift_denial(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "drifted", name="drifted-skill")
+    manager = SkillManager(storage_dir=storage, tool_registry=ToolRegistry())
+    manager.activate_bundle(skill)
+    (skill / "skill.manifest.yaml").unlink()
+
+    decision = manager.authorize_runtime(
+        skill_name="drifted-skill",
+        request=SkillExecutionRequest(skill_name="drifted-skill"),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "skill_bundle_drift"
+
+
+def test_f3_corrupt_skill_inventory_preserves_bytes_and_unrelated_tools(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    inventory = storage / "inventory.json"
+    corrupt = b"{not-json"
+    inventory.write_bytes(corrupt)
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("builtin.health"),
+            description="Built-in health check.",
+            parameters=[],
+        )
+    )
+
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    assert manager.state_health()["status"] == "corrupt"
+    assert inventory.read_bytes() == corrupt
+    assert registry.has_tool(ToolName("builtin.health"))
+    with pytest.raises(StatePersistenceDegradedError):
+        manager.list_installed()
+    with pytest.raises(StatePersistenceDegradedError):
+        manager.activate_bundle(_runtime_skill(tmp_path / "candidate", name="candidate"))
+    # Static review/profile remain available because they do not mutate inventory.
+    assert manager.profile(_runtime_skill(tmp_path / "reviewable", name="reviewable"))
+
+
+def test_f3_skill_inventory_exact_legacy_list_migrates_after_publication(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "legacy", name="legacy-skill")
+    manager = SkillManager(storage_dir=storage)
+    installed = manager.activate_bundle(skill)
+    assert installed is not None
+    envelope = json.loads((storage / "inventory.json").read_text(encoding="utf-8"))
+    envelope["payload"][0].pop("bundle_digest")
+    (storage / "inventory.json").write_text(
+        json.dumps(envelope["payload"]),
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    migrated = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    assert migrated.list_installed()[0].name == "legacy-skill"
+    assert migrated.list_installed()[0].bundle_digest
+    assert registry.has_tool(ToolName("skill.legacy-skill.lookup"))
+    wrapped = json.loads((storage / "inventory.json").read_text(encoding="utf-8"))
+    assert set(wrapped) == {"schema", "sha256", "payload"}
+
+
+@pytest.mark.parametrize("mutation", ["partial", "unknown"])
+def test_f3_skill_inventory_rejects_nonexact_legacy_rows(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "legacy", name="legacy-skill")
+    manager = SkillManager(storage_dir=storage)
+    manager.activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    row = envelope["payload"][0]
+    row.pop("bundle_digest")
+    if mutation == "partial":
+        row.pop("tool_schema_hashes")
+    else:
+        row["unexpected"] = "ignored by permissive model parsing"
+    inventory_path.write_text(json.dumps(envelope["payload"]), encoding="utf-8")
+    before = inventory_path.read_bytes()
+
+    restarted = SkillManager(storage_dir=storage)
+
+    assert restarted.state_health()["status"] == "corrupt"
+    assert inventory_path.read_bytes() == before
+    with pytest.raises(StatePersistenceDegradedError):
+        restarted.list_installed()
+
+
+def test_f3_legacy_inventory_does_not_rebind_a_drifted_manifest(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "legacy-drift", name="legacy-drift")
+    manager = SkillManager(storage_dir=storage)
+    manager.activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    envelope["payload"][0].pop("bundle_digest")
+    inventory_path.write_text(json.dumps(envelope["payload"]), encoding="utf-8")
+    manifest_path = skill / "skill.manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["description"] = "offline drift before F3 migration"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    registry = ToolRegistry()
+    restarted = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    assert restarted.list_installed()[0].bundle_digest == ""
+    assert not registry.has_tool(ToolName("skill.legacy-drift.lookup"))
+    decision = restarted.authorize_runtime(
+        skill_name="legacy-drift",
+        request=SkillExecutionRequest(skill_name="legacy-drift"),
+    )
+    assert decision.allowed is False
+    assert decision.reason == "skill_bundle_drift"
+
+
+def test_f3_skill_inventory_publication_precedes_live_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "state"
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+    candidate = _runtime_skill(tmp_path / "candidate", name="candidate-skill")
+
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AtomicWriteError(
+            path=storage / "inventory.json",
+            stage=AtomicWriteStage.FILE_FSYNC,
+            publication_may_have_committed=False,
+        )
+
+    monkeypatch.setattr(skills_manager_module, "write_state", _fail, raising=False)
+
+    with pytest.raises(StatePersistenceDegradedError):
+        manager.activate_bundle(candidate)
+
+    assert not registry.has_tool(ToolName("skill.candidate-skill.lookup"))
+    assert manager.state_health()["status"] == "corrupt"

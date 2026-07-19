@@ -976,6 +976,7 @@ async def test_m4_task_approval_nonce_and_provenance_stay_bound_to_origin_task(
             predicate=lambda item: (
                 str(item.get("session_id", "")).strip()
                 == str(first_task_result["task_session_id"]).strip()
+                and str(item.get("actor", "")).strip() == "tool_runtime"
                 and str(item.get("data", {}).get("approval_confirmation_id", "")).strip()
                 == str(first_pending["confirmation_id"]).strip()
             ),

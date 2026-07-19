@@ -523,6 +523,15 @@ async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None
     """Run the shisad daemon."""
     setup_logging(level=config.log_level)
     services = await DaemonServices.build(config)
+    try:
+        await _serve_daemon(config, services, on_started)
+    finally:
+        await services.shutdown()
+
+
+async def _serve_daemon(
+    config: DaemonConfig, services: DaemonServices, on_started: Callable[[], None] | None
+) -> None:
     handlers = DaemonControlHandlers(services=services)
     await services.approval_web.start()
 
@@ -591,5 +600,4 @@ async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None
                 await task
         with contextlib.suppress(asyncio.CancelledError):
             await reminder_pump_task
-        await services.shutdown()
         logger.info("shisad daemon stopped")

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from filelock import FileLock
 from pydantic import ValidationError
 
 from shisad.core.config import DaemonConfig, ModelConfig
@@ -557,7 +558,9 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
                 "behavior_packs": {"persona": {"enabled": True, "active_version": "2.0.0"}},
             }
         )
-        services.selfmod_manager._persist_inventory()
+        services.selfmod_manager._persist_inventory_snapshot(
+            services.selfmod_manager._inventory
+        )
         (services.selfmod_manager._proposal_dir / "proposal.json").write_text(
             "{}",
             encoding="utf-8",
@@ -583,10 +586,14 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             state=ArtifactState.PUBLISHED,
             author="unit-test",
             tool_schema_hashes={},
+            bundle_digest="test-bundle-digest",
         )
         services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
         services.skill_manager._pending_registration_events.append(object())  # type: ignore[arg-type]
-        services.skill_manager._persist_inventory()
+        services.skill_manager._publish_inventory(
+            dict(services.skill_manager._inventory),
+            transition="test_seed",
+        )
 
         services.credential_store.register_approval_factor(
             ApprovalFactorRecord(
@@ -1401,7 +1408,7 @@ async def test_daemon_services_build_rolls_back_when_container_construction_fail
 
 
 @pytest.mark.asyncio
-async def test_daemon_services_shutdown_continues_after_disconnect_error() -> None:
+async def test_daemon_services_shutdown_continues_after_disconnect_error(tmp_path) -> None:
     calls: list[str] = []
 
     class _EmbeddingsAdapterStub:
@@ -1425,6 +1432,9 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
     # — that is the intended drift signal. A deeper cleanup would split
     # shutdown logic into a pure function; tracked as a follow-up.
     services = object.__new__(DaemonServices)
+    data_lock = FileLock(str(tmp_path / "data.lock"))
+    data_lock.acquire()
+    services.data_lock = data_lock
     services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
     services.matrix_channel = _MatrixStub()  # type: ignore[assignment]
     services.server = _ServerStub()  # type: ignore[assignment]
@@ -1433,10 +1443,11 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
     assert calls[0] == "embed:True"
     assert "matrix" in calls
     assert calls[-1] == "server"
+    assert data_lock.is_locked is False
 
 
 @pytest.mark.asyncio
-async def test_daemon_services_shutdown_reaches_all_registered_resources() -> None:
+async def test_daemon_services_shutdown_reaches_all_registered_resources(tmp_path) -> None:
     # HDL-L1: the prior test covered only embeddings → matrix → server.
     # Real shutdown also runs a2a_runtime.close(), any-channel.disconnect()
     # (through both the `channels` dict and per-platform attributes),
@@ -1488,6 +1499,9 @@ async def test_daemon_services_shutdown_reaches_all_registered_resources() -> No
             calls.append("server")
 
     services = object.__new__(DaemonServices)
+    data_lock = FileLock(str(tmp_path / "data.lock"))
+    data_lock.acquire()
+    services.data_lock = data_lock
     services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
     services.a2a_runtime = _A2ARuntimeStub()  # type: ignore[assignment]
     services.channels = {"x": _DictChannelStub()}  # type: ignore[assignment]
@@ -1511,6 +1525,7 @@ async def test_daemon_services_shutdown_reaches_all_registered_resources() -> No
     assert "sidecar" in calls
     assert "approval-web" in calls
     assert calls[-1] == "server", "control server must be the last resource to stop"
+    assert data_lock.is_locked is False
 
 
 def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from pathlib import Path
 
@@ -79,6 +80,89 @@ async def test_run_daemon_started_callback_error_does_not_stop_daemon(
         status = await client.call("daemon.status")
         assert status["status"] == "running"
         assert not daemon_task.done()
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_f3_doctor_reports_redacted_lock_and_component_storage_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "d",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        doctor = await client.call("doctor.check", {"component": "storage"})
+        storage = doctor["checks"]["storage"]
+        components = {row["component"]: row for row in storage["components"]}
+
+        assert storage["lock"]["status"] == "ok"
+        assert storage["lock"]["held"] is True
+        assert {"scheduler", "skills", "selfmod", "evidence"} <= set(components)
+        assert all(row["status"] in {"ok", "missing"} for row in components.values())
+        assert str(config.data_dir) not in json.dumps(storage)
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_scheduler_state_leaves_basic_conversation_usable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    scheduler_dir = config.data_dir / "tasks"
+    scheduler_dir.mkdir(parents=True)
+    corrupt = b"{not-json"
+    (scheduler_dir / "tasks.json").write_bytes(corrupt)
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        doctor = await client.call("doctor.check", {"component": "storage"})
+        storage = doctor["checks"]["storage"]
+        scheduler = next(row for row in storage["components"] if row["component"] == "scheduler")
+        assert scheduler["status"] == "corrupt"
+        assert scheduler["reason"]
+        assert "conversation" in scheduler["remains_usable"]
+        assert str(config.data_dir) not in json.dumps(scheduler)
+        assert (scheduler_dir / "tasks.json").read_bytes() == corrupt
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        reply = await client.call(
+            "session.message",
+            {"session_id": created["session_id"], "content": "hello"},
+        )
+        assert str(reply.get("response", "")).strip()
+        assert reply.get("lockdown_level") == "normal"
+        assert (scheduler_dir / "tasks.json").read_bytes() == corrupt
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

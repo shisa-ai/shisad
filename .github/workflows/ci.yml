@@ -101,6 +101,59 @@ jobs:
             artifacts/coverage-trend.json
             artifacts/yara-parity.json
 
+  f3-portability:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --exclude-newer P7D --frozen --dev
+
+      - name: Run F3 state and lifecycle paths on POSIX hosts
+        if: runner.os != 'Windows'
+        run: |
+          uv run pytest --basetemp=/tmp/shisad-f3 -q \
+            tests/unit/test_atomic_state.py \
+            tests/integration/test_state_store_integrity.py \
+            tests/integration/test_daemon_data_lock.py \
+            tests/unit/test_credentials.py \
+            tests/unit/test_soul_admin.py \
+            tests/unit/test_skills.py \
+            tests/unit/test_selfmod.py \
+            tests/unit/test_evidence_store.py
+
+      - name: Verify package and CLI imports on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          uv run python -c "import shisad; import shisad.cli.main"
+          uv run shisad --help
+
+      - name: Run F3 portable state and digest paths on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          uv run pytest -q \
+            tests/unit/test_atomic_state.py \
+            tests/integration/test_state_store_integrity.py \
+            tests/integration/test_daemon_data_lock.py::test_filelock_zero_timeout_is_portable_and_reacquirable \
+            tests/unit/test_skills.py \
+            tests/unit/test_selfmod.py
+
   privileged-connect-path:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest

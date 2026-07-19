@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.api.transport import ControlClient
+from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.approval import generate_totp_code
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
@@ -377,14 +377,28 @@ async def test_two_factor_daemon_starts_with_malformed_persisted_state(
 
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
-        listed = await client.call("2fa.list", {"user_id": "alice"})
-        assert listed["count"] == 0
+        with pytest.raises(JsonRpcCallError, match=r"state|corrupt|restore"):
+            await client.call("2fa.list", {"user_id": "alice"})
+        doctor = await client.call("doctor.check", {"component": "storage"})
+        approval = next(
+            row
+            for row in doctor["checks"]["storage"]["components"]
+            if row["component"] == "approval_factors"
+        )
+        assert approval["status"] == "corrupt"
+
+        created = await client.call("session.create", {"channel": "cli"})
+        reply = await client.call(
+            "session.message",
+            {"session_id": created["session_id"], "content": "hello"},
+        )
+        assert str(reply.get("response", "")).strip()
     finally:
         await _shutdown_daemon(daemon_task, client)
 
-    assert not (data_dir / "approval-factors.json").exists()
+    assert (data_dir / "approval-factors.json").read_text(encoding="utf-8") == "{not-json"
     assert not (data_dir / "confirmation_lockouts.json").exists()
-    assert list(data_dir.glob("approval-factors.json.corrupt.*"))
+    assert list(data_dir.glob("approval-factors.json.corrupt.*")) == []
     assert list(data_dir.glob("confirmation_lockouts.json.corrupt.*"))
 
 

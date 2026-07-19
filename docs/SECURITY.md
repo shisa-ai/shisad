@@ -144,6 +144,49 @@ per-confirmation lock while that daemon process is running. That lock is a
 local concurrency guard, not durable exactly-once evidence; the persisted
 attempt/result lifecycle above is the restart authority.
 
+**Local state integrity and ownership.** Included finite control-state stores
+use a versioned JSON envelope with a SHA-256 checksum over canonical payload
+bytes and publish by same-directory temporary file plus atomic replacement.
+The checksum detects accidental corruption; it is not an authenticity proof
+against an attacker who can rewrite the state and checksum together. Actual
+file and parent-directory durability, and optional permission tightening, are
+reported according to host/filesystem capability. shisad does not claim
+universal power-loss durability or universal POSIX owner, descriptor, or mount
+semantics.
+
+One maintained-library file lock gives a running daemon exclusive ownership of
+its local data root. This is a same-host process-coordination boundary, not a
+distributed lease, and does not defend against administrators, root, a
+compromised host, or unrestricted malicious native code running as the same
+user. A persistent `.shisad.lock` file is normal and does not by itself mean
+that a process currently holds the lock. Independent data roots remain usable
+concurrently.
+
+Malformed, checksum-mismatched, or future-version state is preserved and
+degrades only its owning component. shisad does not silently replace it with an
+empty store and does not provide automatic backup or repair; restore a trusted
+snapshot or use an existing explicit reset/re-enrollment path. Evidence
+metadata is especially conservative: cleanup, quarantine, expiry deletion, and
+garbage collection stop while its metadata domain is uncertain. A crash may
+therefore leave an unreferenced blob; that bounded leakage is preferred to
+deleting data on uncertain authority.
+
+Installed dynamic-skill inventory rows bind a canonical manifest-and-file
+digest, and runtime drift suppresses only the affected skill. Active
+self-modification inventory rows carry the corresponding signed-artifact
+digest; invalid drift disables self-modification/behavior overlays and keeps
+the default planner plus unrelated features available.
+
+Assistant filesystem and Git tools reject the managed data root and exact
+configured external approval, signer, and operator `SOUL.md` files (including
+their adjacent lock files). This protects those files from the assistant tool
+surface; it is not a host-global filesystem policy and does not restrict a
+trusted operator using the host directly.
+
+Channel replay state remains a bounded best-effort guard. Corrupt replay state
+may forget prior message IDs, so this layer does not claim daemon-level,
+provider-level, or distributed exactly-once delivery.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---

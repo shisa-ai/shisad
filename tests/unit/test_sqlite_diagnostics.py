@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from types import SimpleNamespace
 from typing import Any
 
 from click.testing import CliRunner
@@ -85,6 +86,11 @@ def test_gh83_doctor_storage_component_surfaces_sqlite_runtime_status(
         },
     )
     impl = object.__new__(HandlerImplementation)
+    healthy = SimpleNamespace(state_health=lambda: {"component": "test", "status": "ok"})
+    for name in ("_scheduler", "_skill_manager", "_selfmod_manager", "_evidence_store"):
+        setattr(impl, name, healthy)
+    impl._credential_store = SimpleNamespace(approval_state_health=healthy.state_health)
+    impl._services = SimpleNamespace(data_lock=SimpleNamespace(is_locked=True))
 
     assert "storage" in _DOCTOR_COMPONENTS
     assert impl._doctor_storage_status()["status"] == "degraded"

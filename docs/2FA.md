@@ -654,6 +654,12 @@ See [ENV-VARS.md](ENV-VARS.md) for the complete reference.
   signer public keys are stored in a daemon-owned JSON file.
 - Default location: `SHISAD_DATA_DIR/approval-factors.json`
 - Override with: `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`
+- The file uses a checksummed state envelope and short-lived adjacent file lock
+  for each load/mutation. This detects accidental corruption and coordinates
+  local writers; it is not an authenticity or distributed-lock guarantee.
+- Invalid or future-version factor state is preserved and blocks factor/signer
+  operations only. The credential broker and unrelated tools remain usable;
+  restore known-good state or re-enroll through an existing operator route.
 - **Not encrypted at rest** in the current shipped line. Protect with
   filesystem permissions.
 

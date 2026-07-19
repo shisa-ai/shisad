@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from stat import S_IMODE
 
 import pytest
 
+import shisad.core.evidence as evidence_module
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StatePersistenceDegradedError,
+    write_state,
+)
 from shisad.core.evidence import (
     ArtifactBlobCodecError,
     ArtifactEndorsementState,
@@ -23,6 +32,24 @@ from shisad.core.evidence import (
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall
 from tests.helpers.artifact_kms import StubArtifactKmsService
+
+
+def _index_payload(path: Path) -> dict[str, object]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if set(document) == {"schema", "sha256", "payload"}:
+        payload = document["payload"]
+        assert isinstance(payload, dict)
+        return payload
+    assert isinstance(document, dict)
+    return document
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def test_evidence_store_round_trips_content_and_metadata(tmp_path) -> None:
@@ -41,6 +68,245 @@ def test_evidence_store_round_trips_content_and_metadata(tmp_path) -> None:
     assert store.get_ref(sid, ref.ref_id) == ref
     assert store.read(sid, ref.ref_id) == "hello evidence"
     assert store.validate_ref_id(sid, ref.ref_id) is True
+    assert store.state_health()["status"] == "ok"
+    envelope = json.loads((tmp_path / "evidence" / "refs_index.json").read_text(encoding="utf-8"))
+    assert set(envelope) == {"schema", "sha256", "payload"}
+
+
+def test_f3_evidence_exact_legacy_index_migrates_after_validation(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-legacy")
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "legacy evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="legacy evidence",
+    )
+    index_path = evidence_root / "refs_index.json"
+    index_path.write_text(json.dumps(_index_payload(index_path)), encoding="utf-8")
+
+    migrated = EvidenceStore(evidence_root)
+
+    assert migrated.state_health()["status"] == "ok"
+    assert migrated.read(sid, created.ref_id) == "legacy evidence"
+    assert set(json.loads(index_path.read_text(encoding="utf-8"))) == {
+        "schema",
+        "sha256",
+        "payload",
+    }
+
+
+@pytest.mark.parametrize("mutation", ["partial", "unknown"])
+def test_f3_evidence_rejects_nonexact_legacy_ref_shapes(
+    tmp_path,
+    mutation: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-legacy-shape")
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "legacy evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="legacy evidence",
+    )
+    index_path = evidence_root / "refs_index.json"
+    payload = _index_payload(index_path)
+    row = payload[str(sid)][created.ref_id]
+    if mutation == "partial":
+        row.pop("ttl_seconds")
+    else:
+        row["unexpected"] = "ignored by permissive model parsing"
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = _snapshot_files(evidence_root)
+
+    restarted = EvidenceStore(evidence_root)
+
+    assert restarted.state_health()["status"] == "corrupt"
+    assert restarted._refs == {}
+    assert _snapshot_files(evidence_root) == before
+
+
+@pytest.mark.parametrize("salt_bytes", [None, b"short"])
+def test_f3_evidence_missing_or_invalid_salt_with_state_preserves_bytes(
+    tmp_path,
+    salt_bytes: bytes | None,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-salt")
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    first.store(
+        sid,
+        "salt-bound evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="salt-bound evidence",
+    )
+    salt_path = evidence_root / "evidence_salt"
+    if salt_bytes is None:
+        salt_path.unlink()
+    else:
+        salt_path.write_bytes(salt_bytes)
+    before = _snapshot_files(evidence_root)
+
+    restarted = EvidenceStore(evidence_root)
+
+    assert restarted.state_health()["status"] == "corrupt"
+    assert restarted._refs == {}
+    assert _snapshot_files(evidence_root) == before
+
+
+def test_f3_evidence_missing_index_with_blob_preserves_bytes(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    first.store(
+        SessionId("sess-index"),
+        "index-bound evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="index-bound evidence",
+    )
+    (evidence_root / "refs_index.json").unlink()
+    before = _snapshot_files(evidence_root)
+
+    restarted = EvidenceStore(evidence_root)
+
+    assert restarted.state_health()["status"] == "corrupt"
+    assert restarted._refs == {}
+    assert _snapshot_files(evidence_root) == before
+
+
+def test_f3_evidence_publication_failure_keeps_prior_memory_and_disk(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-publish")
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = store.store(
+        sid,
+        "stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="stable evidence",
+    )
+    before = _snapshot_files(evidence_root)
+
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AtomicWriteError(
+            path=evidence_root / "refs_index.json",
+            stage=AtomicWriteStage.FILE_FSYNC,
+            publication_may_have_committed=False,
+        )
+
+    monkeypatch.setattr(evidence_module, "write_state", _fail, raising=False)
+
+    with pytest.raises(StatePersistenceDegradedError):
+        store.endorse(
+            sid,
+            created.ref_id,
+            endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+            actor="operator",
+        )
+
+    assert store._refs[str(sid)][created.ref_id] == created
+    assert store.state_health()["status"] == "corrupt"
+    assert _snapshot_files(evidence_root) == before
+
+
+def test_f3_evidence_publishes_index_before_best_effort_blob_delete(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-order")
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    ref = store.store(
+        sid,
+        "expired evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="expired evidence",
+    )
+    store._refs[str(sid)][ref.ref_id] = ref.model_copy(
+        update={"created_at": datetime.now(UTC) - timedelta(hours=2)}
+    )
+    events: list[str] = []
+    original_persist = store._persist_metadata_index
+
+    def _persist() -> None:
+        events.append("publish")
+        original_persist()
+
+    def _delete(_content_hash: str) -> None:
+        events.append("delete")
+
+    monkeypatch.setattr(store, "_persist_metadata_index", _persist)
+    monkeypatch.setattr(store, "_delete_blob_if_unreferenced", _delete)
+
+    assert store.evict_expired(sid, max_age_seconds=60) == [ref.ref_id]
+    assert events == ["publish", "delete"]
+
+
+def test_f3_evidence_mutations_are_serialized_by_one_process_mutex(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-mutex")
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    ref = store.store(
+        sid,
+        "serialized evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="serialized evidence",
+    )
+    original_write = write_state
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    call_count = 0
+    count_lock = threading.Lock()
+
+    def _blocking_write(path: Path, payload: object) -> object:
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+            current = call_count
+        if current == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_entered.set()
+        return original_write(path, payload)
+
+    monkeypatch.setattr(evidence_module, "write_state", _blocking_write, raising=False)
+
+    def _endorse(actor: str) -> None:
+        store.endorse(
+            sid,
+            ref.ref_id,
+            endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+            actor=actor,
+        )
+
+    first_thread = threading.Thread(target=_endorse, args=("first",))
+    second_thread = threading.Thread(target=_endorse, args=("second",))
+    first_thread.start()
+    assert first_entered.wait(timeout=2)
+    second_thread.start()
+    assert second_entered.wait(timeout=0.1) is False
+    release_first.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert second_entered.is_set()
 
 
 def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
@@ -64,7 +330,7 @@ def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
     assert restarted.validate_ref_id(sid, created.ref_id) is True
 
 
-def test_evidence_store_drops_refs_with_tampered_metadata_mac_on_restart(tmp_path) -> None:
+def test_evidence_store_metadata_mac_mismatch_degrades_without_rewrite(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -77,18 +343,21 @@ def test_evidence_store_drops_refs_with_tampered_metadata_mac_on_restart(tmp_pat
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = _index_payload(index_path)
     raw_index[str(sid)][created.ref_id]["endorsement_state"] = "user_endorsed"
     raw_index[str(sid)][created.ref_id]["endorsed_by"] = "forged-offline"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    write_state(index_path, raw_index)
+    before = _snapshot_files(evidence_root)
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
 
+    assert restarted.state_health()["status"] == "corrupt"
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
+    assert _snapshot_files(evidence_root) == before
 
 
-def test_evidence_store_drops_refs_when_metadata_mac_is_stripped_and_summary_tampered(
+def test_evidence_store_missing_metadata_mac_degrades_without_sanitizing_index(
     tmp_path,
 ) -> None:
     evidence_root = tmp_path / "evidence"
@@ -103,18 +372,21 @@ def test_evidence_store_drops_refs_when_metadata_mac_is_stripped_and_summary_tam
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = _index_payload(index_path)
     raw_index[str(sid)][created.ref_id]["metadata_mac"] = ""
     raw_index[str(sid)][created.ref_id]["summary"] = "tampered summary from disk"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    write_state(index_path, raw_index)
+    before = _snapshot_files(evidence_root)
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
 
+    assert restarted.state_health()["status"] == "corrupt"
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
+    assert _snapshot_files(evidence_root) == before
 
 
-def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
+def test_evidence_store_tampered_blob_degrades_without_lazy_ref_drop(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -128,10 +400,15 @@ def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
     )
     blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
     blob_path.write_text("tampered evidence body", encoding="utf-8")
+    before = _snapshot_files(evidence_root)
 
     assert store.get_ref(sid, created.ref_id) is None
     assert store.read(sid, created.ref_id) is None
     assert store.validate_ref_id(sid, created.ref_id) is False
+    assert store.state_health()["status"] == "corrupt"
+    assert created.ref_id in store._refs[str(sid)]
+    assert store.collect_garbage(max_age_seconds=1) == []
+    assert _snapshot_files(evidence_root) == before
 
 
 def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) -> None:
@@ -147,14 +424,14 @@ def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) 
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = _index_payload(index_path)
     modified = created.model_copy(update={"storage_codec": "alternate-codec", "metadata_mac": ""})
     raw_index[str(sid)][created.ref_id] = modified.model_dump(mode="json")
     raw_index[str(sid)][created.ref_id]["metadata_mac"] = first._make_metadata_mac(
         str(sid),
         modified,
     )
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    write_state(index_path, raw_index)
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
@@ -162,27 +439,31 @@ def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) 
     assert restarted.read(sid, created.ref_id) is None
     assert created.ref_id in restarted._refs[str(sid)]
     assert blob_path.exists() is True
-    reloaded_index = json.loads(index_path.read_text(encoding="utf-8"))
+    reloaded_index = _index_payload(index_path)
     assert created.ref_id in reloaded_index[str(sid)]
 
 
-def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_path) -> None:
+def test_evidence_store_malformed_index_preserves_all_companion_bytes(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     blob_dir = evidence_root / "blobs"
     blob_dir.mkdir(parents=True)
     orphan_hash = "deadbeef" * 8
     blob_path = blob_dir / f"{orphan_hash}.txt"
     blob_path.write_text("recoverable orphan", encoding="utf-8")
+    (evidence_root / "evidence_salt").write_bytes(b"a" * 32)
     (evidence_root / "refs_index.json").write_text("{not json", encoding="utf-8")
+    before = _snapshot_files(evidence_root)
 
-    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    store = EvidenceStore(evidence_root)
 
+    assert store.state_health()["status"] == "corrupt"
     assert store._refs == {}
     assert blob_path.exists() is True
     assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is False
+    assert _snapshot_files(evidence_root) == before
 
 
-def test_evidence_store_drops_refs_with_missing_blobs_on_restart(tmp_path) -> None:
+def test_evidence_store_missing_referenced_blob_blocks_mutation_without_repair(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -196,50 +477,25 @@ def test_evidence_store_drops_refs_with_missing_blobs_on_restart(tmp_path) -> No
     )
     blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
     blob_path.unlink()
+    before = _snapshot_files(evidence_root)
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
 
+    assert restarted.state_health()["status"] == "corrupt"
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
-    recreated = restarted.store(
-        sid,
-        "restart-stable evidence",
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="restart-stable evidence",
-    )
-    assert recreated.ref_id == created.ref_id
-    assert blob_path.exists() is True
-    assert restarted.read(sid, recreated.ref_id) == "restart-stable evidence"
+    with pytest.raises(StatePersistenceDegradedError):
+        restarted.store(
+            sid,
+            "restart-stable evidence",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="restart-stable evidence",
+        )
+    assert _snapshot_files(evidence_root) == before
 
 
-def test_evidence_store_missing_blob_self_heal_degrades_when_index_rewrite_fails(tmp_path) -> None:
-    evidence_root = tmp_path / "evidence"
-    sid = SessionId("sess-a")
-
-    first = EvidenceStore(evidence_root, salt=b"a" * 32)
-    created = first.store(
-        sid,
-        "restart-stable evidence",
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="restart-stable evidence",
-    )
-    (evidence_root / "blobs" / f"{created.content_hash}.txt").unlink()
-
-    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
-
-    def _fail_persist() -> None:
-        raise PermissionError("readonly evidence root")
-
-    restarted._persist_metadata_index = _fail_persist  # type: ignore[method-assign]
-
-    assert restarted.get_ref(sid, created.ref_id) is None
-    assert restarted.validate_ref_id(sid, created.ref_id) is False
-    assert restarted.read(sid, created.ref_id) is None
-
-
-def test_evidence_store_sanitizes_partial_index_and_still_runs_cleanup(tmp_path) -> None:
+def test_evidence_store_partial_index_disables_cleanup_and_preserves_bytes(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -260,19 +516,19 @@ def test_evidence_store_sanitizes_partial_index_and_still_runs_cleanup(tmp_path)
     os.utime(old_quarantined, (old, old))
 
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = _index_payload(index_path)
     raw_index["bad-session"] = "not-a-dict"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    write_state(index_path, raw_index)
+    before = _snapshot_files(evidence_root)
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
 
-    assert restarted.get_ref(sid, created.ref_id) == created
-    assert orphan_blob.exists() is False
-    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
-    assert old_quarantined.exists() is False
-
-    sanitized_index = json.loads(index_path.read_text(encoding="utf-8"))
-    assert "bad-session" not in sanitized_index
+    assert restarted.state_health()["status"] == "corrupt"
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.collect_garbage(max_age_seconds=1) == []
+    assert orphan_blob.exists() is True
+    assert old_quarantined.exists() is True
+    assert _snapshot_files(evidence_root) == before
 
 
 def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None:
@@ -746,9 +1002,9 @@ def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_
         )
 
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = _index_payload(index_path)
     raw_index[str(sid)][ref.ref_id]["summary"] = "forged offline summary"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    write_state(index_path, raw_index)
 
     with StubArtifactKmsService(key_material=b"c" * 32).run() as endpoint_url:
         restarted = ArtifactLedger(
@@ -757,6 +1013,7 @@ def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_
             blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
         )
         assert restarted._refs == {}
+        assert restarted.state_health()["status"] == "corrupt"
 
 
 def test_artifact_ledger_kms_blob_codec_detects_tamper_without_dropping_ref(tmp_path) -> None:
@@ -880,7 +1137,7 @@ def test_evidence_store_hardens_directory_and_file_permissions(tmp_path) -> None
     assert blob_mode == 0o600
 
 
-def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
+def test_evidence_store_orphan_without_salt_degrades_without_quarantine(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     blob_dir = evidence_root / "blobs"
     blob_dir.mkdir(parents=True)
@@ -888,14 +1145,16 @@ def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
     orphan_blob = blob_dir / f"{orphan_hash}.txt"
     orphan_blob.write_text("orphaned evidence", encoding="utf-8")
 
-    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    before = _snapshot_files(evidence_root)
+    store = EvidenceStore(evidence_root)
 
     quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
-    assert orphan_blob.exists() is False
-    assert quarantined.exists() is True
-    assert quarantined.read_text(encoding="utf-8") == "orphaned evidence"
+    assert store.state_health()["status"] == "corrupt"
+    assert orphan_blob.exists() is True
+    assert quarantined.exists() is False
     assert store._refs == {}
-    assert S_IMODE(quarantined.stat().st_mode) == 0o600
+    assert not (evidence_root / "evidence_salt").exists()
+    assert _snapshot_files(evidence_root) == before
 
 
 def test_artifact_ledger_quarantined_refs_are_not_readable_by_default(tmp_path) -> None:
@@ -918,7 +1177,9 @@ def test_artifact_ledger_quarantined_refs_are_not_readable_by_default(tmp_path) 
     assert ledger.read(SessionId("s1"), ref.ref_id) is None
 
 
-def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path) -> None:
+def test_evidence_store_old_orphan_is_not_moved_while_companion_state_is_missing(
+    tmp_path,
+) -> None:
     evidence_root = tmp_path / "evidence"
     blob_dir = evidence_root / "blobs"
     blob_dir.mkdir(parents=True)
@@ -928,13 +1189,19 @@ def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path)
     old = datetime.now(UTC).timestamp() - 3600
     os.utime(orphan_blob, (old, old))
 
-    EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+    before = _snapshot_files(evidence_root)
+    store = EvidenceStore(evidence_root, orphan_retention_seconds=60)
 
     quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
-    assert quarantined.exists() is True
+    assert store.state_health()["status"] == "corrupt"
+    assert orphan_blob.exists() is True
+    assert quarantined.exists() is False
+    assert _snapshot_files(evidence_root) == before
 
 
-def test_evidence_store_prunes_old_quarantined_blobs(tmp_path) -> None:
+def test_evidence_store_does_not_prune_quarantine_when_companion_state_is_missing(
+    tmp_path,
+) -> None:
     evidence_root = tmp_path / "evidence"
     quarantine_dir = evidence_root / "quarantine"
     quarantine_dir.mkdir(parents=True)
@@ -943,9 +1210,12 @@ def test_evidence_store_prunes_old_quarantined_blobs(tmp_path) -> None:
     old = datetime.now(UTC).timestamp() - 3600
     os.utime(old_quarantined, (old, old))
 
-    EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+    before = _snapshot_files(evidence_root)
+    store = EvidenceStore(evidence_root, orphan_retention_seconds=60)
 
-    assert old_quarantined.exists() is False
+    assert store.state_health()["status"] == "corrupt"
+    assert old_quarantined.exists() is True
+    assert _snapshot_files(evidence_root) == before
 
 
 def test_generate_safe_summary_preserves_normal_extract(tmp_path) -> None:

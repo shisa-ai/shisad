@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import shisad.core.soul as soul_module
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
+from shisad.core.soul import write_soul_text
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 
 
@@ -194,3 +197,57 @@ async def test_s9_admin_soul_update_warns_for_project_specific_content(tmp_path)
 
     assert result["updated"] is True
     assert "project_specific_memory_route_recommended" in result["warnings"]
+
+
+def test_f3_soul_write_uses_adjacent_lock_and_portable_atomic_publication(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "SOUL.md"
+    lock_paths: list[str] = []
+    atomic_calls: list[tuple[object, bytes]] = []
+
+    class _RecordingLock:
+        def __init__(self, path: str, **_kwargs: object) -> None:
+            lock_paths.append(path)
+
+        def __enter__(self) -> _RecordingLock:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def _atomic(path: object, payload: bytes, **_kwargs: object) -> None:
+        atomic_calls.append((path, payload))
+        soul_path.write_bytes(payload)
+
+    monkeypatch.setattr(soul_module, "FileLock", _RecordingLock, raising=False)
+    monkeypatch.setattr(soul_module, "atomic_write_bytes", _atomic, raising=False)
+
+    result = write_soul_text(soul_path, "portable preferences")
+
+    assert lock_paths == [str(soul_path.with_name("SOUL.md.lock"))]
+    assert atomic_calls == [(soul_path, b"portable preferences")]
+    assert result.bytes_written == len(b"portable preferences")
+
+
+def test_f3_soul_pre_replace_failure_preserves_prior_text(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("last known good", encoding="utf-8")
+
+    def _fail(path: object, _payload: bytes, **_kwargs: object) -> None:
+        raise AtomicWriteError(
+            path=path,  # type: ignore[arg-type]
+            stage=AtomicWriteStage.FILE_FSYNC,
+            publication_may_have_committed=False,
+        )
+
+    monkeypatch.setattr(soul_module, "atomic_write_bytes", _fail, raising=False)
+
+    with pytest.raises(AtomicWriteError):
+        write_soul_text(soul_path, "uncommitted")
+
+    assert soul_path.read_text(encoding="utf-8") == "last known good"

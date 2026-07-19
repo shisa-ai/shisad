@@ -19,6 +19,12 @@ from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
+def _state_payload(path: Path) -> object:
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert set(envelope) == {"schema", "sha256", "payload"}
+    return envelope["payload"]
+
+
 async def _wait_for_task_pending_confirmation(
     client: ControlClient,
     *,
@@ -618,16 +624,12 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
             str(item.get("confirmation_id", "")) == confirmation_id for item in remaining["pending"]
         )
 
-        tasks_payload = json.loads(
-            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
-        )
+        tasks_payload = _state_payload(tmp_path / "data" / "tasks" / "tasks.json")
         task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
         assert int(task_row.get("failure_count", 0)) >= 1
         assert int(task_row.get("success_count", 0)) == 0
 
-        pending_payload = json.loads(
-            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
-        )
+        pending_payload = _state_payload(tmp_path / "data" / "tasks" / "pending_confirmations.json")
         rows = list(pending_payload.get(str(created["id"]), []))
         matching = next(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
@@ -709,9 +711,7 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         )
         assert action_pending["count"] == 0
 
-        pending_payload = json.loads(
-            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
-        )
+        pending_payload = _state_payload(tmp_path / "data" / "tasks" / "pending_confirmations.json")
         rows = list(pending_payload.get(str(created["id"]), []))
         matching = next(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
@@ -719,9 +719,7 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         assert str(matching.get("status", "")) == "failed"
         assert str(matching.get("status_reason", "")) == "approval_contract_mismatch"
 
-        tasks_payload = json.loads(
-            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
-        )
+        tasks_payload = _state_payload(tmp_path / "data" / "tasks" / "tasks.json")
         task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
         assert int(task_row.get("failure_count", 0)) >= 1
     finally:

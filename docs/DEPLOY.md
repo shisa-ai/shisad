@@ -164,6 +164,34 @@ Before starting the daemon:
 - [ ] Optional: at least one channel token (Discord, Telegram, or Slack)
 - [ ] Optional: policy file created (`runner/policy.default.yaml` is a starting point)
 
+## Data-Root Ownership and State Recovery
+
+Only one daemon may own a given `SHISAD_DATA_DIR` at a time. Ownership is
+acquired before stores or control endpoints are opened; a same-root contender
+fails with an actionable error without altering feature state. Separate data
+roots with separate endpoints can run concurrently.
+
+On supported hard-lock platforms, `.shisad.lock` is intentionally persistent.
+Its presence alone does not mean a daemon is running—the library-managed lock
+held by the live process is authoritative. Check the daemon and finite-store
+posture with:
+
+```bash
+shisad doctor check --component storage
+```
+
+Small included state stores use checksummed envelopes and atomic replacement.
+If doctor reports `corrupt` or `unsupported`, that component is blocked while
+conversation and unrelated features remain available. Existing bytes are
+preserved. Restore a known-good backup or use the component's documented
+explicit reset/re-enrollment path; shisad does not automatically repair,
+quarantine, or replace uncertain state.
+
+Atomic replacement, parent-directory sync, and permission tightening are
+reported according to the host and filesystem. They are not a universal
+power-loss guarantee. The lock is local to one host and is not suitable for a
+shared multi-host data root or active/active deployment.
+
 ## Recommended: Runner Harness
 
 The runner harness is the default local operator path. It handles env isolation,

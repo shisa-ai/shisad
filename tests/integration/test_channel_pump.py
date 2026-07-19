@@ -225,7 +225,7 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
 
 
 @pytest.mark.asyncio
-async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
+async def test_gh41_slack_confirm_reply_completes_without_reentering_planner(
     model_env: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -373,7 +373,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             if (
                 received_total >= 2
                 and len(planner_requests) == 1
-                and len(pending_after.get("actions", [])) == 1
+                and len(pending_after.get("actions", [])) == 0
             ):
                 break
             await asyncio.sleep(0.05)
@@ -382,7 +382,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
         assert len(planner_requests) == 1
         assert "please write my preference" in planner_requests[0]
         assert "confirm 1" not in planner_requests[0]
-        assert len(pending_after.get("actions", [])) == 1
+        assert len(pending_after.get("actions", [])) == 0
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

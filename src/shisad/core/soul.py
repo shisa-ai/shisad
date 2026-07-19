@@ -6,10 +6,14 @@ import hashlib
 import os
 import re
 import stat
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock
+
+from shisad.core.atomic_state import atomic_write_bytes
+from shisad.core.storage_platform import hardened_open_flags
 
 DEFAULT_SOUL_MAX_BYTES = 64 * 1024
 SOUL_FILENAME = "SOUL.md"
@@ -55,7 +59,7 @@ def load_soul_text(raw_path: str | Path, *, max_bytes: int = DEFAULT_SOUL_MAX_BY
     _validate_max_bytes(max_bytes)
     if _existing_regular_soul_stat(path) is None:
         return ""
-    flags = _soul_open_flags(os.O_RDONLY)
+    flags = hardened_open_flags(os.O_RDONLY)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -121,23 +125,11 @@ def write_soul_text(
     if len(data) > max_bytes:
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _reject_symlink_components(path)
-    _existing_regular_soul_stat(path)
-    flags = _soul_open_flags(os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-    try:
-        fd = os.open(path, flags, 0o600)
-    except OSError as exc:
-        raise SoulFileError(f"SOUL.md write failed: {exc}") from exc
-    try:
-        _validate_open_soul_regular_file(fd)
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1
-            handle.write(data)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    with suppress(PermissionError):
-        path.chmod(0o600)
+    lock_path = path.with_name(f"{path.name}.lock")
+    with FileLock(str(lock_path)):
+        _reject_symlink_components(path)
+        _existing_regular_soul_stat(path)
+        atomic_write_bytes(path, data)
     return SoulWriteResult(
         path=path,
         sha256=_sha256_text(normalized),
@@ -170,15 +162,6 @@ def _existing_regular_soul_stat(path: Path) -> os.stat_result | None:
     if not stat.S_ISREG(file_stat.st_mode):
         raise SoulFileError("SOUL.md path must point to a regular file")
     return file_stat
-
-
-def _soul_open_flags(base_flags: int) -> int:
-    flags = base_flags
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_NONBLOCK"):
-        flags |= os.O_NONBLOCK
-    return flags
 
 
 def _validate_open_soul_regular_file(fd: int) -> None:

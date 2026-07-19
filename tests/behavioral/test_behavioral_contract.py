@@ -1514,6 +1514,66 @@ async def test_contract_hello_responds_without_lockdown(contract_harness: Contra
     assert int(reply.get("executed_actions", 0)) == 0
 
 
+@pytest.mark.parametrize("component", ["scheduler", "skills", "selfmod", "evidence"])
+@pytest.mark.asyncio
+async def test_f3_component_corruption_preserves_chat_channel_and_unrelated_fs_tool(
+    component: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        config.channel_identity_allowlist = {"discord": ["guest-f3"]}
+        paths = {
+            "scheduler": config.data_dir / "tasks" / "tasks.json",
+            "skills": config.data_dir / "skills" / "inventory.json",
+            "selfmod": config.data_dir / "selfmod" / "inventory.yaml",
+            "evidence": config.data_dir / "sessions" / "evidence" / "refs_index.json",
+        }
+        path = paths[component]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if component == "evidence":
+            (path.parent / "evidence_salt").write_bytes(b"a" * 32)
+        path.write_bytes(b"{not-json")
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        doctor = await harness.client.call("doctor.check", {"component": "storage"})
+        storage = doctor["checks"]["storage"]
+        component_health = next(
+            row for row in storage["components"] if row["component"] == component
+        )
+        assert component_health["status"] == "corrupt"
+        assert "conversation" in component_health["remains_usable"]
+
+        sid = await _create_session(harness.client)
+        hello = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert str(hello.get("response", "")).strip()
+        assert hello.get("lockdown_level") == "normal"
+
+        listed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "can you list the files in the folder you're in?"},
+        )
+        assert _extract_tool_outputs(listed)["fs.list"][0]["ok"] is True
+
+        channel_reply = await harness.client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "guest-f3",
+                    "workspace_hint": "guild-f3",
+                    "reply_target": "chan-f3",
+                    "message_id": f"msg-f3-{component}",
+                    "content": "hello",
+                }
+            },
+        )
+        assert str(channel_reply.get("response", "")).strip()
+
+
 @pytest.mark.asyncio
 async def test_contract_web_search_executes_and_returns_results(
     contract_harness: ContractHarness,

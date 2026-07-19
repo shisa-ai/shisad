@@ -7,6 +7,14 @@ from datetime import UTC, datetime
 
 import pytest
 
+import shisad.security.credentials as credentials_module
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StatePersistenceDegradedError,
+    write_state,
+)
+from shisad.core.storage_platform import StorageCapability
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
@@ -254,6 +262,9 @@ class TestApprovalFactorStore:
         assert entries[0].credential_id == "totp-1"
         assert entries[0].principal_id == "ops-laptop"
         assert entries[0].recovery_codes[0].code_hash == "recovery-hash"
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        assert set(envelope) == {"schema", "sha256", "payload"}
+        assert envelope["payload"]["schema_version"] == "shisad.approval_factor_store.v2"
 
     def test_approval_factor_revoke_filters_by_user_and_method(self, tmp_path) -> None:
         store = InMemoryCredentialStore()
@@ -282,17 +293,79 @@ class TestApprovalFactorStore:
         assert removed == 1
         assert [item.credential_id for item in store.list_approval_factors()] == ["totp-b"]
 
-    def test_approval_factor_store_quarantines_malformed_json(self, tmp_path) -> None:
+    def test_approval_factor_store_preserves_malformed_json_and_blocks_only_factors(
+        self,
+        tmp_path,
+    ) -> None:
         store_path = tmp_path / "approval-factors.json"
-        store_path.write_text("{not-json", encoding="utf-8")
+        corrupt = b"{not-json"
+        store_path.write_bytes(corrupt)
 
         store = InMemoryCredentialStore()
         store.set_approval_store_path(store_path)
 
-        assert store.list_approval_factors() == []
-        assert not store_path.exists()
-        quarantined = list(tmp_path.glob("approval-factors.json.corrupt.*"))
-        assert len(quarantined) == 1
+        assert store.approval_state_health()["status"] == "corrupt"
+        assert store_path.read_bytes() == corrupt
+        assert list(tmp_path.glob("approval-factors.json.corrupt.*")) == []
+        with pytest.raises(StatePersistenceDegradedError):
+            store.list_approval_factors()
+        # The unrelated credential broker remains usable.
+        store.register(
+            CredentialRef("api-key"),
+            "secret",
+            CredentialConfig(allowed_hosts=["api.example.com"]),
+        )
+        assert store.has_credential(CredentialRef("api-key")) is True
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {
+                "schema_version": "shisad.approval_factor_store.v2",
+                "approval_factors": [],
+            },
+            {
+                "schema_version": "shisad.approval_factor_store.v1",
+                "approval_factors": [],
+                "unexpected": [],
+            },
+        ],
+    )
+    def test_approval_factor_store_rejects_partial_or_unknown_legacy_shapes(
+        self,
+        tmp_path,
+        payload: dict[str, object],
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        raw = json.dumps(payload).encode()
+        store_path.write_bytes(raw)
+
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+
+        assert store.approval_state_health()["status"] == "corrupt"
+        assert store_path.read_bytes() == raw
+
+    def test_approval_factor_store_rejects_partial_wrapped_state(
+        self,
+        tmp_path,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        write_state(
+            store_path,
+            {
+                "schema_version": "shisad.approval_factor_store.v2",
+                "approval_factors": [],
+            },
+        )
+        before = store_path.read_bytes()
+
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+
+        assert store.approval_state_health()["status"] == "corrupt"
+        assert store_path.read_bytes() == before
 
     def test_local_fido2_realm_id_persists_with_factor_store(self, tmp_path) -> None:
         store_path = tmp_path / "approval-factors.json"
@@ -310,7 +383,7 @@ class TestApprovalFactorStore:
             )
         )
 
-        payload = json.loads(store_path.read_text(encoding="utf-8"))
+        payload = json.loads(store_path.read_text(encoding="utf-8"))["payload"]
         assert payload["local_fido2_realm_id"] == realm_id
 
         reloaded = InMemoryCredentialStore()
@@ -344,3 +417,110 @@ class TestApprovalFactorStore:
         store.set_approval_store_path(store_path)
 
         assert store.get_or_create_local_fido2_realm_id() == "deadbeefcafebabe"
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        assert set(envelope) == {"schema", "sha256", "payload"}
+
+    def test_approval_factor_store_uses_short_lived_adjacent_lock(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        lock_paths: list[str] = []
+
+        class _RecordingLock:
+            def __init__(self, path: str, **_kwargs: object) -> None:
+                lock_paths.append(path)
+
+            def __enter__(self) -> _RecordingLock:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        monkeypatch.setattr(credentials_module, "FileLock", _RecordingLock, raising=False)
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="totp-locked",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        adjacent = str(store_path.with_name("approval-factors.json.lock"))
+        assert lock_paths == [adjacent, adjacent]
+
+    def test_approval_factor_publication_failure_preserves_prior_state(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="stable",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        before = store_path.read_bytes()
+
+        def _fail(*_args: object, **_kwargs: object) -> object:
+            raise AtomicWriteError(
+                path=store_path,
+                stage=AtomicWriteStage.FILE_FSYNC,
+                publication_may_have_committed=False,
+            )
+
+        monkeypatch.setattr(credentials_module, "write_state", _fail, raising=False)
+
+        with pytest.raises(StatePersistenceDegradedError):
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="uncommitted",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="device-2",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+
+        assert store_path.read_bytes() == before
+        assert store.approval_state_health()["status"] == "corrupt"
+
+    def test_approval_factor_permission_failure_degrades_only_factor_state(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(tmp_path / "approval-factors.json")
+        ref = CredentialRef("provider-token")
+        store.register(ref, "secret", CredentialConfig(allowed_hosts=["api.example"]))
+        monkeypatch.setattr(
+            credentials_module,
+            "write_state",
+            lambda *_args, **_kwargs: StorageCapability(permissions="failed"),
+        )
+
+        with pytest.raises(StatePersistenceDegradedError):
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="unsafe",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+
+        assert store.approval_state_health()["permissions"] == "failed"
+        assert store.resolve(store.get_placeholder(ref), "api.example") == "secret"

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 import yaml
 
+from shisad.core.atomic_state import write_state
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolRetryClass, tool_definitions_to_openai
@@ -184,8 +185,8 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     assert legacy_hash != current_hash
     inventory_path = state_dir / "inventory.json"
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-    inventory[0]["tool_schema_hashes"]["lookup"] = legacy_hash
-    inventory_path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+    inventory["payload"][0]["tool_schema_hashes"]["lookup"] = legacy_hash
+    write_state(inventory_path, inventory["payload"])
 
     restarted_registry = ToolRegistry()
     SkillManager(
@@ -201,7 +202,7 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     assert restored is not None
     assert restored.retry_class == ToolRetryClass.UNKNOWN
     migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-    assert migrated_inventory[0]["tool_schema_hashes"]["lookup"] == current_hash
+    assert migrated_inventory["payload"][0]["tool_schema_hashes"]["lookup"] == current_hash
 
 
 @pytest.mark.asyncio

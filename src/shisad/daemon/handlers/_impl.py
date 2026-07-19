@@ -78,6 +78,7 @@ from shisad.core.atomic_state import (
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.clock import current_time_payload
+from shisad.core.config import effective_approval_factor_store_path
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -128,6 +129,7 @@ from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.daemon.handlers._impl_plan_steps import PlanStepsImplMixin
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
+    SessionMessageValidationResult,
     _browser_runtime_unavailable_rejection_reason,
 )
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
@@ -1000,6 +1002,8 @@ def _fs_git_toolkit_for_context(
         max_read_bytes=handler._config.assistant_max_read_bytes,
         git_timeout_seconds=handler._config.assistant_git_timeout_seconds,
         protected_write_paths=tuple(getattr(toolkit, "protected_write_paths", ())),
+        protected_roots=tuple(getattr(toolkit, "protected_roots", ())),
+        protected_paths=tuple(getattr(toolkit, "protected_paths", ())),
     )
 
 
@@ -2123,6 +2127,16 @@ class HandlerImplementation(
 ):
     """Owns JSON-RPC control handlers for the daemon."""
 
+    def _planner_reminder_status_context(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> str:
+        try:
+            return super()._planner_reminder_status_context(validated=validated)
+        except StatePersistenceDegradedError:
+            return ""
+
     def __init__(self, *, services: DaemonServices) -> None:
         self._services = services
         self._config = services.config
@@ -2297,6 +2311,20 @@ class HandlerImplementation(
                 (self._config.assistant_persona_soul_path,)
                 if self._config.assistant_persona_soul_path is not None
                 else ()
+            ),
+            protected_roots=(self._config.data_dir,),
+            protected_paths=tuple(
+                path
+                for control_path in (
+                    effective_approval_factor_store_path(data_dir=self._config.data_dir),
+                    self._config.selfmod_allowed_signers_path,
+                    self._config.assistant_persona_soul_path,
+                )
+                if control_path is not None
+                for path in (
+                    control_path,
+                    control_path.with_name(f"{control_path.name}.lock"),
+                )
             ),
         )
         self._attachment_ingestor = AttachmentIngestor(
@@ -3147,7 +3175,33 @@ class HandlerImplementation(
         }
 
     def _doctor_storage_status(self) -> dict[str, Any]:
-        return sqlite_runtime_status()
+        payload = sqlite_runtime_status()
+        components = [
+            self._scheduler.state_health(),
+            self._skill_manager.state_health(),
+            self._selfmod_manager.state_health(),
+            self._evidence_store.state_health(),
+            self._credential_store.approval_state_health(),
+        ]
+        degraded = [row for row in components if row["status"] not in {"ok", "missing"}]
+        if degraded:
+            payload["status"] = "degraded"
+            payload["problems"] = sorted(
+                [*payload.get("problems", []), *(
+                    f"{row['component']}_state_{row['status']}" for row in degraded
+                )]
+            )
+        lock_held = bool(self._services.data_lock.is_locked)
+        payload["components"] = components
+        payload["lock"] = {
+            "status": "ok" if lock_held else "blocked",
+            "held": lock_held,
+            "reason": "" if lock_held else "daemon data-root ownership is not held",
+            "durability": "process_lifetime",
+            "permissions": "maintained_file_lock",
+            "remains_usable": "active daemon services" if lock_held else "none",
+        }
+        return payload
 
     def _doctor_provider_status(self) -> dict[str, Any]:
         payload = self._provider_diagnostics
