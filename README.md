@@ -400,12 +400,16 @@ Key runtime paths:
 ## Development
 
 ```bash
-uv run ruff check src/ tests/ scripts/
-uv run mypy src/shisad/
-uv run pytest -q
+# Example: validate one affected module and its owning tests.
+uv run ruff check src/shisad/core/host_matching.py tests/unit/test_host_matching.py
+uv run mypy src/shisad/core/host_matching.py
+uv run --python 3.12 pytest tests/unit/test_host_matching.py -q
 ```
 
-See `AGENTS.md` for full development process, validation matrix, and commit conventions.
+Ordinary changes use targeted Python 3.12 validation. Full deterministic and
+multi-version runs are checkpoint/release evidence, and contained suites are
+not rerun separately. See `AGENTS.md` for the full validation cadence, coverage
+rules, and commit conventions.
 
 ## Documentation
 

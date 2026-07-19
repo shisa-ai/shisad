@@ -95,12 +95,19 @@ Version must be updated in both places:
       `uv run ruff format --check .`
 - [ ] Run release validation:
       `uv run ruff check .`
-- [ ] Run release validation:
-      `uv run pytest tests/ -q`
-- [ ] Run adversarial release gate:
-      `uv run pytest tests/adversarial -q`
-- [ ] Run behavioral gate:
-      `uv run pytest tests/behavioral/ -q`
+- [ ] Run one primary Python 3.12 deterministic pass with coverage and marker
+      reporting:
+      `uv run --python 3.12 pytest tests/ -m "not requires_cap_net_admin" --cov=src --cov-report=term-missing --cov-report=xml -q -rxXs`
+- [ ] Apply the global and per-module coverage gates to that same report:
+      `uv run python scripts/coverage_baseline.py --xml coverage.xml` and
+      `uv run python scripts/coverage_module_gate.py --xml coverage.xml --critical-floor 80 --module-floor 60`
+- [ ] Confirm the contained adversarial, behavioral, and first-principles cases
+      passed, with zero failed/xfailed/xpassed/skipped first-principles gates.
+      Do not rerun those subsets after the full pass.
+- [ ] Run one Python 3.13 compatibility pass without duplicate coverage:
+      `uv run --python 3.13 pytest tests/ -m "not requires_cap_net_admin" -q -rxXs`
+- [ ] Record relevant macOS/Windows support checks for the exact candidate;
+      reuse candidate-bound CI artifacts rather than rerunning them locally.
 - [ ] Run live-model release gate:
       `bash live-behavior.sh --live-model -q`
 - [ ] Run ACP live coding-agent gates (one pass per configured agent):

@@ -57,8 +57,7 @@ jobs:
           uv sync --frozen --dev
           uv run ruff format --check .
           uv run ruff check .
-          uv run pytest tests/ -q
-          uv run pytest tests/behavioral/ -q
+          uv run pytest tests/ -q -rxXs
 
       - name: Remove stale build artifacts
         run: rm -rf dist/

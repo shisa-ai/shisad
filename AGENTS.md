@@ -18,13 +18,14 @@ When your implementation would break any of these behavioral requirements, stop 
 4. User sends "remember X" → agent stores it, later retrieval works
 5. Multi-tool requests work without lockdown for authorized capabilities
 
-Quick check (before claiming done): `uv run pytest tests/behavioral/ -q`.
-
-For runtime-facing changes, run the named first-principles gate directly before
-the broader behavioral suite:
+During ordinary runtime work, run the affected tests and the named
+first-principles gate when the shared product contract can be affected:
 `uv run pytest tests/behavioral/test_first_principles_gates.py -q`.
 
-Behavioral tests are the hard deterministic gate. For runtime-facing changes, also run a live verification pass via `runner/harness.sh` before claiming end-to-end completion.
+Broad behavioral/full-suite and live evidence are checkpoint/release gates,
+not after-every-edit defaults. A broader valid run subsumes contained tests;
+never rerun the same behavioral selection merely to accumulate another green
+command.
 
 **If a security change breaks functionality, the security change is wrong — not the functionality.**
 
@@ -105,7 +106,11 @@ Not all work starts from a sprint punchlist. Interactive sessions (e.g., human l
 
 1. **Track the work.** Before implementing, add a brief entry to the relevant public planning/worklog artifact for the change. Use the closest existing doc under `docs/` (for example `docs/ROADMAP.md`, a touched ADR under `docs/adr/`, or a task-scoped note added for the feature). This keeps the change visible for review and avoids silent spec drift.
 2. **Write tests first.** Ad-hoc does not mean untested. Write or update tests before implementation — at minimum, cover the success path and any security-relevant edge cases.
-3. **Validate before committing.** Run the targeted tests and static checks from the validation matrix. For runtime-facing changes, include a live runner verification pass against an isolated daemon instance and record the exact commands + outcomes. Don't commit code that hasn't passed the required validation for its scope.
+3. **Validate before committing.** Run the targeted Python 3.12 tests,
+   changed-source coverage, and static checks from the validation matrix. A
+   live runner pass is release-close evidence or a recorded milestone exception,
+   not an ad-hoc default. Don't commit code that hasn't passed the required
+   validation for its scope.
 
 **Post-implementation review is expected.** Ad-hoc commits should receive an independent review pass before any release is cut. This can happen:
 - As a follow-up reviewer session against the committed changes
@@ -150,7 +155,7 @@ Rules:
 - Write tests first for new functionality
 - Keep commits atomic and focused
 - Document security-relevant decisions
-- For planner/provider/tool/scheduler/channel/runtime-security changes, plan an isolated live verification pass with `runner/harness.sh`; behavioral tests are necessary but not sufficient for these changes
+- For planner/provider/tool/scheduler/channel/runtime-security changes, identify the nearest deterministic user journey. Plan an isolated live verification pass only for milestone/release close or when the change materially alters live interaction in a way deterministic tests cannot represent.
 - **Opportunistic cleanup on file touch**: when editing a file for milestone work, remove dead code, stale imports, unused helper methods, and superseded approaches in the same file. This is normal hygiene, not scope expansion. Document significant removals in the task notes. If a cleanup requires touching files outside the active scope, defer it in the relevant planning/worklog doc instead.
 - **Refactor backlog**: if the touched area already has a backlog or TODO doc, review it at the start of the task. Otherwise use same-file-touch opportunistic cleanup only.
 
@@ -158,38 +163,91 @@ Rules:
 
 **When you finish a task, commit.** A "task" is a complete logical unit of work — not every individual file edit. Do not commit mid-task (e.g., while iterating on a fix, exploring questions, or waiting for clarification). Do commit when the task is done and validated, without waiting to be asked. This applies to all completed work — code, tests, docs, planning, config — not just milestone closures.
 
-- Run targeted tests for the changed scope (fast, specific first)
-- Run lint + types: `uv run ruff check src/ tests/ scripts/` and `uv run mypy src/shisad/`
-- For runtime-facing changes, run live verification via `runner/harness.sh` against an isolated daemon instance after deterministic tests pass; record exact commands + outcomes in the active task-scoped doc or worklog notes
-- Run full suite only at milestone closure or agreed large checkpoints (and before claiming completion of non-trivial security work)
+- Run targeted Python 3.12 tests and changed-source coverage for the changed scope
+- Run Ruff on changed Python files and mypy on affected packages; reserve repository-wide static checks for checkpoints
+- Run live verification at release close or for a recorded milestone exception where deterministic tests cannot represent the changed interaction
+- Run one full Python 3.12 deterministic/coverage pass only at nightly, milestone closure, or an agreed large checkpoint; reuse a green scheduled pass for the exact candidate
 - Update relevant docs
 - **Commit immediately** after validation passes — do not wait to be asked
 - When finishing a milestone or review-remediation scope, follow the closure checklist below and produce the closure commit in the same session
 
-### After Changes Validation Matrix
+### Validation Cadence and Evidence Reuse
+
+Validation is an evidence ladder, not a cumulative checklist. Duplicate runs
+cost time, CI resources, feedback latency, and delivery velocity without adding
+assurance. They are an antipattern that must be actively avoided.
+
+A result is bound to its source/test tree, dependency lock, Python version,
+operating system, configuration/posture, and test selection. A broader run
+subsumes contained selections at the same tree/environment. Different Python
+versions, platforms, optional-dependency postures, and live harnesses are
+distinct evidence. Repeat a selection only after relevant changes, to diagnose
+a suspected flake, when required evidence was not captured, or by explicit
+human-lead request; "more confidence" alone is not sufficient.
+
+Required cadence:
+
+- Failed test/remediation: reproduce the exact node IDs; after fixing, rerun
+  those nodes and collect coverage for behaviorally changed production
+  modules. Widen once to the owning file/keyword slice or nearest contract
+  journey only when the fix can affect it.
+- Localized feature/bug: affected unit/contract tests plus the nearest distinct
+  integration or behavioral journey, with changed-module coverage.
+- Shared runtime/security primitive: the targeted evidence above, relevant
+  integration/behavioral selection, and first-principles gates. This does not
+  imply the whole suite.
+- Nightly/milestone/agreed checkpoint: one full deterministic Python 3.12 pass
+  with global coverage and `-rxXs` reporting. This pass contains unit,
+  integration, adversarial, behavioral, and first-principles tests; do not run
+  those subsets again.
+- Release close: one final full Python 3.12 coverage pass, one full Python 3.13
+  compatibility pass, relevant supported-platform checks, and applicable live
+  lanes. Do not duplicate full coverage on Python 3.13.
+
+Partial runs do not enforce repository-wide coverage floors because untouched
+modules were intentionally not loaded. Inspect changed executable
+lines/modules in the targeted report. Apply global and per-module floors only
+to the full checkpoint/release collection.
+
+Use one invariant test at the cheapest authoritative layer plus one
+representative end-to-end journey. Keep exhaustive corruption, fault, and input
+matrices in unit/contract tests rather than repeating them through unit,
+integration, and behavioral layers.
+
+### Validation Command Matrix
 
 ```bash
-# 1) Targeted (fast): run the narrowest tests that match your change (examples)
-# e.g. single file / focused integration flow
-uv run pytest tests/unit/test_pep.py -q
-uv run pytest tests/integration/test_security_loop_defense.py -q
+# 1) Ordinary fix: exact/focused tests + changed-module coverage on Python 3.12
+# Replace these illustrative paths with the affected module/tests.
+uv run --python 3.12 pytest tests/unit/test_host_matching.py \
+  --cov=shisad.core.host_matching --cov-report=term-missing -q
+uv run ruff check src/shisad/core/host_matching.py tests/unit/test_host_matching.py
+uv run mypy src/shisad/core/host_matching.py
 
-# 2) Static checks
+# 2) Shared runtime/security contract, when affected
+uv run --python 3.12 pytest tests/behavioral/test_first_principles_gates.py -q
+# Also run the nearest affected integration/behavioral node or keyword slice.
+
+# 3) Ordinary Python 3.13 compatibility smoke
+uv run --python 3.13 python -c "import shisad; import shisad.cli.main"
+uv run --python 3.13 shisad --help
+
+# 4) Milestone/nightly checkpoint: ONE full Python 3.12 collection + coverage
+uv run --python 3.12 pytest -m "not requires_cap_net_admin" \
+  --cov=src --cov-report=term-missing --cov-report=xml -q -rxXs
+uv run python scripts/coverage_baseline.py --xml coverage.xml
+uv run python scripts/coverage_module_gate.py --xml coverage.xml \
+  --critical-floor 80 --module-floor 60
 uv run ruff check src/ tests/ scripts/
 uv run mypy src/shisad/
 
-# 3) First-principles behavioral gates (MUST pass for runtime-facing changes)
-uv run pytest tests/behavioral/test_first_principles_gates.py -q
+# 5) Release-only full Python 3.13 compatibility (no duplicate coverage)
+uv run --python 3.13 pytest -m "not requires_cap_net_admin" -q -rxXs
 
-# 3a) Behavioral tests (MUST pass — these prove the product works)
-uv run pytest tests/behavioral/ -q
-
-# 3b) Tool status check (review docs/TOOL-STATUS.md; regenerate with live daemon if available)
+# Tool status check (review docs/TOOL-STATUS.md; regenerate with live daemon if available)
 # uv run python scripts/live_tool_matrix.py --tool-status
 
-# 3c) Live runner verification (required for runtime-facing changes:
-# planner/provider/tool wiring, scheduler delivery, channel behavior,
-# or security changes that affect allowed user behavior)
+# Release or recorded milestone-exception live runner verification
 # Use an isolated daemon instance and record the exact commands + outcomes
 # in the active task-scoped doc or worklog notes.
 RUNNER_INHERIT_SHISAD_ENV=1 \
@@ -209,19 +267,7 @@ SHISAD_SOCKET_PATH=/tmp/shisad-dev.sock \
 SHISAD_POLICY_PATH=/tmp/shisad-dev-policy.yaml \
 bash runner/harness.sh stop
 
-# 4) Focused suites (run when relevant; examples)
-# Pick the relevant suites for your change; do not run all focused suites by default.
-uv run pytest tests/unit -q
-uv run pytest tests/adversarial -q
-
-# 5) Full suite (checkpoint-only: milestone closure or agreed large checkpoint, and before claiming completion of non-trivial security work)
-uv run pytest -q
-
-# 6) Optional / when relevant (coverage + asset/parity checks)
-uv run pytest --cov=src --cov-report=term-missing --cov-report=xml -q
-uv run python scripts/coverage_baseline.py --xml coverage.xml
-uv run python scripts/coverage_trend.py --xml coverage.xml --output /tmp/coverage-trend.json
-
+# Optional asset/parity artifact when relevant
 uv run python scripts/yara_parity_report.py --output /tmp/yara-parity.json
 ```
 
@@ -262,15 +308,18 @@ test: add prompt injection test cases
 
 When asked to close a milestone, review remediation, or release-readiness pass:
 
-0. **Behavioral tests pass**: `uv run pytest tests/behavioral/ -q` — if these fail, the milestone is not closeable regardless of other test results
-0p. **First-principles gates pass for runtime-facing scope**:
-   `uv run pytest tests/behavioral/test_first_principles_gates.py -q`.
-   These gates cover clean, accumulated-state, degraded-web,
-   confirmation-followup, require-confirmation, and cross-session postures for
-   the basic product contract in `docs/DESIGN-PHILOSOPHY.md`.
-0a. **Release-close validation bundle recorded**: before any release-close/publish claim, run and record the full release bundle unless the human lead explicitly approves a narrower scope:
-   - `uv run pytest tests/adversarial -q`
-   - `uv run pytest tests/behavioral/ -q`
+0. **One full Python 3.12 checkpoint passes before milestone closure** (or a
+   scheduled result is reused for the exact candidate), with global coverage
+   and `-rxXs` reporting. Its behavioral/adversarial subsets are not rerun.
+0p. **Contained first-principles gates are marker-clean for runtime-facing
+   scope**. Run the focused file separately only if the broader pass did not
+   preserve auditable marker evidence. These gates cover clean,
+   accumulated-state, degraded-web, confirmation-followup,
+   require-confirmation, and cross-session postures.
+0a. **Release-close validation bundle recorded once per distinct environment**:
+   one final full 3.12 coverage pass, one full 3.13 compatibility pass,
+   relevant supported-platform checks, and applicable live lanes unless the
+   human lead narrows scope. Do not separately rerun deterministic subsets:
    - `bash live-behavior.sh --live-model -q`
    - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=claude uv run pytest tests/live/test_coding_agents_live.py -q`
    - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=codex uv run pytest tests/live/test_coding_agents_live.py -q`
@@ -278,7 +327,12 @@ When asked to close a milestone, review remediation, or release-readiness pass:
    Run the live-model and ACP live lanes sequentially, not in parallel; overlapping them can create harness-level startup timeouts and invalidate the evidence.
    If any live lane cannot run, record the exact reason before calling the release closeable.
 0b. **Tool status check**: review `docs/TOOL-STATUS.md` — if a tool that was WORKS is now BROKEN, the milestone is not closeable. Regenerate with a live daemon if available: `uv run python scripts/live_tool_matrix.py --tool-status`
-0c. **Live runner evidence recorded for runtime-facing scope**: if the milestone changed planner/provider behavior, tool wiring, scheduler delivery, channel behavior, or user-visible authorization/runtime behavior, run an isolated `runner/harness.sh` verification pass and record the exact commands + outcomes in the active implementation/worklog doc. If this cannot be run, do not call the milestone closeable without an explicit deferral approved by the human lead.
+0c. **Live runner evidence recorded for runtime-facing release close or a
+   milestone exception**: run an isolated `runner/harness.sh` pass when the
+   release is runtime-facing, or when a milestone materially changed live
+   interaction in a way deterministic tests cannot represent. Record the
+   reason, exact commands, and outcomes. Ordinary remediation does not trigger
+   this lane.
 0d. **Valid review feedback closed**: every valid reviewer issue, including non-blocking notes, is either fixed and re-reviewed or explicitly rejected/deferred with rationale approved by the human lead before marking the milestone closeable.
 1. Stage only explicit task files: `git add <file> ...`
 2. Verify staged file set: `git diff --staged --name-only`
@@ -379,7 +433,11 @@ Any claim of “done”, “shipped”, “complete”, or “closed” must inc
 - **Test evidence**: exact validation command(s) + outcomes (include integration/adversarial when relevant).
 - **Docs parity evidence**: punchlist/worklog updated, and security analysis/non-claims updated when behavior/guarantees change.
 
-For runtime-facing behavior claims, also include live runner evidence: exact `runner/harness.sh` (or direct control-client) commands + outcomes, or an explicit statement that live verification could not be run and that end-to-end completion is therefore not being claimed.
+For runtime-facing release claims, also include live runner evidence: exact
+`runner/harness.sh` (or direct control-client) commands + outcomes, or an
+explicit human-approved reason it could not run. Ordinary implementation claims
+cite the proportional deterministic evidence for their scope; they do not
+trigger a live rerun by default.
 
 Truth-in-claims:
 - Use truth-scoped wording; do not overclaim universal behavior when behavior is conditional (e.g., degraded runtime, optional backends, feature flags).
@@ -389,7 +447,7 @@ Truth-in-claims:
 
 - [ ] Code implemented (minimal patch)
 - [ ] Runtime path wired (daemon/control handler/policy path exercised)
-- [ ] Tests green (targeted + relevant suites; full suite at milestone closure or agreed large checkpoint, and before claiming completion of non-trivial security work)
+- [ ] Tests green (targeted + changed-source coverage for ordinary work; one full Python 3.12 pass at milestone closure or an agreed checkpoint)
 - [ ] Claim-integrity evidence recorded (runtime + tests + docs parity)
 - [ ] Any remaining gaps explicitly deferred (see below)
 
