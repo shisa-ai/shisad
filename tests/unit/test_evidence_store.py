@@ -437,7 +437,9 @@ def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) 
     blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
 
     assert restarted.read(sid, created.ref_id) is None
-    assert created.ref_id in restarted._refs[str(sid)]
+    assert restarted.get_ref_metadata(sid, created.ref_id) is None
+    assert created.ref_id not in restarted._refs.get(str(sid), {})
+    assert created.ref_id in restarted._temporarily_unreadable_refs[str(sid)]
     assert blob_path.exists() is True
     reloaded_index = _index_payload(index_path)
     assert created.ref_id in reloaded_index[str(sid)]
@@ -813,10 +815,12 @@ def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(t
         assert wrong.evict_expired(sid, max_age_seconds=1) == []
         assert wrong.collect_garbage(max_age_seconds=1) == []
         assert _snapshot_files(evidence_root) == before_cleanup
+        assert wrong.get_ref_metadata(sid, ref.ref_id) is None
         assert wrong.read(sid, ref.ref_id) is None
         assert wrong.validate_ref_id(sid, ref.ref_id) is False
         assert wrong.validate_ref_metadata(sid, ref.ref_id) is False
-        assert ref.ref_id in wrong._refs[str(sid)]
+        assert ref.ref_id not in wrong._refs.get(str(sid), {})
+        assert ref.ref_id in wrong._temporarily_unreadable_refs[str(sid)]
 
     with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
         restored = ArtifactLedger(
@@ -850,7 +854,8 @@ def test_artifact_ledger_kms_blob_codec_plaintext_restart_preserves_ref_for_reco
     restarted_plaintext = ArtifactLedger(evidence_root, salt=b"b" * 32)
 
     assert restarted_plaintext.read(sid, ref.ref_id) is None
-    assert ref.ref_id in restarted_plaintext._refs[str(sid)]
+    assert ref.ref_id not in restarted_plaintext._refs.get(str(sid), {})
+    assert ref.ref_id in restarted_plaintext._temporarily_unreadable_refs[str(sid)]
     assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
     assert (evidence_root / "quarantine" / f"{ref.content_hash}.txt").exists() is False
 
@@ -882,7 +887,8 @@ def test_artifact_ledger_plaintext_blob_kms_restart_preserves_ref_for_recovery(t
             blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
         )
         assert restarted_encrypted.read(sid, ref.ref_id) is None
-        assert ref.ref_id in restarted_encrypted._refs[str(sid)]
+        assert ref.ref_id not in restarted_encrypted._refs.get(str(sid), {})
+        assert ref.ref_id in restarted_encrypted._temporarily_unreadable_refs[str(sid)]
         assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
         assert (evidence_root / "quarantine" / f"{ref.content_hash}.txt").exists() is False
 
@@ -913,7 +919,8 @@ def test_artifact_ledger_kms_blob_codec_invalid_url_keeps_ref_for_later_recovery
         blob_codec=KmsArtifactBlobCodec(endpoint_url="not-a-url"),
     )
     assert broken.read(sid, ref.ref_id) is None
-    assert ref.ref_id in broken._refs[str(sid)]
+    assert ref.ref_id not in broken._refs.get(str(sid), {})
+    assert ref.ref_id in broken._temporarily_unreadable_refs[str(sid)]
     assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
 
     with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
@@ -1053,7 +1060,8 @@ def test_artifact_ledger_kms_blob_codec_detects_tamper_without_dropping_ref(tmp_
 
         assert ledger.read(sid, ref.ref_id) is None
         assert ledger.validate_ref_id(sid, ref.ref_id) is False
-        assert ref.ref_id in ledger._refs[str(sid)]
+        assert ref.ref_id not in ledger._refs.get(str(sid), {})
+        assert ref.ref_id in ledger._temporarily_unreadable_refs[str(sid)]
 
 
 def test_artifact_ledger_read_uses_single_decode_for_valid_blob(tmp_path) -> None:
