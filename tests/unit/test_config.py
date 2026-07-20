@@ -224,6 +224,16 @@ def test_u41_unknown_nested_toml_keys_fail_closed(
         load_config_file(config_path, environ={})
 
 
+def test_u41_unknown_nested_environment_json_keys_fail_closed(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path / "config.toml", "schema_version = 1\n")
+
+    with pytest.raises(ConfigFileError, match=r"unknown nested field: daemon\.a2a\.unknown"):
+        load_config_file(
+            config_path,
+            environ={"SHISAD_A2A": '{"enabled": true, "unknown": true}'},
+        )
+
+
 def test_u41_config_path_cannot_be_inside_managed_root(tmp_path: Path) -> None:
     managed_root = tmp_path / "assistant-root"
     managed_root.mkdir()

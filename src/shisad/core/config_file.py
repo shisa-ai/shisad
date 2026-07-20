@@ -322,7 +322,7 @@ def _load_settings_section[SettingsT: BaseSettings](
     if unknown_cli:
         raise ConfigFileError(f"unknown {section} CLI override: {unknown_cli[0]}")
 
-    _reject_unknown_nested_toml(
+    _reject_unknown_nested_values(
         values=toml_values,
         schema=model_type.model_json_schema(),
         section=section,
@@ -350,6 +350,12 @@ def _load_settings_section[SettingsT: BaseSettings](
     for name, value in cli_values.items():
         values[name] = value
         sources[name] = "cli"
+
+    _reject_unknown_nested_values(
+        values=values,
+        schema=model_type.model_json_schema(),
+        section=section,
+    )
 
     try:
         settings_factory = cast(Any, model_type)
@@ -381,13 +387,13 @@ def _settings_defaults[SettingsT: BaseSettings](
     return defaults
 
 
-def _reject_unknown_nested_toml(
+def _reject_unknown_nested_values(
     *,
     values: Mapping[str, object],
     schema: Mapping[str, object],
     section: str,
 ) -> None:
-    """Reject unknown model keys at the TOML boundary without changing env JSON."""
+    """Reject unknown model keys in native structures and nested JSON strings."""
 
     properties = schema.get("properties", {})
     if not isinstance(properties, Mapping):
@@ -410,6 +416,19 @@ def _reject_unknown_schema_value(
     root_schema: Mapping[str, object],
     path: str,
 ) -> None:
+    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            _reject_unknown_schema_value(
+                value=decoded,
+                schema=schema,
+                root_schema=root_schema,
+                path=path,
+            )
+            return
     resolved = _resolve_schema_reference(schema, root_schema=root_schema)
     selected = _select_schema_branch(value, resolved, root_schema=root_schema)
     if selected is not None:

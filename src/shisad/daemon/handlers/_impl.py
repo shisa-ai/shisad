@@ -3395,11 +3395,21 @@ class HandlerImplementation(
 
     def _doctor_search_status(self) -> dict[str, Any]:
         web_enabled = bool(self._config.web_search_enabled)
+        backend_configured = bool(self._config.web_search_backend_url.strip())
+        web_ready = web_enabled and backend_configured
         web = {
-            "status": "configured" if web_enabled else "disabled",
-            "reason": "web_search_configured" if web_enabled else "web_search_disabled",
+            "status": "configured" if web_ready else "misconfigured" if web_enabled else "disabled",
+            "reason": (
+                "web_search_configured"
+                if web_ready
+                else "web_search_backend_unconfigured"
+                if web_enabled
+                else "web_search_disabled"
+            ),
             "next_action": (
                 "exercise one bounded search request to verify the configured backend"
+                if web_ready
+                else "configure web_search_backend_url"
                 if web_enabled
                 else "enable and configure web search if this surface is needed"
             ),
@@ -3407,10 +3417,29 @@ class HandlerImplementation(
         realitycheck = dict(self._realitycheck_toolkit.doctor_status())
         reality_status = str(realitycheck.get("status", "disabled")).strip().lower()
         active = web_enabled or reality_status not in {"disabled", "missing", "unconfigured"}
-        degraded = reality_status in {"degraded", "misconfigured", "error", "unavailable"}
+        web_misconfigured = web_enabled and not backend_configured
+        degraded = reality_status in {
+            "degraded",
+            "misconfigured",
+            "error",
+            "unavailable",
+        }
         return {
-            "status": "degraded" if degraded else "configured" if active else "disabled",
-            "problems": list(realitycheck.get("problems", [])) if degraded else [],
+            "status": (
+                "misconfigured"
+                if web_misconfigured
+                else "degraded"
+                if degraded
+                else "configured"
+                if active
+                else "disabled"
+            ),
+            "problems": (
+                (["web_search_backend_unconfigured"] if web_misconfigured else [])
+                + list(realitycheck.get("problems", []))
+                if web_misconfigured or degraded
+                else []
+            ),
             "web": web,
             "realitycheck": realitycheck,
         }

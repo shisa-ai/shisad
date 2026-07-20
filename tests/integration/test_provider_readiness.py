@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from shisad.core.config import ModelConfig
+from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
 from shisad.core.readiness import ReadinessState, normalize_readiness_payload
@@ -174,3 +174,19 @@ async def test_u41_doctor_projects_all_components_through_shared_states() -> Non
     assert result["checks"]["browser"]["status"] == ReadinessState.ABSENT
     assert result["checks"]["mcp"]["status"] == ReadinessState.ABSENT
     assert result["checks"]["search"]["status"] == ReadinessState.ABSENT
+
+
+def test_u41_search_readiness_blocks_when_backend_is_unconfigured() -> None:
+    fake = SimpleNamespace(
+        _config=DaemonConfig(web_search_enabled=True, web_search_backend_url=""),
+        _realitycheck_toolkit=SimpleNamespace(
+            doctor_status=lambda: {"status": "disabled", "problems": []}
+        ),
+    )
+
+    result = HandlerImplementation._doctor_search_status(fake)
+
+    assert result["status"] == "misconfigured"
+    assert result["web"]["status"] == "misconfigured"
+    assert result["web"]["reason"] == "web_search_backend_unconfigured"
+    assert "configure" in result["web"]["next_action"]
