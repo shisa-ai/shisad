@@ -1541,7 +1541,7 @@ async def test_f3_component_corruption_preserves_chat_channel_and_unrelated_fs_t
         component_health = next(
             row for row in storage["components"] if row["component"] == component
         )
-        assert component_health["status"] == "corrupt"
+        assert component_health["status"] == "degraded"
         assert "conversation" in component_health["remains_usable"]
 
         sid = await _create_session(harness.client)

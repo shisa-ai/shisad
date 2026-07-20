@@ -1883,12 +1883,12 @@ class AdminImplMixin(HandlerMixinBase):
                     payload = await payload
             except Exception as exc:
                 logger.exception("doctor check component failed: %s", name)
-                return {
+                payload = {
                     "status": "error",
                     "problems": [f"component_failed:{exc.__class__.__name__}"],
                 }
             if not isinstance(payload, Mapping):
-                return {
+                payload = {
                     "status": "error",
                     "problems": ["component_returned_non_mapping"],
                 }

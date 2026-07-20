@@ -80,7 +80,7 @@ async def test_facade_routes_across_handler_groups(
     status = await recycled_handler_daemon.call("daemon.status")
     assert status["status"] == "running"
     doctor_all = await recycled_handler_daemon.call("doctor.check", {"component": "all"})
-    assert doctor_all["status"] in {"ok", "degraded"}
+    assert doctor_all["status"] in {"verified", "degraded"}
     checks = doctor_all.get("checks", {})
     assert "dependencies" in checks
     assert "provider" in checks
@@ -89,12 +89,12 @@ async def test_facade_routes_across_handler_groups(
     assert "sandbox" in checks
     assert "browser" in checks
     assert "realitycheck" in checks
-    assert checks["dependencies"]["status"] in {"ok", "misconfigured"}
-    assert checks["provider"]["status"] in {"ok", "misconfigured"}
-    assert checks["policy"]["status"] in {"ok", "degraded", "misconfigured"}
-    assert checks["channels"]["status"] in {"ok", "degraded", "misconfigured", "disabled"}
-    assert checks["sandbox"]["status"] in {"ok", "degraded", "misconfigured"}
-    assert checks["browser"]["status"] in {"ok", "disabled", "misconfigured"}
+    assert checks["dependencies"]["status"] in {"verified", "blocked"}
+    assert checks["provider"]["status"] in {"verified", "degraded", "blocked"}
+    assert checks["policy"]["status"] in {"verified", "degraded", "blocked"}
+    assert checks["channels"]["status"] in {"verified", "degraded", "blocked", "absent"}
+    assert checks["sandbox"]["status"] in {"verified", "degraded", "blocked"}
+    assert checks["browser"]["status"] in {"verified", "absent", "blocked"}
 
     unsupported = await recycled_handler_daemon.call(
         "doctor.check",
@@ -203,12 +203,12 @@ async def test_doctor_component_requests_are_isolated_from_other_component_failu
     )
 
     reality_only = await recycled_handler_daemon.call("doctor.check", {"component": "realitycheck"})
-    assert reality_only["status"] in {"ok", "degraded"}
+    assert reality_only["status"] in {"verified", "degraded", "absent"}
     assert set(reality_only["checks"].keys()) == {"realitycheck"}
 
     policy_only = await recycled_handler_daemon.call("doctor.check", {"component": "policy"})
-    assert policy_only["status"] == "degraded"
-    assert policy_only["checks"]["policy"]["status"] == "error"
+    assert policy_only["status"] == "blocked"
+    assert policy_only["checks"]["policy"]["status"] == "blocked"
     assert "component_failed:RuntimeError" in policy_only["checks"]["policy"]["problems"]
 
 
@@ -225,7 +225,7 @@ async def test_doctor_policy_reports_permissive_posture_without_false_degraded_s
     ) as harness:
         policy_only = await harness.call("doctor.check", {"component": "policy"})
         payload = policy_only["checks"]["policy"]
-        assert payload["status"] == "ok"
+        assert payload["status"] == "verified"
         assert "default_deny_disabled" not in payload.get("problems", [])
         assert payload.get("posture") == "permissive"
         assert "default_deny_disabled" in payload.get("posture_notes", [])
