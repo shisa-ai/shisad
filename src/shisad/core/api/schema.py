@@ -2295,6 +2295,7 @@ class DaemonStatusResult(BaseModel):
     policy_hash: str = ""
     tools_registered: list[str] = Field(default_factory=list)
     model_routes: dict[str, str] = Field(default_factory=dict)
+    provider_readiness: dict[str, Any] = Field(default_factory=dict)
     classifier_mode: str = ""
     content_firewall: dict[str, Any] = Field(default_factory=dict)
     yara_required: bool = False
@@ -2312,6 +2313,8 @@ class DaemonStatusResult(BaseModel):
 
 class DoctorCheckParams(_StrictParams):
     component: str = "all"
+    live: bool = False
+    timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
 
 
 class DoctorCheckResult(BaseModel):

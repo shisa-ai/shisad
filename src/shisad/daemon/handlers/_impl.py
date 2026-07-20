@@ -78,7 +78,6 @@ from shisad.core.atomic_state import (
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.clock import current_time_payload
-from shisad.core.config import effective_approval_factor_store_path
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -100,6 +99,7 @@ from shisad.core.events import (
     ToolRejected,
 )
 from shisad.core.plan_steps import PlanStepStore
+from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.session import Session
 from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
@@ -2196,6 +2196,7 @@ class HandlerImplementation(
         self._provenance_status = services.provenance_status
         self._model_routes = services.model_routes
         self._provider_diagnostics = services.provider_diagnostics
+        self._provider = services.provider
         self._planner_model_id = services.planner_model_id
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
@@ -2316,7 +2317,7 @@ class HandlerImplementation(
             protected_paths=tuple(
                 path
                 for control_path in (
-                    effective_approval_factor_store_path(data_dir=self._config.data_dir),
+                    self._credential_store._approval_store_path,
                     self._config.selfmod_allowed_signers_path,
                     self._config.assistant_persona_soul_path,
                 )
@@ -3203,14 +3204,42 @@ class HandlerImplementation(
         }
         return payload
 
-    def _doctor_provider_status(self) -> dict[str, Any]:
+    async def _doctor_provider_status(
+        self,
+        *,
+        live: bool = False,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
         payload = self._provider_diagnostics
         if not isinstance(payload, dict):
             return {
                 "status": "error",
                 "problems": ["provider_diagnostics_unavailable"],
             }
-        return dict(payload)
+        result = dict(payload)
+        result["routes"] = {
+            str(name): dict(route) if isinstance(route, Mapping) else route
+            for name, route in dict(payload.get("routes", {})).items()
+        }
+        if not live:
+            return result
+        if not isinstance(self._provider, RoutedOpenAIProvider):
+            result["status"] = "blocked"
+            result["live_probe"] = "not_configured"
+            result["problems"] = sorted(
+                {*result.get("problems", []), "planner_route_not_configured"}
+            )
+            return result
+        probe = await self._provider.probe_planner(timeout_seconds=timeout_seconds)
+        planner = result["routes"].get("planner")
+        if isinstance(planner, dict):
+            planner["readiness"] = probe.redacted_projection()
+        result["status"] = probe.state.value
+        result["evidence"] = "live_probe"
+        result["live_probe"] = "completed"
+        if not probe.verified:
+            result["problems"] = sorted({*result.get("problems", []), probe.reason})
+        return result
 
     def _doctor_policy_status(self) -> dict[str, Any]:
         problems: list[str] = []

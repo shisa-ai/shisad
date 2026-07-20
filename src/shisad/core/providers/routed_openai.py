@@ -16,6 +16,12 @@ from shisad.core.providers.base import (
 from shisad.core.providers.capabilities import AuthMode, EndpointFamily
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routing import ModelComponent, ModelRoute, ModelRouter
+from shisad.core.readiness import (
+    ReadinessStatus,
+    configured_route_readiness,
+    failed_probe_readiness,
+    verified_probe_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,11 @@ class RoutedOpenAIProvider:
         planner_route = router.route_for(ModelComponent.PLANNER)
         embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
         monitor_route = router.route_for(ModelComponent.MONITOR)
+        self._planner_route = planner_route
+        self._fallback_api_key = api_key
+        self._allow_http_localhost = allow_http_localhost
+        self._block_private_ranges = block_private_ranges
+        self._endpoint_allowlist = list(endpoint_allowlist or [])
 
         self._planner_provider = self._build_route_provider(
             route=planner_route,
@@ -69,6 +80,30 @@ class RoutedOpenAIProvider:
 
     def monitor_remote_enabled(self) -> bool:
         return self._monitor_remote_enabled
+
+    async def probe_planner(self, *, timeout_seconds: float) -> ReadinessStatus:
+        """Run one bounded planner request without falling back locally."""
+
+        configured = configured_route_readiness(self._planner_route)
+        if not configured.configured:
+            return configured
+        provider = self._build_route_provider(
+            route=self._planner_route,
+            fallback_api_key=self._fallback_api_key,
+            force_json_response=False,
+            allow_http_localhost=self._allow_http_localhost,
+            block_private_ranges=self._block_private_ranges,
+            endpoint_allowlist=self._endpoint_allowlist or None,
+            timeout_seconds=timeout_seconds,
+        )
+        if provider is None:
+            return configured
+        try:
+            await provider.complete([Message(role="user", content="Reply with OK.")])
+        except Exception as exc:
+            logger.info("Provider planner live probe failed: %s", exc.__class__.__name__)
+            return failed_probe_readiness(str(exc))
+        return verified_probe_readiness()
 
     async def _fallback_complete(
         self,
@@ -103,6 +138,7 @@ class RoutedOpenAIProvider:
         allow_http_localhost: bool,
         block_private_ranges: bool,
         endpoint_allowlist: list[str] | None,
+        timeout_seconds: float = 30.0,
     ) -> OpenAICompatibleProvider | None:
         fallback_key = (fallback_api_key or "").strip()
         if not route.remote_enabled:
@@ -149,6 +185,7 @@ class RoutedOpenAIProvider:
             allow_http_localhost=allow_http_localhost,
             block_private_ranges=block_private_ranges,
             endpoint_allowlist=endpoint_allowlist,
+            timeout_seconds=timeout_seconds,
         )
 
     async def complete(

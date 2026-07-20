@@ -28,6 +28,7 @@ from shisad.core.events import (
     LockdownChanged,
     SessionMessageReceived,
 )
+from shisad.core.readiness import ReadinessState, normalize_readiness_payload
 from shisad.core.soul import (
     load_effective_persona_text,
     load_soul_text,
@@ -1535,6 +1536,7 @@ class AdminImplMixin(HandlerMixinBase):
             ),
             "tools_registered": [tool.name for tool in self._registry.list_tools()],
             "model_routes": dict(self._model_routes),
+            "provider_readiness": dict(self._provider_diagnostics),
             "classifier_mode": self._classifier_mode,
             "content_firewall": self._firewall.status_snapshot(),
             "yara_required": True,
@@ -1841,10 +1843,21 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
         component = str(params.get("component", "all")).strip().lower() or "all"
+        live = bool(params.get("live", False))
+        timeout_seconds = _metadata_float(
+            params,
+            "timeout_seconds",
+            default=3.0,
+            lower=0.1,
+            upper=10.0,
+        )
         component_factories = {
             "dependencies": self._doctor_dependencies_status,
             "storage": self._doctor_storage_status,
-            "provider": self._doctor_provider_status,
+            "provider": lambda: self._doctor_provider_status(
+                live=live,
+                timeout_seconds=timeout_seconds,
+            ),
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
             "sandbox": self._doctor_sandbox_status,
@@ -1874,7 +1887,7 @@ class AdminImplMixin(HandlerMixinBase):
                 normalized["status"] = "error"
             if "problems" not in normalized:
                 normalized["problems"] = []
-            return normalized
+            return normalize_readiness_payload(normalized)
 
         checks: dict[str, Any] = {}
         if component == "all":
@@ -1894,9 +1907,26 @@ class AdminImplMixin(HandlerMixinBase):
             for item in checks.values()
             if isinstance(item, Mapping)
         ]
-        overall = "ok"
-        if any(state in {"misconfigured", "degraded", "error"} for state in check_states):
-            overall = "degraded"
+        if component != "all" and check_states:
+            overall = check_states[0]
+        elif any(
+            state in {ReadinessState.BLOCKED, ReadinessState.DEGRADED}
+            for state in check_states
+        ):
+            overall = ReadinessState.DEGRADED.value
+        elif any(
+            state
+            in {
+                ReadinessState.INSTALLED,
+                ReadinessState.CONFIGURED,
+                ReadinessState.REACHABLE,
+                ReadinessState.AUTHENTICATED,
+            }
+            for state in check_states
+        ):
+            overall = ReadinessState.CONFIGURED.value
+        else:
+            overall = ReadinessState.VERIFIED.value
         return {
             "status": overall,
             "component": component,

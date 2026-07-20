@@ -237,6 +237,11 @@ class DaemonConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHISAD_")
 
     # Paths
+    config_path: Path | None = Field(
+        default=None,
+        description="Resolved operator-authored TOML config path, when one is loaded",
+        exclude=True,
+    )
     data_dir: Path = Field(
         default=Path.home() / ".local" / "share" / "shisad",
         description="Root directory for shisad data (audit logs, sessions, etc.)",
@@ -1010,11 +1015,6 @@ class DaemonConfig(BaseSettings):
         return normalized
 
     @model_validator(mode="after")
-    def _ensure_data_dir(self) -> Self:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        return self
-
-    @model_validator(mode="after")
     def _validate_browser_hardened_scope(self) -> Self:
         if not self.browser_enabled or not self.browser_require_hardened_isolation:
             return self
@@ -1030,7 +1030,6 @@ class DaemonConfig(BaseSettings):
                 f"entries: {', '.join(sorted(wildcard_scope))}"
             )
         return self
-
     @model_validator(mode="after")
     def _validate_approval_origin(self) -> Self:
         origin = self.approval_origin.strip()
@@ -1100,52 +1099,17 @@ class SecurityConfig(BaseSettings):
         default=False,
         description="Legacy default-deny setting (runtime uses policy bundle defaults).",
     )
-    require_confirmation_for_writes: bool = Field(
-        default=True,
-        description="Require user confirmation for write/send operations",
-    )
-
-    # Egress
-    egress_default_deny: bool = Field(
-        default=True,
-        description="Block all outbound requests unless explicitly allowed",
-    )
-
-    # Credential broker
-    credential_store_path: Path = Field(
-        default=Path.home() / ".local" / "share" / "shisad" / "credentials.enc",
-        description="Path to the encrypted egress credential store",
-    )
     approval_factor_store_path: Path = Field(
         default=Path.home() / ".local" / "share" / "shisad" / "approval-factors.json",
         description="Path to the approval-factor state store",
     )
 
-    # Audit
-    audit_log_path: Path | None = Field(
-        default=None,
-        description="Override audit log path (default: data_dir/audit.jsonl)",
-    )
 
-
-def effective_credential_store_path(*, data_dir: Path) -> Path:
-    """Resolve the credential-store path for a daemon instance.
-
-    The global security setting is honored when explicitly configured. When the
-    security config is still at its default value, prefer the daemon's active
-    data dir so local test and review instances do not write into the user's
-    shared home-directory path.
-    """
-
-    security = SecurityConfig()
-    configured = security.credential_store_path
-    default_path = SecurityConfig.model_fields["credential_store_path"].default
-    if configured == default_path:
-        return data_dir / "credentials.enc"
-    return configured
-
-
-def effective_approval_factor_store_path(*, data_dir: Path) -> Path:
+def effective_approval_factor_store_path(
+    *,
+    data_dir: Path,
+    configured_path: Path | None = None,
+) -> Path:
     """Resolve the approval-factor store path for a daemon instance.
 
     Approval factors are currently persisted as daemon-owned JSON state rather
@@ -1153,8 +1117,11 @@ def effective_approval_factor_store_path(*, data_dir: Path) -> Path:
     active daemon data dir unless the operator explicitly overrides it.
     """
 
-    security = SecurityConfig()
-    configured = security.approval_factor_store_path
+    configured = (
+        SecurityConfig().approval_factor_store_path
+        if configured_path is None
+        else configured_path
+    )
     default_path = SecurityConfig.model_fields["approval_factor_store_path"].default
     if configured == default_path:
         return data_dir / "approval-factors.json"
@@ -1378,11 +1345,6 @@ class ModelConfig(BaseSettings):
     )
 
     # Logging
-    log_prompts: bool = Field(
-        default=False,
-        description="Log full prompts (debug only; never log credentials)",
-    )
-
     @field_validator("endpoint_allowlist", mode="before")
     @classmethod
     def _parse_endpoint_allowlist(cls, value: object) -> object:
@@ -1542,13 +1504,3 @@ class ModelConfig(BaseSettings):
             )
 
         return self
-
-
-class ShisadConfig(BaseSettings):
-    """Top-level configuration aggregating all config sections."""
-
-    model_config = SettingsConfigDict(env_prefix="SHISAD_")
-
-    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    model: ModelConfig = Field(default_factory=ModelConfig)

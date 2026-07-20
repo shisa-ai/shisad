@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -26,8 +27,10 @@ from shisad.core.audit import AuditLog
 from shisad.core.config import (
     DaemonConfig,
     ModelConfig,
+    SecurityConfig,
     effective_approval_factor_store_path,
 )
+from shisad.core.config_file import load_effective_config
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
 from shisad.core.host_matching import host_matches
@@ -39,6 +42,7 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
+from shisad.core.readiness import aggregate_config_readiness, configured_route_readiness
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.soul import load_effective_persona_text
 from shisad.core.tools.builtin.alarm import AlarmTool
@@ -201,6 +205,17 @@ def _warn_on_evidence_kms_endpoint_config(config: DaemonConfig) -> None:
             ),
             endpoint,
         )
+
+
+def _configs_for_daemon(
+    config: DaemonConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[ModelConfig, SecurityConfig]:
+    """Resolve auxiliary settings from the same source as daemon config."""
+
+    loaded = load_effective_config(config.config_path, environ=environ)
+    return loaded.model, loaded.security
 
 
 def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
@@ -652,7 +667,7 @@ class DaemonServices:
         policy_loader.load()
         policy_loader.register_reload_signal()
 
-        model_config = ModelConfig()
+        model_config, security_config = _configs_for_daemon(config)
         router = ModelRouter(model_config)
         _validate_model_endpoints(model_config, router)
         _validate_security_route_pins(model_config, router)
@@ -872,7 +887,10 @@ class DaemonServices:
             )
             credential_store = InMemoryCredentialStore()
             credential_store.set_approval_store_path(
-                effective_approval_factor_store_path(data_dir=config.data_dir)
+                effective_approval_factor_store_path(
+                    data_dir=config.data_dir,
+                    configured_path=security_config.approval_factor_store_path,
+                )
             )
             _register_route_credentials(credential_store=credential_store, router=router)
             egress_proxy = EgressProxy(credential_store=credential_store)
@@ -2440,12 +2458,15 @@ def _build_tool_registry(
 def _build_provider_diagnostics(router: ModelRouter) -> dict[str, Any]:
     routes: dict[str, Any] = {}
     problems: list[str] = []
+    readiness_rows = []
     for component in ModelComponent:
         route = router.route_for(component)
         requires_key = route.auth_mode != AuthMode.NONE
         has_key = bool(route.api_key)
         if route.remote_enabled and requires_key and not has_key:
             problems.append(f"{component.value}_missing_api_key")
+        readiness = configured_route_readiness(route)
+        readiness_rows.append(readiness)
         routes[component.value] = {
             "preset": route.provider_preset.value,
             "preset_label": provider_preset_label(route),
@@ -2464,9 +2485,12 @@ def _build_provider_diagnostics(router: ModelRouter) -> dict[str, Any]:
             "mapped_request_fields": list(route.mapped_request_fields),
             "rejected_request_fields": list(route.rejected_request_fields),
             "extra_headers": sorted(route.extra_headers.keys()),
+            "readiness": readiness.redacted_projection(),
         }
     return {
-        "status": "misconfigured" if problems else "ok",
+        "status": aggregate_config_readiness(readiness_rows).value,
+        "evidence": "config_only",
+        "live_probe": "not_run",
         "problems": sorted(set(problems)),
         "routes": routes,
         "key_gated_acceptance": _key_gated_acceptance_matrix(),

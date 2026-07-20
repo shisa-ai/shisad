@@ -138,7 +138,12 @@ def test_gh83_doctor_check_storage_component_prints_sqlite_diagnostics(
     result = runner.invoke(cli_main.cli, ["doctor", "check", "--component", "storage"])
 
     assert result.exit_code == 0
-    assert calls == [("doctor.check", {"component": "storage"})]
+    assert calls == [
+        (
+            "doctor.check",
+            {"component": "storage", "live": False, "timeout_seconds": 3.0},
+        )
+    ]
     assert "sqlite_fts5_unavailable" in result.output
 
 

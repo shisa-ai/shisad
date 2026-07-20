@@ -272,6 +272,13 @@ _ensure_policy_file() {
 }
 
 _preflight_planner_credential() {
+  # Explicit route and global model keys are first-class runtime inputs. Keep
+  # this check ahead of preset-key handling so the harness accepts the same
+  # supported configurations as ModelRouter._resolve_route_api_key().
+  if [[ -n "${SHISAD_MODEL_PLANNER_API_KEY:-}" ]] || [[ -n "${SHISAD_MODEL_API_KEY:-}" ]]; then
+    return 0
+  fi
+
   local required=""
   case "${SHISAD_MODEL_PLANNER_PROVIDER_PRESET}" in
     openai_default)

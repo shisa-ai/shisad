@@ -53,3 +53,36 @@ def test_s0_doctor_check_provider_component_prints_provider_diagnostics(
     assert result.exit_code == 0
     assert "openai_default" in result.output
     assert "OPENAI_API_KEY" in result.output
+
+
+def test_u41_provider_doctor_live_flag_requests_bounded_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: list[dict[str, object]] = []
+
+    def _fake_rpc_call(_config, _method, params, **_kwargs):
+        captured.append(params)
+        return DoctorCheckResult.model_validate(
+            {
+                "status": "verified",
+                "component": "provider",
+                "checks": {"provider": {"status": "verified"}},
+            }
+        )
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["doctor", "check", "--component", "provider", "--live", "--timeout", "1.5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == [{"component": "provider", "live": True, "timeout_seconds": 1.5}]

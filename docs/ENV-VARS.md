@@ -5,6 +5,7 @@ This document is the user-facing inventory of the repo's env-var surface.
 Source of truth:
 
 - `src/shisad/core/config.py`
+- `src/shisad/core/config_file.py`
 - `src/shisad/core/providers/routing.py`
 - `src/shisad/daemon/services.py`
 - `src/shisad/interop/a2a_registry.py`
@@ -18,7 +19,26 @@ There are three kinds of env vars in the current codebase:
 2. external provider credentials discovered by shisad (`OPENAI_API_KEY`, `SHISA_API_KEY`, etc.)
 3. tool or CLI internal env vars (`_SHISAD_COMPLETE`, opt-in live-test vars, placeholders)
 
-This surface is large. That is now documented, but it should be simplified in a future lane. A reasonable future direction is to move more user-facing settings into explicit config files and leave env vars for secrets and local overrides only. That is a future design decision, not part of this release.
+The same typed settings are available in an operator-authored TOML file. Use
+`shisad config template` to print the classified commented schema and
+`shisad config show` to inspect effective values and sources with secrets
+redacted.
+
+## TOML Configuration and Precedence
+
+Pass `--config /path/to/config.toml`, set `SHISAD_CONFIG_PATH`, or place the
+file at `$XDG_CONFIG_HOME/shisad/config.toml` (default
+`~/.config/shisad/config.toml`). An explicitly selected missing file is an
+error; an absent default file uses typed defaults without creating files.
+
+The file uses `schema_version = 1` and `[daemon]`, `[model]`, and `[security]`
+tables. Field names are the lowercase names shown by `shisad config template`.
+Precedence is command-line override, then environment, then TOML, then default.
+Parsing is read-only and does not create the configured data directory.
+
+There is intentionally no `init --from-env` migration command in this release.
+Use the generated template and `config show` rather than assuming environment
+values were written to disk.
 
 ## Parsing Rules
 
@@ -44,8 +64,8 @@ This surface is large. That is now documented, but it should be simplified in a 
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
-| `SHISAD_UI_THEME` | Built-in theme name for optional UI renderers; defaults to `shisa-dark` |
-| `SHISAD_UI_THEME_PATH` | Optional btop-compatible `.theme` file path for UI renderers; invalid or missing files fall back to `SHISAD_UI_THEME` |
+| `SHISAD_UI_THEME` | Reserved compatibility input for F6 UI wiring; not yet applied to renderers |
+| `SHISAD_UI_THEME_PATH` | Reserved compatibility input for F6 UI wiring; not yet applied to renderers |
 | `SHISAD_TRACE_ENABLED` | Enable trace recording |
 | `SHISAD_REQUIRE_LOCAL_ADAPTERS` | Require pre-installed coding-agent binaries; disallow runtime `npx` fetches (`1`/`true`/`yes`) |
 
@@ -438,11 +458,13 @@ Coding-agent:
 | Env var | Purpose |
 |---|---|
 | `SHISAD_SECURITY_DEFAULT_DENY` | Legacy compatibility knob; runtime default comes from policy |
-| `SHISAD_SECURITY_REQUIRE_CONFIRMATION_FOR_WRITES` | Write/send confirmation default |
-| `SHISAD_SECURITY_EGRESS_DEFAULT_DENY` | Global egress default |
-| `SHISAD_SECURITY_CREDENTIAL_STORE_PATH` | Encrypted egress credential store path |
 | `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Approval-factor and signer-key state path (daemon-owned JSON until at-rest encryption lands) |
-| `SHISAD_SECURITY_AUDIT_LOG_PATH` | Audit log override |
+
+The removed `SHISAD_SECURITY_REQUIRE_CONFIRMATION_FOR_WRITES`,
+`SHISAD_SECURITY_EGRESS_DEFAULT_DENY`, `SHISAD_SECURITY_CREDENTIAL_STORE_PATH`,
+and `SHISAD_SECURITY_AUDIT_LOG_PATH` names had no runtime consumer and are not
+accepted as configuration. Confirmation and egress posture come from the
+policy bundle; credential/audit storage is constructed by the live daemon.
 
 ## `SHISAD_MODEL_*`
 
@@ -461,7 +483,6 @@ Global route settings:
 - `SHISAD_MODEL_ALLOW_HTTP_LOCALHOST`
 - `SHISAD_MODEL_BLOCK_PRIVATE_RANGES`
 - `SHISAD_MODEL_ENDPOINT_ALLOWLIST`
-- `SHISAD_MODEL_LOG_PROMPTS`
 
 Planner route:
 
@@ -511,6 +532,10 @@ Notes:
 - `*_EXTRA_HEADERS`, `*_CAPABILITIES`, and `*_REQUEST_PARAMETERS` are JSON-object fields.
 - Route-local `*_REMOTE_ENABLED` fields accept empty/unset to mean “inherit global”.
 - `SHISAD_MODEL_API_KEY` is the generic global override, but preset-native key envs are also recognized.
+- Ordinary `shisad doctor check --component provider` reports configuration
+  evidence only; a present key is `configured`, not authenticated or verified.
+  Run `shisad doctor check --component provider --live` for the opt-in bounded
+  planner probe. Use `--timeout` to select a value from 0.1 to 10 seconds.
 
 ## Direct Env Reads Outside `BaseSettings`
 

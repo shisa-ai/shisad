@@ -14,6 +14,7 @@ from filelock import FileLock
 from pydantic import ValidationError
 
 from shisad.core.config import DaemonConfig, ModelConfig
+from shisad.core.config_file import load_config_file
 from shisad.core.events import EventBus, SessionCreated
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
@@ -28,6 +29,7 @@ from shisad.daemon.services import (
     _browser_runtime_unavailable_planner_note,
     _build_provider_diagnostics,
     _build_tool_registry,
+    _configs_for_daemon,
     _key_gated_acceptance_matrix,
     _log_provider_route_summary,
     _normalize_tool_destination,
@@ -50,6 +52,32 @@ from shisad.security.lockdown import LockdownLevel
 from shisad.security.risk import RiskObservation, RiskPolicyVersion
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.manager import InstalledSkill
+
+
+def test_u41_daemon_model_route_consumes_same_toml_source(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+schema_version = 1
+[daemon]
+data_dir = "/tmp/shisad-u41"
+[model]
+model_id = "toml-planner"
+remote_enabled = false
+[security]
+approval_factor_store_path = "/tmp/shisad-u41-factors.json"
+""",
+        encoding="utf-8",
+    )
+    loaded = load_config_file(config_path, environ={})
+
+    model_config, security_config = _configs_for_daemon(loaded.daemon, environ={})
+
+    assert model_config.model_id == "toml-planner"
+    assert model_config.remote_enabled is False
+    assert security_config.approval_factor_store_path.as_posix() == (
+        "/tmp/shisad-u41-factors.json"
+    )
 
 
 def _write_browser_wrapper(path) -> None:

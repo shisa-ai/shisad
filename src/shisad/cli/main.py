@@ -109,6 +109,12 @@ from shisad.core.api.schema import (
     WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
+from shisad.core.config_file import (
+    ConfigFileError,
+    LoadedConfig,
+    load_effective_config,
+    render_config_template,
+)
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
     load_private_key_from_path,
@@ -306,8 +312,17 @@ def _thread_list_row(item: dict[str, Any]) -> str:
     )
 
 
+def _get_loaded_config() -> LoadedConfig:
+    ctx = click.get_current_context(silent=True)
+    configured_path = (ctx.obj or {}).get("config_path") if ctx is not None else None
+    try:
+        return load_effective_config(configured_path)
+    except ConfigFileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _get_config() -> DaemonConfig:
-    return DaemonConfig()
+    return _get_loaded_config().daemon
 
 
 def _last_session_path() -> Path:
@@ -514,12 +529,39 @@ def _progress(label: str) -> Any:
 
 @click.group()
 @click.option("--no-color", is_flag=True, help="Disable colored output.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Load operator configuration from TOML.",
+)
 @click.version_option()
 @click.pass_context
-def cli(ctx: click.Context, no_color: bool) -> None:
+def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
     """shisad — Security-first AI agent daemon."""
     ctx.ensure_object(dict)
     ctx.obj["no_color"] = no_color
+    ctx.obj["config_path"] = config_path
+
+
+@cli.group("config")
+def config_group() -> None:
+    """Inspect the operator-authored TOML configuration surface."""
+
+
+@config_group.command("template")
+def config_template() -> None:
+    """Print the generated commented TOML template."""
+
+    click.echo(render_config_template())
+
+
+@config_group.command("show")
+def config_show() -> None:
+    """Print effective values and sources with secrets redacted."""
+
+    click.echo(json.dumps(_get_loaded_config().redacted_projection(), indent=2, sort_keys=True))
 
 
 @cli.command("completion")
@@ -1027,12 +1069,21 @@ def doctor(ctx: click.Context) -> None:
         "sandbox, browser, realitycheck)"
     ),
 )
-def doctor_check(component: str) -> None:
+@click.option("--live", is_flag=True, help="Run bounded external readiness probes.")
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=click.FloatRange(min=0.1, max=10.0),
+    default=3.0,
+    show_default=True,
+    help="Maximum seconds per live readiness probe.",
+)
+def doctor_check(component: str, live: bool, timeout_seconds: float) -> None:
     config = _get_config()
     result = rpc_call(
         config,
         "doctor.check",
-        {"component": component},
+        {"component": component, "live": live, "timeout_seconds": timeout_seconds},
         response_model=DoctorCheckResult,
     )
     click.echo(_dump_model(result))

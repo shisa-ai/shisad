@@ -1154,7 +1154,10 @@ def test_cli_commands_route_through_rpc_wrapper(
         "todo.delete",
         {"entry_id": "td-1", "user_id": "alice", "workspace_id": "ws-1"},
     ) in calls
-    assert ("doctor.check", {"component": "realitycheck"}) in calls
+    assert (
+        "doctor.check",
+        {"component": "realitycheck", "live": False, "timeout_seconds": 3.0},
+    ) in calls
 
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
     assert ("dashboard.alerts", {"limit": 1}) in calls
@@ -2386,8 +2389,74 @@ def test_doctor_bare_invocation_defaults_to_all(
     result = runner.invoke(cli_main.cli, ["doctor"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("doctor.check", {"component": "all"})]
+    assert calls == [
+        (
+            "doctor.check",
+            {"component": "all", "live": False, "timeout_seconds": 3.0},
+        )
+    ]
     assert '"component": "all"' in result.output
+
+
+def test_u41_root_config_option_loads_toml_for_nonstarting_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "configured-data"
+    socket_path = tmp_path / "control.sock"
+    socket_path.touch()
+    monkeypatch.delenv("SHISAD_DATA_DIR", raising=False)
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(socket_path))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        (
+            "schema_version = 1\n[daemon]\n"
+            f'data_dir = "{data_dir}"\n'
+            f'socket_path = "{socket_path}"\n'
+        ),
+        encoding="utf-8",
+    )
+    captured: list[DaemonConfig] = []
+
+    def _fake_rpc_call(config, *_args, **_kwargs):
+        captured.append(config)
+        return cli_main.DaemonStatusResult.model_validate({"status": "ok"})
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["--config", str(config_path), "status"])
+
+    assert result.exit_code == 0, result.output
+    assert captured[0].data_dir == data_dir
+    assert captured[0].config_path == config_path
+    assert not data_dir.exists()
+
+
+def test_u41_config_template_and_redacted_show(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'schema_version = 1\n[model]\napi_key = "never-print-this"\n',
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    template = runner.invoke(cli_main.cli, ["config", "template"])
+    shown = runner.invoke(
+        cli_main.cli,
+        ["--config", str(config_path), "config", "show"],
+    )
+
+    assert template.exit_code == 0, template.output
+    assert "schema_version = 1" in template.output
+    assert shown.exit_code == 0, shown.output
+    assert "<redacted>" in shown.output
+    assert "never-print-this" not in shown.output
+    assert '"source": "toml"' in shown.output
 
 
 def test_session_message_command_renders_evidence_stub_block(
