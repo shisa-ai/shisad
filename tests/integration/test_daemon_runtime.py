@@ -132,10 +132,12 @@ async def test_f3_doctor_reports_redacted_lock_and_component_storage_health(
         storage = doctor["checks"]["storage"]
         components = {row["component"]: row for row in storage["components"]}
 
-        assert storage["lock"]["status"] == "ok"
+        assert storage["lock"]["status"] == "verified"
         assert storage["lock"]["held"] is True
         assert {"scheduler", "skills", "selfmod", "evidence"} <= set(components)
-        assert all(row["status"] in {"ok", "missing"} for row in components.values())
+        assert all(
+            row["status"] in {"verified", "absent"} for row in components.values()
+        )
         assert str(config.data_dir) not in json.dumps(storage)
     finally:
         with suppress(Exception):
@@ -169,7 +171,7 @@ async def test_f3_corrupt_scheduler_state_leaves_basic_conversation_usable(
         doctor = await client.call("doctor.check", {"component": "storage"})
         storage = doctor["checks"]["storage"]
         scheduler = next(row for row in storage["components"] if row["component"] == "scheduler")
-        assert scheduler["status"] == "corrupt"
+        assert scheduler["status"] == "degraded"
         assert scheduler["reason"]
         assert "conversation" in scheduler["remains_usable"]
         assert str(config.data_dir) not in json.dumps(scheduler)

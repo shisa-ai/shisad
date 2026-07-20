@@ -385,7 +385,7 @@ async def test_two_factor_daemon_starts_with_malformed_persisted_state(
             for row in doctor["checks"]["storage"]["components"]
             if row["component"] == "approval_factors"
         )
-        assert approval["status"] == "corrupt"
+        assert approval["status"] == "degraded"
 
         created = await client.call("session.create", {"channel": "cli"})
         reply = await client.call(

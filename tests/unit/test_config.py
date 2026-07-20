@@ -234,6 +234,20 @@ def test_u41_unknown_nested_environment_json_keys_fail_closed(tmp_path: Path) ->
         )
 
 
+def test_u41r_unhashable_nested_discriminator_is_actionable(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path / "config.toml", "schema_version = 1\n")
+
+    with pytest.raises(ConfigFileError, match="invalid daemon configuration"):
+        load_config_file(
+            config_path,
+            environ={
+                "SHISAD_MCP_SERVERS": (
+                    '[{"name":"demo","transport":[],"command":["server"]}]'
+                )
+            },
+        )
+
+
 def test_u41_config_path_cannot_be_inside_managed_root(tmp_path: Path) -> None:
     managed_root = tmp_path / "assistant-root"
     managed_root.mkdir()

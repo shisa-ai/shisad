@@ -499,7 +499,12 @@ def _select_schema_branch(
         property_name = discriminator.get("propertyName")
         mapping = discriminator.get("mapping")
         if isinstance(property_name, str) and isinstance(mapping, Mapping):
-            selected_ref = mapping.get(value.get(property_name))
+            discriminator_value = value.get(property_name)
+            selected_ref = (
+                mapping.get(discriminator_value)
+                if isinstance(discriminator_value, str)
+                else None
+            )
             if isinstance(selected_ref, str):
                 return _resolve_schema_reference(
                     {"$ref": selected_ref},
