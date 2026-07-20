@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -238,6 +239,41 @@ class TestPepCredentialRefValidation:
 
 
 class TestApprovalFactorStore:
+    def test_external_approval_store_creates_parent_before_adjacent_lock(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store_path = tmp_path / "external" / "approval" / "credentials.json"
+
+        class _ParentCheckingLock:
+            def __init__(self, path: str, **_kwargs: object) -> None:
+                assert Path(path).parent.exists()
+
+            def __enter__(self) -> _ParentCheckingLock:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        monkeypatch.setattr(credentials_module, "FileLock", _ParentCheckingLock)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="totp-first-use",
+                user_id="alice",
+                method="totp",
+                principal_id="new-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        assert store_path.exists()
+        assert store.approval_state_health()["status"] == "ok"
+        assert store.list_approval_factors()[0].credential_id == "totp-first-use"
+
     def test_approval_factor_store_persists_and_round_trips(self, tmp_path) -> None:
         store_path = tmp_path / "credentials.json"
         store = InMemoryCredentialStore()

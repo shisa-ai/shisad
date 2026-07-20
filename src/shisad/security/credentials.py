@@ -525,6 +525,7 @@ class InMemoryCredentialStore:
             self._local_fido2_realm_id = None
             return
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(str(path.with_name(f"{path.name}.lock"))):
                 result = load_state(
                     path, _ApprovalStoreState, legacy_decoder=_legacy_approval_store

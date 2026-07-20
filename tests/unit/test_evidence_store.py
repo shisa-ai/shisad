@@ -793,13 +793,26 @@ def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(t
             source="web.fetch:example.com",
             summary="encrypted evidence body",
         )
+        aged = ledger._stamp_metadata_mac(
+            str(sid),
+            ref.model_copy(update={"created_at": datetime.now(UTC) - timedelta(days=1)}),
+        )
+        payload = _index_payload(evidence_root / "refs_index.json")
+        payload[str(sid)][ref.ref_id] = aged.model_dump(mode="json")
+        write_state(evidence_root / "refs_index.json", payload)
 
     with StubArtifactKmsService(key_material=b"c" * 32).run() as endpoint_url:
         wrong = ArtifactLedger(
             evidence_root,
             salt=b"b" * 32,
+            default_max_age_seconds=2 * 24 * 60 * 60,
             blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
         )
+        before_cleanup = _snapshot_files(evidence_root)
+        assert wrong.state_health()["status"] == "corrupt"
+        assert wrong.evict_expired(sid, max_age_seconds=1) == []
+        assert wrong.collect_garbage(max_age_seconds=1) == []
+        assert _snapshot_files(evidence_root) == before_cleanup
         assert wrong.read(sid, ref.ref_id) is None
         assert wrong.validate_ref_id(sid, ref.ref_id) is False
         assert wrong.validate_ref_metadata(sid, ref.ref_id) is False
@@ -809,6 +822,7 @@ def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(t
         restored = ArtifactLedger(
             evidence_root,
             salt=b"b" * 32,
+            default_max_age_seconds=2 * 24 * 60 * 60,
             blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
         )
         assert restored.read(sid, ref.ref_id) == "encrypted evidence body"

@@ -787,6 +787,33 @@ def test_f3_skill_bundle_drift_blocks_only_drifted_dynamic_skill(tmp_path: Path)
     assert events[0].reason_code == "skill:bundle_drift"
 
 
+@pytest.mark.parametrize(
+    ("mutation", "reason_code"),
+    [("missing", "skill:path_missing"), ("unloadable", "skill:bundle_unloadable")],
+)
+def test_f3_startup_surfaces_unavailable_persisted_skill_bundle(
+    tmp_path: Path,
+    mutation: str,
+    reason_code: str,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "persisted", name="persisted-skill")
+    SkillManager(storage_dir=storage).activate_bundle(skill)
+    if mutation == "missing":
+        skill.rename(tmp_path / "removed")
+    else:
+        (skill / "skill.manifest.yaml").unlink()
+    registry = ToolRegistry()
+
+    restarted = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    assert not registry.has_tool(ToolName("skill.persisted-skill.lookup"))
+    events = restarted.drain_registration_events()
+    assert len(events) == 1
+    assert events[0].skill_name == "persisted-skill"
+    assert events[0].reason_code == reason_code
+
+
 def test_f3_invalid_runtime_skill_bundle_returns_local_drift_denial(tmp_path: Path) -> None:
     storage = tmp_path / "state"
     skill = _runtime_skill(tmp_path / "drifted", name="drifted-skill")

@@ -437,7 +437,7 @@ class ArtifactLedger:
             if metadata_load.loaded_ok:
                 self._refs = metadata_load.refs
                 self._temporarily_unreadable_refs = metadata_load.temporarily_unreadable or {}
-        if self._state_status is StateLoadStatus.OK:
+        if self._cleanup_available():
             self._quarantine_orphaned_blobs()
             self._prune_quarantine()
 
@@ -618,7 +618,7 @@ class ArtifactLedger:
         max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
         best_effort_persist: bool = False,
     ) -> list[str]:
-        if not self._state_available():
+        if not self._cleanup_available():
             return []
         session_key = self._session_key(session_id)
         refs = self._refs.get(session_key, {})
@@ -663,7 +663,7 @@ class ArtifactLedger:
         *,
         max_age_seconds: int | None = None,
     ) -> list[str]:
-        if not self._state_available():
+        if not self._cleanup_available():
             return []
         evicted: list[str] = []
         effective_max_age = (
@@ -679,7 +679,7 @@ class ArtifactLedger:
                     best_effort_persist=True,
                 )
             )
-        if self._state_available():
+        if self._cleanup_available():
             self._quarantine_orphaned_blobs()
             self._prune_quarantine()
         return evicted
@@ -776,6 +776,9 @@ class ArtifactLedger:
     def _state_available(self) -> bool:
         return self._state_status is StateLoadStatus.OK
 
+    def _cleanup_available(self) -> bool:
+        return self._state_available() and not self._temporarily_unreadable_refs
+
     def _degrade(self, reason: str) -> None:
         self._state_status = StateLoadStatus.CORRUPT
         self._state_reason = reason.strip() or "evidence state is invalid"
@@ -797,10 +800,14 @@ class ArtifactLedger:
             StateLoadStatus.CORRUPT: "corrupt",
             StateLoadStatus.UNSUPPORTED_SCHEMA: "unsupported",
         }[self._state_status]
+        reason = self._state_reason
+        if self._temporarily_unreadable_refs:
+            status = "corrupt"
+            reason = "referenced evidence blobs cannot be validated; restore codec/key access"
         return {
             "component": "evidence",
             "status": status,
-            "reason": self._state_reason,
+            "reason": reason,
             "durability": self._storage_capability.parent_sync,
             "permissions": self._storage_capability.permissions,
             "remains_usable": "conversation, channels, and unrelated tools",
@@ -993,7 +1000,7 @@ class ArtifactLedger:
         self._storage_capability = write_state(self._metadata_path, serialized)
 
     def _quarantine_orphaned_blobs(self) -> None:
-        if not self._state_available():
+        if not self._cleanup_available():
             return
         referenced_hashes = {
             ref.content_hash
@@ -1023,7 +1030,7 @@ class ArtifactLedger:
         self._ensure_file_permissions(destination)
 
     def _prune_quarantine(self) -> None:
-        if not self._state_available():
+        if not self._cleanup_available():
             return
         now = datetime.now(UTC).timestamp()
         for blob_path in self._quarantine_dir.glob("*.txt"):

@@ -482,6 +482,7 @@ class SkillManager:
                 continue
             path = Path(installed.path)
             if not path.exists():
+                self._record_unavailable_bundle(installed, "skill:path_missing")
                 continue
             try:
                 bundle = load_skill_bundle(
@@ -489,6 +490,7 @@ class SkillManager:
                     allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
+                self._record_unavailable_bundle(installed, "skill:bundle_unloadable")
                 continue
             bundles[installed.name] = bundle
             digest = _bundle_digest(bundle)
@@ -542,6 +544,16 @@ class SkillManager:
                 actual_hash=actual_hash if schema_drift else actual_digest,
                 reason_code="skill:tool_schema_drift" if schema_drift else "skill:bundle_drift",
             )
+
+    def _record_unavailable_bundle(self, installed: InstalledSkill, reason_code: str) -> None:
+        self._record_registration_drop(
+            manifest=installed,
+            tool_name=ToolName(f"skill.{installed.name}.__bundle__"),
+            registration_source="inventory_reload",
+            expected_hash=installed.bundle_digest,
+            actual_hash="",
+            reason_code=reason_code,
+        )
 
     def _register_skill_tools(
         self,

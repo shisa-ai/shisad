@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+_UNSUPPORTED_DIRECTORY_SYNC_ERRNOS = {
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +56,10 @@ def sync_parent_directory(parent: Path) -> str:
         flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
         descriptor = os.open(parent, flags)
         os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno in _UNSUPPORTED_DIRECTORY_SYNC_ERRNOS:
+            return "unsupported"
+        raise
     finally:
         if descriptor >= 0:
             with contextlib.suppress(OSError):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -249,6 +250,33 @@ def test_atomic_write_reports_real_permission_failure_without_blocking_publicati
 
     assert capability.permissions == "failed"
     assert target.read_bytes() == b"payload"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directory fsync is a POSIX capability")
+@pytest.mark.parametrize("operation", ["open", "fsync"])
+@pytest.mark.parametrize(
+    "error_number",
+    sorted(
+        {
+            errno.EINVAL,
+            errno.ENOSYS,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+    ),
+)
+def test_parent_directory_sync_reports_unsupported_errnos_as_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    error_number: int,
+) -> None:
+    def _unsupported(*_args: object, **_kwargs: object) -> None:
+        raise OSError(error_number, "directory sync unsupported")
+
+    monkeypatch.setattr(storage_platform.os, operation, _unsupported)
+
+    assert storage_platform.sync_parent_directory(tmp_path) == "unsupported"
 
 
 def test_atomic_write_retries_short_os_writes_until_complete(
