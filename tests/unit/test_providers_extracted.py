@@ -2389,6 +2389,7 @@ async def test_routed_openai_provider_uses_component_routes(
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 headers,
@@ -2397,6 +2398,7 @@ async def test_routed_openai_provider_uses_component_routes(
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
             self._base_url = base_url
             self._model_id = model_id
@@ -2471,6 +2473,7 @@ async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 model_id,
@@ -2480,6 +2483,7 @@ async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
             created.append(base_url)
 
@@ -2561,6 +2565,7 @@ async def test_s0_routed_provider_supports_mixed_mode_and_route_local_auth(
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 model_id,
@@ -2569,6 +2574,7 @@ async def test_s0_routed_provider_supports_mixed_mode_and_route_local_auth(
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
             captured_headers[base_url] = dict(headers)
             self._base_url = base_url
@@ -2764,6 +2770,7 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 base_url,
@@ -2774,6 +2781,7 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
 
         async def complete(
@@ -2853,6 +2861,7 @@ async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconf
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 base_url,
@@ -2863,6 +2872,7 @@ async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconf
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
 
         async def complete(
@@ -2915,6 +2925,7 @@ def _openai_provider_raising(error_message: str) -> type[Any]:
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
+            timeout_seconds: float = 30.0,
         ) -> None:
             _ = (
                 base_url,
@@ -2925,6 +2936,7 @@ def _openai_provider_raising(error_message: str) -> type[Any]:
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,
+                timeout_seconds,
             )
 
         async def complete(
