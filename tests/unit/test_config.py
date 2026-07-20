@@ -13,6 +13,7 @@ from shisad.core.config_file import (
     load_effective_config,
     render_config_template,
 )
+from shisad.core.providers.routing import ModelComponent, ModelRouter
 
 
 def _write_config(path: Path, text: str) -> Path:
@@ -74,6 +75,33 @@ approval_factor_store_path = "/toml/factors.json"
     }
     assert "env-secret" not in str(projection)
     assert "toml-secret" not in str(projection)
+    assert projection["daemon"]["config_path"] == {
+        "value": "<redacted>",
+        "source": "explicit",
+    }
+
+
+def test_u41_unset_model_ids_preserve_preset_derived_defaults(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path / "config.toml",
+        """
+schema_version = 1
+[model]
+planner_provider_preset = "openai_default"
+embeddings_provider_preset = "openai_default"
+monitor_provider_preset = "anthropic_default"
+""",
+    )
+
+    loaded = load_config_file(config_path, environ={})
+    router = ModelRouter(loaded.model)
+
+    assert "planner_model_id" not in loaded.model.model_fields_set
+    assert "embeddings_model_id" not in loaded.model.model_fields_set
+    assert "monitor_model_id" not in loaded.model.model_fields_set
+    assert router.route_for(ModelComponent.PLANNER).model_id == "gpt-5.4-2026-03-05"
+    assert router.route_for(ModelComponent.EMBEDDINGS).model_id == "text-embedding-3-small"
+    assert router.route_for(ModelComponent.MONITOR).model_id == "claude-sonnet-4-6"
 
 
 def test_u41_config_defaults_are_annotated_without_ambient_environment(tmp_path: Path) -> None:
@@ -168,6 +196,34 @@ public_key_path = "/private/a2a-key.pub"
     assert "/private/a2a-key" not in str(projection)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[daemon.a2a]\nunknown = true\n",
+        (
+            '[[daemon.mcp_servers]]\nname = "demo"\ntransport = "stdio"\n'
+            'command = ["server"]\nunknown = true\n'
+        ),
+        (
+            '[[daemon.discord_channel_rules]]\nguild_id = "guild"\n'
+            'unknown = true\n'
+        ),
+        '[model.planner_capabilities]\nunknown = true\n',
+    ],
+)
+def test_u41_unknown_nested_toml_keys_fail_closed(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    config_path = _write_config(
+        tmp_path / "config.toml",
+        f"schema_version = 1\n{body}",
+    )
+
+    with pytest.raises(ConfigFileError, match="unknown nested field"):
+        load_config_file(config_path, environ={})
+
+
 def test_u41_config_path_cannot_be_inside_managed_root(tmp_path: Path) -> None:
     managed_root = tmp_path / "assistant-root"
     managed_root.mkdir()
@@ -222,7 +278,8 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     assert all(row["status"] != "unclassified" for row in inventory)
     by_name = {(row["section"], row["field"]): row for row in inventory}
     assert by_name[("security", "default_deny")]["status"] == "compatibility_only"
-    assert by_name[("daemon", "ui_theme")]["status"] == "reserved_for_f6"
+    assert ("daemon", "ui_theme") not in by_name
+    assert ("daemon", "ui_theme_path") not in by_name
     assert by_name[("model", "planner_api_key")]["consumer"] == "ModelRouter"
     for removed in (
         "require_confirmation_for_writes",
@@ -242,7 +299,7 @@ def test_u41_commented_template_is_generated_from_live_inventory() -> None:
     assert "# log_level = \"INFO\"" in template
     assert "[model]" in template
     assert "# api_key = \"\"" in template
-    assert "status=reserved_for_f6" in template
+    assert "ui_theme" not in template
     assert "config_path =" not in template
     assert "config_path is selected only via --config or SHISAD_CONFIG_PATH" in template
     assert "require_confirmation_for_writes" not in template

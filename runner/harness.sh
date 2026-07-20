@@ -168,7 +168,7 @@ _ensure_private_dir() {
 _preflight_socket_parent() {
   local create="${1:-false}"
   local socket_dir
-  socket_dir="$(dirname "${SHISAD_SOCKET_PATH}")"
+  socket_dir="$(dirname "$(_runner_socket_path)")"
 
   if ! _socket_dir_requires_private "${socket_dir}"; then
     if [[ "${create}" == true ]]; then
@@ -215,6 +215,81 @@ _clear_inherited_shisad_env() {
   unset SHISAD_MATRIX_TRUSTED_USERS SHISAD_MATRIX_ROOM_WORKSPACE_MAP || true
 }
 
+_runner_config_state() {
+  (
+    cd "${REPO_ROOT}"
+    uv run python - <<'PY'
+import sys
+
+from shisad.core.config_file import ConfigFileError, load_effective_config
+
+try:
+    loaded = load_effective_config()
+except ConfigFileError as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(2) from None
+print("selected" if loaded.daemon.config_path is not None else "absent")
+PY
+  )
+}
+
+_load_config_runner_context() {
+  RUNNER_EFFECTIVE_DATA_DIR=""
+  RUNNER_EFFECTIVE_SOCKET_PATH=""
+  RUNNER_EFFECTIVE_POLICY_PATH=""
+  RUNNER_EFFECTIVE_CODING_REPO_ROOT=""
+  RUNNER_EFFECTIVE_ASSISTANT_FS_ROOTS=""
+  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    case "${key}" in
+      data_dir) RUNNER_EFFECTIVE_DATA_DIR="${value}" ;;
+      socket_path) RUNNER_EFFECTIVE_SOCKET_PATH="${value}" ;;
+      policy_path) RUNNER_EFFECTIVE_POLICY_PATH="${value}" ;;
+      coding_repo_root) RUNNER_EFFECTIVE_CODING_REPO_ROOT="${value}" ;;
+      assistant_fs_roots) RUNNER_EFFECTIVE_ASSISTANT_FS_ROOTS="${value}" ;;
+      *) _die "unexpected config context field: ${key}" ;;
+    esac
+  done < <(
+    cd "${REPO_ROOT}"
+    uv run python - <<'PY'
+import json
+import sys
+
+from shisad.core.config_file import load_effective_config
+
+daemon = load_effective_config().daemon
+pairs = (
+    ("data_dir", str(daemon.data_dir)),
+    ("socket_path", str(daemon.socket_path)),
+    ("policy_path", str(daemon.policy_path)),
+    ("coding_repo_root", str(daemon.coding_repo_root)),
+    (
+        "assistant_fs_roots",
+        json.dumps([str(path) for path in daemon.assistant_fs_roots]),
+    ),
+)
+for key, value in pairs:
+    sys.stdout.buffer.write(key.encode("utf-8") + b"\0")
+    sys.stdout.buffer.write(value.encode("utf-8") + b"\0")
+PY
+  )
+  [[ -n "${RUNNER_EFFECTIVE_DATA_DIR}" ]] || _die "config data_dir was not resolved"
+  [[ -n "${RUNNER_EFFECTIVE_SOCKET_PATH}" ]] || _die "config socket_path was not resolved"
+  [[ -n "${RUNNER_EFFECTIVE_POLICY_PATH}" ]] || _die "config policy_path was not resolved"
+  export RUNNER_EFFECTIVE_DATA_DIR RUNNER_EFFECTIVE_SOCKET_PATH
+}
+
+_runner_data_dir() {
+  printf '%s\n' "${RUNNER_EFFECTIVE_DATA_DIR:-${SHISAD_DATA_DIR:-}}"
+}
+
+_runner_socket_path() {
+  printf '%s\n' "${RUNNER_EFFECTIVE_SOCKET_PATH:-${SHISAD_SOCKET_PATH:-}}"
+}
+
+_runner_policy_path() {
+  printf '%s\n' "${RUNNER_EFFECTIVE_POLICY_PATH:-${SHISAD_POLICY_PATH:-}}"
+}
+
 _export_defaults() {
   export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-dev}"
   export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-$(_default_user_socket_path)}"
@@ -244,21 +319,23 @@ _export_defaults() {
 }
 
 _daemon_log_path() {
-  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.log"
+  printf '%s\n' "$(_runner_data_dir)/daemon.log"
 }
 
 _daemon_pid_path() {
-  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.pid"
+  printf '%s\n' "$(_runner_data_dir)/daemon.pid"
 }
 
 _ensure_bootstrap_dirs() {
-  mkdir -p "${SHISAD_DATA_DIR}"
-  mkdir -p "$(dirname "${SHISAD_POLICY_PATH}")"
+  mkdir -p "$(_runner_data_dir)"
+  mkdir -p "$(dirname "$(_runner_policy_path)")"
   _preflight_socket_parent true
 }
 
 _ensure_policy_file() {
-  if [[ -f "${SHISAD_POLICY_PATH}" ]]; then
+  local policy_path
+  policy_path="$(_runner_policy_path)"
+  if [[ -f "${policy_path}" ]]; then
     return 0
   fi
 
@@ -267,11 +344,41 @@ _ensure_policy_file() {
     _die "policy template not found: ${template}"
   fi
 
-  cp "${template}" "${SHISAD_POLICY_PATH}"
-  chmod 600 "${SHISAD_POLICY_PATH}" || true
+  cp "${template}" "${policy_path}"
+  chmod 600 "${policy_path}" || true
+}
+
+_preflight_planner_credential_from_config() {
+  (
+    cd "${REPO_ROOT}"
+    uv run python - <<'PY'
+import sys
+
+from shisad.core.config_file import ConfigFileError, load_effective_config
+from shisad.core.providers.capabilities import AuthMode
+from shisad.core.providers.routing import ModelComponent, ModelRouter
+
+try:
+    route = ModelRouter(load_effective_config().model).route_for(ModelComponent.PLANNER)
+except (ConfigFileError, ValueError) as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(2) from None
+if not route.remote_enabled or route.auth_mode == AuthMode.NONE or route.api_key:
+    raise SystemExit(0)
+print(
+    f"planner route '{route.provider_preset.value}' requires a configured credential",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+PY
+  )
 }
 
 _preflight_planner_credential() {
+  if [[ "${RUNNER_CONFIG_SELECTED:-false}" == true ]]; then
+    _preflight_planner_credential_from_config
+    return
+  fi
   # Explicit route and global model keys are first-class runtime inputs. Keep
   # this check ahead of preset-key handling so the harness accepts the same
   # supported configurations as ModelRouter._resolve_route_api_key().
@@ -368,7 +475,18 @@ _runner_env() {
   fi
 
   _load_env_files
-  _export_defaults
+  local config_state
+  if ! config_state="$(_runner_config_state)"; then
+    _die "unable to load effective runner configuration"
+  fi
+  if [[ "${config_state}" == "selected" ]]; then
+    RUNNER_CONFIG_SELECTED=true
+    _load_config_runner_context
+  else
+    RUNNER_CONFIG_SELECTED=false
+    _export_defaults
+  fi
+  export RUNNER_CONFIG_SELECTED
 }
 
 _shisad() {
@@ -391,17 +509,23 @@ _tmux() {
 
 _cmd_env() {
   _runner_env
+  local data_dir socket_path policy_path coding_repo_root assistant_fs_roots
+  data_dir="$(_runner_data_dir)"
+  socket_path="$(_runner_socket_path)"
+  policy_path="$(_runner_policy_path)"
+  coding_repo_root="${RUNNER_EFFECTIVE_CODING_REPO_ROOT:-${SHISAD_CODING_REPO_ROOT:-}}"
+  assistant_fs_roots="${RUNNER_EFFECTIVE_ASSISTANT_FS_ROOTS:-${SHISAD_ASSISTANT_FS_ROOTS:-}}"
   cat <<EOF
 REPO_ROOT=${REPO_ROOT}
 DOTENV_PATH=${DOTENV_PATH}
 RUNNER_TMUX_SOCKET_NAME=$(_tmux_socket_name)
 RUNNER_TMUX_SESSION_NAME=$(_tmux_session_name)
 
-SHISAD_DATA_DIR=${SHISAD_DATA_DIR}
-SHISAD_SOCKET_PATH=${SHISAD_SOCKET_PATH}
-SHISAD_POLICY_PATH=${SHISAD_POLICY_PATH}
-SHISAD_CODING_REPO_ROOT=${SHISAD_CODING_REPO_ROOT}
-SHISAD_ASSISTANT_FS_ROOTS=${SHISAD_ASSISTANT_FS_ROOTS}
+SHISAD_DATA_DIR=${data_dir}
+SHISAD_SOCKET_PATH=${socket_path}
+SHISAD_POLICY_PATH=${policy_path}
+SHISAD_CODING_REPO_ROOT=${coding_repo_root}
+SHISAD_ASSISTANT_FS_ROOTS=${assistant_fs_roots}
 
 DAEMON_LOG=$(_daemon_log_path)
 DAEMON_PID=$(_daemon_pid_path)
@@ -440,24 +564,27 @@ _cmd_start() {
   _ensure_policy_file
   _preflight_planner_credential
 
-  local log_path pid_path
+  local log_path pid_path socket_path data_dir policy_path
   log_path="$(_daemon_log_path)"
   pid_path="$(_daemon_pid_path)"
+  socket_path="$(_runner_socket_path)"
+  data_dir="$(_runner_data_dir)"
+  policy_path="$(_runner_policy_path)"
 
   if uv run shisad status >/dev/null 2>&1; then
-    printf '%s\n' "Daemon already running (socket: ${SHISAD_SOCKET_PATH})"
+    printf '%s\n' "Daemon already running (socket: ${socket_path})"
     return 0
   fi
 
-  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
-    rm -f "${SHISAD_SOCKET_PATH}" || true
+  if [[ -e "${socket_path}" ]]; then
+    rm -f "${socket_path}" || true
   fi
 
   if [[ "${fg}" == true ]]; then
     printf '%s\n' "Starting shisad in foreground (debug=${debug})"
-    printf '%s\n' "  socket   : ${SHISAD_SOCKET_PATH}"
-    printf '%s\n' "  data dir : ${SHISAD_DATA_DIR}"
-    printf '%s\n' "  policy   : ${SHISAD_POLICY_PATH}"
+    printf '%s\n' "  socket   : ${socket_path}"
+    printf '%s\n' "  data dir : ${data_dir}"
+    printf '%s\n' "  policy   : ${policy_path}"
     if [[ "${debug}" == true ]]; then
       exec uv run shisad start --debug
     fi
@@ -466,8 +593,8 @@ _cmd_start() {
 
   printf '%s\n' "Starting shisad in background (debug=${debug})"
   printf '%s\n' "  log      : ${log_path}"
-  printf '%s\n' "  socket   : ${SHISAD_SOCKET_PATH}"
-  printf '%s\n' "  data dir : ${SHISAD_DATA_DIR}"
+  printf '%s\n' "  socket   : ${socket_path}"
+  printf '%s\n' "  data dir : ${data_dir}"
 
   rm -f "${pid_path}" || true
   rm -f "${log_path}" || true
@@ -493,7 +620,16 @@ _cmd_start() {
   fi
 
   # Run in tmux so the daemon survives across non-interactive shells.
-  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "bash runner/daemon_entrypoint.sh ${daemon_args}"
+  if [[ "${RUNNER_CONFIG_SELECTED}" == true ]]; then
+    local selected_command
+    printf -v selected_command \
+      'mkdir -p %q; exec uv run shisad start %q >>%q 2>&1' \
+      "${data_dir}" "${daemon_args}" "${log_path}"
+    _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" \
+      "bash -c $(printf '%q' "${selected_command}")"
+  else
+    _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "bash runner/daemon_entrypoint.sh ${daemon_args}"
+  fi
 
   # Wait for socket + status to succeed.
   local i
@@ -514,8 +650,9 @@ _cmd_stop() {
   _runner_env
   _preflight_socket_parent false
 
-  local pid_path
+  local pid_path socket_path
   pid_path="$(_daemon_pid_path)"
+  socket_path="$(_runner_socket_path)"
 
   uv run shisad stop >/dev/null 2>&1 || true
 
@@ -529,8 +666,8 @@ _cmd_stop() {
 
   rm -f "${pid_path}" || true
 
-  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
-    rm -f "${SHISAD_SOCKET_PATH}" || true
+  if [[ -e "${socket_path}" ]]; then
+    rm -f "${socket_path}" || true
   fi
 
   printf '%s\n' "Daemon stop requested."

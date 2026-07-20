@@ -77,6 +77,8 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "sandbox",
     "browser",
     "realitycheck",
+    "mcp",
+    "search",
 )
 
 _PUBLIC_DISCORD_TOOL_ALLOWLIST: frozenset[str] = frozenset(
@@ -1527,6 +1529,12 @@ class AdminImplMixin(HandlerMixinBase):
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
+        readiness = await AdminImplMixin._collect_doctor_checks(
+            self,
+            component="all",
+            live=False,
+            timeout_seconds=3.0,
+        )
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
@@ -1536,7 +1544,7 @@ class AdminImplMixin(HandlerMixinBase):
             ),
             "tools_registered": [tool.name for tool in self._registry.list_tools()],
             "model_routes": dict(self._model_routes),
-            "provider_readiness": dict(self._provider_diagnostics),
+            "readiness": readiness,
             "classifier_mode": self._classifier_mode,
             "content_firewall": self._firewall.status_snapshot(),
             "yara_required": True,
@@ -1863,6 +1871,8 @@ class AdminImplMixin(HandlerMixinBase):
             "sandbox": self._doctor_sandbox_status,
             "browser": self._doctor_browser_status,
             "realitycheck": self._realitycheck_toolkit.doctor_status,
+            "mcp": self._doctor_mcp_status,
+            "search": self._doctor_search_status,
         }
 
         async def _run_component(name: str) -> dict[str, Any]:
@@ -1933,6 +1943,24 @@ class AdminImplMixin(HandlerMixinBase):
             "checks": checks,
             "error": "",
         }
+
+    async def _collect_doctor_checks(
+        self,
+        *,
+        component: str,
+        live: bool,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        result = await AdminImplMixin.do_doctor_check(
+            self,
+            {
+                "component": component,
+                "live": live,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+        checks = result.get("checks", {})
+        return dict(checks) if isinstance(checks, Mapping) else {}
 
     async def do_lockdown_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))

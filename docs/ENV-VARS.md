@@ -64,8 +64,6 @@ values were written to disk.
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
-| `SHISAD_UI_THEME` | Reserved compatibility input for F6 UI wiring; not yet applied to renderers |
-| `SHISAD_UI_THEME_PATH` | Reserved compatibility input for F6 UI wiring; not yet applied to renderers |
 | `SHISAD_TRACE_ENABLED` | Enable trace recording |
 | `SHISAD_REQUIRE_LOCAL_ADAPTERS` | Require pre-installed coding-agent binaries; disallow runtime `npx` fetches (`1`/`true`/`yes`) |
 
@@ -465,6 +463,10 @@ The removed `SHISAD_SECURITY_REQUIRE_CONFIRMATION_FOR_WRITES`,
 and `SHISAD_SECURITY_AUDIT_LOG_PATH` names had no runtime consumer and are not
 accepted as configuration. Confirmation and egress posture come from the
 policy bundle; credential/audit storage is constructed by the live daemon.
+
+`SHISAD_UI_THEME` and `SHISAD_UI_THEME_PATH` are also not accepted in this
+release because no renderer consumes them. F6 may introduce a wired theme
+surface; until then generated configuration does not advertise inert controls.
 
 ## `SHISAD_MODEL_*`
 

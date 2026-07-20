@@ -2295,7 +2295,7 @@ class DaemonStatusResult(BaseModel):
     policy_hash: str = ""
     tools_registered: list[str] = Field(default_factory=list)
     model_routes: dict[str, str] = Field(default_factory=dict)
-    provider_readiness: dict[str, Any] = Field(default_factory=dict)
+    readiness: dict[str, Any] = Field(default_factory=dict)
     classifier_mode: str = ""
     content_firewall: dict[str, Any] = Field(default_factory=dict)
     yara_required: bool = False

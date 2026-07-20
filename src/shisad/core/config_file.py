@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
@@ -60,6 +61,8 @@ class LoadedConfig:
             section_projection: dict[str, dict[str, object]] = {}
             for name in settings.__class__.model_fields:
                 value: object = values.get(name)
+                if name not in values:
+                    value = getattr(settings, name)
                 if (
                     name in _NESTED_SECRET_FIELDS or _field_is_secret(name)
                 ) and _has_secret_value(value):
@@ -167,9 +170,6 @@ def config_field_inventory() -> list[dict[str, str]]:
             if section == "security" and field == "default_deny":
                 status = "compatibility_only"
                 consumer = "PolicyBundle.default_deny"
-            elif section == "daemon" and field in {"ui_theme", "ui_theme_path"}:
-                status = "reserved_for_f6"
-                consumer = "F6 UI wiring"
             elif section == "model":
                 consumer = "ModelRouter"
             elif section == "security":
@@ -322,7 +322,13 @@ def _load_settings_section[SettingsT: BaseSettings](
     if unknown_cli:
         raise ConfigFileError(f"unknown {section} CLI override: {unknown_cli[0]}")
 
-    values = _settings_defaults(model_type)
+    _reject_unknown_nested_toml(
+        values=toml_values,
+        schema=model_type.model_json_schema(),
+        section=section,
+    )
+
+    values: dict[str, object] = {}
     sources = {name: "default" for name in field_names}
     for name, value in toml_values.items():
         values[name] = value
@@ -346,7 +352,11 @@ def _load_settings_section[SettingsT: BaseSettings](
         sources[name] = "cli"
 
     try:
-        return model_type.model_validate(values), sources
+        settings_factory = cast(Any, model_type)
+        return settings_factory(
+            _env_prefix="__SHISAD_CONFIG_FILE_ENV_DISABLED__",
+            **values,
+        ), sources
     except ValidationError as exc:
         failures = []
         for error_row in exc.errors(include_url=False, include_context=False, include_input=False):
@@ -369,6 +379,132 @@ def _settings_defaults[SettingsT: BaseSettings](
             continue
         raise ConfigFileError(f"configuration field has no default: {model_type.__name__}.{name}")
     return defaults
+
+
+def _reject_unknown_nested_toml(
+    *,
+    values: Mapping[str, object],
+    schema: Mapping[str, object],
+    section: str,
+) -> None:
+    """Reject unknown model keys at the TOML boundary without changing env JSON."""
+
+    properties = schema.get("properties", {})
+    if not isinstance(properties, Mapping):
+        return
+    for name, value in values.items():
+        field_schema = properties.get(name)
+        if isinstance(field_schema, Mapping):
+            _reject_unknown_schema_value(
+                value=value,
+                schema=field_schema,
+                root_schema=schema,
+                path=f"{section}.{name}",
+            )
+
+
+def _reject_unknown_schema_value(
+    *,
+    value: object,
+    schema: Mapping[str, object],
+    root_schema: Mapping[str, object],
+    path: str,
+) -> None:
+    resolved = _resolve_schema_reference(schema, root_schema=root_schema)
+    selected = _select_schema_branch(value, resolved, root_schema=root_schema)
+    if selected is not None:
+        resolved = _resolve_schema_reference(selected, root_schema=root_schema)
+
+    if isinstance(value, Mapping):
+        properties = resolved.get("properties")
+        if isinstance(properties, Mapping):
+            unknown = sorted(str(key) for key in set(value) - set(properties))
+            if unknown:
+                raise ConfigFileError(f"unknown nested field: {path}.{unknown[0]}")
+            for key, item in value.items():
+                child_schema = properties.get(key)
+                if isinstance(child_schema, Mapping):
+                    _reject_unknown_schema_value(
+                        value=item,
+                        schema=child_schema,
+                        root_schema=root_schema,
+                        path=f"{path}.{key}",
+                    )
+            return
+        additional = resolved.get("additionalProperties")
+        if isinstance(additional, Mapping):
+            for key, item in value.items():
+                _reject_unknown_schema_value(
+                    value=item,
+                    schema=additional,
+                    root_schema=root_schema,
+                    path=f"{path}.{key}",
+                )
+        return
+
+    if isinstance(value, list):
+        item_schema = resolved.get("items")
+        if isinstance(item_schema, Mapping):
+            for index, item in enumerate(value):
+                _reject_unknown_schema_value(
+                    value=item,
+                    schema=item_schema,
+                    root_schema=root_schema,
+                    path=f"{path}.{index}",
+                )
+
+
+def _resolve_schema_reference(
+    schema: Mapping[str, object],
+    *,
+    root_schema: Mapping[str, object],
+) -> Mapping[str, object]:
+    reference = schema.get("$ref")
+    if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
+        return schema
+    definitions = root_schema.get("$defs", {})
+    if not isinstance(definitions, Mapping):
+        return schema
+    resolved = definitions.get(reference.removeprefix("#/$defs/"))
+    return resolved if isinstance(resolved, Mapping) else schema
+
+
+def _select_schema_branch(
+    value: object,
+    schema: Mapping[str, object],
+    *,
+    root_schema: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    discriminator = schema.get("discriminator")
+    if isinstance(value, Mapping) and isinstance(discriminator, Mapping):
+        property_name = discriminator.get("propertyName")
+        mapping = discriminator.get("mapping")
+        if isinstance(property_name, str) and isinstance(mapping, Mapping):
+            selected_ref = mapping.get(value.get(property_name))
+            if isinstance(selected_ref, str):
+                return _resolve_schema_reference(
+                    {"$ref": selected_ref},
+                    root_schema=root_schema,
+                )
+    branches = schema.get("anyOf") or schema.get("oneOf")
+    if not isinstance(branches, list):
+        return None
+    expected_type = (
+        "object"
+        if isinstance(value, Mapping)
+        else "array"
+        if isinstance(value, list)
+        else "null"
+        if value is None
+        else None
+    )
+    for branch in branches:
+        if not isinstance(branch, Mapping):
+            continue
+        resolved = _resolve_schema_reference(branch, root_schema=root_schema)
+        if expected_type is None or resolved.get("type") == expected_type:
+            return resolved
+    return None
 
 
 def _field_is_secret(name: str) -> bool:

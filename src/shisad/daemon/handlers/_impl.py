@@ -3346,6 +3346,75 @@ class HandlerImplementation(
             },
         }
 
+    def _doctor_mcp_status(self) -> dict[str, Any]:
+        configured = list(self._config.mcp_servers)
+        if not configured:
+            return {
+                "status": "disabled",
+                "problems": [],
+                "servers": {},
+                "reason": "no_mcp_servers_configured",
+                "next_action": "configure an MCP server if this surface is needed",
+            }
+        manager = self._mcp_manager
+        runtimes = getattr(manager, "_runtimes", {}) if manager is not None else {}
+        rows: dict[str, dict[str, Any]] = {}
+        problems: list[str] = []
+        for server in configured:
+            name = str(server.name)
+            startup_error = manager.startup_error(name) if manager is not None else None
+            if startup_error is not None:
+                status = "degraded"
+                reason = "mcp_startup_failed"
+                next_action = "check the MCP server command, endpoint, and scoped credentials"
+                problems.append(f"{name}_startup_failed")
+            elif name in runtimes:
+                status = "ok"
+                reason = "mcp_session_verified"
+                next_action = "none"
+            else:
+                status = "misconfigured"
+                reason = "mcp_runtime_unavailable"
+                next_action = "restart or correct the configured MCP server"
+                problems.append(f"{name}_runtime_unavailable")
+            rows[name] = {
+                "status": status,
+                "reason": reason,
+                "next_action": next_action,
+            }
+        overall = "ok"
+        if any(row["status"] == "misconfigured" for row in rows.values()):
+            overall = "misconfigured"
+        elif any(row["status"] == "degraded" for row in rows.values()):
+            overall = "degraded"
+        return {
+            "status": overall,
+            "problems": sorted(problems),
+            "servers": rows,
+        }
+
+    def _doctor_search_status(self) -> dict[str, Any]:
+        web_enabled = bool(self._config.web_search_enabled)
+        web = {
+            "status": "configured" if web_enabled else "disabled",
+            "reason": "web_search_configured" if web_enabled else "web_search_disabled",
+            "next_action": (
+                "exercise one bounded search request to verify the configured backend"
+                if web_enabled
+                else "enable and configure web search if this surface is needed"
+            ),
+        }
+        realitycheck = dict(self._realitycheck_toolkit.doctor_status())
+        reality_status = str(realitycheck.get("status", "disabled")).strip().lower()
+        active = web_enabled or reality_status not in {"disabled", "missing", "unconfigured"}
+        degraded = reality_status in {"degraded", "misconfigured", "error", "unavailable"}
+        return {
+            "status": "degraded" if degraded else "configured" if active else "disabled",
+            "problems": list(realitycheck.get("problems", [])) if degraded else [],
+            "web": web,
+            "realitycheck": realitycheck,
+        }
+
     async def _doctor_browser_status(self) -> dict[str, Any]:
         return dict(await self._browser_toolkit.doctor_status())
 

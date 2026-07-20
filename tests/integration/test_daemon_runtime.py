@@ -47,6 +47,29 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
         await client.connect()
         status = await client.call("daemon.status")
         assert status["status"] == "running"
+        assert set(status["readiness"]) >= {
+            "provider",
+            "channels",
+            "storage",
+            "sandbox",
+            "browser",
+            "mcp",
+            "search",
+        }
+        assert all(
+            row["status"]
+            in {
+                "absent",
+                "installed",
+                "configured",
+                "reachable",
+                "authenticated",
+                "verified",
+                "degraded",
+                "blocked",
+            }
+            for row in status["readiness"].values()
+        )
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

@@ -136,22 +136,58 @@ def failed_probe_readiness(error_text: str) -> ReadinessStatus:
 def normalize_readiness_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Project existing component diagnostics through the shared vocabulary."""
 
-    result = dict(payload)
+    result = {
+        key: _normalize_nested_readiness(value)
+        for key, value in payload.items()
+    }
     raw_status = str(result.get("status", "")).strip().lower()
     if raw_status in {state.value for state in ReadinessState}:
-        return result
-    mapping = {
-        "ok": ReadinessState.VERIFIED,
-        "healthy": ReadinessState.VERIFIED,
-        "disabled": ReadinessState.ABSENT,
-        "missing": ReadinessState.ABSENT,
-        "unconfigured": ReadinessState.ABSENT,
-        "misconfigured": ReadinessState.BLOCKED,
-        "error": ReadinessState.BLOCKED,
-        "unavailable": ReadinessState.BLOCKED,
-        "unhealthy": ReadinessState.DEGRADED,
-    }
-    state = mapping.get(raw_status, ReadinessState.DEGRADED)
-    result["status"] = state.value
-    result["legacy_status"] = raw_status or "missing"
+        state = ReadinessState(raw_status)
+    else:
+        mapping = {
+            "ok": ReadinessState.VERIFIED,
+            "healthy": ReadinessState.VERIFIED,
+            "disabled": ReadinessState.ABSENT,
+            "missing": ReadinessState.ABSENT,
+            "unconfigured": ReadinessState.ABSENT,
+            "misconfigured": ReadinessState.BLOCKED,
+            "error": ReadinessState.BLOCKED,
+            "unavailable": ReadinessState.BLOCKED,
+            "unhealthy": ReadinessState.DEGRADED,
+        }
+        state = mapping.get(raw_status, ReadinessState.DEGRADED)
+        result["status"] = state.value
+        result["legacy_status"] = raw_status or "missing"
+    default_reason = {
+        ReadinessState.ABSENT: "component_disabled_or_absent",
+        ReadinessState.INSTALLED: "component_installed_not_configured",
+        ReadinessState.CONFIGURED: "configuration_present_not_verified",
+        ReadinessState.REACHABLE: "component_reachable_not_authenticated",
+        ReadinessState.AUTHENTICATED: "component_authenticated_not_verified",
+        ReadinessState.VERIFIED: "legacy_ok",
+        ReadinessState.DEGRADED: "component_degraded",
+        ReadinessState.BLOCKED: "component_blocked",
+    }[state]
+    default_action = {
+        ReadinessState.ABSENT: "enable and configure the component if it is needed",
+        ReadinessState.INSTALLED: "configure the installed component",
+        ReadinessState.CONFIGURED: "run the component's bounded verification path",
+        ReadinessState.REACHABLE: "configure and verify component authentication",
+        ReadinessState.AUTHENTICATED: "run the component verification path",
+        ReadinessState.VERIFIED: "none",
+        ReadinessState.DEGRADED: "inspect component problems and restore its dependency",
+        ReadinessState.BLOCKED: "correct the component configuration before use",
+    }[state]
+    result.setdefault("reason", default_reason)
+    result.setdefault("next_action", default_action)
     return result
+
+
+def _normalize_nested_readiness(value: Any) -> Any:
+    if isinstance(value, dict):
+        if "status" in value:
+            return normalize_readiness_payload(value)
+        return {key: _normalize_nested_readiness(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_nested_readiness(item) for item in value]
+    return value

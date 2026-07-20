@@ -65,13 +65,24 @@ def test_u41_missing_key_for_enabled_route_is_blocked(monkeypatch) -> None:
 
 
 def test_u41_legacy_component_states_project_through_one_typed_vocabulary() -> None:
-    assert normalize_readiness_payload({"status": "ok"})["status"] == "verified"
+    verified = normalize_readiness_payload({"status": "ok"})
+    assert verified["status"] == "verified"
+    assert verified["reason"] == "legacy_ok"
+    assert verified["next_action"] == "none"
     assert normalize_readiness_payload({"status": "disabled"})["status"] == "absent"
     blocked = normalize_readiness_payload(
         {"status": "misconfigured", "problems": ["missing_setting"]}
     )
     assert blocked["status"] == "blocked"
     assert blocked["legacy_status"] == "misconfigured"
+    nested = normalize_readiness_payload(
+        {
+            "status": "disabled",
+            "channels": {"matrix": {"status": "disabled"}},
+        }
+    )
+    assert nested["channels"]["matrix"]["status"] == "absent"
+    assert nested["channels"]["matrix"]["next_action"] != ""
 
 
 async def test_u41_opt_in_live_probe_distinguishes_verified_and_invalid_auth(
@@ -141,9 +152,14 @@ async def test_u41_doctor_projects_all_components_through_shared_states() -> Non
         _doctor_storage_status=lambda: {"status": "ok"},
         _doctor_provider_status=lambda **_kwargs: {"status": "configured"},
         _doctor_policy_status=lambda: {"status": "ok"},
-        _doctor_channels_status=lambda: {"status": "disabled"},
+        _doctor_channels_status=lambda: {
+            "status": "disabled",
+            "channels": {"matrix": {"status": "disabled"}},
+        },
         _doctor_sandbox_status=lambda: {"status": "ok"},
         _doctor_browser_status=lambda: {"status": "missing"},
+        _doctor_mcp_status=lambda: {"status": "disabled"},
+        _doctor_search_status=lambda: {"status": "disabled"},
         _realitycheck_toolkit=SimpleNamespace(doctor_status=lambda: {"status": "ok"}),
     )
 
@@ -152,4 +168,9 @@ async def test_u41_doctor_projects_all_components_through_shared_states() -> Non
     assert result["status"] == ReadinessState.CONFIGURED
     assert result["checks"]["dependencies"]["status"] == ReadinessState.VERIFIED
     assert result["checks"]["channels"]["status"] == ReadinessState.ABSENT
+    assert result["checks"]["channels"]["channels"]["matrix"]["status"] == (
+        ReadinessState.ABSENT
+    )
     assert result["checks"]["browser"]["status"] == ReadinessState.ABSENT
+    assert result["checks"]["mcp"]["status"] == ReadinessState.ABSENT
+    assert result["checks"]["search"]["status"] == ReadinessState.ABSENT

@@ -845,25 +845,6 @@ def _run_daemon_foreground(
     run_async(run_daemon(config, on_started=started_callback))
 
 
-def _backup_config_snapshot(config: DaemonConfig) -> Path:
-    """Write a timestamped JSON snapshot of current config before reload."""
-    backup_dir = config.data_dir / "config-backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    backup_path = backup_dir / f"{timestamp}.json"
-
-    # Keep names unique if multiple backups happen within the same second.
-    counter = 1
-    while backup_path.exists():
-        backup_path = backup_dir / f"{timestamp}-{counter}.json"
-        counter += 1
-
-    payload = config.model_dump(mode="json")
-    backup_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.chmod(backup_path, 0o600)
-    return backup_path
-
-
 def _single_line_status_value(value: object) -> str:
     rendered = " ".join(str(value).split())
     return rendered or "unknown"
@@ -965,7 +946,7 @@ def stop() -> None:
 @click.option(
     "--fresh-config",
     is_flag=True,
-    help="Reload config from environment after shutdown before start.",
+    help="Reload effective config after shutdown before start, without writing a backup.",
 )
 def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
     """Restart the shisad daemon."""
@@ -990,10 +971,8 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
 
     try:
         if fresh_config:
-            backup_path = _backup_config_snapshot(config)
-            _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
             config = _get_config()
-            _echo("Reloaded configuration from environment", fg="cyan")
+            _echo("Reloaded effective configuration without writing a backup", fg="cyan")
 
         def _announce_started(started_config: DaemonConfig) -> None:
             nonlocal status_config
@@ -1066,7 +1045,7 @@ def doctor(ctx: click.Context) -> None:
     default="all",
     help=(
         "Component to check (all, dependencies, storage, provider, policy, channels, "
-        "sandbox, browser, realitycheck)"
+        "sandbox, browser, realitycheck, mcp, search)"
     ),
 )
 @click.option("--live", is_flag=True, help="Run bounded external readiness probes.")

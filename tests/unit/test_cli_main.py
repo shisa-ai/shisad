@@ -3536,10 +3536,6 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_backup(config: DaemonConfig) -> Path:
-        assert config is initial_config
-        return tmp_path / "config-backups" / "20260302-120000.json"
-
     def _fake_start(
         config: DaemonConfig,
         foreground: bool,
@@ -3557,7 +3553,6 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
-    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
     monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
 
     runner = CliRunner()
@@ -3677,13 +3672,19 @@ def test_restart_debug_prints_operator_confirmation(
     ) in result.output
 
 
-def test_restart_fresh_config_backup_failure_prints_partial_status(
+def test_restart_fresh_config_reload_failure_prints_partial_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
     config.socket_path.touch()
-    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    config_calls = {"count": 0}
+
+    def _fake_get_config() -> DaemonConfig:
+        config_calls["count"] += 1
+        if config_calls["count"] == 1:
+            return config
+        raise click.ClickException("reload failed")
 
     def _fake_rpc_call(
         _config: DaemonConfig,
@@ -3700,9 +3701,6 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_backup(_config: DaemonConfig) -> Path:
-        raise OSError("backup failed")
-
     def _fake_start(
         _config: DaemonConfig,
         foreground: bool,
@@ -3710,10 +3708,10 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
-        raise AssertionError("restart should not start after backup failure")
+        raise AssertionError("restart should not start after reload failure")
 
+    monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
-    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
     monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
 
     runner = CliRunner()
@@ -3722,7 +3720,7 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
     assert result.exit_code == 1, result.output
     assert (
         f"daemon restart failed: phase=fresh-config pid={os.getpid()} "
-        f"data_dir={config.data_dir} socket={config.socket_path} error=backup failed"
+        f"data_dir={config.data_dir} socket={config.socket_path} error=reload failed"
     ) in result.output
 
 
@@ -3779,7 +3777,7 @@ def test_restart_debug_autoreload_failure_reports_refreshed_config(
     ) in result.output
 
 
-def test_restart_fresh_config_creates_backup_before_reload(
+def test_restart_fresh_config_reloads_without_legacy_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3787,7 +3785,6 @@ def test_restart_fresh_config_creates_backup_before_reload(
     initial_config.socket_path.touch()
     refreshed_config = _config(tmp_path).model_copy(update={"log_level": "WARNING"})
     config_calls = {"count": 0}
-    captured_backup: dict[str, DaemonConfig] = {}
     captured_start: dict[str, DaemonConfig] = {}
 
     def _fake_get_config() -> DaemonConfig:
@@ -3811,10 +3808,6 @@ def test_restart_fresh_config_creates_backup_before_reload(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_backup(config: DaemonConfig) -> Path:
-        captured_backup["config"] = config
-        return tmp_path / "config-backups" / "20260302-120000.json"
-
     def _fake_start(
         config: DaemonConfig,
         foreground: bool,
@@ -3832,37 +3825,53 @@ def test_restart_fresh_config_creates_backup_before_reload(
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
-    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
     monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
 
     runner = CliRunner()
     result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
 
     assert result.exit_code == 0, result.output
-    assert captured_backup["config"] is initial_config
     assert captured_start["config"] is refreshed_config
+    assert "Saved prior config snapshot" not in result.output
 
 
-def test_backup_config_snapshot_writes_timestamped_file(tmp_path: Path) -> None:
-    config = _config(tmp_path).model_copy(
-        update={
-            "discord_bot_token": "secret-token",
-            "web_search_backend_url": "https://search.example",
-        }
+def test_u41_restart_fresh_config_does_not_mutate_before_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_config = _config(tmp_path)
+    refreshed_config = _config(tmp_path).model_copy(
+        update={"data_dir": tmp_path / "refreshed-data"}
     )
-    backup = cli_main._backup_config_snapshot(config)
+    configs = iter((initial_config, refreshed_config))
+    monkeypatch.setattr(cli_main, "_get_config", lambda: next(configs))
 
-    assert backup.parent == config.data_dir / "config-backups"
-    assert backup.name.endswith(".json")
-    stem = backup.stem
-    assert len(stem) == 15
-    assert stem[8] == "-"
-    assert stem.replace("-", "").isdigit()
-    assert backup.exists()
+    def _fake_start(
+        config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
+    ) -> None:
+        assert config is refreshed_config
+        assert not initial_config.data_dir.exists()
+        assert not refreshed_config.data_dir.exists()
+        if on_starting is not None:
+            on_starting(config)
+        if on_started is not None:
+            on_started(config)
 
-    raw = backup.read_text(encoding="utf-8")
-    assert "secret-token" in raw
-    assert "search.example" in raw
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    result = CliRunner().invoke(cli_main.cli, ["restart", "--fresh-config"])
+
+    assert result.exit_code == 0, result.output
+    assert not initial_config.data_dir.exists()
+    assert not refreshed_config.data_dir.exists()
+
+
+def test_u41_legacy_config_backup_writer_is_removed() -> None:
+    assert not hasattr(cli_main, "_backup_config_snapshot")
 
 
 async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path: Path) -> None:
