@@ -19,7 +19,7 @@ from functools import wraps
 from html.parser import HTMLParser
 from http.client import InvalidURL
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 from typing import Concatenate, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -423,6 +423,7 @@ class ArtifactLedger:
         self._refs: dict[str, dict[str, EvidenceRef]] = {}
         self._publication_refs: dict[str, dict[str, EvidenceRef]] | None = None
         self._temporarily_unreadable_refs: dict[str, dict[str, _UnreadableRefState]] = {}
+        self._unreadable_probe_in_flight: set[tuple[str, str]] = set()
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -601,6 +602,7 @@ class ArtifactLedger:
     def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref_metadata(session_id, ref_id)
         if ref is None:
+            self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
         if ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
             return False
@@ -1068,6 +1070,28 @@ class ArtifactLedger:
         session_refs.pop(ref_id, None)
         if not session_refs:
             self._temporarily_unreadable_refs.pop(session_key, None)
+
+    def _maybe_probe_temporarily_unreadable(self, session_id: SessionId, ref_id: str) -> None:
+        session_key = self._session_key(session_id)
+        if ref_id not in self._temporarily_unreadable_refs.get(session_key, {}):
+            return
+        probe_key = (session_key, ref_id)
+        if probe_key in self._unreadable_probe_in_flight:
+            return
+        self._unreadable_probe_in_flight.add(probe_key)
+
+        def _probe() -> None:
+            try:
+                self.resolve_ref_content(session_id, ref_id)
+            finally:
+                with self._mutation_lock:
+                    self._unreadable_probe_in_flight.discard(probe_key)
+
+        Thread(
+            target=_probe,
+            name=f"evidence-unreadable-probe-{session_key}-{ref_id}",
+            daemon=True,
+        ).start()
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(
