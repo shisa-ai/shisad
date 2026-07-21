@@ -9,6 +9,11 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
+
 
 class ConnectPathResult(BaseModel):
     enforced: bool
@@ -119,6 +124,7 @@ class IptablesConnectPathProxy:
             text=True,
             timeout=2,
             check=True,
+            env=build_child_environment(ChildEnvironmentProfile.ISOLATION_CONTROL),
         )
 
     @staticmethod
@@ -135,6 +141,7 @@ class IptablesConnectPathProxy:
                 text=True,
                 timeout=1,
                 check=False,
+                env=build_child_environment(ChildEnvironmentProfile.ISOLATION_CONTROL),
             )
         except (OSError, subprocess.SubprocessError):
             return False

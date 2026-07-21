@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.executors.connect_path import ConnectPathProxy, ConnectPathResult
 from shisad.executors.sandbox.models import (
@@ -765,6 +769,7 @@ class SandboxProcessRunner:
                 text=True,
                 timeout=5,
                 check=False,
+                env=build_child_environment(ChildEnvironmentProfile.ISOLATION_CONTROL),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return f"pasta_failed:{exc.__class__.__name__}"
@@ -1251,6 +1256,7 @@ class SandboxProcessRunner:
                 text=True,
                 timeout=2,
                 check=False,
+                env=build_child_environment(ChildEnvironmentProfile.ISOLATION_CONTROL),
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.warning(

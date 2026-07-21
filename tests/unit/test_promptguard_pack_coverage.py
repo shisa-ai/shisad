@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.security.firewall.promptguard_pack as promptguard_pack_module
 from shisad.security.firewall.promptguard_pack import (
     PromptGuardModelPackManifest,
     build_promptguard_model_pack,
@@ -58,6 +59,44 @@ def _build_signed_pack(tmp_path: Path) -> tuple[Path, Path, Path]:
         signer_principal="test-signer",
     )
     return pack_dir, key_path, allowed_signers
+
+
+def test_f4c_promptguard_signature_children_use_fixed_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    signature = tmp_path / "manifest.json.sig"
+    allowed_signers = tmp_path / "allowed_signers"
+    signing_key = tmp_path / "signing-key"
+    manifest.write_text("{}", encoding="utf-8")
+    signature.write_text("signature", encoding="utf-8")
+    allowed_signers.write_text("trusted ssh-ed25519 AAAA\n", encoding="utf-8")
+    captured_envs: list[dict[str, str]] = []
+
+    def _run(_command: list[str], **kwargs: object) -> object:
+        captured_envs.append(dict(kwargs["env"]))  # type: ignore[arg-type]
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("SSH_ASKPASS", "/tmp/poison-askpass")
+    monkeypatch.setattr(promptguard_pack_module.subprocess, "run", _run)
+
+    assert promptguard_pack_module._verify_signature(
+        manifest_path=manifest,
+        signature_path=signature,
+        allowed_signers_path=allowed_signers,
+    ) == (True, "trusted")
+    promptguard_pack_module._sign_manifest(
+        manifest_path=manifest,
+        signing_key_path=signing_key,
+    )
+
+    assert len(captured_envs) == 2
+    for env in captured_envs:
+        assert "PATH" in env
+        assert "OPENAI_API_KEY" not in env
+        assert "SSH_ASKPASS" not in env
 
 
 # --- Manifest validator coverage ---

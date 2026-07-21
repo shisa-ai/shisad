@@ -19,6 +19,10 @@ import click
 from fido2.client import UserInteraction
 
 from shisad.core.api.transport import ControlClient
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 from shisad.ui.evidence import sanitize_terminal_field, sanitize_terminal_text
 
 
@@ -393,6 +397,7 @@ def _build_socket_endpoint(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=build_child_environment(ChildEnvironmentProfile.SSH_FORWARD),
     )
     try:
         _wait_for_socket(local_socket, timeout_seconds=ssh_timeout_seconds)

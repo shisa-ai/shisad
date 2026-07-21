@@ -54,6 +54,10 @@ Note:
   filesystem roots remain available. `shisad doctor check --component storage`
   reports redacted lock and finite-store health separately from this tool
   snapshot.
+- Assistant `git.status`, `git.diff`, and `git.log` run with bounded Git
+  environment/config controls. Repository fsmonitor, external diff/textconv,
+  signature-verifier, pager, and ambient helper settings do not execute on
+  these read paths; ordinary status/diff/log output remains available.
 - Thread control tools (`thread.list`, `thread.inspect`, `thread.resume`,
   `thread.close`, and `thread.why`) are live control/API surfaces, but this
   static snapshot omits them until the live probe seeds an `open_thread`

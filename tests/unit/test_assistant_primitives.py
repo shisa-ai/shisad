@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -400,6 +402,142 @@ def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     log = toolkit.git_log(repo_path=".", limit=5)
     assert log["ok"] is True
     assert "init" in log["output"]
+
+
+def test_f4c_fs_git_invocations_neutralize_repository_helpers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def _run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
+        calls.append((list(command), dict(kwargs)))
+        if kwargs.get("text") is True:
+            return subprocess.CompletedProcess(command, 0, stdout="ordinary output\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/tmp/poison-fsmonitor")
+    monkeypatch.setenv("GIT_EXTERNAL_DIFF", "/tmp/poison-diff")
+    monkeypatch.setattr(subprocess, "run", _run)
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+
+    assert toolkit.git_status(repo_path=".")["ok"] is True
+    assert toolkit.git_diff(repo_path=".")["ok"] is True
+    assert toolkit.git_log(repo_path=".")["ok"] is True
+
+    final_calls = [item for item in calls if item[1].get("text") is True]
+    assert len(final_calls) == 3
+    for command, kwargs in final_calls:
+        config_values = {
+            command[index + 1] for index, token in enumerate(command[:-1]) if token == "-c"
+        }
+        assert "core.hooksPath=" in "\n".join(config_values)
+        assert "core.fsmonitor=false" in config_values
+        assert "log.showSignature=false" in config_values
+        assert "gpg.program=" in config_values
+        assert "gpg.openpgp.program=" in config_values
+        assert "gpg.ssh.program=" in config_values
+        assert "gpg.x509.program=" in config_values
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert "GIT_CONFIG_COUNT" not in env
+        assert "GIT_EXTERNAL_DIFF" not in env
+
+    status_command = next(command for command, _kwargs in final_calls if "status" in command)
+    diff_command = next(command for command, _kwargs in final_calls if "diff" in command)
+    log_command = next(command for command, _kwargs in final_calls if "log" in command)
+    assert "--no-ext-diff" in diff_command
+    assert "--no-textconv" in diff_command
+    assert "--no-show-signature" in log_command
+    assert "--branch" in status_command
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("ssh-keygen") is None,
+    reason="hostile helper and signed-commit fixture requires POSIX ssh-keygen",
+)
+def test_f4c_fs_git_tools_return_results_without_executing_hostile_helpers(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    signing_key = tmp_path / "signing-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(signing_key)],
+        check=True,
+    )
+    (repo / ".gitattributes").write_text("README.md diff=poison\n", encoding="utf-8")
+    (repo / "README.md").write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={signing_key}",
+            "commit",
+            "-S",
+            "-m",
+            "signed init",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    markers = {name: tmp_path / f"{name}.marker" for name in ("fsmonitor", "diff", "signature")}
+    helpers: dict[str, Path] = {}
+    for name, marker in markers.items():
+        helper = tmp_path / f"{name}-helper.py"
+        helper.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        helpers[name] = helper
+
+    for key, value in (
+        ("core.fsmonitor", helpers["fsmonitor"]),
+        ("diff.external", helpers["diff"]),
+        ("diff.poison.textconv", helpers["diff"]),
+        ("log.showSignature", "true"),
+        ("gpg.format", "ssh"),
+        ("gpg.ssh.program", helpers["signature"]),
+    ):
+        subprocess.run(
+            ["git", "-C", str(repo), "config", key, str(value)],
+            check=True,
+        )
+    (repo / "README.md").write_text("updated\n", encoding="utf-8")
+
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+    status = toolkit.git_status(repo_path=".")
+    diff = toolkit.git_diff(repo_path=".")
+    log = toolkit.git_log(repo_path=".")
+
+    assert status["ok"] is True
+    assert "README.md" in status["output"]
+    assert diff["ok"] is True
+    assert "updated" in diff["output"]
+    assert log["ok"] is True
+    assert "signed init" in log["output"]
+    assert all(not marker.exists() for marker in markers.values())
 
 
 def test_web_fetch_redirect_blocks_unallowlisted_destination(

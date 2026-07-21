@@ -5,11 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    GitSafetyError,
+    RequiredGitFilterError,
+    build_child_environment,
+    hardened_git_command,
+    inspect_git_filters,
+)
 
 from .acp_adapter import AcpAdapter
 from .adapter import CodingAgentAdapter
@@ -43,14 +52,18 @@ def _run_subprocess(
     *,
     cwd: Path | None = None,
     check: bool = True,
+    filter_drivers: Iterable[str] = (),
 ) -> subprocess.CompletedProcess[str]:
+    if not command or command[0] != "git":
+        raise ValueError("coding-agent subprocess helper accepts Git commands only")
     return subprocess.run(
-        command,
+        hardened_git_command(command[1:], filter_drivers=filter_drivers),
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=check,
+        env=build_child_environment(ChildEnvironmentProfile.GIT),
     )
 
 
@@ -69,12 +82,19 @@ def _status_paths(status_output: str) -> list[str]:
     return files
 
 
-def _diff_untracked_file(worktree_path: Path, relative_path: str) -> str:
+def _diff_untracked_file(
+    worktree_path: Path,
+    relative_path: str,
+    *,
+    filter_drivers: Iterable[str] = (),
+) -> str:
     result = _run_subprocess(
         [
             "git",
             "diff",
             "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
             "--binary",
             "--no-color",
             "--",
@@ -83,6 +103,7 @@ def _diff_untracked_file(worktree_path: Path, relative_path: str) -> str:
         ],
         cwd=worktree_path,
         check=False,
+        filter_drivers=filter_drivers,
     )
     if result.returncode not in {0, 1}:
         raise subprocess.CalledProcessError(
@@ -263,6 +284,47 @@ class CodingAgentManager:
                     raw_log_payload=raw_log_payload,
                     proposal_payload=proposal_payload,
                 )
+        except RequiredGitFilterError as exc:
+            summary = f"Coding agent could not create or inspect the isolated worktree: {exc}."
+            return CodingAgentExecutionRecord(
+                result=CodingAgentResult(
+                    agent=resolved_selection.spec.name,
+                    task=task_description,
+                    success=False,
+                    summary=summary,
+                ),
+                error_code="worktree_filter_required",
+                selected_agent=resolved_selection.spec.name,
+                attempts=resolved_selection.attempts,
+                fallback_used=resolved_selection.fallback_used,
+                worktree_path=str(worktree_path),
+                raw_log_payload={
+                    "agent": resolved_selection.spec.name,
+                    "task": task_description,
+                    "file_refs": list(file_refs),
+                    "error_code": "worktree_filter_required",
+                    "filter_drivers": list(exc.drivers),
+                    "worktree_path": str(worktree_path),
+                },
+            )
+        except GitSafetyError as exc:
+            summary = (
+                "Coding agent could not safely inspect Git filter policy for the isolated "
+                f"worktree. Git reported: {exc}"
+            )
+            return CodingAgentExecutionRecord(
+                result=CodingAgentResult(
+                    agent=resolved_selection.spec.name,
+                    task=task_description,
+                    success=False,
+                    summary=summary,
+                ),
+                error_code="worktree_git_safety_failed",
+                selected_agent=resolved_selection.spec.name,
+                attempts=resolved_selection.attempts,
+                fallback_used=resolved_selection.fallback_used,
+                worktree_path=str(worktree_path),
+            )
         except subprocess.CalledProcessError as exc:
             logger.warning(
                 "Coding-agent worktree setup failed for %s",
@@ -360,10 +422,23 @@ class CodingAgentManager:
                 "worktree",
                 "add",
                 "--detach",
+                "--no-checkout",
                 str(worktree_path),
                 "HEAD",
             ]
         )
+        try:
+            _run_subprocess(["git", "-C", str(worktree_path), "read-tree", "HEAD"])
+            inspection = inspect_git_filters(worktree_path, cached=True)
+            if inspection.required_executable_drivers:
+                raise RequiredGitFilterError(inspection.required_executable_drivers)
+            _run_subprocess(
+                ["git", "-C", str(worktree_path), "reset", "--hard", "HEAD"],
+                filter_drivers=inspection.active_drivers,
+            )
+        except Exception:
+            self._remove_worktree(worktree_path)
+            raise
 
     def _remove_worktree(self, worktree_path: Path) -> None:
         _run_subprocess(
@@ -401,7 +476,17 @@ class CodingAgentManager:
         return "\n".join(lines).strip()
 
     @staticmethod
-    def _status_output(worktree_path: Path) -> str:
+    def _status_output(
+        worktree_path: Path,
+        *,
+        filter_drivers: Iterable[str] | None = None,
+    ) -> str:
+        selected_drivers = filter_drivers
+        if selected_drivers is None:
+            inspection = inspect_git_filters(worktree_path)
+            if inspection.required_executable_drivers:
+                raise RequiredGitFilterError(inspection.required_executable_drivers)
+            selected_drivers = inspection.active_drivers
         return _run_subprocess(
             [
                 "git",
@@ -410,22 +495,33 @@ class CodingAgentManager:
                 "--untracked-files=all",
             ],
             cwd=worktree_path,
+            filter_drivers=selected_drivers,
         ).stdout
 
     @staticmethod
     def _collect_worktree_changes(worktree_path: Path) -> tuple[list[str], str]:
-        status_output = CodingAgentManager._status_output(worktree_path)
+        inspection = inspect_git_filters(worktree_path)
+        if inspection.required_executable_drivers:
+            raise RequiredGitFilterError(inspection.required_executable_drivers)
+        filter_drivers = inspection.active_drivers
+        status_output = CodingAgentManager._status_output(
+            worktree_path,
+            filter_drivers=filter_drivers,
+        )
         changed_files = _status_paths(status_output)
         tracked_diff = _run_subprocess(
             [
                 "git",
                 "diff",
+                "--no-ext-diff",
+                "--no-textconv",
                 "--binary",
                 "--no-color",
                 "HEAD",
                 "--",
             ],
             cwd=worktree_path,
+            filter_drivers=filter_drivers,
         ).stdout.strip()
         untracked_files = [
             path
@@ -434,7 +530,11 @@ class CodingAgentManager:
         ]
         diff_parts = [tracked_diff] if tracked_diff else []
         for path in untracked_files:
-            diff = _diff_untracked_file(worktree_path, path)
+            diff = _diff_untracked_file(
+                worktree_path,
+                path,
+                filter_drivers=filter_drivers,
+            )
             if diff:
                 diff_parts.append(diff)
         return changed_files, "\n".join(part for part in diff_parts if part).strip()

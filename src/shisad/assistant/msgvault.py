@@ -17,6 +17,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
+
 _EMAIL_TAINT_LABELS = ["untrusted", "email"]
 _MAX_CLI_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_CLI_STDERR_BYTES = 64 * 1024
@@ -27,19 +32,6 @@ _MAX_ACCOUNT_BYTES = 512
 _MAX_MESSAGE_ID_BYTES = 512
 _MAX_LABELS = 50
 _MAX_ATTACHMENTS = 50
-_CHILD_ENV_ALLOWLIST = frozenset(
-    {
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "LOGNAME",
-        "PATH",
-        "TMPDIR",
-        "TZ",
-        "USER",
-    }
-)
 
 
 def _now_iso() -> str:
@@ -164,9 +156,7 @@ def _attachments(value: Any) -> list[dict[str, Any]]:
 
 
 def _msgvault_child_env() -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key in _CHILD_ENV_ALLOWLIST and value}
-    env.setdefault("PATH", os.defpath)
-    return env
+    return build_child_environment(ChildEnvironmentProfile.MSGVAULT)
 
 
 @dataclass(slots=True)

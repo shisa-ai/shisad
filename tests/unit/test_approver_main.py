@@ -337,12 +337,14 @@ def test_build_socket_endpoint_uses_private_dir_and_ssh_hardening(
 ) -> None:
     fake_process = _FakeProcess()
     launched: list[list[str]] = []
+    launched_envs: list[dict[str, str]] = []
     private_dir = tmp_path / "private-socket-dir"
     private_dir.mkdir(mode=0o700)
 
     def _fake_popen(command: list[str], *args: Any, **kwargs: Any) -> _FakeProcess:
-        _ = args, kwargs
+        _ = args
         launched.append(list(command))
+        launched_envs.append(dict(kwargs["env"]))
         return fake_process
 
     def _fake_wait_for_socket(path: Path, *, timeout_seconds: float = 5.0) -> None:
@@ -352,6 +354,11 @@ def test_build_socket_endpoint_uses_private_dir_and_ssh_hardening(
     monkeypatch.setattr("shisad.approver.main.subprocess.Popen", _fake_popen)
     monkeypatch.setattr("shisad.approver.main._wait_for_socket", _fake_wait_for_socket)
     monkeypatch.setattr("shisad.approver.main.tempfile.mkdtemp", lambda prefix="": str(private_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("SSH_ASKPASS", "/tmp/poison-askpass")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "/tmp/poison-git-ssh")
 
     endpoint = _build_socket_endpoint(
         socket_path=None,
@@ -375,6 +382,12 @@ def test_build_socket_endpoint_uses_private_dir_and_ssh_hardening(
                 "user@example.com",
             ]
         ]
+        assert launched_envs[0]["HOME"] == str(tmp_path / "home")
+        assert launched_envs[0]["SSH_AUTH_SOCK"] == str(tmp_path / "agent.sock")
+        assert "PATH" in launched_envs[0]
+        assert "OPENAI_API_KEY" not in launched_envs[0]
+        assert "SSH_ASKPASS" not in launched_envs[0]
+        assert "GIT_SSH_COMMAND" not in launched_envs[0]
     finally:
         endpoint.close()
 

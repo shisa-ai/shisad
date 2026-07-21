@@ -10,6 +10,7 @@ Source of truth:
 - `src/shisad/daemon/services.py`
 - `src/shisad/interop/a2a_registry.py`
 - `src/shisad/memory/ingestion.py`
+- `src/shisad/core/process_environment.py`
 
 ## Scope
 
@@ -39,6 +40,29 @@ Parsing is read-only and does not create the configured data directory.
 There is intentionally no `init --from-env` migration command in this release.
 Use the generated template and `config show` rather than assuming environment
 values were written to disk.
+
+## Child-Process Environment Boundaries
+
+Shisad-owned subprocesses do not all receive the daemon's full environment.
+Each launch family uses a typed profile containing only its process basics and
+operation-scoped inputs. In particular:
+
+- the control-plane sidecar retains `SHISAD_MODEL_*`, supported model-provider
+  API keys, proxy/TLS settings, and `SHISAD_LOG_LEVEL`, but not unrelated
+  channel or signer credentials;
+- coding-agent ACP children retain supported provider auth and transport
+  settings, while ambient Python/Node injection controls and Git helper
+  controls are excluded;
+- msgvault and MCP stdio children retain their bounded runtime context. An MCP
+  server's explicit `env` mapping is applied only to that server after ambient
+  filtering; shell-function exports remain excluded;
+- shisad-owned Git inspection, worktree, and evaluation commands use a fixed
+  non-interactive Git environment rather than ambient global/system Git config
+  or askpass, pager, and helper controls.
+
+These profiles bound inheritance; they are not a general host-process sandbox.
+Configured child programs still receive their explicit arguments and any
+component-scoped credentials documented above.
 
 ## Parsing Rules
 
@@ -269,7 +293,9 @@ MCP notes:
   "http"` entries require `url: "http(s)://.../mcp"`.
 - `transport: "stdio"` entries can also set `env: {"NAME":"value"}` for
   explicit subprocess environment variables. MCP stdio launches do not inherit
-  the daemon's full environment by default.
+  the daemon's full environment by default. Explicit values can intentionally
+  replace a normally filtered variable for that one server, but function-style
+  exports are not forwarded.
 - MCP server names are normalized to lowercase and must remain unique after
   normalization.
 - `SHISAD_MCP_TRUSTED_SERVERS` accepts either a CSV string or JSON array of

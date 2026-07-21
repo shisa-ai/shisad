@@ -855,6 +855,34 @@ async def test_m3_acp_adapter_preserves_agent_auth_env(
 
 
 @pytest.mark.asyncio
+async def test_f4c_acp_adapter_drops_ambient_runtime_injection_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    poisoned_key = "NODE_OPTIONS"
+    monkeypatch.setenv(poisoned_key, "--require=/tmp/poison.js")
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--require-env", poisoned_key))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "request_error",
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {"missing_env": [poisoned_key]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_initialize_failure_maps_to_protocol_error(
     tmp_path: Path,
 ) -> None:

@@ -36,7 +36,11 @@ from acp.schema import (
     SessionConfigOption,
     SessionNotification,
 )
-from acp.transports import default_environment
+
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 
 from .adapter import CodingAgentAdapter
 from .models import CodingAgentConfig, CodingAgentResult, CodingAgentRunOutput
@@ -44,37 +48,6 @@ from .registry import AgentCommandSpec
 
 logger = logging.getLogger(__name__)
 
-_CODING_AGENT_ENV_KEYS = frozenset(
-    {
-        "CLOUD_ML_REGION",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "NODE_OPTIONS",
-        "NPM_CONFIG_USERCONFIG",
-        "NPM_TOKEN",
-        "REQUESTS_CA_BUNDLE",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_STATE_HOME",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-    }
-)
-_CODING_AGENT_ENV_PREFIXES = (
-    "ANTHROPIC_",
-    "AWS_",
-    "AZURE_",
-    "CLAUDE_CODE_",
-    "GEMINI_",
-    "GOOGLE_",
-    "OPENAI_",
-    "OPENROUTER_",
-)
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _PROCESS_STDERR_TAIL_MAX_BYTES = 8192
 _PROCESS_STDERR_TRUNCATED_MESSAGE = (
@@ -169,15 +142,7 @@ _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE = re.compile(
 def _coding_agent_environment() -> dict[str, str]:
     """Preserve the minimal env needed for real coding-agent auth and transport."""
 
-    env = default_environment()
-    for key, value in os.environ.items():
-        if not value or value.startswith("()"):
-            continue
-        if key in _CODING_AGENT_ENV_KEYS or any(
-            key.startswith(prefix) for prefix in _CODING_AGENT_ENV_PREFIXES
-        ):
-            env[key] = value
-    return env
+    return build_child_environment(ChildEnvironmentProfile.CODING_AGENT)
 
 
 def _command_executable_exists(command: tuple[str, ...]) -> bool:

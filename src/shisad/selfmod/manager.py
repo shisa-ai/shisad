@@ -23,6 +23,10 @@ from shisad.core.atomic_state import (
     load_state,
     write_state,
 )
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 from shisad.core.storage_platform import StorageCapability
 
 _IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -177,10 +181,15 @@ def _legacy_inventory(raw: bytes) -> _PersistedInventory:
             raise ValueError("self-modification inventory bucket must be an object")
         normalized[bucket_name] = {}
         for name, row in bucket.items():
-            if not isinstance(name, str) or not isinstance(row, dict) or set(row) != {
-                "enabled",
-                "active_version",
-            }:
+            if (
+                not isinstance(name, str)
+                or not isinstance(row, dict)
+                or set(row)
+                != {
+                    "enabled",
+                    "active_version",
+                }
+            ):
                 raise ValueError("self-modification legacy entry has an unknown shape")
             normalized[bucket_name][name] = {**row, "artifact_digest": ""}
     return _PersistedInventory.model_validate(normalized)
@@ -1242,6 +1251,7 @@ def _verify_signature(
             check=False,
             capture_output=True,
             text=True,
+            env=build_child_environment(ChildEnvironmentProfile.SIGNATURE),
         )
         if result.returncode == 0:
             return True, principal, "signature_verified"

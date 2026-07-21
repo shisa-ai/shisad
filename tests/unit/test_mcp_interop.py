@@ -1199,6 +1199,9 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLEKEY1234")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-key")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-ssh-agent.sock")
+    monkeypatch.setenv("NODE_OPTIONS", "--require=/tmp/poison.js")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/poison-python")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
     manager = McpClientManager(
         server_configs=[
@@ -1233,6 +1236,21 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
             "env-snapshot",
             {"name": "SSH_AUTH_SOCK"},
         )
+        node_options_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "NODE_OPTIONS"},
+        )
+        pythonpath_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "PYTHONPATH"},
+        )
+        git_config_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "GIT_CONFIG_COUNT"},
+        )
         override_result = await manager.call_tool(
             "docs",
             "env-snapshot",
@@ -1251,6 +1269,9 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
         "name": "SSH_AUTH_SOCK",
         "value": None,
     }
+    assert node_options_result["structured_content"] == {"name": "NODE_OPTIONS", "value": None}
+    assert pythonpath_result["structured_content"] == {"name": "PYTHONPATH", "value": None}
+    assert git_config_result["structured_content"] == {"name": "GIT_CONFIG_COUNT", "value": None}
     assert override_result["structured_content"] == {"name": "MCP_VISIBLE_FLAG", "value": "visible"}
 
 

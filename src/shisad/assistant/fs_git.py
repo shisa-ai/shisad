@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from shisad.assistant.boundary_helpers import _is_within, _read_limited
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    GitSafetyError,
+    GitSafetyTimeoutError,
+    build_child_environment,
+    hardened_git_command,
+    inspect_git_filters,
+)
 
 
 @dataclass(slots=True)
@@ -124,7 +132,7 @@ class FsGitToolkit:
         return self._run_git(repo_path=repo_path, args=["status", "--short", "--branch"])
 
     def git_diff(self, *, repo_path: str, ref: str = "", max_lines: int = 400) -> dict[str, Any]:
-        args = ["diff"]
+        args = ["diff", "--no-ext-diff", "--no-textconv"]
         normalized_ref = ref.strip()
         if normalized_ref:
             if normalized_ref.startswith("-"):
@@ -145,7 +153,10 @@ class FsGitToolkit:
 
     def git_log(self, *, repo_path: str, limit: int = 20) -> dict[str, Any]:
         safe_limit = max(1, min(limit, 100))
-        return self._run_git(repo_path=repo_path, args=["log", "--oneline", f"-n{safe_limit}"])
+        return self._run_git(
+            repo_path=repo_path,
+            args=["log", "--no-show-signature", "--oneline", f"-n{safe_limit}"],
+        )
 
     def _run_git(self, *, repo_path: str, args: list[str]) -> dict[str, Any]:
         resolved = self._resolve_path(repo_path)
@@ -155,17 +166,29 @@ class FsGitToolkit:
             return self._error("repo_not_found", path=str(resolved))
         if not (resolved / ".git").exists():
             return self._error("not_a_git_repo", path=str(resolved))
-        command = ["git", "-C", str(resolved), *args]
         try:
+            inspection = inspect_git_filters(
+                resolved,
+                timeout_seconds=max(0.1, float(self.git_timeout_seconds)),
+            )
+            command = hardened_git_command(
+                ["-C", str(resolved), *args],
+                filter_drivers=inspection.active_drivers,
+            )
             completed = subprocess.run(
                 command,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=max(0.1, float(self.git_timeout_seconds)),
+                env=build_child_environment(ChildEnvironmentProfile.GIT),
             )
         except subprocess.TimeoutExpired:
             return self._error("git_execution_timeout", path=str(resolved))
+        except GitSafetyTimeoutError:
+            return self._error("git_execution_timeout", path=str(resolved))
+        except GitSafetyError as exc:
+            return self._error(f"git_safety_check_failed:{exc}", path=str(resolved))
         except (OSError, ValueError):
             return self._error("git_execution_failed", path=str(resolved))
         if completed.returncode != 0:
@@ -198,8 +221,7 @@ class FsGitToolkit:
 
     def _is_protected_path(self, resolved: Path) -> bool:
         protected_roots = (
-            Path(raw_root).expanduser().resolve(strict=False)
-            for raw_root in self.protected_roots
+            Path(raw_root).expanduser().resolve(strict=False) for raw_root in self.protected_roots
         )
         if any(_is_within(resolved, root) for root in protected_roots):
             return True

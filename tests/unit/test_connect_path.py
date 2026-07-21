@@ -192,3 +192,41 @@ def test_m6_connect_path_detect_capability_branches(monkeypatch: pytest.MonkeyPa
         lambda *args, **kwargs: type("Result", (), {"stdout": "cap_net_admin+ep", "stderr": ""})(),
     )
     assert IptablesConnectPathProxy.detect_net_admin_capability() is True
+
+
+def test_f4c_connect_path_children_use_fixed_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, str]] = []
+
+    class _Result:
+        stdout = "cap_net_admin+ep"
+        stderr = ""
+
+    def _run(*_args: object, **kwargs: object) -> _Result:
+        captured.append(dict(kwargs["env"]))  # type: ignore[arg-type]
+        return _Result()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("SSH_ASKPASS", "/tmp/poison-askpass")
+    monkeypatch.setenv("BASH_FUNC_poison%%", "() { touch /tmp/poison; }")
+    monkeypatch.setattr("shisad.executors.connect_path.subprocess.run", _run)
+
+    proxy = IptablesConnectPathProxy(net_admin_available=True)
+    proxy._iptables = "/usr/sbin/iptables"
+    proxy._nsenter = "/usr/bin/nsenter"
+    proxy._run(1234, ["-F", "OUTPUT"])
+
+    monkeypatch.setattr("os.geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        "shisad.executors.connect_path.shutil.which",
+        lambda name: "/usr/bin/capsh" if name == "capsh" else "",
+    )
+    assert IptablesConnectPathProxy.detect_net_admin_capability() is True
+
+    assert len(captured) == 2
+    for env in captured:
+        assert "PATH" in env
+        assert "OPENAI_API_KEY" not in env
+        assert "SSH_ASKPASS" not in env
+        assert "BASH_FUNC_poison%%" not in env

@@ -15,6 +15,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
+
 _PACK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PACK_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _LEGAL_FILENAMES = ("LICENSE", "NOTICE", "USE_POLICY.md", "README.md")
@@ -404,6 +409,7 @@ def _verify_signature(
             check=False,
             capture_output=True,
             text=True,
+            env=build_child_environment(ChildEnvironmentProfile.SIGNATURE),
         )
         if result.returncode == 0:
             return True, principal
@@ -425,4 +431,5 @@ def _sign_manifest(*, manifest_path: Path, signing_key_path: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=build_child_environment(ChildEnvironmentProfile.SIGNATURE),
     )

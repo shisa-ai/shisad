@@ -326,10 +326,14 @@ def test_u42r_pasta_transport_disables_dns_and_port_forwarding(
         pasta_binary="/usr/bin/pasta",
     )
     captured: list[list[str]] = []
+    captured_envs: list[dict[str, str]] = []
     monkeypatch.setattr(runner, "_wait_for_isolated_network_namespace", lambda _pid: "")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("SSH_ASKPASS", "/tmp/poison-askpass")
 
-    def _run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+    def _run(command: list[str], **kwargs: object) -> SimpleNamespace:
         captured.append(list(command))
+        captured_envs.append(dict(kwargs["env"]))  # type: ignore[arg-type]
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -342,6 +346,9 @@ def test_u42r_pasta_transport_disables_dns_and_port_forwarding(
     assert "--no-splice" in command
     for option in ("-t", "-u", "-T", "-U"):
         assert command[command.index(option) + 1] == "none"
+    assert "PATH" in captured_envs[0]
+    assert "OPENAI_API_KEY" not in captured_envs[0]
+    assert "SSH_ASKPASS" not in captured_envs[0]
 
 
 def test_u42r_network_hosts_file_rejects_wildcards_literals_and_injection() -> None:
@@ -1386,6 +1393,8 @@ def test_m6_process_to_text_helpers() -> None:
 def test_m6_process_detect_usable_bwrap_handles_probe_outcomes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("BASH_FUNC_poison%%", "() { touch /tmp/poison; }")
     monkeypatch.setattr("shisad.executors.sandbox.process.shutil.which", lambda name: "")
     assert SandboxProcessRunner._detect_usable_bwrap() == ""
 
@@ -1408,9 +1417,15 @@ def test_m6_process_detect_usable_bwrap_handles_probe_outcomes(
     monkeypatch.setattr(subprocess, "run", _raise_probe)
     assert SandboxProcessRunner._detect_usable_bwrap() == ""
 
+    captured_env: dict[str, str] = {}
+
     def _ok_probe(*args, **kwargs):  # type: ignore[no-untyped-def]
-        _ = args, kwargs
+        _ = args
+        captured_env.update(kwargs["env"])
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", _ok_probe)
     assert SandboxProcessRunner._detect_usable_bwrap() == "/usr/bin/bwrap"
+    assert "PATH" in captured_env
+    assert "OPENAI_API_KEY" not in captured_env
+    assert "BASH_FUNC_poison%%" not in captured_env

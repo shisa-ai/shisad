@@ -858,6 +858,12 @@ def test_msgvault_subprocess_environment_is_scrubbed(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test")
     monkeypatch.setenv("SHISAD_SIGNER_KMS_BEARER_TOKEN", "kms-test")
     monkeypatch.setenv("SHISAD_DISCORD_BOT_TOKEN", "discord-test")
+    monkeypatch.setenv("NODE_OPTIONS", "--require=/tmp/poison.js")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/poison-python")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/tmp/poison-fsmonitor")
+    monkeypatch.setenv("BASH_FUNC_poison%%", "() { touch /tmp/poison; }")
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(script),
@@ -877,6 +883,12 @@ def test_msgvault_subprocess_environment_is_scrubbed(
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "SHISAD_SIGNER_KMS_BEARER_TOKEN" not in child_env
     assert "SHISAD_DISCORD_BOT_TOKEN" not in child_env
+    assert "NODE_OPTIONS" not in child_env
+    assert "PYTHONPATH" not in child_env
+    assert "GIT_CONFIG_COUNT" not in child_env
+    assert "GIT_CONFIG_KEY_0" not in child_env
+    assert "GIT_CONFIG_VALUE_0" not in child_env
+    assert "BASH_FUNC_poison%%" not in child_env
 
 
 def test_msgvault_output_overflow_is_actionable(

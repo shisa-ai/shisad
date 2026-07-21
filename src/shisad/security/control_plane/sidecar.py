@@ -24,6 +24,10 @@ from shisad.core.api.transport import (
 from shisad.core.config import ModelConfig
 from shisad.core.errors import ShisadError
 from shisad.core.log import setup_logging
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
@@ -589,9 +593,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
     async def execution_status(self, *, idempotency_key: str) -> str:
         result = await self._call(
             "control_plane.execution_status",
-            _ExecutionStatusParams(idempotency_key=idempotency_key).model_dump(
-                mode="json"
-            ),
+            _ExecutionStatusParams(idempotency_key=idempotency_key).model_dump(mode="json"),
             _ExecutionStatusResult,
         )
         return result.status
@@ -796,6 +798,7 @@ async def start_control_plane_sidecar(
             for root in (assistant_fs_roots or [])
             for token in ("--assistant-fs-root", str(root))
         ],
+        env=build_child_environment(ChildEnvironmentProfile.SIDECAR),
     )
     handle = ControlPlaneSidecarHandle(
         socket_path=socket_path,

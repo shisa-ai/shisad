@@ -4,46 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
 from shisad.core.config import McpServerConfig, McpStdioServerConfig
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    build_child_environment,
+)
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import openai_function_name
 from shisad.core.types import TaintLabel, ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 
-_STDIO_ALLOWED_ENV_EXACT = frozenset(
-    {
-        "CURL_CA_BUNDLE",
-        "HOME",
-        "LANG",
-        "LOGNAME",
-        "PATH",
-        "PWD",
-        "PYTHONHOME",
-        "PYTHONIOENCODING",
-        "PYTHONNOUSERSITE",
-        "PYTHONPATH",
-        "PYTHONUNBUFFERED",
-        "REQUESTS_CA_BUNDLE",
-        "SHELL",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "TEMP",
-        "TERM",
-        "TMP",
-        "TMPDIR",
-        "TZ",
-        "USER",
-        "VIRTUAL_ENV",
-    }
-)
-_STDIO_ALLOWED_ENV_PREFIXES = ("LC_", "XDG_")
 _DISCOVERY_MAX_PAGES = 128
 
 logger = logging.getLogger(__name__)
@@ -100,14 +76,10 @@ def _is_timeout_error(exc: BaseException) -> bool:
 
 
 def _stdio_process_env(overrides: dict[str, str]) -> dict[str, str]:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if value
-        and (key in _STDIO_ALLOWED_ENV_EXACT or key.startswith(_STDIO_ALLOWED_ENV_PREFIXES))
-    }
-    env.update(overrides)
-    return env
+    return build_child_environment(
+        ChildEnvironmentProfile.MCP_STDIO,
+        overrides=overrides,
+    )
 
 
 async def _aclose_quietly(exit_stack: AsyncExitStack) -> None:

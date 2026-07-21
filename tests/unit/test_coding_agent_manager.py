@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +71,69 @@ class _WriteActivityNoWorktreeDiffAdapter(CodingAgentAdapter):
                 },
             ),
         )
+
+
+def _init_hostile_filter_repo(
+    tmp_path: Path,
+    *,
+    required: bool,
+) -> tuple[Path, dict[str, Path]]:
+    repo = tmp_path / ("required-repo" if required else "optional-repo")
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    (repo / ".gitattributes").write_text("payload.txt filter=poison\n", encoding="utf-8")
+    (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
+    markers = {
+        "filter": tmp_path / f"{'required' if required else 'optional'}-filter.marker",
+        "hook": tmp_path / f"{'required' if required else 'optional'}-hook.marker",
+        "fsmonitor": tmp_path / f"{'required' if required else 'optional'}-fsmonitor.marker",
+    }
+    helpers: dict[str, Path] = {}
+    for name in ("filter", "fsmonitor"):
+        helper = tmp_path / f"{'required' if required else 'optional'}-{name}-helper.py"
+        helper.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(markers[name])!r}).touch()\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        helpers[name] = helper
+    hooks = tmp_path / f"{'required' if required else 'optional'}-hooks"
+    hooks.mkdir()
+    post_checkout = hooks / "post-checkout"
+    post_checkout.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(markers['hook'])!r}).touch()\n",
+        encoding="utf-8",
+    )
+    post_checkout.chmod(0o755)
+
+    for key, value in (
+        ("filter.poison.clean", helpers["filter"]),
+        ("filter.poison.smudge", helpers["filter"]),
+        ("filter.poison.process", helpers["filter"]),
+        ("filter.poison.required", "true" if required else "false"),
+        ("core.hooksPath", hooks),
+        ("core.fsmonitor", helpers["fsmonitor"]),
+    ):
+        subprocess.run(
+            ["git", "-C", str(repo), "config", key, str(value)],
+            check=True,
+        )
+    return repo, markers
 
 
 @pytest.mark.asyncio
@@ -235,3 +300,55 @@ async def test_gh80_manager_records_write_activity_without_worktree_diff(
     assert record.proposal_payload is None
     assert isinstance(record.raw_log_payload, dict)
     assert record.raw_log_payload["write_activity_count"] == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="hostile executable helper fixture is POSIX")
+def test_f4c_manager_worktree_disables_optional_filters_hooks_and_fsmonitor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, markers = _init_hostile_filter_repo(tmp_path, required=False)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(tmp_path / "ambient-hooks"))
+    manager = CodingAgentManager(repo_root=repo, data_dir=tmp_path / "data")
+    worktree = manager.worktree_path_for("optional-filter")
+
+    try:
+        manager._create_worktree(worktree)
+        assert (worktree / "payload.txt").read_text(encoding="utf-8") == "payload\n"
+        (worktree / "payload.txt").write_text("changed\n", encoding="utf-8")
+        files, diff = manager._collect_worktree_changes(worktree)
+        assert files == ["payload.txt"]
+        assert "changed" in diff
+        assert all(not marker.exists() for marker in markers.values())
+    finally:
+        manager._remove_worktree(worktree)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="hostile executable filter fixture is POSIX")
+async def test_f4c_manager_blocks_required_executable_filter_actionably(
+    tmp_path: Path,
+) -> None:
+    repo, markers = _init_hostile_filter_repo(tmp_path, required=True)
+    manager = CodingAgentManager(
+        repo_root=repo,
+        data_dir=tmp_path / "data",
+        registry_overrides={"codex": sys.executable},
+        adapter_factory=lambda _spec: _TransportErrorAdapter(),
+    )
+
+    record = await manager.execute(
+        task_session_id="required-filter",
+        task_description="Inspect the repository.",
+        file_refs=("payload.txt",),
+        config=CodingAgentConfig(preferred_agent="codex", read_only=True),
+    )
+
+    assert record.result.success is False
+    assert record.error_code == "worktree_filter_required"
+    assert "required executable Git filter 'poison'" in record.result.summary
+    assert "disable the filter or use a separately audited checkout" in record.result.summary
+    assert not manager.worktree_path_for("required-filter").exists()
+    assert all(not marker.exists() for marker in markers.values())

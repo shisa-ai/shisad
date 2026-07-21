@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 
@@ -44,6 +47,56 @@ def _hello(tmp_path: Path, **updates: object) -> dict[str, object]:
     }
     payload.update(updates)
     return payload
+
+
+@pytest.mark.skipif(os.name != "posix", reason="hostile fsmonitor helper fixture is POSIX")
+def test_f4c_evaluation_identity_does_not_execute_git_helpers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    module_path = repo / "src" / "shisad" / "memory" / "evaluation_sut.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    expected = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    marker = tmp_path / "fsmonitor.marker"
+    helper = tmp_path / "fsmonitor-helper.py"
+    helper.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.fsmonitor", str(helper)],
+        check=True,
+    )
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(helper))
+    monkeypatch.setattr(evaluation_sut, "__file__", str(module_path))
+
+    assert evaluation_sut._git_commit() == expected
+    assert not marker.exists()
 
 
 def test_hello_rejects_unknown_contract_version(tmp_path: Path) -> None:

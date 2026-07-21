@@ -9,12 +9,14 @@ import os
 import signal
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.request_context import RequestContext
 from shisad.core.types import Capability
+from shisad.security.control_plane import sidecar as sidecar_module
 from shisad.security.control_plane.consensus import ConsensusDecision
 from shisad.security.control_plane.engine import ControlPlaneEngine, ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
@@ -45,6 +47,48 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
 
 
+@pytest.mark.asyncio
+async def test_f4c_sidecar_launch_uses_bounded_environment(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Process:
+        returncode = 0
+
+    async def _create(*args: object, **kwargs: object) -> _Process:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Process()
+
+    async def _ready(_handle: object) -> None:
+        return None
+
+    monkeypatch.setenv("SHISAD_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sidecar-model-key")
+    monkeypatch.setenv("SHISAD_DISCORD_BOT_TOKEN", "must-not-cross")
+    monkeypatch.setenv("NODE_OPTIONS", "--require=/tmp/poison.js")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/poison-python")
+    monkeypatch.setattr(sidecar_module.asyncio, "create_subprocess_exec", _create)
+    monkeypatch.setattr(sidecar_module, "_wait_for_sidecar_ready", _ready)
+
+    await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    env = captured["kwargs"]["env"]
+    assert env["SHISAD_LOG_LEVEL"] == "DEBUG"
+    assert env["SHISAD_MODEL_REMOTE_ENABLED"] == "true"
+    assert env["OPENAI_API_KEY"] == "sidecar-model-key"
+    assert "PATH" in env
+    assert "SHISAD_DISCORD_BOT_TOKEN" not in env
+    assert "NODE_OPTIONS" not in env
+    assert "PYTHONPATH" not in env
+
+
 @pytest.mark.parametrize("failed_trace_write", [1, 2])
 @pytest.mark.parametrize("replace_plan_before_replay", [False, True])
 @pytest.mark.asyncio
@@ -54,14 +98,10 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     failed_trace_write: int,
     replace_plan_before_replay: bool,
 ) -> None:
-    data_dir = tmp_path / (
-        f"cp-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
-    )
+    data_dir = tmp_path / (f"cp-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}")
     engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
     origin = Origin(
-        session_id=(
-            f"sess-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
-        ),
+        session_id=(f"sess-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"),
         user_id="alice",
         workspace_id="ws-f2",
         actor="recovery",
@@ -93,9 +133,7 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
         real_persist()
 
     monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
-    idempotency_key = (
-        f"f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
-    )
+    idempotency_key = f"f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
     params = _RecordExecutionParams(
         action=action,
         success=True,
@@ -364,10 +402,7 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
             success=True,
             idempotency_key=execution_key,
         )
-        assert (
-            await handle.client.execution_status(idempotency_key=execution_key)
-            == "success"
-        )
+        assert await handle.client.execution_status(idempotency_key=execution_key) == "success"
 
         history_path = tmp_path / "data" / "control_plane" / "history.jsonl"
         history_rows = [

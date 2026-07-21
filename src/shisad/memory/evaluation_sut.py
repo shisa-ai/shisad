@@ -14,6 +14,13 @@ from typing import Any, TextIO
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from shisad import __version__
+from shisad.core.process_environment import (
+    ChildEnvironmentProfile,
+    GitSafetyError,
+    build_child_environment,
+    hardened_git_command,
+    inspect_git_filters,
+)
 from shisad.core.providers.base import OpenAICompatibleProvider
 from shisad.core.providers.embeddings_adapter import SyncEmbeddingsAdapter
 from shisad.memory.consolidation.config import ConsolidationConfig
@@ -628,19 +635,29 @@ def _identity() -> dict[str, str]:
 def _git_commit() -> str:
     repo_root = Path(__file__).resolve().parents[3]
     try:
+        inspection = inspect_git_filters(repo_root)
+        git_env = build_child_environment(ChildEnvironmentProfile.GIT)
         head = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            hardened_git_command(
+                ["-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+                filter_drivers=inspection.active_drivers,
+            ),
             check=True,
             capture_output=True,
             text=True,
+            env=git_env,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            hardened_git_command(
+                ["-C", str(repo_root), "status", "--porcelain"],
+                filter_drivers=inspection.active_drivers,
+            ),
             check=True,
             capture_output=True,
             text=True,
+            env=git_env,
         ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
+    except (GitSafetyError, OSError, subprocess.CalledProcessError):
         return "source"
     if not head:
         return "source"

@@ -8654,6 +8654,78 @@ async def test_contract_browser_end_session_executes_without_lockdown(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="hostile executable helper fixture is POSIX")
+async def test_f4c_git_tools_ignore_repository_helpers_and_return_results(
+    contract_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = contract_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    (ws / ".gitattributes").write_text("README.md diff=poison\n", encoding="utf-8")
+    (ws / "README.md").write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(ws), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+
+    markers = {name: ws / f"{name}.marker" for name in ("fsmonitor", "diff", "signature")}
+    helpers: dict[str, Path] = {}
+    for name, marker in markers.items():
+        helper = ws / f"{name}-helper.py"
+        helper.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        helpers[name] = helper
+    for key, value in (
+        ("core.fsmonitor", helpers["fsmonitor"]),
+        ("diff.external", helpers["diff"]),
+        ("diff.poison.textconv", helpers["diff"]),
+        ("log.showSignature", "true"),
+        ("gpg.format", "ssh"),
+        ("gpg.ssh.program", helpers["signature"]),
+    ):
+        subprocess.run(["git", "-C", str(ws), "config", key, str(value)], check=True)
+    (ws / "README.md").write_text("updated\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(helpers["fsmonitor"]))
+    monkeypatch.setenv("GIT_EXTERNAL_DIFF", str(helpers["diff"]))
+
+    sid = await _create_session(contract_harness.client)
+    expected = (
+        ("show me the git status", "git.status", "README.md"),
+        ("show me the git log", "git.log", "init"),
+        ("show me the git diff", "git.diff", "updated"),
+    )
+    for content, tool_name, output_fragment in expected:
+        reply = await contract_harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": content},
+        )
+        assert reply.get("lockdown_level") == "normal"
+        assert int(reply.get("blocked_actions", 0)) == 0
+        assert int(reply.get("executed_actions", 0)) == 1
+        outputs = _extract_tool_outputs(reply)
+        assert tool_name in outputs
+        payload = outputs[tool_name][0]
+        assert payload.get("ok") is True
+        assert output_fragment in str(payload.get("output", ""))
+
+    assert all(not marker.exists() for marker in markers.values())
+
+
+@pytest.mark.asyncio
 async def test_contract_git_status_executes_and_returns_output(
     contract_harness: ContractHarness,
 ) -> None:

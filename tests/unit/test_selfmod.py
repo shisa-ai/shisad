@@ -84,6 +84,40 @@ def _skill_manifest_payload(*, tool_name: str = "lookup") -> dict[str, Any]:
     }
 
 
+def test_f4c_selfmod_signature_verifier_uses_fixed_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    signature = tmp_path / "manifest.json.sig"
+    allowed_signers = tmp_path / "allowed_signers"
+    manifest.write_text("{}", encoding="utf-8")
+    signature.write_text("signature", encoding="utf-8")
+    allowed_signers.write_text("trusted ssh-ed25519 AAAA\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _run(command: list[str], **kwargs: object) -> object:
+        captured["command"] = list(command)
+        captured["env"] = dict(kwargs["env"])  # type: ignore[arg-type]
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross")
+    monkeypatch.setenv("SSH_ASKPASS", "/tmp/poison-askpass")
+    monkeypatch.setattr(selfmod_manager_module.subprocess, "run", _run)
+
+    verified, principal, reason = selfmod_manager_module._verify_signature(
+        manifest_path=manifest,
+        signature_path=signature,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert (verified, principal, reason) == (True, "trusted", "signature_verified")
+    env = captured["env"]
+    assert "PATH" in env
+    assert "OPENAI_API_KEY" not in env
+    assert "SSH_ASKPASS" not in env
+
+
 def _write_signed_skill_bundle(root: Path, *, key_path: Path, version: str = "1.0.0") -> Path:
     payload_root = root / "payload"
     payload_root.mkdir(parents=True, exist_ok=True)

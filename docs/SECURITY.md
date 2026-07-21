@@ -183,6 +183,25 @@ their adjacent lock files). This protects those files from the assistant tool
 surface; it is not a host-global filesystem policy and does not restrict a
 trusted operator using the host directly.
 
+Shisad-owned child launches also use operation-specific environment profiles.
+Fixed isolation/signature children receive process basics only; sidecar, SSH,
+msgvault, MCP, and coding-agent children retain only their documented
+component-scoped auth, transport, or explicit per-server inputs. Ambient
+function exports, Python/Node runtime injection controls, unrelated
+credentials, and askpass/Git helper controls are not forwarded on these paths.
+This inheritance boundary does not sandbox a configured child or defend against
+an unrestricted malicious same-user process.
+
+Assistant Git reads, coding-worktree lifecycle commands, and evaluation source
+probes use a fixed non-interactive Git environment and command-line overrides
+for hooks, fsmonitor, external diff/textconv, and signature verification.
+Coding worktrees are created without checkout, structurally inspect selected
+filter drivers, and then check out with optional drivers disabled. A selected
+filter marked required with an executable clean/smudge/process command blocks
+with actionable guidance instead of executing silently. These controls apply
+to shisad-owned Git commands; they are not a claim that an authorized coding
+agent cannot itself run repository commands.
+
 Channel replay state remains a bounded best-effort guard. Corrupt replay state
 may forget prior message IDs, so this layer does not claim daemon-level,
 provider-level, or distributed exactly-once delivery.
