@@ -20,6 +20,7 @@ from shisad.executors.sandbox import (
     SandboxOrchestrator,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 
 
 def _resolver(_hostname: str) -> list[str]:
@@ -51,12 +52,14 @@ def test_m4_t26_connect_path_degraded_signal_emitted_when_unavailable() -> None:
             sandbox_type=SandboxType.CONTAINER,
             network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
             network_urls=["https://api.good.com/v1"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
     )
     assert result.allowed is True
     assert "connect_path" in result.degraded_controls
+    assert result.host_fallback_used is True
 
 
 class _CaptureConnectPathProxy:
@@ -71,7 +74,7 @@ class _CaptureConnectPathProxy:
         return ConnectPathResult(enforced=True, method="iptables", reason="enforced")
 
 
-def test_m5_rt12_connect_path_uses_runtime_process_pid() -> None:
+def test_m5_rt12_supported_connect_path_never_uses_host_process_pid() -> None:
     proxy = _CaptureConnectPathProxy()
     orchestrator = SandboxOrchestrator(
         proxy=EgressProxy(resolver=_resolver),
@@ -97,13 +100,15 @@ def test_m5_rt12_connect_path_uses_runtime_process_pid() -> None:
             sandbox_type=SandboxType.CONTAINER,
             network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
             network_urls=["https://api.good.com/v1"],
+            containment_profile=ContainmentProfile.SUPPORTED,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
     )
-    assert result.allowed is True
-    assert proxy.namespace_pids
-    assert all(pid > 0 for pid in proxy.namespace_pids)
+    assert result.allowed is False
+    assert result.reason == "runtime_isolation_unavailable"
+    assert result.host_fallback_used is False
+    assert proxy.namespace_pids == []
 
 
 def test_m5_rt13_connect_path_refuses_host_namespace(monkeypatch) -> None:

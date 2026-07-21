@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -291,6 +292,17 @@ class _McpHarness:
     ) -> RiskTier:
         _ = (network_enabled, write_paths, security_critical)
         return RiskTier.LOW
+
+    @staticmethod
+    def _registered_skill_identity(
+        *,
+        tool: ToolDefinition | None,
+        arguments: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        return HandlerImplementation._registered_skill_identity(
+            tool=tool,
+            arguments=arguments,
+        )
 
     def _build_merged_policy(self, **_kwargs: object) -> object:
         return SimpleNamespace(
