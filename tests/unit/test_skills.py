@@ -598,6 +598,30 @@ def test_m4_rr5_runtime_shell_command_prefix_match_is_allowed(tmp_path: Path) ->
     assert decision.allowed is True
 
 
+def test_f4b_manager_rejects_executable_name_prefix_bypass(tmp_path: Path) -> None:
+    manifest_payload = _manifest_payload(name="shell-boundary")
+    manifest_payload["capabilities"]["shell"] = [{"command": "echo", "reason": "output"}]
+    skill = _write_skill(
+        tmp_path / "shell_boundary",
+        manifest=manifest_payload,
+        files={"SKILL.md": "safe"},
+    )
+    manager = SkillManager(storage_dir=tmp_path / "state", tool_registry=ToolRegistry())
+    manager.activate_bundle(skill)
+
+    decision = manager.authorize_runtime(
+        skill_name="shell-boundary",
+        request=SkillExecutionRequest(
+            skill_name="shell-boundary",
+            shell_commands=["echomalicious payload"],
+        ),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "undeclared_capability"
+    assert decision.violations == ["undeclared_shell:echomalicious payload"]
+
+
 def test_m4_rr5b_runtime_shell_command_host_mismatch_is_blocked(tmp_path: Path) -> None:
     manifest_payload = _manifest_payload(name="shell-host-match")
     manifest_payload["capabilities"]["shell"] = [

@@ -372,6 +372,13 @@ class SkillManager:
             return SkillSandboxDecision(allowed=False, reason="skill_tool_schema_drift")
         if bundle_digest != installed.bundle_digest:
             return SkillSandboxDecision(allowed=False, reason="skill_bundle_drift")
+        executable_violations = _undeclared_shell_executables(bundle.manifest, request)
+        if executable_violations:
+            return SkillSandboxDecision(
+                allowed=False,
+                reason="undeclared_capability",
+                violations=executable_violations,
+            )
         return self._runtime_sandbox.authorize(
             bundle.manifest,
             request.model_copy(update={"skill_name": bundle.manifest.name}),
@@ -680,6 +687,26 @@ def _skill_tool_capabilities(manifest: Any) -> set[Capability]:
     if getattr(manifest.capabilities, "shell", []):
         capabilities.add(Capability.SHELL_EXEC)
     return capabilities
+
+
+def _undeclared_shell_executables(
+    manifest: Any,
+    request: SkillExecutionRequest,
+) -> list[str]:
+    declared = {
+        command
+        for item in getattr(manifest.capabilities, "shell", [])
+        if (command := str(getattr(item, "command", "")).strip().split(" ", 1)[0])
+    }
+    violations: list[str] = []
+    for command in request.shell_commands:
+        normalized = " ".join(str(command).strip().split())
+        if not normalized:
+            continue
+        executable = normalized.split(" ", 1)[0]
+        if executable not in declared:
+            violations.append(f"undeclared_shell:{normalized}")
+    return sorted(set(violations))
 
 
 def _tool_definition(manifest: Any, declared_tool: Any) -> ToolDefinition:

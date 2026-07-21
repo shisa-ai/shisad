@@ -185,6 +185,53 @@ async def test_f4b_registered_skill_identity_authorizes_at_effect_boundary(
 
 
 @pytest.mark.parametrize(
+    "command",
+    [
+        ["echo", "evil.example"],
+        ["echo", "--url=https://evil.example/path"],
+        ["echo", "endpoint=https://evil.example/path"],
+    ],
+    ids=["bare-domain", "url-flag", "url-assignment"],
+)
+@pytest.mark.asyncio
+async def test_f4b_skill_authorization_uses_sandbox_network_target_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    skill_path = tmp_path / "network-target-skill"
+    _write_command_skill(skill_path)
+    services = await DaemonServices.build(config)
+    try:
+        services.skill_manager.activate_bundle(skill_path)
+        handlers = DaemonControlHandlers(services=services)
+        created = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            RequestContext(),
+        )
+        session_id = SessionId(created.session_id)
+        session = services.session_manager.get(session_id)
+        assert session is not None
+
+        result = await handlers._impl._execute_approved_action(
+            sid=session_id,
+            user_id=session.user_id,
+            tool_name=ToolName("skill.command-fixture.run"),
+            arguments={"command": command},
+            capabilities=set(session.capabilities),
+            approval_actor="planner",
+        )
+
+        assert result.success is False
+        assert result.error == "undeclared_capability:undeclared_network:evil.example"
+        assert result.sandbox_result is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.parametrize(
     "self_modified",
     [False, True],
     ids=["retry-reloaded", "retry-self-modified"],

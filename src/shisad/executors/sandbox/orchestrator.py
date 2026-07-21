@@ -92,6 +92,11 @@ class SandboxOrchestrator:
             for backend_type, backend in self._backends.items()
         }
 
+    def network_targets_for_command(self, command: list[str]) -> list[str]:
+        """Return the exact network target surface used during execution."""
+
+        return self._network.extract_network_targets(command)
+
     async def execute_async(
         self,
         config: SandboxConfig,

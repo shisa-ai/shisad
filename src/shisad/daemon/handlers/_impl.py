@@ -2847,7 +2847,8 @@ class HandlerImplementation(
             host = safe_url_hostname(str(raw).strip())
             if host:
                 network_hosts.append(host)
-        for raw in arguments.get("command", []):
+        command = [str(token) for token in arguments.get("command", [])]
+        for raw in self._sandbox.network_targets_for_command(command):
             host = safe_url_hostname(str(raw))
             if host:
                 network_hosts.append(host)
@@ -2858,7 +2859,7 @@ class HandlerImplementation(
                 network_hosts=network_hosts,
                 filesystem_paths=[str(item) for item in arguments.get("read_paths", [])]
                 + [str(item) for item in arguments.get("write_paths", [])],
-                shell_commands=[" ".join(str(token) for token in arguments.get("command", []))],
+                shell_commands=[" ".join(command)],
                 environment_vars=list(dict(arguments.get("env", {})).keys()),
             ),
         )
