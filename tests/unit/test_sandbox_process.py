@@ -1046,10 +1046,126 @@ def test_u42r_process_invoke_kills_spawned_process_on_collection_error(
     assert process.killed is True
     assert process.waited is True
     assert stdout == ""
-    assert stderr == "process launch failed: ValueError"
+    assert stderr == "process collection failed: ValueError"
     assert exit_code is None
     assert timed_out is False
-    assert blocked_reason == "process_launch_failed:ValueError"
+    assert blocked_reason == "process_collection_failed:ValueError"
+
+
+def test_u42r3_expert_post_spawn_collection_failure_never_replays_on_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = SandboxProcessRunner(
+        connect_path_proxy=NoopConnectPathProxy(),
+        bwrap_binary="/usr/bin/bwrap",
+        nsjail_binary="",
+        pasta_binary="",
+    )
+    backend = runner.build_default_backends()[SandboxType.CONTAINER]
+    launched: list[list[str]] = []
+    processes: list[object] = []
+    monkeypatch.setattr(sandbox_process_module.secrets, "token_hex", lambda _size: "marker")
+
+    class _Process:
+        pid = 321
+
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.killed = False
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            _ = timeout
+            raise ValueError("decode failed after child effect")
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = 137
+
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            assert self.killed is True
+            return 137
+
+    def _popen(command: list[str], **_kwargs: object) -> _Process:
+        launched.append(list(command))
+        process = _Process()
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    config = SandboxConfig(
+        tool_name="shell.exec",
+        command=["effectful-command"],
+        containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+        degraded_mode=DegradedModePolicy.FAIL_OPEN,
+        security_critical=False,
+    )
+
+    result = runner.run_process(
+        config,
+        backend=backend,
+        command=config.command,
+        env={},
+        connect_path_allowed_ips=[],
+        enforce_connect_path=False,
+    )
+
+    assert len(launched) == 1
+    assert len(processes) == 1
+    assert result.blocked_reason == "process_collection_failed:ValueError"
+    assert result.host_fallback_used is False
+    assert result.actual_runtime == "bwrap"
+    assert result.isolation_degraded is True
+
+
+def test_u42r3_expert_pre_spawn_launch_failure_still_falls_back_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = SandboxProcessRunner(
+        connect_path_proxy=NoopConnectPathProxy(),
+        bwrap_binary="/usr/bin/bwrap",
+        nsjail_binary="",
+        pasta_binary="",
+    )
+    backend = runner.build_default_backends()[SandboxType.CONTAINER]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sandbox_process_module.secrets, "token_hex", lambda _size: "marker")
+
+    def _invoke(command: list[str], **_kwargs: object):  # type: ignore[no-untyped-def]
+        calls.append(list(command))
+        if len(calls) == 1:
+            return (
+                "",
+                "process launch failed: FileNotFoundError",
+                None,
+                False,
+                "process_launch_failed:FileNotFoundError",
+            )
+        return "host-ok\n", "", 0, False, None
+
+    monkeypatch.setattr(runner, "invoke", _invoke)
+    config = SandboxConfig(
+        tool_name="shell.exec",
+        command=["working-command"],
+        containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+        degraded_mode=DegradedModePolicy.FAIL_OPEN,
+        security_critical=False,
+    )
+
+    result = runner.run_process(
+        config,
+        backend=backend,
+        command=config.command,
+        env={},
+        connect_path_allowed_ips=[],
+        enforce_connect_path=False,
+    )
+
+    assert len(calls) == 2
+    assert result.stdout == "host-ok\n"
+    assert result.blocked_reason == ""
+    assert result.host_fallback_used is True
+    assert result.actual_runtime == "host"
 
 
 def test_u42r_process_invoke_preserves_invalid_utf8_as_replacement_text() -> None:

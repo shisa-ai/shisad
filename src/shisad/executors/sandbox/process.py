@@ -414,11 +414,19 @@ class SandboxProcessRunner:
         if wrapped_used and not execution_started:
             isolation_degraded = True
         if wrapped_used and not execution_started and not timed_out:
-            if fail_closed:
+            expert_retry_safe = self._expert_host_retry_is_pre_effect(
+                invoke_blocked_reason,
+                enforce_connect_path=enforce_connect_path,
+            )
+            if fail_closed or not expert_retry_safe:
                 blocked_reason = (
                     "connect_path_unavailable"
                     if invoke_blocked_reason == "connect_path_unavailable"
-                    else "runtime_isolation_unavailable"
+                    else (
+                        invoke_blocked_reason
+                        if invoke_blocked_reason and not expert_retry_safe
+                        else "runtime_isolation_unavailable"
+                    )
                 )
                 return ProcessRunResult(
                     stdout=stdout,
@@ -700,6 +708,19 @@ class SandboxProcessRunner:
                 continue
             kept.append(line)
         return "".join(kept), found
+
+    @staticmethod
+    def _expert_host_retry_is_pre_effect(
+        blocked_reason: str | None,
+        *,
+        enforce_connect_path: bool,
+    ) -> bool:
+        if not blocked_reason or blocked_reason.startswith("process_launch_failed:"):
+            return True
+        return enforce_connect_path and (
+            blocked_reason == "connect_path_unavailable"
+            or blocked_reason.startswith("process_start_callback_failed:")
+        )
 
     @staticmethod
     def _ipv4_addresses(addresses: list[str]) -> list[str]:
@@ -1009,6 +1030,7 @@ class SandboxProcessRunner:
                 except BaseException as exc:
                     # The callback guards a command blocked before its first effect. Kill the
                     # wrapper before any caller-owned gate FD can be closed during unwinding.
+                    blocked_reason = f"process_start_callback_failed:{exc.__class__.__name__}"
                     SandboxProcessRunner._kill_process_tree(completed)
                     try:
                         stdout, stderr = completed.communicate(timeout=1)
@@ -1021,7 +1043,6 @@ class SandboxProcessRunner:
                     callback_error = f"process start callback failed: {exc.__class__.__name__}"
                     separator = "" if not stderr or stderr.endswith("\n") else "\n"
                     stderr = f"{stderr}{separator}{callback_error}"
-                    blocked_reason = f"process_start_callback_failed:{exc.__class__.__name__}"
                     return stdout, stderr, exit_code, timed_out, blocked_reason
                 if blocked_reason:
                     SandboxProcessRunner._terminate_process_tree(completed)
@@ -1048,10 +1069,19 @@ class SandboxProcessRunner:
             stderr = SandboxProcessRunner.to_text(exc.stderr)
             exit_code = None
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            if completed is not None:
+            if completed is None:
+                stderr = f"process launch failed: {exc.__class__.__name__}"
+                blocked_reason = f"process_launch_failed:{exc.__class__.__name__}"
+            else:
                 SandboxProcessRunner._kill_and_reap(completed)
-            stderr = f"process launch failed: {exc.__class__.__name__}"
-            blocked_reason = f"process_launch_failed:{exc.__class__.__name__}"
+                if blocked_reason:
+                    stderr = SandboxProcessRunner._append_stderr_line(
+                        stderr,
+                        f"process cleanup failed: {exc.__class__.__name__}",
+                    )
+                else:
+                    stderr = f"process collection failed: {exc.__class__.__name__}"
+                    blocked_reason = f"process_collection_failed:{exc.__class__.__name__}"
         return stdout, stderr, exit_code, timed_out, blocked_reason
 
     @staticmethod

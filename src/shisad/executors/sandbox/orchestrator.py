@@ -382,6 +382,9 @@ class SandboxOrchestrator:
         if process.isolation_degraded:
             degraded_controls = sorted({*degraded_controls, "runtime_isolation"})
             self._audit_runtime_degraded(config=config, backend_type=backend_type)
+        collection_uncertain = process.blocked_reason.startswith("process_collection_failed:")
+        if collection_uncertain and process.host_fallback_used:
+            degraded_controls = sorted({*degraded_controls, "expert_host_fallback"})
         if process.blocked_reason:
             return self._denied(
                 config,
@@ -392,6 +395,8 @@ class SandboxOrchestrator:
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
                 connect_path=connect_path_result,
+                actual_backend=(process.actual_runtime or None) if collection_uncertain else None,
+                host_fallback_used=(process.host_fallback_used if collection_uncertain else False),
             )
         host_fallback_used = process.host_fallback_used
         if host_fallback_used:
@@ -481,26 +486,33 @@ class SandboxOrchestrator:
         degraded_controls: list[str] | None = None,
         connect_path: ConnectPathResult | None = None,
         escape_detected: bool = False,
+        actual_backend: str | None = None,
+        host_fallback_used: bool = False,
     ) -> SandboxResult:
+        if reason.startswith("process_collection_failed:"):
+            next_action = (
+                "inspect the sandbox runtime failure before retrying; the original command "
+                "may have started, so host fallback was suppressed"
+            )
+        elif reason in {"degraded_enforcement", "runtime_isolation_unavailable"}:
+            next_action = (
+                "install or configure the requested sandbox backend; select "
+                "expert_host_fallback only when host execution is explicitly acceptable"
+            )
+        elif reason == "connect_path_unavailable":
+            next_action = "configure the connect-path network boundary and required privileges"
+        else:
+            next_action = ""
         return SandboxResult(
             allowed=False,
             reason=reason,
-            next_action=(
-                "install or configure the requested sandbox backend; select "
-                "expert_host_fallback only when host execution is explicitly acceptable"
-                if reason in {"degraded_enforcement", "runtime_isolation_unavailable"}
-                else (
-                    "configure the connect-path network boundary and required privileges"
-                    if reason == "connect_path_unavailable"
-                    else ""
-                )
-            ),
+            next_action=next_action,
             backend=backend,
             requested_backend=backend,
-            actual_backend=None,
+            actual_backend=actual_backend,
             containment_profile=config.containment_profile,
             degraded_mode=config.degraded_mode,
-            host_fallback_used=False,
+            host_fallback_used=host_fallback_used,
             checkpoint_id=checkpoint_id,
             escape_detected=escape_detected,
             fs_decisions=fs_decisions or [],

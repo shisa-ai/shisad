@@ -545,6 +545,66 @@ def test_u42r_result_reports_concrete_runtime_engine(
     assert result.actual_backend == expected_actual
 
 
+@pytest.mark.parametrize(
+    ("actual_runtime", "host_fallback_used"),
+    [("bwrap", False), ("host", True)],
+)
+def test_u42r3_collection_failure_returns_actionable_uncertain_result(
+    monkeypatch: pytest.MonkeyPatch,
+    actual_runtime: str,
+    host_fallback_used: bool,
+) -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="/usr/bin/bwrap",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            cgroups=True,
+            dns_control=True,
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_process",
+        lambda *args, **kwargs: ProcessRunResult(
+            stdout="",
+            stderr="process collection failed: ValueError",
+            exit_code=None,
+            timed_out=False,
+            truncated=False,
+            resource_limit_warning="",
+            isolation_degraded=True,
+            blocked_reason="process_collection_failed:ValueError",
+            connect_path_result=None,
+            connect_path_degraded=False,
+            actual_runtime=actual_runtime,
+            host_fallback_used=host_fallback_used,
+        ),
+    )
+
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=["effectful-command"],
+            sandbox_type=SandboxType.NSJAIL,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "process_collection_failed:ValueError"
+    assert "may have started" in result.next_action
+    assert result.host_fallback_used is host_fallback_used
+    assert result.actual_backend == actual_runtime
+
+
 def test_m3_rr2_unknown_runtime_wrapper_fail_closed_blocks_preinvoke(tmp_path: Path) -> None:
     target = tmp_path / "wrapper-mismatch.txt"
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
