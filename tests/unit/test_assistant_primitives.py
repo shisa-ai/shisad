@@ -540,6 +540,60 @@ def test_f4c_fs_git_tools_return_results_without_executing_hostile_helpers(
     assert all(not marker.exists() for marker in markers.values())
 
 
+@pytest.mark.skipif(os.name != "posix", reason="executable filter fixture is POSIX")
+def test_f4c_fs_git_worktree_reads_block_required_filter_but_log_remains_usable(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    (repo / ".gitattributes").write_text("payload.txt filter=poison\n", encoding="utf-8")
+    (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
+    marker = tmp_path / "filter.marker"
+    helper = tmp_path / "filter-helper.py"
+    helper.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "filter.poison.clean", str(helper)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "filter.poison.required", "true"],
+        check=True,
+    )
+
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+    status = toolkit.git_status(repo_path=".")
+    diff = toolkit.git_diff(repo_path=".")
+    log = toolkit.git_log(repo_path=".")
+
+    for result in (status, diff):
+        assert result["ok"] is False
+        assert result["error"].startswith("git_required_filter_blocked:")
+        assert "disable the filter or use a separately audited checkout" in result["error"]
+    assert log["ok"] is True
+    assert "init" in log["output"]
+    assert not marker.exists()
+
+
 def test_web_fetch_redirect_blocks_unallowlisted_destination(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

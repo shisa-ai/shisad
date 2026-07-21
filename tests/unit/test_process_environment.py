@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from shisad.core.process_environment import (
     ChildEnvironmentProfile,
     build_child_environment,
+    inspect_git_filters,
 )
 
 _POISONED_PARENT = {
@@ -134,3 +140,88 @@ def test_f4c_mcp_explicit_override_is_scoped_to_that_child() -> None:
     assert child["MCP_VISIBLE_FLAG"] == "visible"
     assert child["NODE_OPTIONS"] == "--configured-explicitly"
     assert "UNRELATED_SECRET" not in child
+
+
+def _init_globally_configured_filter_repo(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    (repo / ".gitattributes").write_text("payload.txt filter=poison\n", encoding="utf-8")
+    (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
+    marker = tmp_path / "filter.marker"
+    helper = tmp_path / "filter-helper.py"
+    helper.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    global_config = home / ".gitconfig"
+    subprocess.run(
+        ["git", "config", "--file", str(global_config), "filter.poison.clean", str(helper)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--file", str(global_config), "filter.poison.required", "true"],
+        check=True,
+    )
+    return repo, home, marker
+
+
+@pytest.mark.skipif(os.name != "posix", reason="executable filter fixture is POSIX")
+def test_f4c_filter_inspection_detects_required_global_driver_without_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, home, marker = _init_globally_configured_filter_repo(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "ambient-global-config"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "filter.poison.required")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+
+    inspection = inspect_git_filters(repo)
+
+    assert inspection.active_drivers == ("poison",)
+    assert inspection.required_executable_drivers == ("poison",)
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="executable filter fixture is POSIX")
+def test_f4c_filter_inspection_honors_local_required_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, home, marker = _init_globally_configured_filter_repo(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "filter.poison.required", "false"],
+        check=True,
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    inspection = inspect_git_filters(repo)
+
+    assert inspection.active_drivers == ("poison",)
+    assert inspection.required_executable_drivers == ()
+    assert not marker.exists()

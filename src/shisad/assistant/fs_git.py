@@ -13,6 +13,7 @@ from shisad.core.process_environment import (
     ChildEnvironmentProfile,
     GitSafetyError,
     GitSafetyTimeoutError,
+    RequiredGitFilterError,
     build_child_environment,
     hardened_git_command,
     inspect_git_filters,
@@ -156,9 +157,16 @@ class FsGitToolkit:
         return self._run_git(
             repo_path=repo_path,
             args=["log", "--no-show-signature", "--oneline", f"-n{safe_limit}"],
+            requires_worktree_filters=False,
         )
 
-    def _run_git(self, *, repo_path: str, args: list[str]) -> dict[str, Any]:
+    def _run_git(
+        self,
+        *,
+        repo_path: str,
+        args: list[str],
+        requires_worktree_filters: bool = True,
+    ) -> dict[str, Any]:
         resolved = self._resolve_path(repo_path)
         if isinstance(resolved, dict):
             return resolved
@@ -167,13 +175,22 @@ class FsGitToolkit:
         if not (resolved / ".git").exists():
             return self._error("not_a_git_repo", path=str(resolved))
         try:
-            inspection = inspect_git_filters(
-                resolved,
-                timeout_seconds=max(0.1, float(self.git_timeout_seconds)),
-            )
+            filter_drivers: tuple[str, ...] = ()
+            if requires_worktree_filters:
+                inspection = inspect_git_filters(
+                    resolved,
+                    timeout_seconds=max(0.1, float(self.git_timeout_seconds)),
+                )
+                if inspection.required_executable_drivers:
+                    required = RequiredGitFilterError(inspection.required_executable_drivers)
+                    return self._error(
+                        f"git_required_filter_blocked:{required}",
+                        path=str(resolved),
+                    )
+                filter_drivers = inspection.active_drivers
             command = hardened_git_command(
                 ["-C", str(resolved), *args],
-                filter_drivers=inspection.active_drivers,
+                filter_drivers=filter_drivers,
             )
             completed = subprocess.run(
                 command,

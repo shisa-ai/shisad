@@ -636,6 +636,8 @@ def _git_commit() -> str:
     repo_root = Path(__file__).resolve().parents[3]
     try:
         inspection = inspect_git_filters(repo_root)
+        if inspection.required_executable_drivers:
+            return "source:required_git_filter_blocked:disable_filter_or_use_audited_checkout"
         git_env = build_child_environment(ChildEnvironmentProfile.GIT)
         head = subprocess.run(
             hardened_git_command(

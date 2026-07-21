@@ -56,9 +56,12 @@ operation-scoped inputs. In particular:
 - msgvault and MCP stdio children retain their bounded runtime context. An MCP
   server's explicit `env` mapping is applied only to that server after ambient
   filtering; shell-function exports remain excluded;
-- shisad-owned Git inspection, worktree, and evaluation commands use a fixed
-  non-interactive Git environment rather than ambient global/system Git config
-  or askpass, pager, and helper controls.
+- shisad-owned Git worktree and evaluation commands execute in a fixed
+  non-interactive environment rather than ambient global/system Git config or
+  askpass, pager, and helper controls. A bounded read-only preflight can locate
+  normal system/global config files solely to classify a repository-selected
+  checkout filter; ambient `GIT_CONFIG_*` overrides do not steer that preflight,
+  and configured helper values are never executed by it.
 
 These profiles bound inheritance; they are not a general host-process sandbox.
 Configured child programs still receive their explicit arguments and any

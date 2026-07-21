@@ -195,12 +195,17 @@ an unrestricted malicious same-user process.
 Assistant Git reads, coding-worktree lifecycle commands, and evaluation source
 probes use a fixed non-interactive Git environment and command-line overrides
 for hooks, fsmonitor, external diff/textconv, and signature verification.
-Coding worktrees are created without checkout, structurally inspect selected
-filter drivers, and then check out with optional drivers disabled. A selected
-filter marked required with an executable clean/smudge/process command blocks
-with actionable guidance instead of executing silently. These controls apply
-to shisad-owned Git commands; they are not a claim that an authorized coding
-agent cannot itself run repository commands.
+Filter preflight reads normal system/global/local/worktree configuration as
+data, with normal precedence, but ignores ambient `GIT_CONFIG_*`
+location/injection overrides and never executes configured values. Coding
+worktrees are created without checkout, structurally inspect selected filter
+drivers, and then check out with optional drivers disabled. A selected filter
+marked required with an executable clean/smudge/process command blocks coding
+checkout, assistant status/diff, and the evaluation dirty probe with actionable
+guidance instead of executing silently or returning a misleading projection.
+Commit-only assistant log remains available. These controls apply to
+shisad-owned Git commands; they are not a claim that an authorized coding agent
+cannot itself run repository commands.
 
 Channel replay state remains a bounded best-effort guard. Corrupt replay state
 may forget prior message IDs, so this layer does not claim daemon-level,

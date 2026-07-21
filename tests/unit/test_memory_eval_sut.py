@@ -67,6 +67,8 @@ def test_f4c_evaluation_identity_does_not_execute_git_helpers(
         ["git", "-C", str(repo), "config", "user.name", "Test User"],
         check=True,
     )
+    (repo / ".gitattributes").write_text("payload.txt filter=poison\n", encoding="utf-8")
+    (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", "init"],
@@ -97,6 +99,28 @@ def test_f4c_evaluation_identity_does_not_execute_git_helpers(
 
     assert evaluation_sut._git_commit() == expected
     assert not marker.exists()
+
+    filter_marker = tmp_path / "filter.marker"
+    filter_helper = tmp_path / "filter-helper.py"
+    filter_helper.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(filter_marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    filter_helper.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "filter.poison.clean", str(filter_helper)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "filter.poison.required", "true"],
+        check=True,
+    )
+
+    assert (
+        evaluation_sut._git_commit()
+        == "source:required_git_filter_blocked:disable_filter_or_use_audited_checkout"
+    )
+    assert not filter_marker.exists()
 
 
 def test_hello_rejects_unknown_contract_version(tmp_path: Path) -> None:

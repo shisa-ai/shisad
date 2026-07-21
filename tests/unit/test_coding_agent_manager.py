@@ -77,6 +77,7 @@ def _init_hostile_filter_repo(
     tmp_path: Path,
     *,
     required: bool,
+    configure_filter: bool = True,
 ) -> tuple[Path, dict[str, Path]]:
     repo = tmp_path / ("required-repo" if required else "optional-repo")
     repo.mkdir()
@@ -121,14 +122,20 @@ def _init_hostile_filter_repo(
     )
     post_checkout.chmod(0o755)
 
-    for key, value in (
-        ("filter.poison.clean", helpers["filter"]),
-        ("filter.poison.smudge", helpers["filter"]),
-        ("filter.poison.process", helpers["filter"]),
-        ("filter.poison.required", "true" if required else "false"),
+    config_values: list[tuple[str, object]] = [
         ("core.hooksPath", hooks),
         ("core.fsmonitor", helpers["fsmonitor"]),
-    ):
+    ]
+    if configure_filter:
+        config_values.extend(
+            (
+                ("filter.poison.clean", helpers["filter"]),
+                ("filter.poison.smudge", helpers["filter"]),
+                ("filter.poison.process", helpers["filter"]),
+                ("filter.poison.required", "true" if required else "false"),
+            )
+        )
+    for key, value in config_values:
         subprocess.run(
             ["git", "-C", str(repo), "config", key, str(value)],
             check=True,
@@ -351,4 +358,58 @@ async def test_f4c_manager_blocks_required_executable_filter_actionably(
     assert "required executable Git filter 'poison'" in record.result.summary
     assert "disable the filter or use a separately audited checkout" in record.result.summary
     assert not manager.worktree_path_for("required-filter").exists()
+    assert all(not marker.exists() for marker in markers.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="hostile executable filter fixture is POSIX")
+async def test_f4c_manager_blocks_required_global_filter_actionably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, markers = _init_hostile_filter_repo(
+        tmp_path,
+        required=True,
+        configure_filter=False,
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    global_config = home / ".gitconfig"
+    filter_helper = tmp_path / "required-filter-helper.py"
+    subprocess.run(
+        [
+            "git",
+            "config",
+            "--file",
+            str(global_config),
+            "filter.poison.clean",
+            str(filter_helper),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--file", str(global_config), "filter.poison.required", "true"],
+        check=True,
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    manager = CodingAgentManager(
+        repo_root=repo,
+        data_dir=tmp_path / "data",
+        registry_overrides={"codex": sys.executable},
+        adapter_factory=lambda _spec: _TransportErrorAdapter(),
+    )
+
+    record = await manager.execute(
+        task_session_id="required-global-filter",
+        task_description="Inspect the repository.",
+        file_refs=("payload.txt",),
+        config=CodingAgentConfig(preferred_agent="codex", read_only=True),
+    )
+
+    assert record.result.success is False
+    assert record.error_code == "worktree_filter_required"
+    assert "required executable Git filter 'poison'" in record.result.summary
+    assert "disable the filter or use a separately audited checkout" in record.result.summary
+    assert not manager.worktree_path_for("required-global-filter").exists()
     assert all(not marker.exists() for marker in markers.values())

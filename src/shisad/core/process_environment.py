@@ -168,6 +168,16 @@ _POLICIES: dict[ChildEnvironmentProfile, _EnvironmentPolicy] = {
 
 _GIT_SAFE_FILTER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _GIT_FILTER_CONFIG_SUFFIXES = ("clean", "smudge", "process", "required")
+_GIT_CONFIG_LOCATION_KEYS = frozenset(
+    {
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "PROGRAMDATA",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+    }
+)
 
 
 class GitSafetyError(RuntimeError):
@@ -263,6 +273,7 @@ def _run_git_inspection(
     input_bytes: bytes | None = None,
     timeout_seconds: float,
     allowed_returncodes: frozenset[int] = frozenset({0}),
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         completed = subprocess.run(
@@ -271,7 +282,11 @@ def _run_git_inspection(
             capture_output=True,
             check=False,
             timeout=max(0.1, float(timeout_seconds)),
-            env=build_child_environment(ChildEnvironmentProfile.GIT),
+            env=(
+                dict(environment)
+                if environment is not None
+                else build_child_environment(ChildEnvironmentProfile.GIT)
+            ),
         )
     except subprocess.TimeoutExpired as exc:
         raise GitSafetyTimeoutError("Git helper inspection timed out") from exc
@@ -280,6 +295,20 @@ def _run_git_inspection(
     if completed.returncode not in allowed_returncodes:
         raise GitSafetyError(f"Git helper inspection failed: {_git_error_detail(completed.stderr)}")
     return completed
+
+
+def _git_config_inspection_environment() -> dict[str, str]:
+    """Allow read-only discovery of normal config locations, never config injection."""
+
+    source = os.environ
+    child = build_child_environment(ChildEnvironmentProfile.GIT, parent=source)
+    for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_SYSTEM"):
+        child.pop(key, None)
+    for raw_key, value in source.items():
+        key = _normalized_key(raw_key)
+        if key in _GIT_CONFIG_LOCATION_KEYS and value and not _is_function_export(key, value):
+            child[key] = value
+    return child
 
 
 def _parse_filter_config(payload: bytes) -> dict[str, dict[str, bytes]]:
@@ -320,12 +349,6 @@ def inspect_git_filters(
         [*repo_args, "ls-files", "-z"],
         timeout_seconds=timeout_seconds,
     ).stdout
-    config_payload = _run_git_inspection(
-        [*repo_args, "config", "-z", "--get-regexp", r"^filter\."],
-        timeout_seconds=timeout_seconds,
-        allowed_returncodes=frozenset({0, 1}),
-    ).stdout
-    filter_config = _parse_filter_config(config_payload)
     if not files:
         return GitFilterInspection()
 
@@ -352,6 +375,17 @@ def inspect_git_filters(
         if not _GIT_SAFE_FILTER_NAME_RE.fullmatch(driver):
             raise GitSafetyError("repository selects an unsupported Git filter driver name")
         active.add(driver)
+
+    if not active:
+        return GitFilterInspection()
+
+    config_payload = _run_git_inspection(
+        [*repo_args, "config", "--includes", "-z", "--get-regexp", r"^filter\."],
+        timeout_seconds=timeout_seconds,
+        allowed_returncodes=frozenset({0, 1}),
+        environment=_git_config_inspection_environment(),
+    ).stdout
+    filter_config = _parse_filter_config(config_payload)
 
     required_executable: set[str] = set()
     false_values = {b"", b"0", b"false", b"no", b"off"}

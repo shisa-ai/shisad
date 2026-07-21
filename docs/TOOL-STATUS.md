@@ -57,7 +57,10 @@ Note:
 - Assistant `git.status`, `git.diff`, and `git.log` run with bounded Git
   environment/config controls. Repository fsmonitor, external diff/textconv,
   signature-verifier, pager, and ambient helper settings do not execute on
-  these read paths; ordinary status/diff/log output remains available.
+  these read paths. Ordinary status/diff/log output remains available;
+  `git.status` and `git.diff` instead return an actionable block when an active
+  checkout filter is both executable and required. Commit-only `git.log`
+  remains available in that case.
 - Thread control tools (`thread.list`, `thread.inspect`, `thread.resume`,
   `thread.close`, and `thread.why`) are live control/API surfaces, but this
   static snapshot omits them until the live probe seeds an `open_thread`
