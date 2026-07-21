@@ -25,6 +25,28 @@ The same typed settings are available in an operator-authored TOML file. Use
 `shisad config show` to inspect effective values and sources with secrets
 redacted.
 
+## Artifact Profiles
+
+The `v0.8.1` consumer package profile is `shisad[assistant]`. It installs
+runtime libraries but does not set any `SHISAD_*` channel flag, endpoint, or
+credential. PromptGuard remains the separate `promptguard` extra.
+
+The local Linux container candidate supplies these non-secret defaults:
+
+- `HOME=/home/shisad`
+- `XDG_RUNTIME_DIR=/run/shisad`
+- `SHISAD_DATA_DIR=/var/lib/shisad`
+- `SHISAD_SOCKET_PATH=/run/shisad/control.sock`
+- `SHISAD_ASSISTANT_FS_ROOTS=["/workspace"]`
+
+Pass provider/channel settings at `docker run` time with an operator-owned env
+file or secret mechanism; do not add them to the Dockerfile or build context.
+The daemon runs as uid/gid `10001`, so bind-mounted paths must grant that
+identity only the access intended. The image does not silently alter
+`SHISAD_POLICY_PATH` or select `expert_host_fallback`; mount an operator policy
+at `/etc/shisad/policy.yaml` and verify the effective sandbox posture with
+`shisad doctor check --component sandbox`.
+
 ## TOML Configuration and Precedence
 
 Pass `--config /path/to/config.toml`, set `SHISAD_CONFIG_PATH`, or place the
@@ -206,7 +228,10 @@ Web:
 Web notes:
 
 - `SHISAD_WEB_SEARCH_BACKEND_URL` must point at a compatible search backend that serves JSON search results over HTTP(S). The current runtime expects a SearxNG-style `/search` endpoint.
-- For local source checkouts, `docs/DEPLOY.md` has an end-to-end SearxNG container recipe. The common runner setting is `SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080`.
+- `docs/DEPLOY.md` has an end-to-end SearxNG recipe. The common source-runner
+  setting is `SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080`. Inside the
+  shisad container, loopback refers to that container; use an explicitly
+  reachable backend service address and allowlist its actual host.
 - IP-literal, `localhost`, and `.local` / `.internal` / `.lan` search backend hosts must be present in the effective web allowlist. For local SearxNG runner setups, use `SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost` in `runner/.env`; if `SHISAD_WEB_ALLOWED_DOMAINS` is unset, the daemon falls back to policy egress hosts. Public backend hosts do not need an allowlist entry just to run `web.search`, but listing the backend and common result hosts preapproves backend redirects and later `web.fetch` calls.
 - Restart the daemon after changing `SHISAD_WEB_*` values. The running daemon reads these variables at startup, so exporting them in a later CLI terminal does not update an existing daemon.
 - If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset, `tool.web.search` stays available in the registry but reports `web_search_backend_unconfigured` in live tool-status checks instead of silently locking down the session.
@@ -262,7 +287,14 @@ Browser:
 Browser notes:
 
 - `SHISAD_BROWSER_ENABLED=1` turns on the planner-visible browser tool surface (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, `browser.end_session`).
-- `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol, not the upstream Playwright CLI. For source checkouts, the wrapper is `scripts/shisad-playwright-cli.mjs`; set `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs` after installing the prerequisites in `docs/runbooks/BROWSER.md`. The current PyPI wheel does not install this wrapper, so package installs need an explicit compatible wrapper path.
+- `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol,
+  not the upstream Playwright CLI. For source checkouts, the wrapper is
+  `scripts/shisad-playwright-cli.mjs`; set
+  `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs`
+  after installing the prerequisites in `docs/runbooks/BROWSER.md`. Neither
+  the wheel nor the local container candidate installs the Node wrapper or a
+  browser, so artifact installs need an explicit compatible wrapper/runtime;
+  a container-mounted wrapper must also be executable by uid/gid `10001`.
 - Upstream `playwright` / `npx playwright` is not protocol-compatible with shisad because the daemon passes a shisad session selector (`-s=shisad-...`) and uses wrapper-specific subcommands.
 - If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
 - `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept either comma-separated values (`example.com,api.example.com`) or JSON arrays (`["example.com","api.example.com"]`) from environment variables. Prefer the comma-separated form in `runtime.env`, `runner/.env`, and other env files for readability; if you use JSON arrays in a shell-sourced env file, quote the whole value so the inner quotes are preserved.

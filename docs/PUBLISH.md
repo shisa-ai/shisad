@@ -5,6 +5,9 @@ Use this as the release checklist for cutting a new `shisad` version.
 Scope:
 
 - Use this checklist whenever preparing a new Git tag or publishing to PyPI.
+- A checked-in Dockerfile is a local release candidate, not authorization to
+  tag, push, sign, or claim a registry image. Container publication requires
+  a separate explicit human decision and the controls below.
 - `CHANGELOG.md` is release-oriented, not an in-progress ledger. Add a new
   topmost version section when cutting a release; do not keep an `Unreleased`
   section.
@@ -106,6 +109,12 @@ Version must be updated in both places:
       Do not rerun those subsets after the full pass.
 - [ ] Run one Python 3.13 compatibility pass without duplicate coverage:
       `uv run --python 3.13 pytest tests/ -m "not requires_cap_net_admin" -q -rxXs`
+- [ ] Run the clean consumer-artifact lane without skips on Linux/amd64:
+      `SHISAD_RUN_PACKAGING_TESTS=1 SHISAD_RUN_CONTAINER_TESTS=1 uv run --frozen --python 3.12 pytest tests/packaging/test_clean_artifact_journey.py -q -rxXs`
+- [ ] Review the artifact supply-chain diff: `pyproject.toml`, `uv.lock`, the
+      digest-pinned Docker `FROM` lines, Docker build context, runtime package
+      set, fixed uid/gid, image env, and absence of test/build tools and baked
+      credentials.
 - [ ] Record relevant macOS/Windows support checks for the exact candidate;
       reuse candidate-bound CI artifacts rather than rerunning them locally.
 - [ ] Run live-model release gate:
@@ -164,9 +173,17 @@ Version must be updated in both places:
       `gh release upload vX.Y.Z sbom-shisad-X.Y.Z.spdx.json`
 - [ ] Verify the published package:
       `uvx --refresh --from "shisad==X.Y.Z" shisad --help`
+- [ ] For releases that expose the assistant profile, verify it from the
+      published artifact too:
+      `uvx --refresh --from "shisad[assistant]==X.Y.Z" shisad --help`
 - [ ] Verify the GitHub Release, tag, and PyPI project page all show the new
       version
 - [ ] Verify attestation is visible on the PyPI project page
+- [ ] Do not describe the local Dockerfile candidate as an "official image"
+      unless an explicitly authorized registry workflow has published it and
+      the exact manifest digest, SBOM/provenance, signature/verification path,
+      supported platform, and pull command have all been recorded. Otherwise
+      keep public wording at "local container candidate."
 - [ ] If GitHub code scanning raises new alerts on the release commit, triage
       them with `gh` before assuming manual UI work is required:
       `gh api '/repos/<owner>/<repo>/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100'`

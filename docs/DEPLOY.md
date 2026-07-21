@@ -12,7 +12,83 @@ Coming soon. For now, follow the manual paths below.
 
 ---
 
-## Prerequisites
+## Package Installation (v0.8.1+)
+
+The supported consumer profile is the `assistant` extra:
+
+```bash
+uv tool install 'shisad[assistant]'
+shisad --help
+shisad doctor check --component all
+```
+
+It installs the Textual UI plus MCP, Matrix E2EE, Discord, Telegram, and Slack
+client libraries. It does not enable any channel or supply credentials.
+PromptGuard remains a separate optional model runtime; combine it explicitly
+as `shisad[assistant,promptguard]` when wanted. The latest currently published
+package is `v0.8.0`, so the `assistant` PyPI command applies after `v0.8.1` is
+published or to an equivalent wheel built from this tree.
+
+The smaller base package still provides `shisad --help`; `shisad[chat]`
+remains available for a Textual-only installation. Missing optional surfaces
+fail with an install/configuration action rather than requiring the repository
+on `PYTHONPATH`.
+
+## Local Container Candidate (v0.8.1)
+
+The repository Dockerfile is a tested Linux/amd64 release candidate, not a
+published or signed registry image. Build it locally from a reviewed checkout:
+
+```bash
+git clone https://github.com/shisa-ai/shisad.git
+cd shisad
+docker build --tag shisad:local .
+docker volume create shisad-data
+docker volume create shisad-workspace
+```
+
+Create an operator policy and an env file outside the image, then start the
+fixed non-root uid/gid `10001` runtime:
+
+```bash
+docker run --detach --name shisad \
+  --mount source=shisad-data,target=/var/lib/shisad \
+  --mount source=shisad-workspace,target=/workspace \
+  --mount type=bind,src=/absolute/path/policy.yaml,dst=/etc/shisad/policy.yaml,readonly \
+  --env-file /absolute/path/runtime.env \
+  shisad:local
+
+docker exec shisad shisad status
+docker exec shisad shisad doctor check --component sandbox
+```
+
+The image launches the installed wheel through Tini, uses the real daemon
+status command for health, and keeps `/var/lib/shisad` and `/workspace` on
+separate volumes. `docker stop shisad && docker rm shisad` does not remove
+those named volumes. Delete them only as a separate, intentional data-removal
+operation.
+
+The image contains `bwrap`, `pasta`, `iptables`, and `nsenter`, but nested
+namespace availability is controlled by the Docker host. The fixed non-root
+candidate does not claim `CAP_NET_ADMIN`, so its connect-path diagnostic is
+unavailable by default. Always inspect the sandbox doctor result on the target
+host. If a required boundary is unavailable, the default `supported` profile
+reports the missing component and command-backed operations that require it
+fail closed; the image never selects `expert_host_fallback` automatically. Do
+not use `--privileged` merely to turn that diagnostic green. Bind-mounted
+data/workspace directories, if used in place of named volumes, must be owned
+and writable by uid/gid `10001`.
+
+Browser automation and web search are not bundled services. Browser use still
+needs an explicit compatible wrapper plus browser runtime, and web search
+still needs an explicit SearxNG-compatible backend; see the respective setup
+sections below.
+
+## Development Source Checkout
+
+The remaining `uv run ...` examples in this guide describe a source checkout.
+With a package install, omit `uv run`; inside the local container, prefix the
+same CLI with `docker exec shisad`.
 
 - A dedicated Linux host (VM, cloud instance, or container)
 - Python 3.12+
@@ -33,7 +109,7 @@ Install dependencies:
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --group dev --extra chat
+uv sync --group dev --group channels-runtime
 ```
 
 `uv sync` creates and uses the repo `.venv`. To install this checkout into an
@@ -41,7 +117,8 @@ already-active conda/mamba env instead:
 
 ```bash
 mamba install -y -c conda-forge uv
-uv export --frozen --format requirements.txt --group dev --extra chat \
+uv export --frozen --format requirements.txt --group dev \
+  --group channels-runtime \
   --output-file /tmp/shisad-requirements.txt
 uv pip install --python "$CONDA_PREFIX/bin/python" \
   -r /tmp/shisad-requirements.txt --strict
@@ -53,15 +130,16 @@ YARA-backed content scanning is included in the base install through
 from a source checkout, include the security runtime dependency group:
 
 ```bash
-uv sync --group security-runtime --group dev --extra chat
+uv sync --group security-runtime --group dev --group channels-runtime
 ```
 
 For package installs, use the first-class PromptGuard extra, for example
 `uv pip install 'shisad[promptguard]'`. `security-runtime`,
 `security-build`, `interop`, `channels-runtime`, and `coverage` are uv
-dependency groups from `[dependency-groups]`; install them with `--group`. The
-chat UI and package PromptGuard dependencies are project optional extras;
-install them with `--extra chat` or `shisad[promptguard]`.
+dependency groups from `[dependency-groups]`; install them with `--group` in a
+source checkout. The complete package profile is `shisad[assistant]`; the
+smaller `chat` and separate `promptguard` profiles remain available for
+specialized installs.
 
 Optional groups:
 
@@ -331,7 +409,8 @@ shisad supports Discord, Telegram, Slack, and Matrix as messaging channels. Each
 channel uses default-deny identity allowlisting — only explicitly allowed user IDs
 can interact with the daemon.
 
-Install channel runtime dependencies first:
+`shisad[assistant]` and the local container already contain the channel client
+libraries. For a source checkout, install the matching dependency group:
 
 ```bash
 uv sync --group channels-runtime
@@ -577,13 +656,16 @@ sudo apt install --no-install-recommends -y ufw fail2ban
 Create a policy file (copy `runner/policy.default.yaml` as a starting point) and restart the daemon.
 
 **`doctor.check` reports `<channel>_dependency_missing`:**
-Install channel runtime dependencies: `uv sync --group channels-runtime`.
+Install `shisad[assistant]`, or run `uv sync --group channels-runtime` in a
+source checkout. A dependency being installed does not enable a channel;
+verify its token and `SHISAD_<CHANNEL>_ENABLED` setting separately.
 
 **`uv sync --extra security-runtime` fails:**
 `security-runtime` is a dependency group, not an optional extra. Use
 `uv sync --group security-runtime` or the combined source-checkout command
-`uv sync --group security-runtime --group dev --extra chat`. For package
-installs, use `uv pip install 'shisad[promptguard]'`.
+`uv sync --group security-runtime --group dev --group channels-runtime`. For
+package installs, use `uv pip install 'shisad[promptguard]'` or combine it with
+the consumer profile as `shisad[assistant,promptguard]`.
 
 **Startup logs say PyTorch was not found:**
 This is expected when only `security-runtime` is installed. The daemon runtime
@@ -607,7 +689,10 @@ Install or update the CA trust bundle: `sudo apt install ca-certificates`.
 This is the expected confirmation gate. Rerun with `--confirm`.
 
 **`session.message` fails with planner parse errors:**
-Ensure you are on the latest code (`uv sync --group dev --extra chat`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
+Ensure you are on the latest installed artifact (or run
+`uv sync --group dev --group channels-runtime` in a source checkout), restart
+the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible
+endpoint that supports JSON response formatting.
 
 **Env values with JSON lists cause `SettingsError`:**
 If the env file is shell-sourced, switch list fields to comma-separated values,

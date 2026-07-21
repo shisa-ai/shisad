@@ -101,6 +101,36 @@ jobs:
             artifacts/coverage-trend.json
             artifacts/yara-parity.json
 
+  clean-artifacts:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Verify lockfile is up to date
+        run: uv lock --check
+
+      - name: Install test dependencies
+        run: uv sync --exclude-newer P7D --frozen --dev
+
+      - name: Run clean wheel and local image candidate journeys
+        env:
+          SHISAD_RUN_PACKAGING_TESTS: "1"
+          SHISAD_RUN_CONTAINER_TESTS: "1"
+        run: >-
+          uv run --frozen --python 3.12 pytest
+          tests/packaging/test_clean_artifact_journey.py -q -rxXs
+
   f3-portability:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}

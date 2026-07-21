@@ -24,6 +24,21 @@ sequence control sees the synthetic burst.
 
 Note:
 
+- The `v0.8.1` `assistant` package extra installs Textual plus MCP and the four
+  channel client families. Installation alone does not enable a channel,
+  authenticate a remote service, or turn a configuration-gated row into
+  `WORKS`; the snapshot remains environment-specific.
+- The local Linux/amd64 container candidate includes `bwrap`, `pasta`,
+  `iptables`, and `nsenter`, but the Docker host decides whether nested
+  namespaces are usable. Its fixed non-root posture does not claim
+  `CAP_NET_ADMIN`, so the current connect-path diagnostic reports unavailable.
+  The sandbox doctor reports that detected state. An unavailable boundary
+  remains an actionable fail-closed `supported` result, never an automatic
+  `expert_host_fallback` selection.
+- Browser and search services are not bundled into either artifact profile.
+  Browser rows still require an operator-supplied compatible wrapper/runtime,
+  and `tool.web.search` still requires a configured SearxNG-compatible
+  endpoint.
 - `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must appear in the effective web allowlist before the tool can show up as `WORKS`; set `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups, or rely on policy egress hosts when that variable is unset. Public backend hosts do not need an allowlist entry just to run `web.search`.
 - `tool.email.search` and `tool.email.read` are `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_MSGVAULT_ENABLED=1`. In a configured environment, shisad calls local `msgvault --local` read/search commands for tool output; reads also inspect local msgvault archive email metadata. msgvault remains responsible for provider sync and provider credentials.
 - `tool.email.read` resolves the requested msgvault id against local archive

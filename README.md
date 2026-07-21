@@ -80,23 +80,36 @@ Users and agents looking to set up ShisaD on their own system should see [`docs/
 
 ### Quick Start
 
+For `v0.8.1` artifacts, install the complete assistant runtime rather than a
+source checkout:
+
+```bash
+uv tool install 'shisad[assistant]'
+shisad --help
+shisad doctor check --component all
+```
+
+The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
+Telegram, and Slack client runtimes. It does not enable channels or add
+credentials; those remain explicit configuration. PromptGuard also remains a
+separate opt-in, so install `shisad[assistant,promptguard]` only when that local
+model runtime is wanted. The latest currently published package is `v0.8.0`;
+the `assistant` extra becomes a PyPI install surface when `v0.8.1` is actually
+published.
+
+This repository also contains a tested Linux/amd64 Dockerfile candidate. No
+registry image is published or signed from this tree yet; build it locally and
+follow the volume, policy, and isolation checks in
+[`docs/DEPLOY.md`](docs/DEPLOY.md#local-container-candidate-v081).
+
+### Development checkout
+
+Use a source checkout for development and test groups:
+
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --group dev --extra chat
-```
-
-`uv sync` creates and uses the repo `.venv`. For an existing conda/mamba env,
-install `uv` into that env first, then install the frozen source dependencies
-into the active Python:
-
-```bash
-mamba install -y -c conda-forge uv
-uv export --frozen --format requirements.txt --group dev --extra chat \
-  --output-file /tmp/shisad-requirements.txt
-uv pip install --python "$CONDA_PREFIX/bin/python" \
-  -r /tmp/shisad-requirements.txt --strict
-uv pip install --python "$CONDA_PREFIX/bin/python" -e .
+uv sync --group dev --group channels-runtime
 ```
 
 YARA-backed content scanning is included in the base install through
@@ -110,8 +123,9 @@ uv sync --group security-runtime --group dev --extra chat
 For package installs, use the first-class PromptGuard extra, for example
 `uv pip install 'shisad[promptguard]'`. `security-runtime` is a uv dependency
 group, not a pip extra; use `--group security-runtime`, not
-`--extra security-runtime`. The `chat` and `promptguard` package sets are
-project optional extras and use `--extra chat` / `shisad[promptguard]`.
+`--extra security-runtime`. The `assistant`, `chat`, and `promptguard` package
+sets are project optional extras; `assistant` is the complete consumer profile,
+while `chat` remains the smaller Textual-only profile.
 
 Memory retrieval prefers Python's `sqlite3` runtime to have SQLite FTS5
 enabled. shisad falls back when FTS5 is unavailable, but you should verify the

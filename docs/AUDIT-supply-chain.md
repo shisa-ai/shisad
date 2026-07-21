@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-06-25 (v0.8.0b0 release-audit dependency refresh)*
+*Updated: 2026-07-21 (v0.8.1 F5 distribution-candidate review)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at the v0.8.0b0 release target for the 2026-06-25 Python audit review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.7.4 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at the pre-release v0.8.1 F5 distribution candidate for the 2026-07-21 Python/container review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. No registry image is published by this snapshot.*
 
 ## Scope and Intent
 
@@ -20,12 +20,12 @@ Goals:
 | Item | Value |
 | --- | --- |
 | Primary ecosystem | Python |
-| Secondary ecosystem | Optional Node subproject: `contrib/ledger-bridge/` |
+| Secondary ecosystem | Optional Node subproject: `contrib/ledger-bridge/`; local Linux/amd64 OCI candidate |
 | Package manager | uv; npm for the optional Ledger bridge |
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
-| CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
-| Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; the v0.8.0b0 Python release audit passes after refreshing affected locked dependencies; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate vulnerability rows through one advisory in the unchanged Claude adapter chain |
+| CI install path | `uv sync --exclude-newer P7D --frozen --dev`; focused groups plus an opt-in clean-wheel/image job |
+| Release path | PyPI: GitHub Actions `publish.yml` via OIDC; container: local candidate only, no registry path |
+| Current risk summary | Python runtime resolutions remain hash-locked; the assistant extra reuses existing locked packages; the local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. Existing Ledger/ACP findings below remain unchanged. |
 
 ## Pre-analysis Notes
 
@@ -678,6 +678,7 @@ sed -n '1,140p' docs/DEPLOY.md
 
 | Extra | Direct packages in extra | Lock status |
 | --- | --- | --- |
+| `assistant` | `textual`, `mcp`, `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `chat` | `textual` | Exact in lock (`0.89.1`); declared as range |
 | `promptguard` | `textguard[promptguard]` | Exact in lock through `textguard 1.0.0`; declared as range |
 
@@ -703,7 +704,33 @@ or `textguard[promptguard]`. The v0.6.5 interop lane adds `mcp` as a direct
 `sse-starlette`, `starlette`, and `uvicorn` resolving transitively through
 that path.
 
-### C. Full upstream package inventory (all groups)
+### C. v0.8.1 local container candidate
+
+- Both stages use the official Linux/amd64 Python 3.12 slim-bookworm manifest
+  digest `sha256:72d3d75f2639ab82b34b29390ad3d6e0827c775befee94edda8e9976818f488d`.
+- Runtime Python requirements are exported from `uv.lock` for the `assistant`
+  extra and installed with required artifact hashes. The project is built as a
+  wheel and installed non-editably into the final venv.
+- `.dockerignore` admits only package/build inputs and excludes bytecode. The
+  final stage does not contain `uv`, Hatchling, pytest, the test tree, or a
+  source checkout. The clean-artifact journey checks the installed import path
+  plus the absence of those build/test tools; the two-stage copy boundary
+  excludes the checkout and test tree by construction.
+- The final image runs as uid/gid `10001`, contains Tini, bwrap, pasta,
+  iptables, and nsenter, and declares separate data and workspace volumes. It
+  does not infer `CAP_NET_ADMIN` in this fixed non-root posture, so the current
+  connect-path diagnostic is unavailable rather than overclaimed.
+  Provider/channel secrets are runtime inputs, not image environment or build
+  arguments.
+- Residual build mutability remains: Debian packages are not version-pinned to
+  a snapshot repository, and the exact `uv`/Hatchling builder declarations do
+  not hash-pin all builder-only transitive wheels. Neither surface is copied as
+  tooling into the runtime image.
+- This is not a published image. There is no registry workflow, image SBOM,
+  provenance attestation, signature, or documented signature-verification path
+  yet; public docs therefore call it a local candidate only.
+
+### D. Full upstream package inventory (all groups)
 
 The full locked package set (third-party only) at snapshot time:
 
@@ -843,7 +870,7 @@ yara-python==4.5.4
 yarl==1.22.0
 ```
 
-### D. Upstream edge map (who pulls what)
+### E. Upstream edge map (who pulls what)
 
 Immediate upstream edges from the lock export (`uv export --all-groups --frozen --format requirements.txt --no-hashes --no-header`):
 
@@ -1280,6 +1307,14 @@ Note: packages with no `# via` comments in this export are direct dependencies o
      - `curl -LsSf https://astral.sh/uv/install.sh | sh`.
    - This is common operationally but is not reproducible/immutable supply chain by default.
 
+5. **Local container build is only partially reproducible**
+   - The Python base is digest-pinned and runtime Python artifacts are selected
+     from `uv.lock` with hashes.
+   - Debian runtime packages and builder-only transitive packages still resolve
+     from mutable upstream indexes at build time.
+   - No registry image is published, so image signing, registry provenance,
+     image SBOM attachment, and consumer verification are not yet implemented.
+
 ### Explicitly accepted risk
 
 1. **Python interpreter version pinning**
@@ -1306,6 +1341,10 @@ Note: packages with no `# via` comments in this export are direct dependencies o
 | Lockfile drift guard | Yes | `uv lock --check` as early CI gate (v0.5.3) |
 | Trusted publishing (OIDC) | Yes | PyPI OIDC trusted publisher configured (v0.5.3) |
 | Top-level permissions hardening | Yes | CI defaults to `contents: read` and expands only per job where needed (v0.6.0 release-close) |
+| Container base digest | Yes (candidate) | Both image stages pin the reviewed Linux/amd64 Python manifest digest |
+| Container runtime Python lock/hashes | Yes (candidate) | `uv.lock` export plus `--require-hashes`; final wheel install is non-editable |
+| Container OS/build-tool transitive pinning | Partial | Debian packages and builder-only transitive wheels remain index-resolved |
+| Container registry signing/attestation | No | No image is published; required before an official-image claim |
 
 ## Minimum-Age Controls (uv + pip fallback note)
 
@@ -1385,7 +1424,10 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 1. ~~Move release publishing to trusted publishing + provenance attestations.~~ Done (OIDC trusted publisher + `publish.yml`; build provenance attestation covers `dist/shisad-*` as of the v0.7.1 review refresh).
 2. ~~Add release SBOM generation + build provenance attestation.~~ Done (SPDX SBOM generated by anchore/sbom-action and uploaded with actions/upload-artifact; artifact attestation via actions/attest-build-provenance). Hardware-backed release signing remains future work (`PF.42`).
-3. When container images are introduced, require digest pinning and signature verification in release policy. (Future.)
+3. ~~Pin the local container candidate's base image by digest.~~ Done for the
+   v0.8.1 F5 Linux/amd64 candidate. Registry publication remains future and
+   requires image SBOM/provenance plus signature verification before an
+   official-image claim.
 
 ## Suggested Policy Language (for future docs alignment)
 
@@ -1415,6 +1457,10 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
   adapter risk.
 - Bootstrap/installer paths (apt-get, curl-pipe-sh) remain mutable but are
   operationally standard and accepted risk at this scale.
+- The v0.8.1 local image candidate improves consumer reproducibility through a
+  digest-pinned base and hash-locked Python runtime, but Debian/build-only
+  resolution remains partially mutable and the image is neither published nor
+  signed.
 
 ## Decision Summary
 
@@ -1425,5 +1471,5 @@ CI/release-path and Codex adapter provenance gaps. The current Claude
 adapter-chain advisory is recorded as accepted runtime-npx adapter risk rather
 than an open deferral. Remaining open items (periodic hygiene inventory diffs,
 internal package mirror/proxy, external GitHub/PyPI release environment audits,
-hardware-backed release signing, and future container-image signing) are lower
+hardware-backed release signing, and container-image publication/signing) are lower
 priority or release-close/future-surface work with documented deferral targets.

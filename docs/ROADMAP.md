@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-02*
+*Updated: 2026-07-21*
 *Status: Active*
 
 ## Goal
@@ -76,6 +76,10 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.8.0` is published: the stable release covers command-channel approval
   parity, TUI/confirmation polish, task panels, and the broader UX overhaul
   foundation.
+- `v0.8.1` is in development. Its distribution milestone adds a locked
+  `shisad[assistant]` consumer profile plus a tested local Linux/amd64 image
+  candidate with non-root runtime, health, and persistent-volume journeys.
+  No registry image is published or signed by this milestone.
 
 ## Milestones
 
@@ -377,6 +381,9 @@ TOTP entry remain deferred to `v0.8.0`.
   with CLI fallback, TOTP stays on trusted command channels when possible, and
   stronger method-specific proofs route to browser/helper/signer surfaces
   truthfully
+- v0.8.1 patch line (in development) — supported package assembly and a local
+  container candidate, followed by the remaining security/UX closeout
+  milestones; registry publication remains a release-close decision
 - TUI visual overhaul — theme system, chat/dashboard/confirmation chrome
 - CLI & config — TOML config file, help text, error messages, naming consistency
 - Onboarding — first-run wizard, tutorial bot, upgrade flow
