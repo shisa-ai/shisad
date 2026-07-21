@@ -122,7 +122,7 @@ async def _confirm_tool_execute(
 
 
 @pytest.mark.asyncio
-async def test_m4_t10_skill_with_undeclared_capability_blocked_at_runtime(
+async def test_m4_t10_caller_skill_identity_cannot_bind_builtin_tool(
     model_env: None,
     tmp_path: Path,
 ) -> None:
@@ -159,7 +159,7 @@ async def test_m4_t10_skill_with_undeclared_capability_blocked_at_runtime(
             },
         )
         assert result["allowed"] is False
-        assert "undeclared_network" in str(result["reason"])
+        assert result["reason"] == "skill_identity_not_registered"
     finally:
         await _shutdown(daemon_task, client)
 
@@ -434,7 +434,7 @@ async def test_m4_rr11_http_request_requires_explicit_non_wildcard_allowlist(
 
 
 @pytest.mark.asyncio
-async def test_m4_rr12_skill_runtime_extracts_network_hosts_from_command_tokens(
+async def test_m4_rr12_caller_skill_identity_cannot_redirect_builtin_tool(
     model_env: None,
     tmp_path: Path,
 ) -> None:
@@ -473,7 +473,7 @@ async def test_m4_rr12_skill_runtime_extracts_network_hosts_from_command_tokens(
             },
         )
         assert result["allowed"] is False
-        assert "undeclared_network:evil.com" in str(result["reason"])
+        assert result["reason"] == "skill_identity_not_registered"
     finally:
         await _shutdown(daemon_task, client)
 
@@ -485,6 +485,7 @@ async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
 ) -> None:
     policy = {
         "sandbox": {
+            "containment_profile": "expert_host_fallback",
             "tool_overrides": {
                 "shell_exec": {
                     "network": {
@@ -496,7 +497,7 @@ async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
                     "security_critical": False,
                     "degraded_mode": "fail_open",
                 }
-            }
+            },
         }
     }
     (tmp_path / "policy.yaml").write_text(
@@ -707,7 +708,8 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
     (tmp_path / "policy.yaml").write_text(
         'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
-        "  - file.read\n  - memory.read\n",
+        "  - file.read\n  - memory.read\n"
+        "sandbox:\n  containment_profile: expert_host_fallback\n",
         encoding="utf-8",
     )
     daemon_task, client = await _start_daemon(tmp_path)

@@ -17,6 +17,7 @@ from shisad.executors.sandbox.checkpoint import (
     SandboxCheckpointManager,
 )
 from shisad.executors.sandbox.models import (
+    ContainmentProfile,
     DegradedModePolicy,
     EnvironmentPolicy,
     ResourceLimits,
@@ -80,6 +81,15 @@ class SandboxOrchestrator:
             "available": available,
             "engaged": False,
             "cap_net_admin_available": bool(net_admin_available),
+        }
+
+    def backend_status(self) -> dict[str, dict[str, object]]:
+        return {
+            backend_type.value: {
+                "available": bool(backend.runtime),
+                "runtime": backend.runtime,
+            }
+            for backend_type, backend in self._backends.items()
         }
 
     async def execute_async(
@@ -352,6 +362,12 @@ class SandboxOrchestrator:
                 degraded_controls=degraded_controls,
                 connect_path=connect_path_result,
             )
+        host_fallback_used = bool(
+            process.isolation_degraded
+            and config.containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK
+        )
+        if host_fallback_used:
+            degraded_controls = sorted({*degraded_controls, "expert_host_fallback"})
         return SandboxResult(
             allowed=True,
             exit_code=process.exit_code,
@@ -361,6 +377,11 @@ class SandboxOrchestrator:
             truncated=process.truncated,
             reason="allowed",
             backend=backend_type,
+            requested_backend=backend_type,
+            actual_backend="host" if host_fallback_used else backend_type,
+            containment_profile=config.containment_profile,
+            degraded_mode=config.degraded_mode,
+            host_fallback_used=host_fallback_used,
             checkpoint_id=checkpoint_id,
             fs_decisions=fs_decisions,
             network_decisions=network_decisions,
@@ -411,7 +432,11 @@ class SandboxOrchestrator:
         return degraded_controls
 
     def _is_fail_closed(self, config: SandboxConfig) -> bool:
-        return config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical
+        return (
+            config.containment_profile == ContainmentProfile.SUPPORTED
+            or config.degraded_mode == DegradedModePolicy.FAIL_CLOSED
+            or config.security_critical
+        )
 
     def _denied(
         self,
@@ -429,7 +454,22 @@ class SandboxOrchestrator:
         return SandboxResult(
             allowed=False,
             reason=reason,
+            next_action=(
+                "install or configure the requested sandbox backend; select "
+                "expert_host_fallback only when host execution is explicitly acceptable"
+                if reason in {"degraded_enforcement", "runtime_isolation_unavailable"}
+                else (
+                    "configure the connect-path network boundary and required privileges"
+                    if reason == "connect_path_unavailable"
+                    else ""
+                )
+            ),
             backend=backend,
+            requested_backend=backend,
+            actual_backend=None,
+            containment_profile=config.containment_profile,
+            degraded_mode=config.degraded_mode,
+            host_fallback_used=False,
             checkpoint_id=checkpoint_id,
             escape_detected=escape_detected,
             fs_decisions=fs_decisions or [],

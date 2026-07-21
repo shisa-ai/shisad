@@ -666,6 +666,11 @@ class DaemonServices:
         policy_loader = PolicyLoader(config.policy_path)
         policy_loader.load()
         policy_loader.register_reload_signal()
+        if policy_loader.policy.sandbox.containment_profile == "expert_host_fallback":
+            logger.warning(
+                "Expert host fallback is enabled: command tools may run on the host "
+                "when requested process isolation is unavailable."
+            )
 
         model_config, security_config = _configs_for_daemon(config)
         router = ModelRouter(model_config)

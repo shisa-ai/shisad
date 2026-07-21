@@ -21,6 +21,7 @@ from shisad.executors.sandbox import (
     SandboxProcessRunner,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 
 
 def test_m3_process_fail_closed_blocks_when_runtime_unavailable() -> None:
@@ -72,6 +73,7 @@ def test_m3_process_fail_open_executes_when_runtime_unavailable() -> None:
         SandboxConfig(
             tool_name="shell.exec",
             command=[sys.executable, "-c", "print('ok')"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         ),

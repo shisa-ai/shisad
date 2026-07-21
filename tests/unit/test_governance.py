@@ -14,6 +14,7 @@ from shisad.executors.sandbox import (
     ResourceLimits,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 from shisad.governance.merge import (
     PolicyMerge,
     PolicyMergeError,
@@ -38,6 +39,7 @@ def _floor_policy(
     security_critical: bool = True,
 ) -> ToolExecutionPolicy:
     return ToolExecutionPolicy(
+        containment_profile=ContainmentProfile.SUPPORTED,
         sandbox_type=sandbox_type,
         network=NetworkPolicy(
             allow_network=allow_network,
@@ -155,6 +157,17 @@ def test_m4_t21_policy_merge_intersection_most_restrictive_all_dimensions() -> N
     assert merged.limits.pids == 32
     assert merged.degraded_mode == DegradedModePolicy.FAIL_CLOSED
     assert merged.security_critical is True
+    assert merged.containment_profile == ContainmentProfile.SUPPORTED
+
+
+def test_f4b_containment_profile_is_server_authority() -> None:
+    server = _floor_policy()
+    caller = normalize_patch({"containment_profile": "expert_host_fallback"})
+
+    merged = PolicyMerge.merge(server=server, caller=caller)
+
+    assert "containment_profile" not in caller.model_fields_set
+    assert merged.containment_profile == ContainmentProfile.SUPPORTED
 
 
 def test_m4_t22_policy_merge_idempotent() -> None:

@@ -28,6 +28,13 @@ class DegradedModePolicy(StrEnum):
     FAIL_OPEN = "fail_open"
 
 
+class ContainmentProfile(StrEnum):
+    """Operator-selected posture for unavailable process isolation."""
+
+    SUPPORTED = "supported"
+    EXPERT_HOST_FALLBACK = "expert_host_fallback"
+
+
 class ResourceLimits(BaseModel):
     """Execution resource limits."""
 
@@ -91,6 +98,7 @@ class SandboxConfig(BaseModel):
     request_headers: dict[str, str] = Field(default_factory=dict)
     request_body: str = ""
     origin: dict[str, str] = Field(default_factory=dict)
+    containment_profile: ContainmentProfile = ContainmentProfile.SUPPORTED
 
 
 class SandboxInstance(BaseModel):
@@ -111,7 +119,13 @@ class SandboxResult(BaseModel):
     timed_out: bool = False
     truncated: bool = False
     reason: str = ""
+    next_action: str = ""
     backend: SandboxType | None = None
+    requested_backend: SandboxType | None = None
+    actual_backend: SandboxType | str | None = None
+    containment_profile: ContainmentProfile = ContainmentProfile.SUPPORTED
+    degraded_mode: DegradedModePolicy = DegradedModePolicy.FAIL_CLOSED
+    host_fallback_used: bool = False
     checkpoint_id: str = ""
     escape_detected: bool = False
     degraded_controls: list[str] = Field(default_factory=list)
@@ -145,6 +159,7 @@ class SandboxBackend:
 
 
 __all__ = [
+    "ContainmentProfile",
     "DegradedModePolicy",
     "EnvironmentPolicy",
     "ResourceLimits",

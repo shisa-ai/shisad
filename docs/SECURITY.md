@@ -406,6 +406,30 @@ This is what makes system modification safe without making it impossible. The CO
 
 Certain catastrophic command patterns (e.g., `rm -rf /`) are blocked structurally at the sandbox/policy layer before execution, not by LLM judgment. Protected path registry, severity-tiered detection, and recursive deletion scope analysis ensure no prompt injection, jailbreak, or misconfiguration can make the agent destroy a host filesystem.
 
+### Command containment profiles
+
+The default `sandbox.containment_profile: supported` posture requires the
+selected process-isolation backend. If that backend or its required network
+boundary is unavailable, command-backed static tools and installed-skill tools
+fail closed before the original command is invoked on the host. Results and
+`shisad doctor check --component sandbox` report the requested backend, the
+actual backend when one ran, degraded controls, and an operator next action.
+
+`sandbox.containment_profile: expert_host_fallback` is a separate explicit
+operator posture for environments that accept host execution when isolation
+cannot be provided. It preserves declared tool functionality but is not a
+supported containment claim: startup logs, doctor output, approval previews,
+sandbox results, and degraded audit events identify the fallback. Call-level
+arguments and per-tool overrides cannot select this profile or weaken the
+supported profile.
+
+Installed dynamic tools carry immutable registration source, installed-skill
+identity, and requested containment metadata. Immediately before any shared
+execution path invokes an effect, shisad derives skill identity from that
+registered definition and rechecks inventory publication, bundle and manifest
+digests, tool schemas, and declared command/path/environment/network
+capabilities. A caller-provided `skill_name` is never treated as authority.
+
 ## Supply Chain
 
 Dependencies are pinned via `uv.lock` with SHA256 integrity hashes. Skills are

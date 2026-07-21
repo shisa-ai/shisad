@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from shisad.executors.connect_path import ConnectPathProxy, ConnectPathResult
 from shisad.executors.sandbox.models import (
+    ContainmentProfile,
     DegradedModePolicy,
     ResourceLimits,
     SandboxBackend,
@@ -165,7 +166,9 @@ class SandboxProcessRunner:
         run_env = env
         wrapped_used = False
         fail_closed = (
-            config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical
+            config.containment_profile == ContainmentProfile.SUPPORTED
+            or config.degraded_mode == DegradedModePolicy.FAIL_CLOSED
+            or config.security_critical
         )
         if backend.runtime:
             wrapped = self.wrap_isolated_command(

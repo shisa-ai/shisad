@@ -120,6 +120,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.daemon.handlers._helpers import publish_event
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.daemon.handlers._impl_assistant import AssistantImplMixin
@@ -170,6 +171,7 @@ from shisad.executors.sandbox import (
     SandboxResult,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 from shisad.governance.merge import (
     PolicyMerge,
     PolicyMergeError,
@@ -204,6 +206,7 @@ from shisad.security.pep import PolicyContext
 from shisad.security.reputation import ReputationScorer
 from shisad.security.taint import label_tool_output, normalize_retrieval_taints
 from shisad.skills.manifest import parse_manifest
+from shisad.skills.sandbox import SkillExecutionRequest
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
     ConfirmationWarningGenerator,
@@ -2727,8 +2730,13 @@ class HandlerImplementation(
             max_total_bytes=sandbox_policy.env_max_total_bytes,
         )
         limits = ResourceLimits()
-        degraded_mode = DegradedModePolicy.FAIL_OPEN
-        security_critical = False
+        containment_profile = ContainmentProfile(sandbox_policy.containment_profile)
+        degraded_mode = (
+            DegradedModePolicy.FAIL_CLOSED
+            if containment_profile == ContainmentProfile.SUPPORTED
+            else DegradedModePolicy.FAIL_OPEN
+        )
+        security_critical = containment_profile == ContainmentProfile.SUPPORTED
 
         override = sandbox_policy.tool_overrides.get(tool_name)
         if override is not None:
@@ -2760,7 +2768,12 @@ class HandlerImplementation(
             if override.security_critical is not None:
                 security_critical = bool(override.security_critical)
 
+        if containment_profile == ContainmentProfile.SUPPORTED:
+            degraded_mode = DegradedModePolicy.FAIL_CLOSED
+            security_critical = True
+
         return ToolExecutionPolicy(
+            containment_profile=containment_profile,
             sandbox_type=sandbox_type,
             network=network,
             filesystem=filesystem,
@@ -2788,6 +2801,73 @@ class HandlerImplementation(
             channel=str(session.channel),
             trust_level=str(session.metadata.get("trust_level", "untrusted")),
         )
+
+    @staticmethod
+    def _registered_skill_identity(
+        *,
+        tool: ToolDefinition | None,
+        arguments: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        caller_identity = str(arguments.get("skill_name") or "").strip()
+        source = str(getattr(tool, "registration_source", "")).strip().lower()
+        registered_identity = str(getattr(tool, "registration_source_id", "")).strip()
+        tool_name = str(getattr(tool, "name", "")).strip()
+        upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+        if source != "skill":
+            if tool_name.startswith("skill."):
+                return "", "skill_source_metadata_invalid"
+            if caller_identity:
+                return "", "skill_identity_not_registered"
+            return "", ""
+        if not registered_identity:
+            return "", "skill_identity_missing"
+        if (
+            not upstream_tool_name
+            or tool_name != f"skill.{registered_identity}.{upstream_tool_name}"
+        ):
+            return "", "skill_source_metadata_invalid"
+        if caller_identity and caller_identity != registered_identity:
+            return "", "skill_identity_mismatch"
+        return registered_identity, ""
+
+    def _authorize_registered_skill_runtime(
+        self,
+        *,
+        tool: ToolDefinition | None,
+        arguments: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        skill_name, identity_error = self._registered_skill_identity(
+            tool=tool,
+            arguments=arguments,
+        )
+        if identity_error or not skill_name:
+            return skill_name, identity_error
+        network_hosts: list[str] = []
+        for raw in arguments.get("network_urls", []):
+            host = safe_url_hostname(str(raw).strip())
+            if host:
+                network_hosts.append(host)
+        for raw in arguments.get("command", []):
+            host = safe_url_hostname(str(raw))
+            if host:
+                network_hosts.append(host)
+        decision = self._skill_manager.authorize_runtime(
+            skill_name=skill_name,
+            request=SkillExecutionRequest(
+                skill_name=skill_name,
+                network_hosts=network_hosts,
+                filesystem_paths=[str(item) for item in arguments.get("read_paths", [])]
+                + [str(item) for item in arguments.get("write_paths", [])],
+                shell_commands=[" ".join(str(token) for token in arguments.get("command", []))],
+                environment_vars=list(dict(arguments.get("env", {})).keys()),
+            ),
+        )
+        if decision.allowed:
+            return skill_name, ""
+        reason = decision.reason
+        if decision.violations:
+            reason = reason + ":" + ",".join(decision.violations)
+        return skill_name, reason
 
     @staticmethod
     def _approval_task_envelope_id_for_session(session: Session | None) -> str:
@@ -2882,6 +2962,7 @@ class HandlerImplementation(
             environment=merged_policy.environment,
             limits=merged_policy.limits,
             degraded_mode=merged_policy.degraded_mode,
+            containment_profile=merged_policy.containment_profile,
             origin=origin.model_dump(mode="json"),
         )
 
@@ -3323,13 +3404,31 @@ class HandlerImplementation(
 
     def _doctor_sandbox_status(self) -> dict[str, Any]:
         problems: list[str] = []
+        containment_profile = ContainmentProfile(
+            self._policy_loader.policy.sandbox.containment_profile
+        )
         connect_path = self._sandbox.connect_path_status()
+        backends = self._sandbox.backend_status()
+        default_backend = self._policy_loader.policy.sandbox.default_backend
+        network_backend = self._policy_loader.policy.sandbox.network_backend
         if not bool(connect_path.get("available", False)):
             problems.append("connect_path_unavailable")
+        if not bool(backends.get(default_backend, {}).get("available", False)):
+            problems.append(f"default_backend_unavailable:{default_backend}")
+        if not bool(backends.get(network_backend, {}).get("available", False)):
+            problems.append(f"network_backend_unavailable:{network_backend}")
         if not bool(self._policy_loader.policy.sandbox.fail_closed_security_critical):
             problems.append("fail_closed_security_critical_disabled")
+        if containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK:
+            problems.append("expert_host_fallback_enabled")
         status = "ok"
-        if "fail_closed_security_critical_disabled" in problems:
+        if (
+            (
+                "fail_closed_security_critical_disabled" in problems
+                or any("backend_unavailable:" in item for item in problems)
+            )
+            and containment_profile == ContainmentProfile.SUPPORTED
+        ):
             status = "misconfigured"
         elif problems:
             status = "degraded"
@@ -3337,9 +3436,11 @@ class HandlerImplementation(
             "status": status,
             "problems": sorted(set(problems)),
             "connect_path": connect_path,
+            "backends": backends,
             "sandbox_policy": {
-                "default_backend": self._policy_loader.policy.sandbox.default_backend,
-                "network_backend": self._policy_loader.policy.sandbox.network_backend,
+                "containment_profile": containment_profile,
+                "default_backend": default_backend,
+                "network_backend": network_backend,
                 "fail_closed_security_critical": bool(
                     self._policy_loader.policy.sandbox.fail_closed_security_critical
                 ),
@@ -4068,6 +4169,14 @@ class HandlerImplementation(
             warnings.append(
                 "Approval fallback engaged: "
                 f"{backend_resolution.backend.method}/{backend_resolution.backend.level.value}"
+            )
+        if (
+            merged_policy is not None
+            and merged_policy.containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK
+        ):
+            warnings.append(
+                "Expert host fallback enabled: this command may run on the host "
+                "if requested isolation is unavailable"
             )
         if extra_warnings:
             warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
@@ -6636,10 +6745,15 @@ class HandlerImplementation(
             return execution
 
         tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))
+        tool = self._registry.get_tool(tool_name)
+        registered_skill_name, skill_identity_error = self._registered_skill_identity(
+            tool=tool,
+            arguments=arguments,
+        )
         origin = self._origin_for(
             session=session,
             actor=approval_actor,
-            skill_name=str(arguments.get("skill_name") or "").strip(),
+            skill_name=registered_skill_name,
             task_id=str(task_id).strip(),
         )
         executed_action = execution_action or build_action(
@@ -6669,7 +6783,6 @@ class HandlerImplementation(
         )
 
         checkpoint_id: str | None = None
-        tool = self._registry.get_tool(tool_name)
         if _should_checkpoint(self._config.checkpoint_trigger, tool):
             checkpoint = self._checkpoint_store.create(session)
             checkpoint_id = checkpoint.checkpoint_id
@@ -7355,6 +7468,44 @@ class HandlerImplementation(
                 success=False,
                 checkpoint_id=checkpoint_id,
                 error=tool_unavailable_reason,
+            )
+
+        _, skill_runtime_error = self._authorize_registered_skill_runtime(
+            tool=tool,
+            arguments=arguments,
+        )
+        skill_runtime_error = skill_identity_error or skill_runtime_error
+        if skill_runtime_error:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="skill_sandbox",
+                    tool_name=tool_name,
+                    reason=skill_runtime_error,
+                    **approval_event_fields,
+                )
+            )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="skill_sandbox",
+                    tool_name=tool_name,
+                    success=False,
+                    error=skill_runtime_error,
+                    **approval_event_fields,
+                )
+            )
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=False,
+                idempotency_key=control_plane_execution_key,
+            )
+            return ApprovedToolExecutionResult(
+                success=False,
+                checkpoint_id=checkpoint_id,
+                error=skill_runtime_error,
             )
 
         sandbox_result = await self._execute_via_sandbox(

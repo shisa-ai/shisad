@@ -16,6 +16,7 @@ from shisad.executors.sandbox import (
     ResourceLimits,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 
 
 class PolicyMergeError(ValueError):
@@ -69,6 +70,7 @@ class PolicyPatch(_PatchBase):
 
 
 class ToolExecutionPolicy(BaseModel):
+    containment_profile: ContainmentProfile = ContainmentProfile.SUPPORTED
     sandbox_type: SandboxType
     network: NetworkPolicy
     filesystem: FilesystemPolicy
@@ -104,6 +106,7 @@ class PolicyMerge:
         security_critical = cls._merge_security_critical(server.security_critical, caller)
 
         return ToolExecutionPolicy(
+            containment_profile=server.containment_profile,
             sandbox_type=sandbox_type,
             network=network,
             filesystem=filesystem,

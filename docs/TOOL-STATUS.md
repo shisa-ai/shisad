@@ -76,6 +76,12 @@ Note:
   audit actor chain `human_confirmation -> planner_lockdown_resume`. The static
   snapshot omits it until the probe creates a bounded caution-level fixture;
   lockdown behavioral tests cover the stateful journey.
+- Command-backed tool rows assume a usable configured isolation backend under
+  the default `supported` containment profile. Without one, those rows fail
+  closed and doctor reports the missing backend. The explicit
+  `expert_host_fallback` profile can preserve command functionality on the
+  host, with persistent warnings and truthful requested/actual backend data;
+  that posture is not a supported-isolation result.
 - `shisad memory benchmark` and `shisad memory sut` are CLI evaluation
   surfaces, not live assistant tools, so they are intentionally omitted from
   this tool table. See `docs/memory-evals.md` for memory evaluation commands.

@@ -17,7 +17,6 @@ from shisad.core.approval import (
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, PEPDecisionKind, SessionId, TaintLabel, ToolName
-from shisad.core.url_parsing import safe_url_hostname
 from shisad.daemon.handlers._impl_session import _browser_runtime_unavailable_rejection_reason
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
@@ -31,7 +30,6 @@ from shisad.governance.merge import PolicyMergeError, normalize_patch
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision
 from shisad.security.control_plane.trace import trace_reason_requires_confirmation
-from shisad.skills.sandbox import SkillExecutionRequest
 
 logger = logging.getLogger(__name__)
 
@@ -242,48 +240,24 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 )
             )
             raise ValueError(validation_error)
-        skill_name = str(params.get("skill_name") or "").strip()
-        if skill_name:
-            network_hosts: list[str] = []
-            for raw in params.get("network_urls", []):
-                token = str(raw).strip()
-                if not token:
-                    continue
-                host = safe_url_hostname(token)
-                if host:
-                    network_hosts.append(host)
-            for token in params.get("command", []):
-                host = safe_url_hostname(str(token))
-                if host:
-                    network_hosts.append(host)
-            runtime_decision = self._skill_manager.authorize_runtime(
-                skill_name=skill_name,
-                request=SkillExecutionRequest(
-                    skill_name=skill_name,
-                    network_hosts=network_hosts,
-                    filesystem_paths=[str(item) for item in params.get("read_paths", [])]
-                    + [str(item) for item in params.get("write_paths", [])],
-                    shell_commands=[" ".join(str(token) for token in params.get("command", []))],
-                    environment_vars=list(dict(params.get("env", {})).keys()),
-                ),
-            )
-            if not runtime_decision.allowed:
-                reason = runtime_decision.reason
-                if runtime_decision.violations:
-                    reason = reason + ":" + ",".join(runtime_decision.violations)
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="skill_sandbox",
-                        tool_name=tool_name,
-                        reason=reason,
-                        **direct_event_fields,
-                    )
+        skill_name, skill_identity_error = self._registered_skill_identity(
+            tool=tool_def,
+            arguments=params,
+        )
+        if skill_identity_error:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="skill_sandbox",
+                    tool_name=tool_name,
+                    reason=skill_identity_error,
+                    **direct_event_fields,
                 )
-                return SandboxResult(
-                    allowed=False,
-                    reason=reason,
-                ).model_dump(mode="json")
+            )
+            return SandboxResult(
+                allowed=False,
+                reason=skill_identity_error,
+            ).model_dump(mode="json")
 
         patch_params = normalize_patch(dict(params))
         # Default direct admin execution posture to fail-closed when omitted.
@@ -291,7 +265,11 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             "degraded_mode" not in patch_params.model_fields_set
             or "security_critical" not in patch_params.model_fields_set
         ):
-            strict_defaults = self._policy_loader.policy.sandbox.fail_closed_security_critical
+            sandbox_policy = self._policy_loader.policy.sandbox
+            strict_defaults = bool(
+                sandbox_policy.fail_closed_security_critical
+                and sandbox_policy.containment_profile == "supported"
+            )
             patched_params = dict(params)
             if "degraded_mode" not in patch_params.model_fields_set:
                 patched_params["degraded_mode"] = (

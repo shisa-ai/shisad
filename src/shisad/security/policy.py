@@ -229,6 +229,7 @@ class SandboxPolicy(BaseModel):
     """Sandbox policy defaults and per-tool overrides."""
 
     default_backend: str = "nsjail"
+    containment_profile: Literal["supported", "expert_host_fallback"] = "supported"
     network_backend: str = "container"
     fail_closed_security_critical: bool = True
     tool_overrides: dict[ToolName, SandboxToolOverride] = Field(default_factory=dict)

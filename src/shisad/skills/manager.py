@@ -693,6 +693,7 @@ def _tool_definition(manifest: Any, declared_tool: Any) -> ToolDefinition:
         registration_source="skill",
         registration_source_id=str(manifest.name),
         upstream_tool_name=str(declared_tool.name),
+        sandbox_type="nsjail",
     )
 
 

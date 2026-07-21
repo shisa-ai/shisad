@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -71,6 +72,118 @@ def _write_skill(path: Path, *, description: str) -> None:
     (path / "SKILL.md").write_text("Dynamic fixture skill.\n", encoding="utf-8")
 
 
+def _write_command_skill(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "manifest_version": "1.0.0",
+        "name": "command-fixture",
+        "version": "1.0.0",
+        "author": "fixture-author",
+        "signature": "",
+        "source_repo": "https://example.test/command-fixture",
+        "description": "dynamic command fixture",
+        "capabilities": {
+            "network": [],
+            "filesystem": [],
+            "shell": [{"command": "echo", "reason": "fixture output"}],
+            "environment": [],
+        },
+        "dependencies": [],
+        "tools": [
+            {
+                "name": "run",
+                "description": "Run the declared fixture command.",
+                "parameters": [
+                    {
+                        "name": "command",
+                        "type": "array",
+                        "items_type": "string",
+                        "required": True,
+                    }
+                ],
+                "destinations": [],
+                "require_confirmation": False,
+            }
+        ],
+    }
+    (path / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+    (path / "SKILL.md").write_text("Command fixture skill.\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "persist_attempt_before_effect",
+    [False, True],
+    ids=["planner", "persisted-confirmation"],
+)
+@pytest.mark.parametrize(
+    ("caller_skill_name", "expected_error"),
+    [("", "skill_bundle_drift"), ("forged-skill", "skill_identity_mismatch")],
+    ids=["omitted-identity", "forged-identity"],
+)
+@pytest.mark.asyncio
+async def test_f4b_registered_skill_identity_authorizes_at_effect_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persist_attempt_before_effect: bool,
+    caller_skill_name: str,
+    expected_error: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    skill_path = tmp_path / "command-skill"
+    _write_command_skill(skill_path)
+    tool_name = ToolName("skill.command-fixture.run")
+
+    services = await DaemonServices.build(config)
+    try:
+        services.skill_manager.activate_bundle(skill_path)
+        registered = services.registry.get_tool(tool_name)
+        assert registered is not None
+        assert registered.registration_source == "skill"
+        assert registered.registration_source_id == "command-fixture"
+        assert registered.sandbox_type == "nsjail"
+        handlers = DaemonControlHandlers(services=services)
+        absent_source = registered.model_copy(
+            update={"registration_source": "local", "registration_source_id": ""}
+        )
+        forged_source = registered.model_copy(update={"registration_source_id": "other-skill"})
+        assert handlers._impl._registered_skill_identity(
+            tool=absent_source, arguments={}
+        ) == ("", "skill_source_metadata_invalid")
+        assert handlers._impl._registered_skill_identity(
+            tool=forged_source, arguments={}
+        ) == ("", "skill_source_metadata_invalid")
+        created = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            RequestContext(),
+        )
+        session_id = SessionId(created.session_id)
+        session = services.session_manager.get(session_id)
+        assert session is not None
+
+        (skill_path / "SKILL.md").write_text("drifted after approval\n", encoding="utf-8")
+        arguments: dict[str, Any] = {"command": ["echo", "must-not-run"]}
+        if caller_skill_name:
+            arguments["skill_name"] = caller_skill_name
+        result = await handlers._impl._execute_approved_action(
+            sid=session_id,
+            user_id=session.user_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            capabilities=set(session.capabilities),
+            approval_actor="planner",
+            persist_attempt_before_effect=persist_attempt_before_effect,
+        )
+
+        assert result.success is False
+        assert result.error == expected_error
+    finally:
+        await services.shutdown()
+
+
 @pytest.mark.parametrize(
     "self_modified",
     [False, True],
@@ -99,6 +212,7 @@ async def test_dynamic_skill_operation_defaults_unknown_and_never_auto_retries(
         assert registered is not None
         assert registered.registration_source == "skill"
         assert registered.registration_source_id == "fixture"
+        assert registered.sandbox_type == "nsjail"
         assert registered.upstream_tool_name == "dynamic-effect"
         assert registered.retry_class == ToolRetryClass.UNKNOWN
 
