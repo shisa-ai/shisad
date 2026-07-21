@@ -415,6 +415,19 @@ fail closed before the original command is invoked on the host. Results and
 `shisad doctor check --component sandbox` report the requested backend, the
 actual backend when one ran, degraded controls, and an operator next action.
 
+On Linux, network-enabled commands additionally require `bwrap`, `pasta`, and
+the configured connect-path enforcement helper. shisad creates an isolated
+network namespace, holds the command behind a pre-exec gate, attaches
+user-mode networking, and installs destination rules before releasing the
+command. The bubblewrap command policy drops all Linux capabilities before the
+tool starts. The current path is IPv4-only. Names authorized and resolved before
+execution are pinned in a generated read-only hosts file; the namespace does
+not receive an external DNS forwarder or host/namespace port forwarding. A
+missing helper, namespace setup failure, or rule-installation failure leaves
+the command unstarted in the `supported` profile. Doctor's backend rows report
+network-namespace isolation, network-transport prerequisites, and DNS-control
+availability separately from the base process-isolation runtime.
+
 `sandbox.containment_profile: expert_host_fallback` is a separate explicit
 operator posture for environments that accept host execution when isolation
 cannot be provided. It preserves declared tool functionality but is not a
@@ -428,7 +441,12 @@ identity, and requested containment metadata. Immediately before any shared
 execution path invokes an effect, shisad derives skill identity from that
 registered definition and rechecks inventory publication, bundle and manifest
 digests, tool schemas, and declared command/path/environment/network
-capabilities. A caller-provided `skill_name` is never treated as authority.
+capabilities. Executable authorization uses the original argv atom, and path
+authorization includes the working directory and implicit absolute-argument
+mounts; a post-authorization executable substitution is rejected before
+launch. Skill and local tool identifiers are canonicalized consistently across
+activation, restart, authorization, registration, and revocation. A
+caller-provided `skill_name` is never treated as authority.
 
 ## Supply Chain
 

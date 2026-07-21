@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from shisad.core.session import CheckpointStore, Session
@@ -88,6 +89,11 @@ class SandboxOrchestrator:
             backend_type.value: {
                 "available": bool(backend.runtime),
                 "runtime": backend.runtime,
+                "network_namespace_available": backend.enforcement.network,
+                "network_available": bool(
+                    backend.enforcement.network and backend.enforcement.dns_control
+                ),
+                "dns_control_available": backend.enforcement.dns_control,
             }
             for backend_type, backend in self._backends.items()
         }
@@ -96,6 +102,12 @@ class SandboxOrchestrator:
         """Return the exact network target surface used during execution."""
 
         return self._network.extract_network_targets(command)
+
+    @staticmethod
+    def filesystem_targets_for_command(command: list[str], *, cwd: str | None) -> list[str]:
+        """Return the exact implicit filesystem mount surface used during execution."""
+
+        return SandboxProcessRunner.filesystem_targets_for_command(command, cwd=cwd)
 
     async def execute_async(
         self,
@@ -268,6 +280,7 @@ class SandboxOrchestrator:
         )
         return self._result_from_process(
             config=config,
+            backend=backend,
             backend_type=backend_type,
             checkpoint_id=checkpoint_id,
             fs_decisions=fs_decisions,
@@ -316,10 +329,22 @@ class SandboxOrchestrator:
                 *[address.strip() for address in connect_path_scope_addresses if address.strip()],
             }
         )
+        process_config = config.model_copy(
+            update={
+                "network_urls": [
+                    *config.network_urls,
+                    *[
+                        f"https://{decision.destination_host}/"
+                        for decision in network_decisions
+                        if decision.allowed and decision.destination_host
+                    ],
+                ]
+            }
+        )
         instance = backend.create(config)
         try:
             return self._run_process(
-                config,
+                process_config,
                 backend=backend,
                 command=command,
                 env=env,
@@ -333,6 +358,7 @@ class SandboxOrchestrator:
         self,
         *,
         config: SandboxConfig,
+        backend: SandboxBackend,
         backend_type: SandboxType,
         checkpoint_id: str,
         fs_decisions: list[FilesystemAccessDecision],
@@ -367,12 +393,12 @@ class SandboxOrchestrator:
                 degraded_controls=degraded_controls,
                 connect_path=connect_path_result,
             )
-        host_fallback_used = bool(
-            process.isolation_degraded
-            and config.containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK
-        )
+        host_fallback_used = process.host_fallback_used
         if host_fallback_used:
             degraded_controls = sorted({*degraded_controls, "expert_host_fallback"})
+        actual_runtime = process.actual_runtime
+        if not actual_runtime:
+            actual_runtime = Path(backend.runtime).name if backend.runtime else ""
         return SandboxResult(
             allowed=True,
             exit_code=process.exit_code,
@@ -383,7 +409,7 @@ class SandboxOrchestrator:
             reason="allowed",
             backend=backend_type,
             requested_backend=backend_type,
-            actual_backend="host" if host_fallback_used else backend_type,
+            actual_backend=("host" if host_fallback_used else actual_runtime or None),
             containment_profile=config.containment_profile,
             degraded_mode=config.degraded_mode,
             host_fallback_used=host_fallback_used,
@@ -710,10 +736,6 @@ class SandboxOrchestrator:
             preexec=preexec,
             on_started=on_started,
         )
-
-    @staticmethod
-    def _isolation_runtime_failed(*, exit_code: int | None, stderr: str) -> bool:
-        return SandboxProcessRunner.isolation_runtime_failed(exit_code=exit_code, stderr=stderr)
 
     @staticmethod
     def _to_text(value: bytes | str | None) -> str:

@@ -79,10 +79,37 @@ class _LegacyInstalledSkill(BaseModel):
     tool_schema_hashes: dict[str, str]
 
 
+def _canonical_skill_name(value: str) -> str:
+    return value.strip().lower()
+
+
+def _canonical_tool_local_name(value: str) -> str:
+    return value.strip().lower()
+
+
+def _canonical_tool_hashes(value: dict[str, str]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for raw_name, digest in value.items():
+        name = _canonical_tool_local_name(raw_name)
+        if not name or name in hashes:
+            raise ValueError("skill inventory contains conflicting tool names")
+        hashes[name] = digest
+    return hashes
+
+
 def _inventory_entries(value: list[InstalledSkill]) -> dict[str, InstalledSkill]:
-    entries = {entry.name: entry for entry in value}
-    if len(entries) != len(value):
-        raise ValueError("skill inventory contains duplicate names")
+    entries: dict[str, InstalledSkill] = {}
+    for entry in value:
+        name = _canonical_skill_name(entry.name)
+        if not name or name in entries:
+            raise ValueError("skill inventory contains duplicate names")
+        entries[name] = entry.model_copy(
+            update={
+                "name": name,
+                "tool_schema_hashes": _canonical_tool_hashes(entry.tool_schema_hashes),
+            },
+            deep=True,
+        )
     return entries
 
 
@@ -145,7 +172,7 @@ class SkillManager:
             file_hashes={file.path: file.sha256 for file in bundle.files},
             keyring=self._keyring,
         )
-        prior = self._inventory.get(bundle.manifest.name)
+        prior = self._inventory.get(_canonical_skill_name(bundle.manifest.name))
         diff = []
         if prior is not None and Path(prior.path).exists():
             previous = load_skill_bundle(
@@ -241,7 +268,7 @@ class SkillManager:
                 artifact_state=ArtifactState.REVIEW,
             )
 
-        existing = self._inventory.get(bundle.manifest.name)
+        existing = self._inventory.get(_canonical_skill_name(bundle.manifest.name))
         if existing is not None and self._policy.require_review_on_update:
             return SkillInstallDecision(
                 allowed=False,
@@ -285,16 +312,17 @@ class SkillManager:
 
     def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
         self._require_inventory("revoke")
-        installed = self._inventory.get(skill_name)
+        canonical_name = _canonical_skill_name(skill_name)
+        installed = self._inventory.get(canonical_name)
         if installed is None:
             return None
         if installed.state == ArtifactState.REVOKED:
             return installed
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
         candidate = dict(self._inventory)
-        candidate[skill_name] = updated
+        candidate[canonical_name] = updated
         self._publish_inventory(candidate, transition="revoke")
-        self._unregister_skill_tools(skill_name)
+        self._unregister_skill_tools(canonical_name)
         _ = reason
         return updated
 
@@ -309,8 +337,9 @@ class SkillManager:
             skill_path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
+        canonical_name = _canonical_skill_name(bundle.manifest.name)
         installed = InstalledSkill(
-            name=bundle.manifest.name,
+            name=canonical_name,
             version=bundle.manifest.version,
             path=str(skill_path),
             manifest_hash=bundle.manifest.manifest_hash(),
@@ -320,9 +349,9 @@ class SkillManager:
             bundle_digest=_bundle_digest(bundle),
         )
         candidate = dict(self._inventory)
-        candidate[bundle.manifest.name] = installed
+        candidate[canonical_name] = installed
         self._publish_inventory(candidate, transition="activate_bundle")
-        self._unregister_skill_tools(bundle.manifest.name)
+        self._unregister_skill_tools(canonical_name)
         if state == ArtifactState.PUBLISHED:
             self._register_skill_tools(
                 bundle.manifest,
@@ -332,7 +361,9 @@ class SkillManager:
         return installed
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
-        return [str(name) for name in self._skill_tool_map.get(skill_name, [])]
+        return [
+            str(name) for name in self._skill_tool_map.get(_canonical_skill_name(skill_name), [])
+        ]
 
     def drain_registration_events(self) -> list[SkillToolRegistrationDropped]:
         events = list(self._pending_registration_events)
@@ -344,9 +375,11 @@ class SkillManager:
         *,
         skill_name: str,
         request: SkillExecutionRequest,
+        command_argv: list[str] | None = None,
     ) -> SkillSandboxDecision:
         self._require_inventory("authorize_runtime")
-        installed = self._inventory.get(skill_name)
+        canonical_name = _canonical_skill_name(skill_name)
+        installed = self._inventory.get(canonical_name)
         if installed is None:
             return SkillSandboxDecision(allowed=False, reason="unknown_skill")
         if installed.state != ArtifactState.PUBLISHED:
@@ -372,16 +405,21 @@ class SkillManager:
             return SkillSandboxDecision(allowed=False, reason="skill_tool_schema_drift")
         if bundle_digest != installed.bundle_digest:
             return SkillSandboxDecision(allowed=False, reason="skill_bundle_drift")
-        executable_violations = _undeclared_shell_executables(bundle.manifest, request)
+        executable_violations = _undeclared_shell_executables(
+            bundle.manifest,
+            request,
+            command_argv=command_argv,
+        )
         if executable_violations:
             return SkillSandboxDecision(
                 allowed=False,
                 reason="undeclared_capability",
                 violations=executable_violations,
             )
+        canonical_manifest = bundle.manifest.model_copy(update={"name": canonical_name}, deep=True)
         return self._runtime_sandbox.authorize(
-            bundle.manifest,
-            request.model_copy(update={"skill_name": bundle.manifest.name}),
+            canonical_manifest,
+            request.model_copy(update={"skill_name": canonical_name}),
         )
 
     def _run_static(self, bundle: SkillBundle) -> list[Finding]:
@@ -499,7 +537,7 @@ class SkillManager:
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 self._record_unavailable_bundle(installed, "skill:bundle_unloadable")
                 continue
-            bundles[installed.name] = bundle
+            bundles[_canonical_skill_name(installed.name)] = bundle
             digest = _bundle_digest(bundle)
             expected_hashes = _migrate_legacy_tool_hashes(
                 bundle.manifest, dict(installed.tool_schema_hashes)
@@ -509,7 +547,7 @@ class SkillManager:
                 not installed.bundle_digest
                 and bundle.manifest.manifest_hash() == installed.manifest_hash
             ) or (digest == installed.bundle_digest and hashes_migrated):
-                candidate[installed.name] = installed.model_copy(
+                candidate[_canonical_skill_name(installed.name)] = installed.model_copy(
                     update={"bundle_digest": digest, "tool_schema_hashes": expected_hashes},
                     deep=True,
                 )
@@ -572,10 +610,12 @@ class SkillManager:
         if self._tool_registry is None:
             return []
         registered: list[ToolName] = []
+        skill_name = _canonical_skill_name(str(manifest.name))
         for declared_tool in getattr(manifest, "tools", []):
-            tool_name = ToolName(f"skill.{manifest.name}.{declared_tool.name}")
+            local_name = _canonical_tool_local_name(str(declared_tool.name))
+            tool_name = ToolName(f"skill.{skill_name}.{local_name}")
             tool_def = _tool_definition(manifest, declared_tool)
-            expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
+            expected_hash = str((expected_hashes or {}).get(local_name, "")).strip()
             actual_hash = tool_def.schema_hash()
             if expected_hash and expected_hash != actual_hash:
                 legacy_hash = tool_def.legacy_schema_hash_without_retry_metadata()
@@ -585,7 +625,7 @@ class SkillManager:
                     and expected_hash == legacy_hash
                     and expected_hashes is not None
                 ):
-                    expected_hashes[declared_tool.name] = actual_hash
+                    expected_hashes[local_name] = actual_hash
                     expected_hash = actual_hash
                 else:
                     self._record_registration_drop(
@@ -604,15 +644,16 @@ class SkillManager:
             except ValueError:
                 continue
             registered.append(tool_name)
-        self._skill_tool_map[manifest.name] = registered
+        self._skill_tool_map[skill_name] = registered
         return registered
 
     def _unregister_skill_tools(self, skill_name: str) -> None:
         if self._tool_registry is None:
             return
-        for tool_name in self._skill_tool_map.get(skill_name, []):
+        canonical_name = _canonical_skill_name(skill_name)
+        for tool_name in self._skill_tool_map.get(canonical_name, []):
             self._tool_registry.unregister(tool_name)
-        self._skill_tool_map.pop(skill_name, None)
+        self._skill_tool_map.pop(canonical_name, None)
 
     def _record_registration_drop(
         self,
@@ -626,7 +667,7 @@ class SkillManager:
     ) -> None:
         event = SkillToolRegistrationDropped(
             actor="skill_manager",
-            skill_name=str(getattr(manifest, "name", "")),
+            skill_name=_canonical_skill_name(str(getattr(manifest, "name", ""))),
             version=str(getattr(manifest, "version", "")),
             tool_name=tool_name,
             reason_code=reason_code,
@@ -692,55 +733,82 @@ def _skill_tool_capabilities(manifest: Any) -> set[Capability]:
 def _undeclared_shell_executables(
     manifest: Any,
     request: SkillExecutionRequest,
+    *,
+    command_argv: list[str] | None,
 ) -> list[str]:
     declared = {
         command
         for item in getattr(manifest.capabilities, "shell", [])
-        if (command := str(getattr(item, "command", "")).strip().split(" ", 1)[0])
+        if (command := _declared_shell_executable(str(getattr(item, "command", ""))))
     }
-    violations: list[str] = []
-    for command in request.shell_commands:
-        normalized = " ".join(str(command).strip().split())
-        if not normalized:
-            continue
-        executable = normalized.split(" ", 1)[0]
+    if command_argv:
+        executable = str(command_argv[0])
         if executable not in declared:
-            violations.append(f"undeclared_shell:{normalized}")
-    return sorted(set(violations))
+            rendered = " ".join(str(token) for token in command_argv)
+            return [f"undeclared_shell:{rendered}"]
+        return []
+    if request.shell_commands:
+        return ["undeclared_shell:structured_argv_required"]
+    return []
+
+
+def _declared_shell_executable(command: str) -> str:
+    return command.strip().split(" ", 1)[0]
 
 
 def _tool_definition(manifest: Any, declared_tool: Any) -> ToolDefinition:
+    skill_name = _canonical_skill_name(str(manifest.name))
+    tool_name = _canonical_tool_local_name(str(declared_tool.name))
     return ToolDefinition(
-        name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
+        name=ToolName(f"skill.{skill_name}.{tool_name}"),
         description=declared_tool.description,
         parameters=list(declared_tool.parameters),
         capabilities_required=sorted(_skill_tool_capabilities(manifest), key=str),
         destinations=list(declared_tool.destinations),
         require_confirmation=bool(declared_tool.require_confirmation),
         registration_source="skill",
-        registration_source_id=str(manifest.name),
-        upstream_tool_name=str(declared_tool.name),
+        registration_source_id=skill_name,
+        upstream_tool_name=tool_name,
         sandbox_type="nsjail",
+    )
+
+
+def _legacy_case_preserving_tool_definition(manifest: Any, declared_tool: Any) -> ToolDefinition:
+    return _tool_definition(manifest, declared_tool).model_copy(
+        update={
+            "name": ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
+            "registration_source_id": str(manifest.name),
+            "upstream_tool_name": str(declared_tool.name),
+        },
+        deep=True,
     )
 
 
 def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for declared_tool in getattr(manifest, "tools", []):
-        hashes[declared_tool.name] = _tool_definition(manifest, declared_tool).schema_hash()
+        name = _canonical_tool_local_name(str(declared_tool.name))
+        if not name or name in hashes:
+            raise ValueError("skill manifest contains conflicting tool names")
+        hashes[name] = _tool_definition(manifest, declared_tool).schema_hash()
     return hashes
 
 
 def _migrate_legacy_tool_hashes(manifest: Any, expected: dict[str, str]) -> dict[str, str]:
-    migrated = dict(expected)
+    migrated = _canonical_tool_hashes(expected)
     for declared_tool in getattr(manifest, "tools", []):
+        local_name = _canonical_tool_local_name(str(declared_tool.name))
         tool_def = _tool_definition(manifest, declared_tool)
-        stored = expected.get(declared_tool.name, "")
-        if (
+        legacy_tool_def = _legacy_case_preserving_tool_definition(manifest, declared_tool)
+        stored = migrated.get(local_name, "")
+        if stored in {
+            legacy_tool_def.schema_hash(),
+            legacy_tool_def.legacy_schema_hash_without_retry_metadata(),
+        } or (
             tool_def.retry_class is ToolRetryClass.UNKNOWN
             and stored == tool_def.legacy_schema_hash_without_retry_metadata()
         ):
-            migrated[declared_tool.name] = tool_def.schema_hash()
+            migrated[local_name] = tool_def.schema_hash()
     return migrated
 
 

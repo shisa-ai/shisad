@@ -485,6 +485,66 @@ def test_f4b_expert_profile_reports_explicit_host_fallback(tmp_path: Path) -> No
     assert target.read_text(encoding="utf-8") == "x"
 
 
+@pytest.mark.parametrize(
+    ("requested_backend", "runtime", "expected_actual"),
+    [
+        (SandboxType.NSJAIL, "/usr/bin/bwrap", "bwrap"),
+        (SandboxType.NSJAIL, "/usr/sbin/nsjail", "nsjail"),
+        (SandboxType.VM, "/usr/bin/bwrap", "bwrap"),
+    ],
+)
+def test_u42r_result_reports_concrete_runtime_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    requested_backend: SandboxType,
+    runtime: str,
+    expected_actual: str,
+) -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[requested_backend] = SandboxBackend(
+        backend=requested_backend,
+        runtime=runtime,
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            cgroups=True,
+            dns_control=True,
+        ),
+    )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_process",
+        lambda *args, **kwargs: ProcessRunResult(
+            stdout="ok\n",
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            truncated=False,
+            resource_limit_warning="",
+            isolation_degraded=False,
+            blocked_reason="",
+            connect_path_result=None,
+            connect_path_degraded=False,
+        ),
+    )
+
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", "print('ok')"],
+            sandbox_type=requested_backend,
+            containment_profile=ContainmentProfile.SUPPORTED,
+        )
+    )
+
+    assert result.allowed is True
+    assert result.requested_backend == requested_backend
+    assert result.actual_backend == expected_actual
+
+
 def test_m3_rr2_unknown_runtime_wrapper_fail_closed_blocks_preinvoke(tmp_path: Path) -> None:
     target = tmp_path / "wrapper-mismatch.txt"
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))

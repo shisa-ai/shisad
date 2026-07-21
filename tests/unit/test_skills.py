@@ -611,6 +611,7 @@ def test_f4b_manager_rejects_executable_name_prefix_bypass(tmp_path: Path) -> No
 
     decision = manager.authorize_runtime(
         skill_name="shell-boundary",
+        command_argv=["echomalicious", "payload"],
         request=SkillExecutionRequest(
             skill_name="shell-boundary",
             shell_commands=["echomalicious payload"],
@@ -620,6 +621,35 @@ def test_f4b_manager_rejects_executable_name_prefix_bypass(tmp_path: Path) -> No
     assert decision.allowed is False
     assert decision.reason == "undeclared_capability"
     assert decision.violations == ["undeclared_shell:echomalicious payload"]
+
+
+def test_u42r_manager_preserves_executable_argv_atom_boundary(tmp_path: Path) -> None:
+    declared = tmp_path / "allowed"
+    actual = tmp_path / "allowed malicious"
+    manifest_payload = _manifest_payload(name="argv-boundary")
+    manifest_payload["capabilities"]["shell"] = [
+        {"command": str(declared), "reason": "declared executable"}
+    ]
+    skill = _write_skill(
+        tmp_path / "argv_boundary",
+        manifest=manifest_payload,
+        files={"SKILL.md": "safe"},
+    )
+    manager = SkillManager(storage_dir=tmp_path / "state", tool_registry=ToolRegistry())
+    manager.activate_bundle(skill)
+
+    decision = manager.authorize_runtime(
+        skill_name="argv-boundary",
+        command_argv=[str(actual), "payload"],
+        request=SkillExecutionRequest(
+            skill_name="argv-boundary",
+            shell_commands=[f"{actual} payload"],
+        ),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "undeclared_capability"
+    assert decision.violations == [f"undeclared_shell:{actual} payload"]
 
 
 def test_m4_rr5b_runtime_shell_command_host_mismatch_is_blocked(tmp_path: Path) -> None:
@@ -779,6 +809,83 @@ def test_f3_skill_inventory_healthy_lifecycle_wraps_and_reloads(tmp_path: Path) 
     assert revoked is not None
     assert revoked.state.value == "revoked"
     assert not reloaded_registry.has_tool(ToolName("skill.calendar-helper.lookup"))
+
+
+def test_u42r_mixed_case_skill_identity_survives_activation_reload_and_revoke(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "calendar", name="Calendar-Helper")
+    manifest_path = skill / "skill.manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["tools"][0]["name"] = "LookUp"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    installed = manager.activate_bundle(skill)
+
+    assert installed is not None
+    assert installed.name == "calendar-helper"
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    registered = registry.get_tool(tool_name)
+    assert registered is not None
+    assert registered.registration_source_id == "calendar-helper"
+    assert registered.upstream_tool_name == "lookup"
+    assert manager.tool_names_for_skill("Calendar-Helper") == [str(tool_name)]
+
+    reloaded_registry = ToolRegistry()
+    reloaded = SkillManager(storage_dir=storage, tool_registry=reloaded_registry)
+    assert reloaded_registry.has_tool(tool_name)
+    assert reloaded.authorize_runtime(
+        skill_name="CALENDAR-HELPER",
+        request=SkillExecutionRequest(
+            skill_name="CALENDAR-HELPER",
+            network_hosts=["api.good.example"],
+        ),
+    ).allowed
+
+    revoked = reloaded.revoke(skill_name="Calendar-Helper", reason="user_request")
+    assert revoked is not None
+    assert not reloaded_registry.has_tool(tool_name)
+
+
+def test_u42r_mixed_case_precanonical_inventory_migrates_on_reload(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _runtime_skill(tmp_path / "calendar", name="Calendar-Helper")
+    manifest_path = skill / "skill.manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["tools"][0]["name"] = "LookUp"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    manager = SkillManager(storage_dir=storage)
+    installed = manager.activate_bundle(skill)
+    assert installed is not None
+    bundle = load_skill_bundle(skill)
+    declared_tool = bundle.manifest.tools[0]
+    legacy_hash = skills_manager_module._legacy_case_preserving_tool_definition(
+        bundle.manifest,
+        declared_tool,
+    ).schema_hash()
+    manager._publish_inventory(
+        {
+            "Calendar-Helper": installed.model_copy(
+                update={
+                    "name": "Calendar-Helper",
+                    "tool_schema_hashes": {"LookUp": legacy_hash},
+                }
+            )
+        },
+        transition="test_legacy_case_inventory",
+    )
+
+    registry = ToolRegistry()
+    reloaded = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    assert registry.has_tool(tool_name)
+    registered = registry.get_tool(tool_name)
+    assert registered is not None
+    assert reloaded.list_installed()[0].tool_schema_hashes == {"lookup": registered.schema_hash()}
 
 
 def test_f3_skill_bundle_drift_blocks_only_drifted_dynamic_skill(tmp_path: Path) -> None:

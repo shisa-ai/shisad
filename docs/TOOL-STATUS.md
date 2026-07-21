@@ -82,6 +82,15 @@ Note:
   `expert_host_fallback` profile can preserve command functionality on the
   host, with persistent warnings and truthful requested/actual backend data;
   that posture is not a supported-isolation result.
+- Network-enabled command rows additionally require Linux `bwrap`, `pasta`,
+  and connect-path enforcement. The command is released inside its isolated
+  IPv4 network namespace, with Linux capabilities dropped, only after
+  destination rules are installed.
+  Pre-authorized hostnames are pinned without external DNS or port forwarding.
+  Doctor backend rows expose `network_namespace_available`,
+  `network_available`, and `dns_control_available`; missing network components
+  fail closed under `supported` and may use the host only under the explicit
+  `expert_host_fallback` posture.
 - `shisad memory benchmark` and `shisad memory sut` are CLI evaluation
   surfaces, not live assistant tools, so they are intentionally omitted from
   this tool table. See `docs/memory-evals.md` for memory evaluation commands.

@@ -2808,11 +2808,15 @@ class HandlerImplementation(
         tool: ToolDefinition | None,
         arguments: Mapping[str, Any],
     ) -> tuple[str, str]:
-        caller_identity = str(arguments.get("skill_name") or "").strip()
-        source = str(getattr(tool, "registration_source", "")).strip().lower()
-        registered_identity = str(getattr(tool, "registration_source_id", "")).strip()
-        tool_name = str(getattr(tool, "name", "")).strip()
-        upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+        caller_identity = str(arguments.get("skill_name") or "").strip().lower()
+        raw_source = str(getattr(tool, "registration_source", "")).strip()
+        raw_registered_identity = str(getattr(tool, "registration_source_id", "")).strip()
+        raw_tool_name = str(getattr(tool, "name", "")).strip()
+        raw_upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+        source = raw_source.lower()
+        registered_identity = raw_registered_identity.lower()
+        tool_name = raw_tool_name.lower()
+        upstream_tool_name = raw_upstream_tool_name.lower()
         if source != "skill":
             if tool_name.startswith("skill."):
                 return "", "skill_source_metadata_invalid"
@@ -2821,6 +2825,13 @@ class HandlerImplementation(
             return "", ""
         if not registered_identity:
             return "", "skill_identity_missing"
+        if (
+            raw_source != source
+            or raw_registered_identity != registered_identity
+            or raw_tool_name != tool_name
+            or raw_upstream_tool_name != upstream_tool_name
+        ):
+            return "", "skill_source_metadata_invalid"
         if (
             not upstream_tool_name
             or tool_name != f"skill.{registered_identity}.{upstream_tool_name}"
@@ -2854,11 +2865,16 @@ class HandlerImplementation(
                 network_hosts.append(host)
         decision = self._skill_manager.authorize_runtime(
             skill_name=skill_name,
+            command_argv=command,
             request=SkillExecutionRequest(
                 skill_name=skill_name,
                 network_hosts=network_hosts,
                 filesystem_paths=[str(item) for item in arguments.get("read_paths", [])]
-                + [str(item) for item in arguments.get("write_paths", [])],
+                + [str(item) for item in arguments.get("write_paths", [])]
+                + self._sandbox.filesystem_targets_for_command(
+                    command,
+                    cwd=str(arguments.get("cwd", "")) or None,
+                ),
                 shell_commands=[" ".join(command)],
                 environment_vars=list(dict(arguments.get("env", {})).keys()),
             ),
@@ -2908,6 +2924,25 @@ class HandlerImplementation(
             operator_surface=operator_surface,
         )
         return PolicyMerge.merge(server=floor, caller=normalize_patch(dict(arguments)))
+
+    def _reconcile_current_containment_policy(
+        self,
+        merged_policy: ToolExecutionPolicy,
+    ) -> ToolExecutionPolicy:
+        current_profile = ContainmentProfile(self._policy_loader.policy.sandbox.containment_profile)
+        if (
+            current_profile != ContainmentProfile.SUPPORTED
+            and merged_policy.containment_profile != ContainmentProfile.SUPPORTED
+        ):
+            return merged_policy
+        return merged_policy.model_copy(
+            update={
+                "containment_profile": ContainmentProfile.SUPPORTED,
+                "degraded_mode": DegradedModePolicy.FAIL_CLOSED,
+                "security_critical": True,
+            },
+            deep=True,
+        )
 
     @staticmethod
     def _build_sandbox_config(
@@ -3418,18 +3453,19 @@ class HandlerImplementation(
             problems.append(f"default_backend_unavailable:{default_backend}")
         if not bool(backends.get(network_backend, {}).get("available", False)):
             problems.append(f"network_backend_unavailable:{network_backend}")
+        elif not bool(backends.get(network_backend, {}).get("network_available", False)):
+            problems.append(f"network_boundary_unavailable:{network_backend}")
         if not bool(self._policy_loader.policy.sandbox.fail_closed_security_critical):
             problems.append("fail_closed_security_critical_disabled")
         if containment_profile == ContainmentProfile.EXPERT_HOST_FALLBACK:
             problems.append("expert_host_fallback_enabled")
         status = "ok"
         if (
-            (
-                "fail_closed_security_critical_disabled" in problems
-                or any("backend_unavailable:" in item for item in problems)
-            )
-            and containment_profile == ContainmentProfile.SUPPORTED
-        ):
+            "fail_closed_security_critical_disabled" in problems
+            or "connect_path_unavailable" in problems
+            or any("backend_unavailable:" in item for item in problems)
+            or any("network_boundary_unavailable:" in item for item in problems)
+        ) and containment_profile == ContainmentProfile.SUPPORTED:
             status = "misconfigured"
         elif problems:
             status = "degraded"
@@ -7708,6 +7744,7 @@ class HandlerImplementation(
                     reason=f"policy_merge:{exc}",
                     origin=origin.model_dump(mode="json"),
                 )
+        merged_policy = self._reconcile_current_containment_policy(merged_policy)
 
         config = self._build_sandbox_config(
             sid=sid,
