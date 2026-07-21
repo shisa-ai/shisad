@@ -3,6 +3,8 @@
 !README.md
 !pyproject.toml
 !uv.lock
+!scripts/
+!scripts/clean_artifact_smoke.py
 !src/
 !src/**
 **/__pycache__/

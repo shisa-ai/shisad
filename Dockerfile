@@ -78,6 +78,10 @@ RUN apt-get update \
         /workspace
 
 COPY --from=builder /opt/shisad /opt/shisad
+COPY scripts/clean_artifact_smoke.py /usr/local/bin/shisad-container-entrypoint
+
+RUN chmod 0755 /usr/local/bin/shisad-container-entrypoint \
+    && ln -s /usr/local/bin/shisad-container-entrypoint /usr/local/bin/bwrap
 
 VOLUME ["/var/lib/shisad", "/workspace"]
 WORKDIR /workspace
@@ -87,5 +91,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD ["shisad", "status"]
 
 STOPSIGNAL SIGINT
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/shisad-container-entrypoint"]
 CMD ["shisad", "start", "--foreground"]

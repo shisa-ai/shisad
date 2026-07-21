@@ -109,28 +109,21 @@ def _wheel_metadata(wheel: Path) -> str:
 def _assert_assistant_metadata(wheel: Path) -> None:
     metadata = _wheel_metadata(wheel)
     assert metadata.count("Provides-Extra: assistant") == 1
-    expected = (
-        "textual",
-        "mcp",
-        "matrix-nio",
-        "discord-py",
-        "python-telegram-bot",
-        "slack-bolt",
-        "slack-sdk",
-    )
+    expected = {
+        "Requires-Dist: discord-py<3,>=2.4; extra == 'assistant'",
+        "Requires-Dist: matrix-nio[e2e]<0.26,>=0.25; extra == 'assistant'",
+        "Requires-Dist: mcp<2,>=1.27; extra == 'assistant'",
+        "Requires-Dist: python-telegram-bot<22,>=21.6; extra == 'assistant'",
+        "Requires-Dist: slack-bolt<2,>=1.21; extra == 'assistant'",
+        "Requires-Dist: slack-sdk<4,>=3.33; extra == 'assistant'",
+        "Requires-Dist: textual<1,>=0.89; extra == 'assistant'",
+    }
     assistant_requirements = {
-        match.group(1).lower()
+        line
         for line in metadata.splitlines()
         if "extra == 'assistant'" in line or 'extra == "assistant"' in line
-        if (match := re.match(r"Requires-Dist: ([A-Za-z0-9_.-]+)", line)) is not None
     }
-    assert assistant_requirements == set(expected)
-    for distribution in expected:
-        assert re.search(
-            rf"^Requires-Dist: {re.escape(distribution)}.*extra == ['\"]assistant['\"]",
-            metadata,
-            flags=re.MULTILINE,
-        ), distribution
+    assert assistant_requirements == expected
 
 
 def _create_venv(tmp_path: Path, wheel: Path, *, extra: str = "") -> tuple[Path, Path]:
@@ -582,6 +575,7 @@ def test_official_container_clean_artifact_journey(
         pytest.skip("set SHISAD_RUN_CONTAINER_TESTS=1 for the required image lane")
     _assert_assistant_metadata(built_wheel)
     assert (REPO_ROOT / "Dockerfile").is_file()
+    assert (REPO_ROOT / "scripts" / "clean_artifact_smoke.py").is_file()
     docker = _docker_prefix()
     image = f"shisad-f5-test:{os.getpid()}"
     name = f"shisad-f5-{os.getpid()}"
@@ -649,7 +643,7 @@ def test_official_container_clean_artifact_journey(
                 cli = _Cli([*docker, "exec", name, "shisad"], REPO_ROOT)
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
-                    status = _run([*cli.prefix, "status"], cwd=REPO_ROOT, timeout=5, check=False)
+                    status = _run([*cli.prefix, "status"], cwd=REPO_ROOT, timeout=15, check=False)
                     if status.returncode == 0:
                         return cli
                     time.sleep(0.5)
@@ -680,7 +674,7 @@ def test_official_container_clean_artifact_journey(
                 ).stdout
             )
             assert runtime_probe == {
-                "bwrap": "/usr/bin/bwrap",
+                "bwrap": "/usr/local/bin/bwrap",
                 "capsh": None,
                 "pasta": "/usr/bin/pasta",
                 "uv": None,
@@ -701,10 +695,15 @@ def test_official_container_clean_artifact_journey(
 
             sandbox = _exercise_core_journey(cli, "/workspace/approved.txt", server)
             backends = sandbox["backends"]
-            if backends["nsjail"]["available"]:
-                assert backends["nsjail"]["runtime"] == "/usr/bin/bwrap"
-                assert backends["container"]["network_available"] is True
-            else:
+            bwrap_ready = backends["nsjail"]["available"]
+            for backend_name in ("container", "nsjail", "vm"):
+                backend = backends[backend_name]
+                assert backend["available"] is bwrap_ready
+                assert backend["runtime"] == ("/usr/local/bin/bwrap" if bwrap_ready else "")
+                assert backend["network_namespace_available"] is bwrap_ready
+                assert backend["network_available"] is bwrap_ready
+                assert backend["dns_control_available"] is bwrap_ready
+            if not bwrap_ready:
                 assert "default_backend_unavailable:nsjail" in sandbox["problems"]
                 assert "network_backend_unavailable:container" in sandbox["problems"]
             assert sandbox["connect_path"]["available"] is False

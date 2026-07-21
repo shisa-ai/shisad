@@ -718,8 +718,10 @@ that path.
   excludes the checkout and test tree by construction.
 - The final image runs as uid/gid `10001`, contains Tini, bwrap, pasta,
   iptables, and nsenter, and declares separate data and workspace volumes. It
-  does not infer `CAP_NET_ADMIN` in this fixed non-root posture, so the current
-  connect-path diagnostic is unavailable rather than overclaimed.
+  runs a bounded non-root namespace plus pasta-attachment preflight before the
+  daemon and exposes bwrap-backed doctor rows only after that probe succeeds.
+  It does not infer `CAP_NET_ADMIN` in this fixed non-root posture, so the
+  current connect-path diagnostic is unavailable rather than overclaimed.
   Provider/channel secrets are runtime inputs, not image environment or build
   arguments.
 - Residual build mutability remains: Debian packages are not version-pinned to
@@ -1343,6 +1345,7 @@ Note: packages with no `# via` comments in this export are direct dependencies o
 | Top-level permissions hardening | Yes | CI defaults to `contents: read` and expands only per job where needed (v0.6.0 release-close) |
 | Container base digest | Yes (candidate) | Both image stages pin the reviewed Linux/amd64 Python manifest digest |
 | Container runtime Python lock/hashes | Yes (candidate) | `uv.lock` export plus `--require-hashes`; final wheel install is non-editable |
+| Container isolation readiness | Yes (candidate) | Non-root startup probe exercises namespace creation plus real pasta attachment before bwrap-backed doctor rows become available |
 | Container OS/build-tool transitive pinning | Partial | Debian packages and builder-only transitive wheels remain index-resolved |
 | Container registry signing/attestation | No | No image is published; required before an official-image claim |
 

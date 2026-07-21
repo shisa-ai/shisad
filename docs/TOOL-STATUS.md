@@ -30,11 +30,13 @@ Note:
   `WORKS`; the snapshot remains environment-specific.
 - The local Linux/amd64 container candidate includes `bwrap`, `pasta`,
   `iptables`, and `nsenter`, but the Docker host decides whether nested
-  namespaces are usable. Its fixed non-root posture does not claim
-  `CAP_NET_ADMIN`, so the current connect-path diagnostic reports unavailable.
-  The sandbox doctor reports that detected state. An unavailable boundary
-  remains an actionable fail-closed `supported` result, never an automatic
-  `expert_host_fallback` selection.
+  namespaces are usable. Before daemon startup, the non-root entrypoint probes
+  the runtime namespace flags and a real pasta attachment; all bwrap-backed
+  doctor rows stay unavailable unless that probe succeeds. Its fixed non-root
+  posture does not claim `CAP_NET_ADMIN`, so the current connect-path diagnostic
+  reports unavailable. An unavailable boundary remains an actionable
+  fail-closed `supported` result, never an automatic `expert_host_fallback`
+  selection.
 - Browser and search services are not bundled into either artifact profile.
   Browser rows still require an operator-supplied compatible wrapper/runtime,
   and `tool.web.search` still requires a configured SearxNG-compatible

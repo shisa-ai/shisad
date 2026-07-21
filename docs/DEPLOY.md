@@ -70,14 +70,17 @@ operation.
 
 The image contains `bwrap`, `pasta`, `iptables`, and `nsenter`, but nested
 namespace availability is controlled by the Docker host. The fixed non-root
-candidate does not claim `CAP_NET_ADMIN`, so its connect-path diagnostic is
-unavailable by default. Always inspect the sandbox doctor result on the target
-host. If a required boundary is unavailable, the default `supported` profile
-reports the missing component and command-backed operations that require it
-fail closed; the image never selects `expert_host_fallback` automatically. Do
-not use `--privileged` merely to turn that diagnostic green. Bind-mounted
-data/workspace directories, if used in place of named volumes, must be owned
-and writable by uid/gid `10001`.
+entrypoint first exercises the namespace flags used by the runtime and attaches
+pasta to a disposable isolated network namespace. Only a successful probe is
+cached in the owner-only runtime directory and exposed through the bwrap-backed
+doctor rows. The candidate does not claim `CAP_NET_ADMIN`, so its connect-path
+diagnostic is unavailable by default. Always inspect the sandbox doctor result
+on the target host. If a required boundary is unavailable, the default
+`supported` profile reports the missing component and command-backed operations
+that require it fail closed; the image never selects `expert_host_fallback`
+automatically. Do not use `--privileged` merely to turn that diagnostic green.
+Bind-mounted data/workspace directories, if used in place of named volumes,
+must be owned and writable by uid/gid `10001`.
 
 Browser automation and web search are not bundled services. Browser use still
 needs an explicit compatible wrapper plus browser runtime, and web search

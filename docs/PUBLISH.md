@@ -113,8 +113,8 @@ Version must be updated in both places:
       `SHISAD_RUN_PACKAGING_TESTS=1 SHISAD_RUN_CONTAINER_TESTS=1 uv run --frozen --python 3.12 pytest tests/packaging/test_clean_artifact_journey.py -q -rxXs`
 - [ ] Review the artifact supply-chain diff: `pyproject.toml`, `uv.lock`, the
       digest-pinned Docker `FROM` lines, Docker build context, runtime package
-      set, fixed uid/gid, image env, and absence of test/build tools and baked
-      credentials.
+      set, fixed uid/gid, image env, namespace/pasta startup preflight, and
+      absence of test/build tools and baked credentials.
 - [ ] Record relevant macOS/Windows support checks for the exact candidate;
       reuse candidate-bound CI artifacts rather than rerunning them locally.
 - [ ] Run live-model release gate:
