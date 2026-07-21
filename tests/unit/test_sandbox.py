@@ -546,13 +546,33 @@ def test_u42r_result_reports_concrete_runtime_engine(
 
 
 @pytest.mark.parametrize(
-    ("actual_runtime", "host_fallback_used"),
-    [("bwrap", False), ("host", True)],
+    (
+        "actual_runtime",
+        "host_fallback_used",
+        "expected_guidance",
+        "forbidden_guidance",
+    ),
+    [
+        (
+            "bwrap",
+            False,
+            "host fallback was suppressed",
+            "host process collection failure",
+        ),
+        (
+            "host",
+            True,
+            "host process collection failure",
+            "host fallback was suppressed",
+        ),
+    ],
 )
 def test_u42r3_collection_failure_returns_actionable_uncertain_result(
     monkeypatch: pytest.MonkeyPatch,
     actual_runtime: str,
     host_fallback_used: bool,
+    expected_guidance: str,
+    forbidden_guidance: str,
 ) -> None:
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
     orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
@@ -601,6 +621,8 @@ def test_u42r3_collection_failure_returns_actionable_uncertain_result(
     assert result.allowed is False
     assert result.reason == "process_collection_failed:ValueError"
     assert "may have started" in result.next_action
+    assert expected_guidance in result.next_action
+    assert forbidden_guidance not in result.next_action
     assert result.host_fallback_used is host_fallback_used
     assert result.actual_backend == actual_runtime
 

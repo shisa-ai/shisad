@@ -489,10 +489,18 @@ class SandboxOrchestrator:
         actual_backend: str | None = None,
         host_fallback_used: bool = False,
     ) -> SandboxResult:
-        if reason.startswith("process_collection_failed:"):
+        if reason.startswith("process_collection_failed:") and (
+            host_fallback_used or actual_backend == "host"
+        ):
             next_action = (
-                "inspect the sandbox runtime failure before retrying; the original command "
-                "may have started, so host fallback was suppressed"
+                "inspect the host process collection failure before retrying; the original "
+                "command may have started on the host, so no further automatic retry was "
+                "attempted"
+            )
+        elif reason.startswith("process_collection_failed:"):
+            next_action = (
+                "inspect the sandbox process collection failure before retrying; the original "
+                "command may have started in isolation, so host fallback was suppressed"
             )
         elif reason in {"degraded_enforcement", "runtime_isolation_unavailable"}:
             next_action = (
