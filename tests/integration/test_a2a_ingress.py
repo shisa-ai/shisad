@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+from shisad.core.api.transport import ControlClient
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
-from shisad.core.planner import Planner, PlannerOutput, PlannerResult
-from shisad.core.types import SessionId, TaintLabel
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
+from shisad.core.types import SessionId, TaintLabel, ToolName
+from shisad.daemon.runner import _serve_daemon
 from shisad.daemon.services import DaemonServices
 from shisad.interop.a2a_envelope import (
     A2aEnvelope,
@@ -31,6 +41,7 @@ from shisad.interop.a2a_registry import (
     A2aRegistry,
 )
 from shisad.interop.a2a_transport import SocketTransport
+from tests.helpers.daemon import wait_for_socket
 
 
 @pytest.mark.asyncio
@@ -155,3 +166,160 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
     assert audit_data["capability_granted"] is True
     assert audit_data["outcome"] == "accepted"
     assert audit_data["reason"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_f9_a2a_pending_action_is_shared_with_control_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _queue_time_confirmation(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="f9-a2a-time",
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reasoning="exercise one cross-surface pending-action owner",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                actions=[proposal], assistant_response="Time check needs approval."
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _queue_time_confirmation)
+    local_private_path = tmp_path / "local-a2a.pem"
+    local_public_path = tmp_path / "local-a2a.pub"
+    local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'version: "1"\ndefault_require_confirmation: true\n',
+        encoding="utf-8",
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        a2a=A2aConfig(
+            enabled=True,
+            identity=A2aIdentityConfig(
+                agent_id="local-agent",
+                private_key_path=local_private_path,
+                public_key_path=local_public_path,
+            ),
+            listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
+            agents=[
+                A2aAgentConfig(
+                    agent_id="remote-agent",
+                    fingerprint=remote_fingerprint,
+                    public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                    trust_level="untrusted",
+                    allowed_intents=["query"],
+                )
+            ],
+        ),
+    )
+
+    services = await DaemonServices.build(config)
+    serve_task = asyncio.create_task(_serve_daemon(config, services, None))
+    client = ControlClient(config.socket_path)
+    try:
+        await wait_for_socket(config.socket_path)
+        await client.connect()
+        assert services.a2a_runtime is not None
+        runtime_status = services.a2a_runtime.status()
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(runtime_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
+        envelope = create_envelope(
+            from_agent_id="remote-agent",
+            from_fingerprint=remote_fingerprint,
+            to_agent_id="local-agent",
+            message_type="request",
+            intent="query",
+            payload={"content": "what time is it in UTC?"},
+        )
+        signed = attach_signature(envelope, sign_envelope(envelope, remote_private))
+        response = A2aEnvelope.model_validate(await SocketTransport().send(signed, target))
+        session_id = str(response.payload["session_id"])
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": session_id, "status": "pending", "limit": 10},
+        )
+        assert pending["count"] == 1
+        action = pending["actions"][0]
+        confirmation_id = str(action["confirmation_id"])
+        decision_nonce = str(action["decision_nonce"])
+        assert action["session_id"] == session_id
+        assert action["user_id"] == "remote-agent"
+        assert action["workspace_id"] == "local-agent"
+
+        confirm_params = {
+            "confirmation_id": confirmation_id,
+            "decision_nonce": decision_nonce,
+            "reason": "f9_cross_surface_approval",
+        }
+        confirmed = await client.call("action.confirm", confirm_params)
+        if str(confirmed.get("reason", "")) == "cooldown_active":
+            await asyncio.sleep(float(confirmed["retry_after_seconds"]) + 0.05)
+            confirmed = await client.call("action.confirm", confirm_params)
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+
+        terminal = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id, "status": "all", "limit": 10},
+        )
+        assert terminal["count"] == 1
+        terminal_action = terminal["actions"][0]
+        assert terminal_action["confirmation_id"] == confirmation_id
+        assert terminal_action["decision_nonce"] == decision_nonce
+        assert terminal_action["session_id"] == session_id
+        assert terminal_action["status"] == "approved"
+
+        ingress = services.a2a_runtime._ingress
+        assert ingress._session_create.__self__ is services.control_handlers
+        assert ingress._session_message.__self__ is services.control_handlers
+        assert services.approval_web._approval_complete_cb.__self__ is (
+            services.control_handlers._impl
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        services.shutdown_event.set()
+        await client.close()
+        await asyncio.wait_for(serve_task, timeout=3)
+        await services.shutdown()

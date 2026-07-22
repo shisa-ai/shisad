@@ -100,6 +100,7 @@ if TYPE_CHECKING:
     from shisad.channels.matrix import MatrixChannel
     from shisad.channels.slack import SlackChannel
     from shisad.channels.telegram import TelegramChannel
+    from shisad.daemon.control_handlers import DaemonControlHandlers
     from shisad.executors.browser import BrowserSandbox
 
 logger = logging.getLogger(__name__)
@@ -116,13 +117,6 @@ def _wipe_dir_contents(directory: Path) -> None:
             shutil.rmtree(child, ignore_errors=True)
         else:
             child.unlink(missing_ok=True)
-
-
-def _count_files(directory: Path) -> int:
-    """Count files inside *directory* (non-recursive)."""
-    if not directory.is_dir():
-        return 0
-    return sum(1 for child in directory.iterdir() if child.is_file())
 
 
 def _count_files_recursive(directory: Path) -> int:
@@ -579,6 +573,7 @@ class DaemonServices:
     risk_calibrator: RiskCalibrator
     server: ControlServer
     event_wiring: DaemonEventWiring
+    control_handlers: DaemonControlHandlers = field(init=False, repr=False)
     session_manager: SessionManager
     firewall: ContentFirewall
     output_firewall: OutputFirewall
@@ -1173,17 +1168,22 @@ class DaemonServices:
                 identity_default_trust_baseline=identity_default_trust_baseline,
                 identity_allowlists_baseline=identity_allowlists_baseline,
             )
+            local_identity = None
+            a2a_registry = None
             if config.a2a.enabled:
                 if config.a2a.identity is None:
                     raise ValueError("A2A is enabled but no local identity is configured")
                 local_identity = load_local_identity(config.a2a.identity)
-                services.a2a_registry = A2aRegistry.from_config(config.a2a)
-                from shisad.daemon.control_handlers import DaemonControlHandlers
+                a2a_registry = A2aRegistry.from_config(config.a2a)
+                services.a2a_registry = a2a_registry
+            from shisad.daemon.control_handlers import DaemonControlHandlers
 
-                handlers = DaemonControlHandlers(services=services)
+            services.control_handlers = DaemonControlHandlers(services=services)
+            if local_identity is not None and a2a_registry is not None:
+                handlers = services.control_handlers
                 a2a_runtime = A2aRuntime(
                     local_identity=local_identity,
-                    registry=services.a2a_registry,
+                    registry=a2a_registry,
                     firewall=firewall,
                     session_create=handlers.handle_session_create,
                     session_message=handlers.handle_session_message,

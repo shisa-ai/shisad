@@ -77,10 +77,10 @@ async def test_f7b_startup_recovers_delivery_before_server_accepts_work(
     resolver = object()
     shutdown_event = asyncio.Event()
 
-    class _Handlers:
+    class _UnexpectedHandlers:
         def __init__(self, *, services: object) -> None:
             _ = services
-            self._impl = SimpleNamespace(_resolve_chat_approval_capability=resolver)
+            raise AssertionError("runner must reuse the service-owned handlers")
 
     class _ApprovalWeb:
         async def start(self) -> None:
@@ -100,7 +100,7 @@ async def test_f7b_startup_recovers_delivery_before_server_accepts_work(
         _ = (services, handlers)
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(runner_module, "DaemonControlHandlers", _Handlers)
+    monkeypatch.setattr(runner_module, "DaemonControlHandlers", _UnexpectedHandlers)
     monkeypatch.setattr(runner_module, "_method_specs", lambda *args, **kwargs: [])
     monkeypatch.setattr(runner_module, "_warn_on_startup_config_gaps", lambda _config: None)
     monkeypatch.setattr(runner_module, "_reminder_delivery_pump", _idle_pump)
@@ -113,6 +113,9 @@ async def test_f7b_startup_recovers_delivery_before_server_accepts_work(
         assistant_fs_roots=[],
     )
     services = SimpleNamespace(
+        control_handlers=SimpleNamespace(
+            _impl=SimpleNamespace(_resolve_chat_approval_capability=resolver)
+        ),
         approval_web=_ApprovalWeb(),
         delivery=_Delivery(),
         server=_Server(),

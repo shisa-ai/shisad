@@ -14,6 +14,7 @@ import pytest
 from filelock import FileLock
 from pydantic import ValidationError
 
+import shisad.daemon.control_handlers as control_handlers_module
 from shisad.channels.state import ReplayIdentity
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.config_file import load_config_file
@@ -41,6 +42,7 @@ from shisad.daemon.services import (
     _warn_on_evidence_kms_endpoint_config,
     _warn_on_provider_route_gaps,
 )
+from shisad.interop.a2a_registry import A2aConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
@@ -179,6 +181,116 @@ async def test_daemon_services_builds_with_local_provider(
         assert services.internal_ingress_marker is not None
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f9_daemon_services_owns_handler_graph_when_a2a_disabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        handlers = services.control_handlers
+        impl = handlers._impl
+        assert impl._services is services
+        assert services.a2a_runtime is None
+        assert services.approval_web._registration_context_cb.__self__ is impl
+        assert services.approval_web._registration_complete_cb.__self__ is impl
+        assert services.approval_web._approval_context_cb.__self__ is impl
+        assert services.approval_web._approval_complete_cb.__self__ is impl
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f9_handler_construction_failure_releases_data_root_lock(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+
+    class _ExplodingHandlers:
+        def __init__(self, *, services: DaemonServices) -> None:
+            _ = services
+            raise RuntimeError("f9 handler construction failed")
+
+    monkeypatch.setattr(control_handlers_module, "DaemonControlHandlers", _ExplodingHandlers)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    built: DaemonServices | None = None
+    try:
+        with pytest.raises(RuntimeError, match="f9 handler construction failed"):
+            built = await DaemonServices.build(config)
+    finally:
+        if built is not None:
+            await built.shutdown()
+
+    data_lock = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+    data_lock.acquire(timeout=0)
+    data_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_f9_a2a_config_validation_precedes_handler_construction(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    constructed: list[DaemonServices] = []
+
+    class _TrackingHandlers:
+        def __init__(self, *, services: DaemonServices) -> None:
+            constructed.append(services)
+
+    monkeypatch.setattr(control_handlers_module, "DaemonControlHandlers", _TrackingHandlers)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        a2a=A2aConfig(enabled=True),
+    )
+
+    with pytest.raises(ValueError, match="no local identity"):
+        await DaemonServices.build(config)
+
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+async def test_f9_restart_replaces_service_owned_handler_graph(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    first = await DaemonServices.build(config)
+    first_handlers = first.control_handlers
+    await first.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        assert restarted.control_handlers is not first_handlers
+        assert restarted.control_handlers._impl._services is restarted
+        assert restarted.approval_web._approval_complete_cb.__self__ is (
+            restarted.control_handlers._impl
+        )
+    finally:
+        await restarted.shutdown()
 
 
 @pytest.mark.asyncio
@@ -642,7 +754,10 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
                 public_key_pem="-----BEGIN PUBLIC KEY-----\nQUFB\n-----END PUBLIC KEY-----",
             )
         )
-        assert services.credential_store.get_or_create_local_fido2_realm_id(seed="realm") == "realm"
+        initialized_realm_id = services.credential_store.get_or_create_local_fido2_realm_id(
+            seed="realm"
+        )
+        assert initialized_realm_id
 
         services.identity_map.configure_channel_trust(channel="matrix", trust_level="trusted")
         services.identity_map.allow_identity(channel="matrix", external_user_id="extra-user")
@@ -770,6 +885,10 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert services.credential_store.has_credential(static_credential) is True
         assert services.credential_store.list_approval_factors() == []
         assert services.credential_store.list_signer_keys(include_revoked=True) == []
+        assert (
+            services.credential_store.get_or_create_local_fido2_realm_id(seed="post-reset-realm")
+            == "postresetrealm"
+        )
         assert services.identity_map.is_allowed(channel="matrix", external_user_id="trusted-alice")
         assert not services.identity_map.is_allowed(channel="matrix", external_user_id="extra-user")
         assert (
@@ -1847,6 +1966,27 @@ async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
     _clear_remote_provider_env(monkeypatch)
     wrapper = tmp_path / "shisad-browser-wrapper"
     _write_browser_wrapper(wrapper)
+
+    async def _browser_ready(
+        *,
+        config: DaemonConfig,
+        sandbox: object,
+        browser_sandbox: object,
+        allowed_domains: list[str],
+    ) -> dict[str, object]:
+        _ = sandbox, browser_sandbox
+        assert allowed_domains == ["localhost"]
+        return {
+            "enabled": True,
+            "command": str(config.browser_command),
+            "allowed_domains": list(allowed_domains),
+            "require_hardened_isolation": False,
+            "problems": [],
+            "protocol": {"supported": True, "probe": "test", "reason": ""},
+            "status": "ok",
+        }
+
+    monkeypatch.setattr("shisad.daemon.services._browser_startup_status", _browser_ready)
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",

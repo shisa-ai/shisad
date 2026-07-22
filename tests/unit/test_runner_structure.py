@@ -59,6 +59,27 @@ def test_runner_has_no_private_provider_classes() -> None:
     assert private_classes == []
 
 
+def test_f9_single_live_handler_constructor_is_services_owned() -> None:
+    services_source = Path("src/shisad/daemon/services.py").read_text(encoding="utf-8")
+    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
+    services_tree = ast.parse(services_source)
+    runner_tree = ast.parse(runner_source)
+
+    def _handler_constructions(tree: ast.AST) -> list[ast.Call]:
+        return [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "DaemonControlHandlers"
+        ]
+
+    assert len(_handler_constructions(services_tree)) == 1
+    assert _handler_constructions(runner_tree) == []
+    assert "services.control_handlers = DaemonControlHandlers(services=services)" in services_source
+    assert "handlers = services.control_handlers" in runner_source
+
+
 def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods() -> None:
     class _HandlerStub:
         def __getattr__(self, _name: str):  # type: ignore[no-untyped-def]

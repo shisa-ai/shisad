@@ -532,7 +532,7 @@ async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None
 async def _serve_daemon(
     config: DaemonConfig, services: DaemonServices, on_started: Callable[[], None] | None
 ) -> None:
-    handlers = DaemonControlHandlers(services=services)
+    handlers = services.control_handlers
     await services.approval_web.start()
     await services.delivery.recover(
         capability_resolver=handlers._impl._resolve_chat_approval_capability
