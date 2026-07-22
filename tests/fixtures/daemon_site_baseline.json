@@ -3,17 +3,23 @@
     "DaemonServices.build": {
       "tests/adversarial/test_adversarial_context_taint.py": 2,
       "tests/adversarial/test_adversarial_task_handoffs.py": 2,
+      "tests/behavioral/test_f2_action_recovery.py": 2,
+      "tests/behavioral/test_f7_channel_completion.py": 4,
       "tests/integration/test_a2a_ingress.py": 1,
-      "tests/integration/test_chat_confirmation_e2e.py": 7,
+      "tests/integration/test_action_execution_recovery.py": 52,
+      "tests/integration/test_chat_confirmation_e2e.py": 11,
       "tests/integration/test_context_scaffold_degraded.py": 3,
+      "tests/integration/test_daemon_data_lock.py": 1,
+      "tests/integration/test_skill_tool_execution.py": 7,
       "tests/unit/test_daemon_services.py": 30,
       "tests/unit/test_session_memory_summarizer.py": 6
     },
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
-      "tests/adversarial/test_pairing_artifact_parser.py": 3,
+      "tests/adversarial/test_pairing_artifact_parser.py": 6,
       "tests/behavioral/test_behavioral_contract_live_model.py": 1,
       "tests/behavioral/test_evidence_behavioral.py": 1,
+      "tests/behavioral/test_f4_containment_skill_provenance.py": 1,
       "tests/behavioral/test_no_model_configured_behavioral.py": 1,
       "tests/behavioral/test_v04_behavioral_extensions.py": 1,
       "tests/behavioral/test_web_fetch_extraction.py": 1,
@@ -26,7 +32,8 @@
       "tests/integration/test_cleanroom_workflow.py": 1,
       "tests/integration/test_coding_agent_tasks.py": 1,
       "tests/integration/test_control_plane_integration.py": 1,
-      "tests/integration/test_daemon_runtime.py": 8,
+      "tests/integration/test_daemon_data_lock.py": 7,
+      "tests/integration/test_daemon_runtime.py": 10,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
       "tests/integration/test_runtime_completion.py": 19,
@@ -44,7 +51,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 51,
-    "run_daemon": 101
+    "DaemonServices.build": 121,
+    "run_daemon": 114
   }
 }

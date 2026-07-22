@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-21*
+*Updated: 2026-07-22*
 *Status: Active*
 
 ## Goal
@@ -11,7 +11,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 ## Guiding Constraints
 
 - The assistant should remain capable; security is delivered by enforcement, not by disabling tools.
-- All tool execution stays policy-gated and auditable.
+- Planner-proposed and shared administrative tool execution stays policy-gated
+  and auditable; any distinct authenticated operator route is documented
+  explicitly until it joins that authority.
 - Untrusted content remains provenance-marked as it crosses runtime boundaries.
 - Memory and long-running automation must not become durable prompt-injection channels.
 
@@ -80,9 +82,13 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   `shisad[assistant]` consumer profile, a tested local Linux/amd64 image
   candidate, and bounded CLI/config/runtime UX closure: no-overwrite minimal
   init, typed config/env inspection, grouped help and actionable errors,
-  built-in theme/accessibility wiring, and a safe static web snapshot. No
-  registry image is published or signed, and this work does not claim the
-  later setup wizard or live operator web application.
+  built-in theme/accessibility wiring, and a safe static web snapshot. It also
+  adds durable pending-action/attempt/result state, conservative restart
+  recovery and `outcome_unknown` containment, checksummed finite-state
+  handling, single-daemon data-root ownership, managed-root filesystem/Git
+  exclusions, and scoped delivery/approval continuity across Discord, Slack,
+  Telegram, and Matrix. No registry image is published or signed, and this
+  work does not claim the later setup wizard or live operator web application.
 
 ## Milestones
 
@@ -387,8 +393,14 @@ TOTP entry remain deferred to `v0.8.0`.
 - v0.8.1 patch line (in development) — supported package assembly, a local
   container candidate, minimal no-overwrite init, typed config/env inspection,
   grouped help/actionable errors, and built-in chat/dashboard/static-snapshot
-  theme and accessibility wiring, followed by the remaining security/UX
-  closeout milestones; registry publication remains a release-close decision
+  theme and accessibility wiring; durable action attempts and conservative
+  restart containment; finite-state integrity and one-daemon data-root
+  ownership; managed-root containment; and four-channel scoped
+  delivery/approval continuity. The remaining bounded authority-consolidation
+  sequence is: one live handler/composition owner, one pending-action lifecycle
+  owner, typed RPC descriptors, one enforcement contract for direct operator
+  RPCs, structured planner-produced memory intent, and canonical secret plus
+  URL-safety primitives. Registry publication remains a release-close decision
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -401,8 +413,10 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.9 — Security quality and consolidation
 
-- Unify secret detection patterns across ingress, egress, and PEP (eliminate coverage gaps)
-- Unify URL/SSRF validation (eliminate duplicate private-range checks)
+- Extend the bounded v0.8.1 secret-pattern consolidation to broader content
+  firewall and credential-consumer policy where evidence warrants it
+- Simplify the broader network enforcement stack after v0.8.1 establishes one
+  canonical URL/SSRF primitive for current consumers
 - Simplify network enforcement layers (single PEP decision point)
 - Unify crypto key management across signing and encryption systems
 - Wire or remove unused policy scope compilation code

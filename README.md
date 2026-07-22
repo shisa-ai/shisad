@@ -2,7 +2,13 @@
 
 [Security-first](docs/SECURITY.md) AI agent daemon framework.
 
-ShisaD is a long-running daemon that sits between an LLM and external systems (tools, files, network, messaging channels). The model proposes actions; the runtime decides what actually executes — every tool call passes through policy enforcement, taint tracking, and audit before anything happens.
+ShisaD is a long-running daemon that sits between an LLM and external systems
+(tools, files, network, messaging channels). The model proposes actions; the
+shared planner execution path decides what actually executes through policy
+enforcement, provenance/taint checks, confirmation, and audit. Authenticated
+operator convenience RPCs are separate routes with route-local validation and
+logging; see the [ref-scoped authority map](docs/AUTHORITY-MAP.md) for the exact
+boundary.
 
 The core question at every action is: **who asked for it?** ShisaD is the user's agent — it exists to do what the user asks with the highest possible fidelity, and to prevent anything else (prompt injection, hallucination, attacker-controlled input) from taking control.
 
@@ -34,12 +40,15 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 - **Structured long-term memory** — separate identity, active-attention, recall, procedural, and evidence surfaces share a versioned local store with provenance-gated writes, review gates for high-risk paths, and auditable provenance
 - **COMMAND/TASK orchestration runtime** — persistent COMMAND sessions hand off delegated work to isolated TASK sessions with taint-safe summaries, approval provenance, and explicit task envelopes
-- **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
+- **Per-call policy enforcement** — the 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every shared planner / `tool.execute` action, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
 - **Command-channel approvals** — supported command surfaces can approve or reject routine pending actions where they originated, with CLI remaining as fallback rather than the only path
 - **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and user-visible warnings on repeated suspicious deny patterns
-- **Destructive command protection** — enforced at the sandbox policy layer before execution, not by LLM judgment; structurally incapable of `rm -rf /` regardless of prompt injection or misconfiguration
+- **Destructive command protection** — under the supported containment profile,
+  command policy is enforced before execution rather than by LLM judgment;
+  unavailable required isolation fails closed, while the explicit
+  `expert_host_fallback` posture carries no supported-containment claim
 - **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
 - **Multi-channel messaging** — Matrix, Discord, Telegram, Slack (Socket Mode), with default-deny identity allowlisting per channel
 - **Assistant primitives** — notes/todos, scheduler with shared delivery, web search/fetch, baseline browser automation, filesystem/git helpers, and evidence references for large untrusted output
@@ -57,6 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
+| v0.8.1 (in development) | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
@@ -76,7 +86,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for more details.
 
 > `shisad` is currently **PRE-ALPHA** software and probably won't do what you think it will if you're not a developer. The easiest way to get setup is to point Claude Code, OpenAI Codex, or some other strong coding agent to install. When it's more baked, the installation procedure will be better.
 
-Users and agents looking to set up ShisaD on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack), and troubleshooting. ShisaD is designed to run on a dedicated instance or container, not inside your development environment.
+Users and agents looking to set up ShisaD on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack, Matrix), and troubleshooting. ShisaD is designed to run on a dedicated instance or container, not inside your development environment.
 
 ### Quick Start
 
@@ -392,27 +402,42 @@ uv run shisad git status --repo /tmp/shisad-workspace
 
 ```bash
 uv run shisad session mode <session-id> --mode admin_cleanroom
-uv run shisad channel pairing-propose --limit 50
+uv run shisad channel pairing-propose --workspace <provider-workspace> --limit 50
 ```
 
 ## Security Model
 
-shisad assumes prompt injection will succeed and builds enforcement outside the model. The LLM is a planner, not an executor — it proposes tool calls, but the runtime pipeline decides whether each call proceeds, requires confirmation, or gets blocked. No amount of prompt injection, jailbreaking, or misconfiguration can override the enforcement layers because they run in a separate trust domain from the model.
+shisad assumes prompt injection will succeed and builds enforcement outside the
+model. On the shared planner path, the LLM is a planner, not an executor: it
+proposes tool calls, while runtime enforcement decides whether each call
+proceeds, requires confirmation, or is blocked. Those enforcement decisions do
+not come from the model. Authenticated local operator convenience RPCs do not
+claim the same PEP/control-plane path; their exact route-local boundaries are
+listed in [`docs/AUTHORITY-MAP.md`](docs/AUTHORITY-MAP.md).
 
 **The problem**: any agent with access to private data (files, email), exposure to untrusted content (web pages, API responses), and the ability to take consequential actions (send messages, write files) is exploitable. This is the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). shisad has all three by design — it's meant to be a useful assistant, not a sandboxed demo.
 
 **The approach**: instead of removing capabilities until the agent is safe (at which point you've rebuilt ChatGPT with extra steps), shisad keeps all capabilities available and enforces safety per-call:
 
-- **8-layer PEP pipeline** on every tool call: registry check, schema validation, capability check, DLP (secret pattern detection), resource authorization, egress allowlisting, credential host-scoping, taint sink enforcement
+- **8-layer PEP pipeline** on every shared planner / `tool.execute` action: registry check, schema validation, capability check, DLP (secret pattern detection), resource authorization, egress allowlisting, credential host-scoping, taint sink enforcement
 - **Taint tracking**: content firewalls tag untrusted input on ingress and enforce provenance-aware restrictions on egress — the runtime knows *who asked for* each action (user vs. injected content vs. model hallucination)
 - **Confirmation gates**: user-requested actions proceed; actions with ambiguous or tainted provenance route to user confirmation with context; only genuine anomalies trigger lockdown
 - **Approval surface parity**: routine channel-originated approvals stay on supported command surfaces with explicit approve/reject affordances or typed channel fallbacks; stronger method-specific proofs route truthfully to browser, helper, or external signer surfaces
 - **Behavioral anomaly detection**: control plane consensus (5 independent voters) catches patterns that individual call-level checks miss
-- **Destructive command protection**: enforced at the sandbox layer before execution, not by LLM judgment — structurally incapable of `rm -rf /` regardless of what the model is tricked into proposing
+- **Destructive command protection**: under the supported containment profile,
+  command policy is enforced before execution rather than by LLM judgment;
+  unavailable required isolation fails closed. The separately selected
+  `expert_host_fallback` posture does not carry that containment claim.
 
-**Default posture**: all tools available out of the box. Operators who need a restrictive posture deploy an explicit policy via `SHISAD_POLICY_PATH`.
+**Default posture**: built-in tools are not globally removed by a restrictive
+policy, but configuration-dependent tools remain unavailable until their local
+or external dependencies and credentials are configured. Operators who need a
+more restrictive posture deploy an explicit policy via `SHISAD_POLICY_PATH`.
 
-**Egress model**: allowlists auto-approve known-good destinations. Explicit user requests proceed without confirmation. Destinations suggested only by untrusted content route through confirmation with warning. Unattributed/hallucinated drift is blocked.
+**Shared-path egress model**: allowlists auto-approve known-good destinations.
+Explicit user requests proceed subject to the active policy. Destinations
+suggested only by untrusted content route through confirmation with warning;
+unattributed/hallucinated drift is blocked.
 
 See `docs/SECURITY.md` for the full security architecture and `docs/DESIGN-PHILOSOPHY.md` for the governing principles.
 

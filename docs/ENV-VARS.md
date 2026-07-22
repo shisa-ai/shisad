@@ -12,6 +12,10 @@ Source of truth:
 - `src/shisad/memory/ingestion.py`
 - `src/shisad/core/process_environment.py`
 
+Inventory checked against `shisad env --format json` at public development ref
+`d4d2f465` on 2026-07-22. Direct provider/test reads are listed separately
+below because they are not all ordinary operator settings.
+
 ## Scope
 
 There are three kinds of env vars in the current codebase:
@@ -122,6 +126,7 @@ component-scoped credentials documented above.
 | `SHISAD_CONFIG_PATH` | Explicit operator TOML path; equivalent to root `--config` at lower precedence |
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
+| `SHISAD_CONTROL_PLANE_STARTUP_TIMEOUT_SECONDS` | Readiness timeout for the isolated control-plane sidecar; minimum `0.1`, default `15.0` seconds |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
 | `SHISAD_UI_THEME` | Built-in renderer palette: `shisa-dark`, `shisa-light`, or `shisa-high-contrast` |
 | `SHISAD_REDUCE_MOTION` | Disable optional UI motion while retaining visible status updates |
@@ -643,6 +648,7 @@ These are repo/test helpers, not normal operator runtime config:
 
 | Env var | Purpose |
 |---|---|
+| `SHISAD_TEST_MODE` | Enables test-only daemon helpers, including reset RPC registration. Never enable on a production daemon. |
 | `SHISAD_LIVE_MODEL_TESTS` | opt-in live-model behavioral suite |
 | `SHISAD_LIVE_CODING_AGENTS` | opt-in live coding-agent smoke suite |
 

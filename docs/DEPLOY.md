@@ -242,7 +242,7 @@ Before starting the daemon:
 - [ ] Socket path writable (default: `$XDG_RUNTIME_DIR/shisad/control.sock`
       when `XDG_RUNTIME_DIR` is an absolute path, otherwise
       `/tmp/shisad-<uid>/control.sock`)
-- [ ] Optional: at least one channel token (Discord, Telegram, or Slack)
+- [ ] Optional: at least one channel credential (Discord, Telegram, Slack, or Matrix)
 - [ ] Optional: policy file created (`runner/policy.default.yaml` is a starting point)
 
 ## Data-Root Ownership and State Recovery
@@ -272,6 +272,28 @@ Atomic replacement, parent-directory sync, and permission tightening are
 reported according to the host and filesystem. They are not a universal
 power-loss guarantee. The lock is local to one host and is not suitable for a
 shared multi-host data root or active/active deployment.
+
+### Backup, upgrade, and uninstall boundaries
+
+- **Backup:** stop the daemon that owns the data root, verify it is stopped,
+  and snapshot or copy the entire `SHISAD_DATA_DIR` as one unit. Preserve the
+  operator TOML, policy, secrets, external signer/helper configuration, and
+  assistant workspace separately because they may live outside that root.
+  shisad does not currently create or validate backups for you.
+- **Restore:** restore a complete trusted snapshot while the daemon is stopped,
+  retain its owner-only permissions, then run `shisad doctor check --component
+  storage` before accepting new work. Mixing individual state files from
+  different snapshots is not a supported recovery procedure.
+- **Upgrade:** take the stopped-daemon backup first, install the reviewed wheel
+  or image, and start exactly one daemon against the existing root. Run
+  `shisad doctor check --component all` before enabling unattended work. An
+  upgrade does not imply provider reconciliation for an existing
+  `outcome_unknown` action; reconcile it using its recorded identifiers.
+- **Uninstall:** removing the Python package, source checkout, container, or
+  service definition does not intentionally delete the data root, workspace,
+  operator config, policy, credentials, or named container volumes. Remove
+  those separately only after identifying the exact paths/volumes and deciding
+  that their retained state and backups are no longer needed.
 
 ## Recommended: Runner Harness
 
@@ -512,6 +534,37 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
 ```
 
 **Verify:** Start the daemon, then mention the bot or DM it in Slack.
+
+### Matrix
+
+**Setup:**
+
+1. Create a dedicated bot account on the chosen Matrix homeserver.
+2. Obtain an access token for that account and invite it to the intended room.
+3. Record the full bot user id (`@bot:example.org`), room id
+   (`!room:example.org`), homeserver URL, and the Matrix user ids allowed to
+   issue commands.
+4. Leave E2EE enabled unless the room and deployment deliberately use an
+   unencrypted test posture. E2EE availability depends on the installed Matrix
+   runtime and room state.
+
+**Config:**
+
+```bash
+SHISAD_MATRIX_ENABLED=true
+SHISAD_MATRIX_HOMESERVER=https://matrix.example.org
+SHISAD_MATRIX_USER_ID=@shisad:example.org
+SHISAD_MATRIX_ACCESS_TOKEN=<access-token>
+SHISAD_MATRIX_ROOM_ID='!room:example.org'
+SHISAD_MATRIX_E2EE=true
+SHISAD_MATRIX_TRUSTED_USERS='["@alice:example.org"]'
+SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"matrix":["@alice:example.org"]}'
+```
+
+**Verify:** Start the daemon, send a message from an allowlisted Matrix user in
+the configured room, and confirm that an unlisted user is rejected. For
+multiple rooms, configure `SHISAD_MATRIX_ROOM_WORKSPACE_MAP` so each room binds
+to its intended workspace rather than relying on the default room alone.
 
 ---
 

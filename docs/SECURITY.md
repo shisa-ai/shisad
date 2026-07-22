@@ -14,7 +14,14 @@ A general-purpose agent that has (1) access to private data, (2) exposure to unt
 
 Since LLMs won't separate instructions from data, the surrounding architecture must re-create the boundary the LLM collapses.
 
-**The LLM is a planner, not an executor.** It can only *propose* actions. A separate control plane *decides* what executes. The control plane never sees injectable content — it operates on metadata only (action types, resource identifiers, timing, sequence patterns). Prompt injection cannot influence approval decisions because the injected content never reaches the components that make them.
+**On the shared planner path, the LLM is a planner, not an executor.** It can
+only *propose* actions. A separate control plane decides what executes from
+structured metadata (action types, resource identifiers, timing, and sequence
+patterns), rather than accepting model text as enforcement authority. The
+daemon also exposes authenticated local operator convenience RPCs; those are
+not planner proposals and do not claim the same shared PEP/control-plane path.
+Their exact route boundaries are documented below and in
+[AUTHORITY-MAP.md](AUTHORITY-MAP.md).
 
 ```
                        ┌─────────────────┐
@@ -277,7 +284,7 @@ These hold regardless of LLM behavior:
                          tamper-evident)
 ```
 
-### PEP Pipeline (8 layers, every tool call)
+### PEP Pipeline (8 layers, shared execution path)
 
 1. **Registry check** — is this a known, registered tool?
 2. **Schema validation** — do the arguments match the tool's typed schema?
@@ -287,6 +294,27 @@ These hold regardless of LLM behavior:
 6. **Egress allowlisting** — provenance-aware destination enforcement (see below)
 7. **Credential host-scoping** — credentials resolved by the broker at the proxy layer, never exposed to LLM context
 8. **Taint sink enforcement** — provenance-aware rules at egress sinks (user-goal → proceed; autonomous/unattributed → confirm; attacker-initiated → block)
+
+### Runtime route boundary
+
+The PEP list above applies to actions executed through the shared planner and
+administrative `tool.execute` path. It is not a universal claim about every
+callable daemon method.
+
+| Route family | Authority and enforcement | Audit / observability |
+|---|---|---|
+| `session.message` from the local control socket or a trusted command channel | Authenticated ingress builds a session turn; planner-proposed actions enter shared policy, PEP, confirmation, control-plane, and tool-execution handling | Session, policy, confirmation, action, and execution events on the shared path |
+| Signed A2A `session.message` ingress | Fingerprint verification, replay protection, intent grants, and rate limits precede the same session/planner path; the remote principal's grants remain authoritative | A2A ingress evaluation plus shared-path events |
+| Administrative `tool.execute` | Local administrator RPC; invokes the shared PEP/control-plane/confirmation execution handler directly | Shared-path action and execution events |
+| Convenience `web.*`, `realitycheck.*`, `email.*`, `fs.*`, and `git.*` RPCs | Authenticated local operator routes with typed RPC schemas and toolkit-local safety checks; they currently bypass the shared planner PEP/control-plane path | Explicit `operator_bypass_rpc` process logging; no claim of shared-path audit equivalence |
+| `action.confirm` / `action.reject` | Exact pending-action identity, decision nonce, actor/surface binding, required proof, and durable lifecycle checks | Durable decision and execution correlation on the pending-action path |
+| Scheduler and command-channel delivery | Background work and channel ingress use shared handler execution and scoped delivery bindings; ambiguous external outcomes are contained rather than silently replayed | Scheduler, delivery-attempt, and pending-action state plus shared-path events |
+
+This distinction is a current implementation boundary, not an assertion that
+operator routes are model-controllable. The convenience methods require the
+local authenticated control surface and retain their own input, filesystem,
+Git, URL, and configuration checks. Authority consolidation work must preserve
+their documented functionality while removing duplicated ownership.
 
 ### Consensus Voting (5 independent voters)
 
@@ -476,11 +504,11 @@ caller-provided `skill_name` is never treated as authority.
 
 Dependencies are pinned via `uv.lock` with SHA256 integrity hashes. Skills are
 treated as untrusted code: capability manifests declare what a skill can
-access, PEP rejects undeclared operations, all skill-initiated tool calls go
-through the same enforcement pipeline as direct actions, and no skill
-auto-installs without user review.
+access, PEP rejects undeclared operations, installed skill tools execute
+through the shared tool-enforcement path, and no skill auto-installs without
+user review. A caller-supplied skill name is not authority.
 
-As of the published `v0.6.0` line, the CI/release path is also materially
+As of the published `v0.8.0` line, the CI/release path is also materially
 hardened: GitHub Actions are pinned by SHA, CI runs dependency-review on PRs,
 workflow linting (`zizmor`), and GitHub code scanning, and the public release
 path goes through GitHub Actions `publish.yml` using PyPI OIDC trusted
@@ -494,50 +522,49 @@ full analysis.
 
 ## Implementation Status
 
-The architecture described here is still the target design. Current status as
-of the published `v0.6.0` line:
+The latest published stable package is `v0.8.0`; `v0.8.1` is in development.
+The following statements describe the current public development tree and are
+subject to the explicit route boundary above.
 
-**Implemented**:
+**Implemented on the shared execution path**:
 
-- PEP 8-layer pipeline, taint tracking and provenance labeling, content
-  firewall with YARA rules, output firewall with secret/PII detection,
-  consensus voting (5 voters), egress allowlisting with provenance-aware
-  enforcement, credential broker, destructive command protection, clean-room
-  admin workflows, append-only audit log, and default-deny channel identity
-  allowlisting.
-- Formal `COMMAND` / `TASK` orchestration boundaries in the live runtime:
-  immutable task envelopes, taint-safe handoffs, task-scoped credential refs,
-  typed sink validation for built-in runtime boundaries, live resource-scope
-  enforcement, TASK summary-firewall checkpoints, and approval provenance on
-  confirmation/execute audit paths.
-- Structured evidence / artifact handling: restart-stable evidence metadata, a
-  structured ArtifactLedger with endorsement metadata and GC semantics, and
-  text-first evidence rendering that keeps large untrusted content on the
-  extractive path by default.
-- Baseline high-risk tool surfaces now ship in the same enforcement model:
-  web search/fetch, confirmation-gated browser writes with source/destination
-  binding, and local skill tool-surface integrity checks via persisted
-  schema-hash validation.
-- Supply-chain and deployment hardening for the shipped line: pinned workflow
-  actions, CI dependency review + workflow linting + code scanning, release-time
-  dependency auditing, PyPI OIDC trusted publishing, SPDX SBOM generation, and
-  provenance attestations.
+- The eight PEP checks, taint/provenance labeling, ingress and output
+  firewalls, five-voter control-plane analysis, credential scoping,
+  confirmation, and append-only audit handling.
+- Formal `COMMAND` / `TASK` orchestration with immutable task envelopes,
+  taint-safe handoffs, resource and credential scopes, summary-firewall
+  checkpoints, and approval provenance.
+- Structured ArtifactLedger/evidence storage, restart-stable refs, memory
+  surfaces with provenance-gated writes, web/browser baselines, MCP client
+  tools, signed A2A ingress, and reviewed local skill-tool integrity checks.
+- Multi-factor approval through software confirmation, TOTP, WebAuthn,
+  local-FIDO2 helper, remote KMS, and supported Ledger signing surfaces.
+- The current `v0.8.1` tree adds durable pending-action/attempt/result state,
+  conservative restart recovery and `outcome_unknown` containment, finite
+  state integrity handling, one-daemon data-root ownership, managed-root
+  filesystem/Git exclusions, and scoped four-channel delivery/approval
+  continuity.
+- Supply-chain hardening for the published line: locked dependencies,
+  SHA-pinned workflow actions, dependency review, workflow linting, code
+  scanning, PyPI OIDC trusted publishing, SPDX SBOM generation, and provenance
+  attestations.
 
-**Planned**:
+**Current boundaries and follow-up work**:
 
-- **Minimal control-plane isolation boundary** (`v0.6.1`) — move core policy /
-  PEP / audit enforcement behind an OS-enforced process boundary without
-  breaking the current behavioral contract.
-- **PromptGuard 2 / stronger semantic classifier integration** (`v0.6.1`) —
-  harden the semantic-classifier path without turning it into the sole
-  enforcement boundary.
-- **Tool Dependency Graph verification + phantom action detection** (`v0.6.1`)
-  — add stronger metadata-only runtime checks tying tool calls back to the
-  committed user-goal plan and surfacing deny-pattern compromise signals.
-- **Differential execution** (post-`v0.6.1`) — when suspicious content enters the context and the next proposed action involves egress or side effects, run the same request with and without the suspect content and compare proposed actions. Behavioral divergence is empirical evidence of injection influence. If proposals are identical, the content is not influencing behavior (reduces false positives). If they diverge materially, a third-party evaluator in a clean context (it never sees the suspect content directly) judges whether the divergence is benign or suspicious. This catches subtle goal drift and laundered injection that passes the content firewall — and equally importantly, confirms innocence when content looks suspicious but isn't actually influencing behavior.
-- **Full spotlighting with datamarking** — enhanced context builder with per-request cryptographically random delimiters and character-level datamarking of untrusted content
-- **Memory write gating with quarantine** (`v0.7`) — proposed memory writes held in quarantine with provenance review before committing to durable storage; poisoned entries can be identified and removed before they influence future sessions
-- **Hardware-backed approval signing** (`v0.6.2`) — hardware token (for example Ledger) signing for high-value operations plus user-authenticated artifact approval flows that cannot be spoofed by software
+- Authenticated operator convenience RPCs retain route-local safeguards and
+  logging but do not yet share one PEP/control-plane execution authority.
+- Live handler/composition ownership, pending-action lifecycle ownership, and
+  RPC method/schema descriptors still have duplicated authorities that are
+  being consolidated in bounded follow-up batches.
+- Some explicit memory-intent routing still has daemon-side prose
+  interpretation; the target is planner-produced structured intent without
+  reducing user functionality.
+- Secret-detection and URL/network safety primitives still have multiple
+  consumers with non-identical rules. Broader network-layer simplification,
+  differential execution, and full datamarking remain later work.
+- External effects do not carry a universal exactly-once guarantee. Automatic
+  restart recovery is limited to the documented trusted routes and ambiguous
+  outcomes fail closed to operator reconciliation.
 
 ---
 
@@ -548,5 +575,6 @@ of the published `v0.6.0` line:
 - `analysis/ANALYSIS-supply-chain.md` — supply chain threat model and mitigations
 - `adr/ADR-command-task-architecture.md` — COMMAND/TASK isolation and orchestration security
 - `adr/ADR-policy-source-authority.md` — policy merge and authority model
+- `AUTHORITY-MAP.md` — ref-scoped runtime ownership and route boundaries
 - [agentic-security](https://github.com/lhl/agentic-security) — literature survey on LLM agent security (78 papers, defense taxonomy, production readiness assessment)
 - [agentic-memory](https://github.com/lhl/agentic-memory) — literature survey on agent memory architectures and poisoning defenses (29+ references, attack taxonomy, defense recommendations)

@@ -3,11 +3,11 @@
 > **Current 2FA feature status:** The approval protocol, credential store, and
 > currently available approval backends documented here were introduced across
 > `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
-> published line. TOTP confirmation works through trusted chat / command
-> replies and through the CLI. The v0.8.0 line adds routine command-channel
-> approve/reject parity for supported surfaces. Passkey (WebAuthn) and signer
-> approvals work via browser and remote KMS respectively. QR code rendering for
-> TOTP enrollment is also included.
+> published line. The current `v0.8.1` development tree preserves TOTP through
+> trusted command-channel replies and the CLI, and provides routine approve /
+> reject handling on Discord, Slack, Telegram, and Matrix. Passkey (WebAuthn)
+> and signer approvals work via browser and remote KMS respectively. QR code
+> rendering for TOTP enrollment is also included.
 > Entering a TOTP code on the approval web page is not included yet; browser
 > approval today is WebAuthn only.
 
@@ -32,10 +32,11 @@ choose, it can prove:
 The stronger the proof, the harder it is for a compromised session, a prompt
 injection, or a stolen token to authorize actions you did not intend.
 
-2FA is **opt-in**. If you do not enroll any factor, everything works exactly
-as before — approvals use the standard L0 software confirmation flow (click to
-approve). You only need to set up 2FA if you want stronger assurance for
-specific actions.
+2FA enrollment is **opt-in**. When active policy requires only L0, an operator
+without an enrolled factor can use the standard software confirmation flow.
+If policy requires a stronger level, the action remains pending or is denied
+until a suitable enrolled method is used; shisad does not silently downgrade
+that requirement.
 
 ---
 
@@ -162,6 +163,27 @@ any time.
 | `shisad 2fa list` | List enrolled TOTP and passkey credentials |
 | `shisad signer list` | List enrolled signer keys |
 
+### Approval surface matrix
+
+This matrix describes the current `v0.8.1` development tree. “Typed” means a
+trusted command reply handled before planner flow; it does not mean that proof
+is flattened into ordinary chat content.
+
+| Surface | Routine L0 approve / reject | TOTP / recovery | Stronger proof |
+|---|---|---|---|
+| Discord | Native components with typed-command fallback | Native TOTP modal when available or trusted typed reply; recovery code stays on host CLI | Routes WebAuthn/helper/signer requirements to their owning surface |
+| Slack | Typed command | Trusted typed TOTP reply; recovery code stays on host CLI | Routes stronger requirements to their owning surface |
+| Telegram | Typed command | Trusted typed TOTP reply; recovery code stays on host CLI | Routes stronger requirements to their owning surface |
+| Matrix | Typed command | Trusted typed TOTP reply; recovery code stays on host CLI | Routes stronger requirements to their owning surface |
+| Host CLI | Software confirm/reject, with exact action/nonce lookup | TOTP and single-use recovery code | Coordinates the method-specific flow; it does not manufacture browser/helper/signer proof |
+| Approval web | WebAuthn action review/ceremony only | No TOTP or recovery-code entry | WebAuthn (L2) |
+| Local FIDO2 helper | Not a routine channel approval surface | Not applicable | Local-device bound approval |
+| External signer | Not a routine channel approval surface | Not applicable | KMS (L3) or configured Ledger trusted-display signing (L4 when the device reports that posture) |
+
+Every supported command channel can reject a routine pending action. The CLI
+remains the recovery and inspection fallback, while the browser, helper, and
+external signer retain method-specific authority.
+
 ---
 
 ## L1: TOTP (Authenticator Apps)
@@ -234,11 +256,11 @@ shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
 ```
 
 > **Command-channel parity.** Routine approvals should be completable on the
-> channel where they originated. In the v0.8.0 line, Discord-originated routine
-> approvals advertise native Approve/Reject handling with CLI fallback, and
-> TOTP approval can stay on the trusted channel through a modal where available
-> or a typed confirmation reply. Channels without native buttons still use
-> typed control replies where trusted channel ingress is available. The CLI
+> channel where they originated. In the current v0.8.1 tree,
+> Discord-originated routine approvals use native Approve/Reject components
+> with typed-command fallback. Slack, Telegram, and Matrix use typed control
+> replies, and TOTP approval can stay on any trusted supported channel through
+> a typed confirmation reply. The CLI
 > stays a first-class fallback, but it is not the only path for supported
 > ongoing routine approvals. Method-specific proofs such as WebAuthn, KMS, and
 > Ledger approvals are routed to their browser, helper, or signer surfaces

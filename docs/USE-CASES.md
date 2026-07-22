@@ -1,7 +1,7 @@
 # shisad Use Cases — Personal AI Assistant
 
 *Created: 2026-02-17*
-*Updated: 2026-03-29*
+*Updated: 2026-07-22*
 *Sources: [Omar's Lobster article](https://www.omarknows.ai/p/meet-lobster-my-personal-ai-assistant), [Tanay's Complete Guide](https://peerlist.io/tanayvasishtha/articles/clawdbot-the-complete-guide-to-everything-you-can-do-withit) + shisad gap analysis*
 
 This document catalogs concrete personal AI assistant use cases drawn from real-world deployments and community guides (primarily "Lobster" on OpenClaw, plus the broader OpenClaw community), maps them against shisad's current and planned capabilities, and identifies gaps, security considerations, and workarounds.
@@ -16,10 +16,10 @@ This document catalogs concrete personal AI assistant use cases drawn from real-
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Supported (v0.3)** | 7 | Works today: chat, reminders, lists, web research, shell/fs/git ops, identity routing |
-| **Partial** | 25 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
-| **Planned** | 1 | Architecture designed, not runtime-wired for full personal knowledge base / RAG |
-| **Missing** | 29 | Needs new connectors, skills, or architectural work |
+| **Supported** | 11 | Works in the current tree, sometimes behind explicit provider/adapter configuration |
+| **Partial** | 31 | A bounded foundation or one half of the journey exists; the named gap still matters |
+| **Planned** | 0 | No use case is counted as planned-only when a runtime foundation already exists |
+| **Missing** | 20 | Needs a new connector, skill, or end-user workflow |
 
 ### Top 10 Most-Wanted Use Cases (by community frequency)
 
@@ -27,26 +27,48 @@ These are the most commonly cited use cases across all source articles, rank-ord
 
 | Rank | Use Case | Our Status | Blocker | Target |
 |------|----------|-----------|---------|--------|
-| **1** | **Email triage / read / send** | Missing | Orchestration foundation + email/calendar connector lane | **v0.7** |
-| **2** | **Calendar read / write** | Missing | Orchestration foundation + email/calendar connector lane | **v0.7** |
-| **3** | **Morning briefing (full)** | Partial | Needs email + calendar to be useful | **v0.7** |
+| **1** | **Email triage / read / send** | Partial | Local MsgVault read/search works when configured; draft/send is absent | Future connector work |
+| **2** | **Calendar read / write** | Missing | Calendar connector and credential lifecycle | Future connector work |
+| **3** | **Morning briefing (full)** | Partial | Scheduler and configured email reads exist; calendar is absent | Future connector work |
 | **4** | **Attachment pipeline (voice + image)** | Partial | Local bounded manifest ingest in `v0.6.6`; STT/OCR/channel download plumbing still needed | **v0.7** |
-| **5** | **Code generation / dev workflows** | Missing | Sandbox + proposal/apply workflow | **v0.4** |
-| **6** | **Memory / preference learning** | Partial | Structured memory and configurable extraction exist; richer semantic preference schema/extraction still needed | **v0.7+** |
-| **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | v0.6+ |
-| **8** | **Group chat @mention gating** | Partial | Per-channel routing config + group-scoped policy model | **v0.7 (stretch)** |
+| **5** | **Code generation / dev workflows** | Supported (config-gated) | Requires a configured coding-agent adapter and repository root | Current |
+| **6** | **Memory / preference learning** | Partial | Structured memory and configurable extraction exist; richer semantic preference schema/extraction still needed | Future refinement |
+| **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | Future connector work |
+| **8** | **Group chat @mention gating** | Partial | Per-channel routing config + group-scoped policy model | Future refinement |
 | **9** | **Scheduled task guardrails** | Partial | Task cancellation propagation, output sanitization | **v0.4** |
 | **10** | **Browser automation** | Partial | Baseline sandboxed browser tools shipped in `v0.6.0` M6; authenticated/admin follow-ons still need more hardening | **v0.6 (baseline)** |
 
-### Key Insight: Two Blockers Unlock Most Value
+### Key Insight: The Foundations Exist; Connectors Define the Remaining Gaps
 
-1. **Orchestration foundation** (`v0.6`) — unlocks safe delegated execution, typed boundaries, provenance-aware handoff, and credential scoping for the high-risk assistant surfaces that follow.
-2. **Email/calendar + attachment tool-surface track** (`v0.7`) — builds on the
-   `v0.6.6` local attachment manifest baseline to unlock #1, #2, #3, #4 plus
-   package tracking, morning briefings, weekly reports, job search,
-   transcription, OCR, and other downstream assistant workflows.
+1. **Email write + calendar connectors** unlock full inbox/calendar workflows,
+   morning briefings, family scheduling, and related automation. Current local
+   MsgVault integration is read/search only and does not bundle provider sync.
+2. **STT/OCR plus channel attachment download** turns the current bounded local
+   attachment-manifest ingress into voice, image, receipt, and document
+   workflows. The manifest alone does not transcribe or recognize content.
 
-Some of the 25 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
+Many of the 31 partial use cases are connector or workflow layers on existing
+orchestration, scheduler, memory, channel, browser, and attachment foundations.
+“Partial” must not be read as a claim that the missing provider, recognition,
+or end-user workflow is bundled.
+
+### Configuration, known limits, and behavioral evidence
+
+- Channels, MsgVault, browser automation, web search, coding-agent adapters,
+  and command isolation are configuration-dependent. Package installation does
+  not enable remote services or credentials.
+- Email send/calendar, general contact-name resolution, provider-level message
+  exactly-once delivery, bundled browser/search services, OCR, and STT are not
+  claimed. Four network channels preserve delivery evidence but their providers
+  do not expose one common idempotency guarantee.
+- Representative behavioral coverage lives in
+  [`test_behavioral_contract.py`](../tests/behavioral/test_behavioral_contract.py),
+  [`test_v04_behavioral_extensions.py`](../tests/behavioral/test_v04_behavioral_extensions.py),
+  [`test_f7_channel_completion.py`](../tests/behavioral/test_f7_channel_completion.py),
+  and
+  [`test_f7_channel_reliability.py`](../tests/behavioral/test_f7_channel_reliability.py).
+  These tests establish bounded product journeys; they do not make an
+  unconfigured external service available.
 
 ---
 
@@ -96,10 +118,10 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing |
-| **Gap** | No user-facing cross-user message relay capability. Background-task plumbing now has an internal `message.send` runtime path, but not the routed assistant surface needed for "send a message to Alex on my behalf." |
-| **Needed** | Planner/user-facing `message.send` with destination user/channel routing, confirmation gate, and audit trail |
-| **Security notes** | High-risk: message relay is an egress action. Must be confirmation-gated. Must prevent injection-driven relay (attacker crafts message content via injected prompt). Allowlisted destinations only. |
+| **shisad support** | Present (config-gated): registered `message.send` accepts an explicit channel/recipient/workspace/thread target and uses the shared policy and delivery path |
+| **Gap** | No general contact directory or automatic natural-name-to-provider-recipient resolution; the destination must already be concrete and authorized |
+| **Needed** | Optional contact/address-book resolution for natural names without weakening exact delivery binding |
+| **Security notes** | High-risk egress: exact destination and policy scope are authoritative. Explicit trusted-user intent may proceed under policy; tainted, unattributed, or out-of-scope relay must confirm or fail closed rather than inheriting authority from message content. |
 
 ---
 
@@ -111,9 +133,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the v0.7 email/calendar connector lane) |
-| **Gap** | No email connector (IMAP/SMTP/OAuth) |
-| **Needed** | Email connector skill with: OAuth credential lifecycle, read-only mode, PII redaction on summaries, taint tracking (email content is untrusted) |
+| **shisad support** | Present (config-gated): planner-visible `email.search` and `email.read` query a local MsgVault archive and can be summarized in the normal session path |
+| **Gap** | shisad does not bundle provider sync, OAuth lifecycle, IMAP, or email send; MsgVault setup and account scope remain operator responsibilities |
+| **Needed** | Provider sync/configuration outside shisad for reads; a separately reviewed connector for draft/send |
 | **Security notes** | Email content is a major prompt injection vector. All email body/subject content must be treated as untrusted. Summarization must use spotlighting. Email credentials need secure storage (credential broker). |
 
 #### 2.2 Draft Email Responses
@@ -133,7 +155,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (requires email connector, v0.7) |
+| **shisad support** | Missing (requires an outbound/mutation email connector) |
 | **Gap** | No email connector; no bulk action primitives |
 | **Needed** | Email connector (see 2.1) + bulk action tools (filter, unsubscribe, star, archive, auto-reply). Each bulk action type needs its own confirmation policy. |
 | **Security notes** | Bulk auto-reply is especially dangerous: an injection in one email could craft reply content sent to many recipients. Must be confirmation-gated per-batch or per-action-type. Unsubscribe links are egress (clicking external URLs). |
@@ -148,7 +170,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the v0.7 email/calendar connector lane) |
+| **shisad support** | Missing (requires a calendar connector) |
 | **Gap** | No calendar connector (CalDAV/Google Calendar API) |
 | **Needed** | Calendar read skill with OAuth credentials, timezone awareness |
 | **Security notes** | Calendar event content (titles, descriptions, attendee lists) contains PII. Read-only access is lower risk but still needs credential broker integration. |
@@ -185,7 +207,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Present (v0.3): `todo.create` + scheduler pump + channel delivery path |
+| **shisad support** | Present: planner-visible `reminder.create` + scheduler pump + scoped channel delivery path |
 | **Gap** | None for basic reminders. Natural language time parsing works via LLM. |
 | **Security notes** | Reminders execute under capability snapshot captured at creation time. No post-schedule privilege escalation. |
 
@@ -195,9 +217,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Partial: scheduler exists but no cross-user delivery |
-| **Gap** | No cross-user reminder delivery. Requires a user-facing `message.send` flow plus user/channel routing. |
-| **Needed** | Cross-user reminder delivery with confirmation and destination allowlist |
+| **shisad support** | Present (config-gated): scheduled tasks retain an exact delivery target and can execute `message.send` under their capability, policy, recipient, and workspace scope |
+| **Gap** | No general contact-name resolver or household directory; operators must configure an exact supported channel destination |
+| **Needed** | Optional contact/address-book UX on top of the existing scoped delivery path |
 | **Security notes** | Same as message relay (1.3): confirmation-gated, allowlisted destinations. |
 
 #### 4.3 Persistent Lists (Shopping, Packing, etc.)
@@ -257,9 +279,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing |
-| **Gap** | No email monitoring, no structured data extraction from emails, no Parcel app integration |
-| **Needed** | Email connector (see 2.1) + regex/LLM extraction of tracking numbers + integration with tracking service/app |
+| **shisad support** | Partial: configured MsgVault search/read, scheduler, web fetch/search, notes, and delivery provide the bounded building blocks |
+| **Gap** | No packaged tracking-number workflow, provider inbox sync, carrier API, or Parcel app integration |
+| **Needed** | A structured extraction/tracking skill over configured email reads plus a reviewed carrier integration |
 | **Security notes** | Email monitoring is a triggered task — runs while user is away. Must use capability snapshot. Email content is untrusted (tracking number extraction from tainted content). No auto-egress without confirmation or pre-configured allowlist. |
 
 ---
@@ -324,10 +346,10 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Partial: per-user trust levels + capability scoping exist in design; runtime enforcement via PEP |
+| **shisad support** | Partial: per-user trust levels and capability scoping are runtime-enforced; there is no separate named-agent product abstraction |
 | **Gap** | No "multiple named agents" concept. shisad uses per-user roles/trust levels rather than separate agent instances. |
-| **shisad approach** | shisad achieves the same security outcome differently: per-identity capability scoping via `UserRole` (owner/admin/user/guest) + per-tool PEP enforcement. This is arguably more secure than Docker-sandboxed separate agent instances because policy is centrally enforced. |
-| **Security notes** | shisad's approach is architecturally stronger: policy enforcement is central (PEP), not distributed across container boundaries. OpenClaw's Docker sandbox approach has wider blast radius per container. |
+| **shisad approach** | shisad uses per-identity capability scoping via `UserRole` (owner/admin/user/guest) plus per-tool PEP enforcement. This is a centralized policy model, not an equivalence claim about a separate container boundary. |
+| **Security notes** | Central policy gives one place to enforce identity/tool scope, while process/container isolation remains a separate deployment and sandbox concern. Neither boundary should be inferred from the other. |
 
 #### 9.2 Agent-to-Agent Escalation
 
@@ -335,7 +357,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing as an explicit feature, but achievable |
+| **shisad support** | Partial: permission/confirmation routing can represent the approval outcome, but there is no explicit named-agent escalation protocol |
 | **Gap** | No agent-to-agent communication protocol |
 | **shisad approach** | In shisad's model, this would be a permission escalation: the request from a `guest`-role user triggers a confirmation gate that routes to the `owner` for approval. Same outcome, different mechanism. |
 | **Security notes** | Escalation must not bypass PEP. The escalated action still runs under the requester's trust context with explicit owner confirmation. |
@@ -361,8 +383,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Aspect | Status |
 |--------|--------|
 | **shisad support** | Partial (v0.3): scheduler + channel delivery exists; individual data sources partially available |
-| **Gap** | No multi-source aggregation skill. Calendar and email connectors missing. Weather/news require web search (available). |
-| **Needed** | "Briefing" skill that orchestrates multiple data sources (calendar, email, web search, todos) into a single formatted message, delivered via cron. Requires calendar + email connectors (v0.7). A basic version using web search + todos could work today. |
+| **Gap** | No multi-source aggregation skill or calendar connector. Configured local email reads and web search are available. |
+| **Needed** | A briefing workflow that combines configured MsgVault reads, calendar data when a connector exists, web search, and todos into one scheduled delivery. A web/todo/email-read subset can be assembled today. |
 | **Security notes** | Cron task runs under capability snapshot. Each data source fetch is a separate tool call through PEP. Aggregated output may contain PII from multiple sources — Output Firewall applies. Email content in briefing is tainted. |
 
 #### 10.2 Weekly Retrospective / Scheduled Reports
@@ -412,9 +434,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the coding-workflow lane) |
-| **Gap** | Coding workflows are "across the line" in v0.3. No IDE integration, no code execution environment. |
-| **Needed** | Coding agent workflow: proposal/apply contract, sandboxed execution environment, deterministic validator gates, bounded filesystem access. |
+| **shisad support** | Present (config-gated): delegated TASK sessions can invoke configured Codex, Claude, or OpenCode ACP adapters in bounded worktrees and return proposal artifacts |
+| **Gap** | No bundled external coding-agent binary/account, IDE integration, or universal automatic apply/deploy workflow |
+| **Needed** | Configure an available coding-agent adapter and repository root; review/apply proposal artifacts under the operator's policy |
 | **Security notes** | Code generation + execution is the highest-risk capability. Tainted input (web content, email) could influence generated code to include backdoors, exfiltrate data, or damage the system. Requires: sandboxed execution, proposal-only with human review, no auto-apply, bounded path policy, adversarial tests. |
 
 #### 12.2 Remote System Operations / DevOps from Mobile
@@ -434,9 +456,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing |
-| **Gap** | No project management API integration (Linear, Notion, Trello). No autonomous multi-step task execution loop. |
-| **Needed** | Project management API skill + autonomous execution loop with daily status reporting. Each task execution step goes through PEP. |
+| **shisad support** | Partial: durable COMMAND/TASK orchestration, scheduler, coding-agent execution, run limits, cancellation, and status delivery exist |
+| **Gap** | No Linear/Notion/Trello connector or turnkey backlog-picking/Kanban workflow |
+| **Needed** | A scoped project-management connector and explicit workflow policy over the existing task runtime |
 | **Security notes** | Autonomous execution is extremely high-risk. Each task from the backlog is effectively untrusted input (could be crafted to trigger injection). Must use commit-before-contamination: read task description, commit plan, then execute. Must have kill switch / rate limiting. Daily reports via trusted channel. |
 
 ---
@@ -497,9 +519,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing |
-| **Gap** | No bulk data ingestion pipeline. No document processing (PDF, chat export formats). No cross-referencing/linking system. |
-| **Needed** | Ingestion skill: parse chat exports / documents, chunk, embed, store in memory with provenance. STT for voice messages. Entity extraction and cross-referencing. |
+| **shisad support** | Partial: local attachment manifests, ArtifactLedger evidence, memory ingestion/retrieval primitives, and provenance-bearing storage exist |
+| **Gap** | No turnkey bulk importer for PDFs/chat exports, no bundled STT/OCR, and no cross-reference workflow |
+| **Needed** | Format-specific bounded ingestion skills over the existing evidence/memory foundations, with separate STT/OCR where required |
 | **Security notes** | Bulk ingestion is a major poisoning vector. All ingested content is untrusted. Must go through ContentFirewall before indexing. Taint must persist in stored embeddings/summaries. Ingestion should be rate-limited and operator-confirmed. PII in chat history needs redaction policy. |
 
 ---
@@ -769,7 +791,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Planned (architecture designed): full RAG over ingested URLs/articles/notes with embeddings; memory foundation exists |
+| **shisad support** | Partial: structured memory, embeddings/retrieval, `retrieve_rag`, evidence refs, and notes exist, but there is no turnkey bulk personal-knowledge workflow |
 | **Gap** | No bulk URL ingestion. No web content indexing pipeline. No user-facing RAG query workflow over indexed content. |
 | **Needed** | Memory hierarchy implementation. Web content ingestion skill (fetch, parse, chunk, embed). Query interface over personal knowledge base. |
 | **Security notes** | All ingested web content is untrusted. Must go through ContentFirewall before indexing. Taint persists in embeddings. RAG retrieval returns sanitized evidence with provenance + risk score. This is exactly what shisad's memory architecture is designed for. |
@@ -851,27 +873,31 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Deliberate divergence: clean-room workflow exists for admin-reviewed skill proposals, but no self-modification |
-| **Gap** | No "agent creates skill" workflow. This is intentional — self-modification is a security anti-pattern. |
-| **shisad approach** | shisad's v0.3 clean-room workflow supports proposal artifacts (diffs, manifests) but never auto-applies. Skill creation is an admin-reviewed process. The agent can *propose* a skill, but installation requires user review via trusted admin surface. |
+| **shisad support** | Deliberate divergence: clean-room workflow exists for admin-reviewed skill proposals, but there is no autonomous self-installing skill path |
+| **Gap** | No unattended "agent creates and enables a skill" workflow. This is intentional; durable extension authority remains with the operator. |
+| **shisad approach** | The clean-room workflow supports proposal artifacts (diffs, manifests) but does not grant them install authority. The agent can propose a skill; review and enablement require a trusted admin path. Separately documented signed self-modification inventory does not turn arbitrary generated skill text into authority. |
 | **Security notes** | Self-extending agents are a major supply-chain and integrity risk. An injected prompt could cause the agent to create a malicious skill that persists beyond the current session. shisad explicitly avoids this by design. The proposal-only pattern preserves the utility (agent can draft skills) while maintaining security (human reviews before activation). |
 
 ---
 
 ## Gap Summary by Priority
 
-### Already Supported (v0.3)
+### Already Supported in the Current Tree
 
 | Use Case | shisad Feature |
 |----------|---------------|
 | Direct chat via messaging apps | Discord, Telegram, Slack, Matrix channels |
 | Identity-based routing | `ChannelIdentityMap` + default-deny allowlist |
-| Create reminders | `todo.create` + scheduler + channel delivery |
+| Scoped cross-user message delivery | `message.send` + exact channel/workspace/recipient/thread target |
+| Create reminders | `reminder.create` + scheduler + channel delivery |
+| Scoped cross-user reminders | Scheduler capability/recipient snapshot + exact delivery target |
 | Persistent lists (shopping, packing) | `note.create` + `note.list` (basic; no structured list ops) |
 | Web research (search + fetch + summarize) | `web.search` + `web.fetch` (config-gated, allowlisted) |
 | Clarifying questions / multi-turn | Session-based conversation |
 | Notes / knowledge capture | `note.create` + `note.list` |
+| Configured local email read/triage | Planner-visible MsgVault `email.search` + `email.read` |
 | Filesystem / git workflows | `fs.read/write` + `git.status/diff/log` |
+| Coding-agent proposal workflows | Delegated TASK executor + bounded worktree/proposal artifacts |
 | Per-user trust levels | `UserRole` + PEP enforcement |
 | Basic keyword/news monitoring | `web.search` + scheduler (manual setup) |
 | Basic financial price checking | `web.fetch` + scheduler (manual setup) |
@@ -880,65 +906,64 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Local document queries | `fs.read` + local model routing |
 | Price comparison (basic) | `web.search` + `web.fetch` |
 
-### Requires New Skills/Connectors (future tool-surface scope)
+### Remaining Skills/Connectors (including partial workflows)
 
 | Use Case | What's Needed | Target | Security Considerations |
 |----------|--------------|--------|------------------------|
-| Email read/triage | IMAP/OAuth connector | v0.7 | Major injection vector; taint all email content |
-| Email send/draft | SMTP/OAuth + confirmation gate | v0.7 | Irreversible egress; confirmation-gated |
-| Email bulk actions (unsubscribe, auto-reply) | Email connector + bulk action tools | v0.7 | Bulk auto-reply is high-risk; per-batch confirmation |
-| Calendar read | CalDAV/Google Calendar API | v0.7 | Credential broker; PII in event data |
-| Calendar write | Calendar API + confirmation | v0.7 | Side-effecting; confirmation-gated |
-| Morning briefing (full) | Multi-source aggregation skill | v0.7 | Aggregates tainted data; Output Firewall applies |
-| Weekly retrospective / reports | Multi-API data gathering | v0.6+ | GitHub/calendar/email APIs; credential broker |
-| Package tracking | Email monitoring + tracking API | v0.6+ | Triggered task; capability snapshot |
-| Music control (Sonos/Spotify) | Sonos API / Spotify API skill | v0.6+ | Local network egress; OAuth |
-| Smart home (Hue, etc.) | HomeAssistant/Hue API skill | v0.6+ | Safety-relevant actions; per-device policy |
-| Cross-user message relay | User-facing `message.send` + user/channel routing | v0.5+ | Confirmation-gated; allowlisted destinations |
-| Cross-user reminders | Cross-user delivery path | v0.5+ | Same as message relay |
-| Flight tracking | FlightAware API skill | v0.6+ | API credential management |
-| Health/fitness dashboard | WHOOP/Oura/HealthKit API skills | v0.6+ | Highly sensitive PII; credential broker |
-| Financial alerts | Financial API skill | v0.6+ | Sensitive data; rate-limited polling |
-| Social media management | Social media API skills | v0.6+ | Public-facing egress; confirmation-gated |
-| Personal CRM | CRM data model + integrations | v0.6+ | PII-heavy; outreach is egress |
-| Customer support agent | Customer-facing agent mode | v0.6+ | Untrusted input; auto-reply is high-risk egress |
-| Grocery/shopping automation | Commerce API skills + payment | v0.6+ | Payment is highest-risk commerce action |
-| TTS / audio generation | TTS API skill | v0.6+ | Text sent to TTS is egress |
-| Job search automation | Job board APIs + tracker | v0.6+ | PII; auto-apply is high-risk |
-| Restaurant/dining logging | Vision + location APIs + dining memory | v0.6+ | Location is sensitive PII; photo EXIF privacy |
-| Location-aware recall | Geospatial indexing in memory | v0.7+ | Reveals user position; trusted channel only |
-| Voice telephony (outbound calls) | Twilio + TTS APIs | v0.6+ | Irreversible public-facing egress; voice impersonation risk |
-| Meeting transcription | Long-form STT + action extraction | v0.6+ | Sensitive business content; prefer local STT |
-| Receipt processing | Vision + OCR + spreadsheet export | v0.6+ | Receipts contain card numbers; prefer local processing |
-| Document filing / OCR | Vision/OCR + auto-classification | v0.6+ | Untrusted PDFs are injection vector |
-| Directory monitoring | File watcher / cron-based scanning | v0.6+ | Auto-processing untrusted files is high-risk |
-| Media server (Plex/Jellyfin) | Radarr/Sonarr/Jellyseerr API | v0.6+ | Local network egress; low-risk |
-| Bookmark / link search | Ingestion pipeline + embedding search | v0.7+ | Web content is untrusted; taint persists |
-| Voice-to-journal | STT + journal template + git | v0.6+ | Voice is untrusted; transcription API is egress |
-| Personal knowledge base / RAG | Memory hierarchy + web ingestion | v0.7+ | All ingested content untrusted; ContentFirewall |
-| Family calendar aggregation | Multi-calendar connectors | v0.6+ | Multi-person PII; per-credential scoping |
-| Household task coordination | Poll skill + shared todos | v0.7+ | Low-risk; standard channel security |
-| Google Workspace editing | Google Docs/Sheets/Slides API | v0.6+ | Side-effecting; OAuth scope minimization |
-| Server health monitoring | Monitoring skill (disk/CPU/RAM) | v0.6+ | Read-only; low-risk |
-| CI/CD monitoring | GitHub Actions / Jenkins API | v0.6+ | Build triggers are side-effecting |
-| Expense tracking / finance queries | Finance query skill | v0.6+ | Highly sensitive; keep local |
-| Content repurposing | Multi-format adaptation skill | v0.6+ | Social posting is public egress |
+| Email send/draft | Outbound email connector + confirmation gate | Future | Irreversible egress; confirmation-gated |
+| Email bulk actions (unsubscribe, auto-reply) | Mutation connector + bulk action tools | Future | Bulk auto-reply is high-risk; per-batch confirmation |
+| Calendar read | CalDAV/Google Calendar API | Future | Credential broker; PII in event data |
+| Calendar write | Calendar API + confirmation | Future | Side-effecting; confirmation-gated |
+| Morning briefing (full) | Multi-source aggregation skill + calendar | Future | Aggregates tainted data; Output Firewall applies |
+| Weekly retrospective / reports | Multi-API data gathering | Future | GitHub/calendar/email APIs; credential broker |
+| Package tracking | Email monitoring + tracking API | Future | Triggered task; capability snapshot |
+| Music control (Sonos/Spotify) | Sonos API / Spotify API skill | Future | Local network egress; OAuth |
+| Smart home (Hue, etc.) | HomeAssistant/Hue API skill | Future | Safety-relevant actions; per-device policy |
+| Contact-name message UX | Address-book resolution over exact `message.send` targets | Future | Never let natural names weaken destination binding |
+| Household reminder UX | Contact/directory layer over scoped scheduled delivery | Future | Same exact-target and recipient policy as message relay |
+| Flight tracking | FlightAware API skill | Future | API credential management |
+| Health/fitness dashboard | WHOOP/Oura/HealthKit API skills | Future | Highly sensitive PII; credential broker |
+| Financial alerts | Financial API skill | Future | Sensitive data; rate-limited polling |
+| Social media management | Social media API skills | Future | Public-facing egress; confirmation-gated |
+| Personal CRM | CRM data model + integrations | Future | PII-heavy; outreach is egress |
+| Customer support agent | Customer-facing agent mode | Future | Untrusted input; auto-reply is high-risk egress |
+| Grocery/shopping automation | Commerce API skills + payment | Future | Payment is highest-risk commerce action |
+| TTS / audio generation | TTS API skill | Future | Text sent to TTS is egress |
+| Job search automation | Job board APIs + tracker | Future | PII; auto-apply is high-risk |
+| Restaurant/dining logging | Vision + location APIs + dining memory | Future | Location is sensitive PII; photo EXIF privacy |
+| Location-aware recall | Geospatial indexing in memory | Future | Reveals user position; trusted channel only |
+| Voice telephony (outbound calls) | Twilio + TTS APIs | Future | Irreversible public-facing egress; voice impersonation risk |
+| Meeting transcription | Long-form STT + action extraction | Future | Sensitive business content; prefer local STT |
+| Receipt processing | Vision + OCR + spreadsheet export | Future | Receipts contain card numbers; prefer local processing |
+| Document filing / OCR | Vision/OCR + auto-classification | Future | Untrusted PDFs are injection vector |
+| Directory monitoring | File watcher / cron-based scanning | Future | Auto-processing untrusted files is high-risk |
+| Media server (Plex/Jellyfin) | Radarr/Sonarr/Jellyseerr API | Future | Local network egress; low-risk |
+| Bookmark / link search | Ingestion pipeline + embedding search | Future | Web content is untrusted; taint persists |
+| Voice-to-journal | STT + journal template + git | Future | Voice is untrusted; transcription API is egress |
+| Personal knowledge base / RAG | Memory hierarchy + web ingestion | Future | All ingested content untrusted; ContentFirewall |
+| Family calendar aggregation | Multi-calendar connectors | Future | Multi-person PII; per-credential scoping |
+| Household task coordination | Poll skill + shared todos | Future | Low-risk; standard channel security |
+| Google Workspace editing | Google Docs/Sheets/Slides API | Future | Side-effecting; OAuth scope minimization |
+| Server health monitoring | Monitoring skill (disk/CPU/RAM) | Future | Read-only; low-risk |
+| CI/CD monitoring | GitHub Actions / Jenkins API | Future | Build triggers are side-effecting |
+| Expense tracking / finance queries | Finance query skill | Future | Highly sensitive; keep local |
+| Content repurposing | Multi-format adaptation skill | Future | Social posting is public egress |
 
 ### Requires Architectural Work
 
 | Use Case | What's Needed | Target | Notes |
 |----------|--------------|--------|-------|
-| Group chat @mention gating | Per-channel routing rules | v0.7 (stretch) | Config-driven, but now coupled to group-scoped policy/routing work |
-| Richer preference learning | Dedicated preference schema + high-confidence extraction | v0.7+ | Memory foundation is runtime-wired; richer semantic extraction/schema remains planned |
-| Automatic fact extraction | LLM-driven extraction pipeline | v0.7+ | Effectively part of the memory/extraction lane because the writes need the gated memory stack, not locked `v0.4` |
-| Streaming/chunked replies | TUI/Web UI progress + status streaming over the daemon event stream | v0.8 | Reframed as operator UX for TUI/Web UI, not token streaming for Discord/Telegram-style messaging channels |
-| Voice/speech input (STT) | Local manifest ingest exists; STT + channel plumbing still needed | v0.7 | Adversarial audio is injection vector |
-| Image/vision input | Local manifest ingest exists; OCR/vision + channel plumbing still needed | v0.7 | Adversarial images are injection vector |
-| Code generation / dev workflows | Sandboxed execution + proposal/apply | v0.4 | Highest-risk capability; needs full review |
-| Autonomous task execution | Multi-step execution loop + kill switch | v0.5 | Extremely high-risk; commit-before-contamination |
-| Content/newsletter drafting | Style profile in memory + proactive gen | v0.6+ | Needs memory hierarchy + scheduled tasks |
-| Bulk data ingestion | Ingestion pipeline + ContentFirewall | v0.6+ | Major poisoning vector; rate-limited |
-| Browser automation | Playwright + sandboxed browser | **v0.6** | Highest injection pressure; baseline shipped with allowlisting + confirmation-gated browser writes, broader authenticated flows later |
+| Group chat @mention gating | Per-channel routing rules | Future | Config-driven, but coupled to group-scoped policy/routing work |
+| Richer preference learning | Dedicated preference schema + high-confidence extraction | Future | Memory foundation is runtime-wired; richer semantic extraction/schema remains planned |
+| Automatic fact extraction | LLM-driven extraction pipeline | Future | Writes need the gated memory stack and bounded extraction authority |
+| Streaming/chunked replies | TUI/Web UI progress + status streaming over the daemon event stream | Future | Operator UX, not token streaming for Discord/Telegram-style messaging channels |
+| Voice/speech input (STT) | Local manifest ingest exists; STT + channel plumbing still needed | Future | Adversarial audio is injection vector |
+| Image/vision input | Local manifest ingest exists; OCR/vision + channel plumbing still needed | Future | Adversarial images are injection vector |
+| Coding-agent follow-ons | IDE/apply/deploy integrations over the existing proposal workflow | Future | Preserve bounded worktrees and explicit effect authority |
+| Autonomous project workflow | Project connector + explicit backlog loop over existing tasks, limits, cancellation | Future | Extremely high-risk; commit-before-contamination |
+| Content/newsletter drafting | Style profile in memory + proactive gen | Future | Needs a bounded scheduled workflow |
+| Bulk data ingestion | Format-specific importer over ArtifactLedger/memory foundations | Future | Major poisoning vector; rate-limited |
+| Browser automation follow-ons | Authenticated/admin UX and broader live-site validation over the shipped baseline | Future | Highest injection pressure; preserve allowlisting and confirmation-gated writes |
 | Self-extending agent (write own skills) | Clean-room proposal workflow | Present (v0.3) | Deliberate: proposal-only, no auto-apply |
 
 ### Deliberate Divergences (Not a Gap)
@@ -1053,10 +1078,11 @@ Based on the article and OpenClaw's architecture:
 | **v0.6.4** | Port prompt-injection detection to `textguard` library |
 | **v0.6.5** | MCP/A2A interop and remote-tool trust work |
 | **v0.6.6** | Local attachment ingest baseline for images and voice/audio recordings; connector and skill expansion groundwork |
-| **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), full attachment processing, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
-| **v0.6+** | Music control, smart home, grocery/shopping, bulk data ingestion, news monitoring (structured), content repurposing, customer support agent, social media management, voice telephony |
-| **v0.7+** | Memory hierarchy, preference learning, personal knowledge base / RAG, bookmark/link search, family calendar aggregation, household coordination, location-aware recall, group chat @mention gating, memory-driven extraction workflows |
-| **v0.8** | Operator Web UI, TUI/web progress-status streaming, multitenant deployments |
+| **v0.7** | Structured long-term-memory surfaces, provenance-gated writes, retrieval/evaluation foundations, thread/timeline/procedure follow-ons, and configured local email-read groundwork; not email send or calendar |
+| **v0.8.0** | Command-channel routine approval parity and operator UX foundation |
+| **v0.8.1 (development)** | Package/config UX, durable action/restart containment, finite-state/data-root integrity, managed-root containment, and four-channel scoped delivery/approval continuity |
+| **Future connector work** | Email send, calendar, STT/OCR, music, smart home, commerce, social, telephony, Google Workspace, and turnkey bulk-ingestion/PKB workflows |
+| **Later operator UX** | Live operator Web UI and richer progress/status surfaces; the current `web-ui` remains a static snapshot |
 
 ---
 
@@ -1064,87 +1090,87 @@ Based on the article and OpenClaw's architecture:
 
 Complete per-use-case breakdown across all 62 cataloged use cases.
 
-### Supported Baseline (v0.3) — 7
+### Supported in the Current Tree — 11
 
 | # | Use Case | How |
 |---|----------|-----|
 | 1.1 | Direct chat via messaging apps | Discord, Telegram, Slack, Matrix, CLI |
-| 4.1 | Create reminders (natural language) | `todo.create` + scheduler + channel delivery |
+| 1.3 | Cross-user message relay | Registered `message.send` with explicit authorized delivery target; config-gated |
+| 2.1 | Email read/summarize | Planner-visible local MsgVault search/read; provider sync is external and config-gated |
+| 4.1 | Create reminders (natural language) | `reminder.create` + scheduler + channel delivery |
+| 4.2 | Cross-user reminders | Scoped scheduled task plus exact `message.send` delivery target; config-gated |
 | 4.3 | Persistent lists (shopping, etc.) | `note.create` + `note.list` |
 | 5.2 | Clarifying questions / multi-turn | Session-based conversation |
 | 9.3 | Identity-based routing | `ChannelIdentityMap` + default-deny allowlist |
+| 12.1 | Code generation / dev workflows | Delegated coding-agent TASK workflow and proposal artifacts; adapter/repository config required |
 | 12.2 | Remote shell/fs/git ops from mobile | `fs.read/write` + `git.*` + shell (confirmation-gated) |
 | 28.1 | Self-extending agent (skill proposals) | Clean-room proposal workflow (proposal-only, no auto-apply) |
 
-### Partial (Foundation Exists, Needs Skills/Wiring) — 25
+### Partial (Foundation Exists, Named Gap Remains) — 31
 
 | # | Use Case | What Works | What's Missing |
 |---|----------|-----------|---------------|
 | 1.2 | Group chat @mentions | Channel adapters receive messages | Mention-gating routing rules |
-| 4.2 | Cross-user reminders | Scheduler exists | Cross-user delivery path |
 | 5.1 | Research flights/topics | `web.search` + `web.fetch` | Structured travel APIs |
 | 5.3 | Flight tracking | `web.fetch` can scrape | No structured flight API |
+| 6.1 | Package tracking | Configured email read, scheduler, web tools, notes, and delivery | Packaged extraction/carrier workflow and provider inbox sync |
 | 8.1 | Learn user preferences over time | Structured memory, explicit notes/preferences, and configurable extraction | Richer semantic preference schema/extraction |
 | 8.2 | Family context awareness | Notes can store manually | No family-specific relationship schema or high-confidence extraction |
 | 9.1 | Tiered access levels | Per-user trust + PEP | No "named agents" concept |
 | 9.2 | Agent-to-agent escalation | PEP confirmation gates | No explicit escalation protocol |
-| 10.1 | Morning briefing | Scheduler + delivery | Calendar/email connectors missing |
+| 10.1 | Morning briefing | Scheduler, delivery, and configured local email reads | Calendar connector and turnkey digest assembly |
 | 10.2 | Weekly retrospective | Scheduler + `git.log` | Multi-API aggregation missing |
 | 11.1 | Newsletter/content drafting | Session memory for style | No proactive generation workflow |
+| 12.3 | Autonomous task execution (Kanban) | COMMAND/TASK runtime, scheduler, coding-agent execution, limits, cancellation, status | Project-management connector and backlog workflow |
+| 13.1 | Voice/speech input (STT) | Local bounded voice/audio manifest ingest | STT and channel attachment download |
+| 13.4 | Image recognition/processing | Local bounded image manifest ingest | OCR/vision and channel attachment download |
+| 14.1 | Bulk data ingestion | ArtifactLedger, attachment manifests, memory ingestion/retrieval | Format-specific bulk importer, STT/OCR, cross-referencing |
 | 15.2 | Price comparison | `web.search` + `web.fetch` | No image recognition, no cart |
 | 16.2 | Financial alerts | Scheduler + `web.fetch` | No financial API, no threshold alerting |
 | 16.3 | News/keyword monitoring | `web.search` + scheduler | No watchlist, no digest formatting |
 | 17.1 | Customer support agent | Channel adapters + sessions | No customer-facing mode, no escalation |
 | 17.3 | Personal CRM | Notes/memory for contacts | No CRM model, no outreach |
-| 17.4 | Job search automation | `web.search` + scheduler | No tracker, no email connector |
+| 17.4 | Job search automation | `web.search`, scheduler, and configured local email reads | No tracker or outbound email connector |
 | 18.1 | Language learning | Conversational capability | No curriculum, no proactive nudges |
 | 19.1 | Content pipeline (quality gates) | Multi-model routing | No pipeline orchestration |
 | 21.1 | Expense tracking / finance queries | `fs.read` for local ledgers | No finance query skill |
 | 22.1 | Document filing / OCR | `fs.write` (confirmation-gated) | No OCR, no auto-classification |
 | 22.2 | Directory monitoring | Scheduler + `fs.list` | No native file watcher |
 | 23.2 | Bookmark/link semantic search | Notes can store links | No embedding search over bookmarks |
+| 24.2 | Personal knowledge base / RAG | Structured memory, embeddings/retrieval, `retrieve_rag`, evidence refs, notes | No turnkey bulk URL/document ingestion and query workflow |
 | 24.3 | Private document assistant (local RAG) | `fs.read` + local model routing | No chunking/embedding pipeline |
-| 25.2 | Household task coordination | Cross-user messaging + reminders | No polling/voting mechanism |
+| 25.2 | Household task coordination | Scoped cross-user messaging and reminders | No polling/voting or household directory UX |
+| 26.1 | Browser automation (forms, web admin) | Sandboxed browser baseline with read and confirmation-gated write tools | Authenticated/admin ergonomics, wrapper/runtime setup, broader live-site coverage |
 
-### Planned (Architecture Designed, Not Wired) — 1
+### Planned-Only — 0
 
-| # | Use Case | Design Status |
-|---|----------|--------------|
-| 24.2 | Personal knowledge base / RAG | Memory + embedding architecture designed |
+No cataloged use case is counted as planned-only: where a runtime foundation
+exists but the end-user workflow does not, the row is classified as partial.
 
-### Missing (Need New Skills/Connectors) — 29
+### Missing (Need New Skills/Connectors) — 20
 
-| # | Use Case | Target | Primary Blocker |
-|---|----------|--------|----------------|
-| 1.3 | Cross-user message relay | v0.5+ | User-facing `message.send` + user routing |
-| 2.1 | Email read/summarize | v0.7 | Email connector |
-| 2.2 | Email draft/send | v0.7 | Email connector |
-| 2.3 | Email bulk actions (unsubscribe, auto-reply) | v0.7 | Email connector |
-| 3.1 | Calendar read | v0.7 | Calendar connector |
-| 3.2 | Calendar write | v0.7 | Calendar connector |
-| 3.3 | Multi-person scheduling | v0.7 | Calendar connector |
-| 6.1 | Package tracking | v0.6+ | Email connector + tracking API |
-| 7.1 | Music control (Sonos/Spotify) | v0.6+ | Music API skill |
-| 7.2 | Smart home (Hue, HomeAssistant) | v0.6+ | HomeAssistant/Hue skill |
-| 11.2 | Audio/TTS generation | v0.6+ | TTS API skill |
-| 12.1 | Code generation / dev workflows | v0.4 | Proposal-first coding workflow + sandbox/apply contract |
-| 12.3 | Autonomous task execution (Kanban) | v0.6+ | Multi-step execution loop |
-| 13.1 | Voice/speech input (STT) | v0.7 | Local manifest ingest exists in `v0.6.6`; STT/channel plumbing remains |
-| 13.2 | Voice telephony (outbound calls) | v0.6+ | Twilio + TTS |
-| 13.3 | Meeting transcription | v0.7+ | Long-form STT |
-| 13.4 | Image recognition/processing | v0.7 | Local manifest ingest exists in `v0.6.6`; OCR/vision/channel plumbing remains |
-| 14.1 | Bulk data ingestion | v0.6+ | Ingestion pipeline |
-| 15.1 | Grocery/shopping automation | v0.6+ | Vision + commerce APIs |
-| 16.1 | Health/fitness dashboard | v0.6+ | Wearable API skills |
-| 17.2 | Social media management | v0.6+ | Social media API skills |
-| 20.1 | Restaurant check-in / menu logging | v0.6+ | Vision + location APIs |
-| 20.2 | Location-aware recall | v0.7+ | Geospatial memory indexing |
-| 21.2 | Receipt processing (photo → spreadsheet) | v0.6+ | Vision/OCR |
-| 23.1 | Media server management (Plex/Jellyfin) | v0.6+ | Radarr/Sonarr API |
-| 24.1 | Voice-to-journal | v0.7+ | STT |
-| 25.1 | Family calendar aggregation | v0.7+ | Calendar connectors |
-| 26.1 | Browser automation (forms, web admin) | **v0.6 (baseline)** | Playwright sandbox; authenticated/admin-heavy follow-ons still need additional hardening |
-| 27.1 | Google Workspace editing | v0.6+ | Google API skills |
+| # | Use Case | Primary Blocker |
+|---|----------|----------------|
+| 2.2 | Email draft/send | Outbound email connector |
+| 2.3 | Email bulk actions (unsubscribe, auto-reply) | Outbound/mutation email connector and batch policy |
+| 3.1 | Calendar read | Calendar connector |
+| 3.2 | Calendar write | Calendar connector |
+| 3.3 | Multi-person scheduling | Calendar connector |
+| 7.1 | Music control (Sonos/Spotify) | Music API skill |
+| 7.2 | Smart home (Hue, HomeAssistant) | HomeAssistant/Hue skill |
+| 11.2 | Audio/TTS generation | TTS integration |
+| 13.2 | Voice telephony (outbound calls) | Telephony plus TTS integration |
+| 13.3 | Meeting transcription | Long-form STT workflow |
+| 15.1 | Grocery/shopping automation | Vision plus commerce APIs |
+| 16.1 | Health/fitness dashboard | Wearable API skills |
+| 17.2 | Social media management | Social media API skills |
+| 20.1 | Restaurant check-in / menu logging | Vision plus location APIs |
+| 20.2 | Location-aware recall | Geospatial memory indexing |
+| 21.2 | Receipt processing (photo → spreadsheet) | Vision/OCR plus spreadsheet connector |
+| 23.1 | Media server management (Plex/Jellyfin) | Media-server API skill |
+| 24.1 | Voice-to-journal | STT plus journal workflow |
+| 25.1 | Family calendar aggregation | Calendar connectors |
+| 27.1 | Google Workspace editing | Google API skills |
 
 ---
 

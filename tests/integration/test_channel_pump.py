@@ -35,6 +35,20 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 @pytest.fixture
 def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in (
+        "SHISAD_MODEL_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+    ):
+        monkeypatch.setenv(variable, "false")
+    for variable in (
+        "SHISA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
@@ -732,6 +746,7 @@ async def test_m75_discord_read_along_marks_proactive_and_enforces_cooldown(
         await InMemoryChannel.connect(self)
 
     monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+    monkeypatch.setattr(DiscordChannel, "available", property(lambda _self: True))
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",

@@ -16,11 +16,23 @@ Status meanings:
 
 Current snapshot:
 
-This snapshot was generated on 2026-07-12 from a fresh isolated data directory
-with external channels, browser, msgvault, and the web-search backend disabled.
-The filesystem root was the source checkout. The direct-RPC probe is deliberately
+This snapshot was generated on 2026-07-22 from public development ref
+`d4d2f465d96ed93ac51a9cfbe2569d043b17747f` in an isolated data directory.
+The remote planner route was configured and responsive; external channels,
+browser, MsgVault, RealityCheck, and web search were explicitly disabled. The
+filesystem root was the source checkout. The direct-RPC probe is deliberately
 fast; later safe tools can therefore appear as `GATED` when the behavioral
 sequence control sees the synthetic burst.
+
+This host had no available `nsjail` or container sandbox backend. Under the
+default `supported` profile, sandbox doctor correctly reported `blocked` and
+the three command-backed probe rows failed closed with
+`degraded_enforcement`. To record tool functionality separately from host
+containment availability, the table below was generated with the explicit
+`expert_host_fallback` policy posture. Sandbox doctor reported `degraded` with
+`expert_host_fallback_enabled`; the `WORKS` command rows therefore make **no
+supported-isolation claim**. A supported deployment must keep the default
+profile and provide the required backend instead.
 
 Note:
 
@@ -47,7 +59,14 @@ Note:
   Browser rows still require an operator-supplied compatible wrapper/runtime,
   and `tool.web.search` still requires a configured SearxNG-compatible
   endpoint.
-- `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must appear in the effective web allowlist before the tool can show up as `WORKS`; set `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups, or rely on policy egress hosts when that variable is unset. Public backend hosts do not need an allowlist entry just to run `web.search`.
+- `tool.web.search` is `DISABLED` in this recorded snapshot because
+  `SHISAD_WEB_SEARCH_ENABLED=false` was selected. Enabling it also requires a
+  configured SearxNG-compatible backend. In a configured environment,
+  IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts
+  must appear in the effective web allowlist before the tool can show up as
+  `WORKS`; set `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups, or rely
+  on policy egress hosts when that variable is unset. Public backend hosts do
+  not need an allowlist entry just to run `web.search`.
 - `tool.email.search` and `tool.email.read` are `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_MSGVAULT_ENABLED=1`. In a configured environment, shisad calls local `msgvault --local` read/search commands for tool output; reads also inspect local msgvault archive email metadata. msgvault remains responsible for provider sync and provider credentials.
 - `tool.email.read` resolves the requested msgvault id against local archive
   email metadata before calling `show-message` with the matched internal id;
@@ -71,6 +90,16 @@ Note:
   manifests that are not readable through the default evidence read/promote
   path.
 - The file.read, attachment, note, todo, and reminder rows use direct `tool.execute` probe payloads and show the configured control-plane gate for synthetic control API calls. User-requested session flows for these tools are covered separately by behavioral tests.
+- The four network channel adapters do not currently advertise a common
+  provider idempotency or automatic-delivery-recovery capability. Their
+  durable delivery ledger preserves attempt/outcome evidence and prevents
+  silent local replay; it does not create a provider exactly-once guarantee.
+  `tool.message.send` is disabled in this snapshot because no channel was
+  configured, so this direct table is not delivery-recovery evidence.
+- Pending-action restart recovery is separately restricted to trusted
+  persisted retry descriptors. Target-bearing or otherwise ambiguous attempts
+  become `outcome_unknown`; the live tool matrix does not simulate a crash and
+  is not evidence of arbitrary effect retry safety.
 - Assistant `fs.*` and `git.*` tools reject the daemon-managed data root and
   exact configured external approval, signer, and operator `SOUL.md` control
   files (including adjacent lock files). Unrelated paths under configured
@@ -135,7 +164,7 @@ Note:
 | tool.http.request | WORKS | allowed |
 | tool.file.read | WORKS | allowed |
 | tool.file.write | GATED | consensus:veto:BehavioralSequenceAnalyzer |
-| tool.web.search | DISABLED | web_search_backend_unconfigured |
+| tool.web.search | DISABLED | web_search_disabled |
 | tool.web.fetch | WORKS | ok |
 | tool.time.now | GATED | consensus:veto:BehavioralSequenceAnalyzer |
 | tool.email.search | DISABLED | msgvault_disabled |
