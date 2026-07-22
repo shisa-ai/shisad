@@ -354,7 +354,7 @@ class ChannelStateStore:
                 raise ChannelReplayStateError(
                     "Channel replay database permissions could not be set."
                 )
-            self._initialize_schema(connection)
+            self._initialize_schema(connection, allow_create=first_create)
             if first_create:
                 sync_parent_directory(self._root_dir)
             return connection
@@ -367,11 +367,20 @@ class ChannelStateStore:
                 connection.close()
             raise _sqlite_error("open", exc) from exc
 
-    def _initialize_schema(self, connection: sqlite3.Connection) -> None:
+    def _initialize_schema(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        allow_create: bool,
+    ) -> None:
         try:
             connection.execute("BEGIN IMMEDIATE")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version == 0:
+                if not allow_create:
+                    raise ChannelReplayStateError(
+                        "Unsupported unversioned channel replay database schema."
+                    )
                 existing = {
                     str(row[0])
                     for row in connection.execute(
@@ -435,42 +444,46 @@ class ChannelStateStore:
 
     @staticmethod
     def _validate_schema(connection: sqlite3.Connection) -> None:
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-            if not str(row[0]).startswith("sqlite_")
+        objects = {
+            (str(row[0]), str(row[1]))
+            for row in connection.execute("SELECT type, name FROM sqlite_master").fetchall()
+            if not str(row[1]).startswith("sqlite_")
         }
-        expected_tables = {
-            "replay_reservations",
-            "legacy_replay_blockers",
-            "legacy_replay_imports",
+        expected_objects = {
+            ("table", "replay_reservations"),
+            ("table", "legacy_replay_blockers"),
+            ("table", "legacy_replay_imports"),
         }
-        if tables != expected_tables:
+        if objects != expected_objects:
             raise ChannelReplayStateError("Unsupported channel replay database schema.")
-        columns = connection.execute("PRAGMA table_info(replay_reservations)").fetchall()
-        expected = [
-            "provider",
-            "account_id",
-            "scope_id",
-            "event_kind",
-            "event_id",
-            "state",
-            "created_at",
-            "updated_at",
-        ]
-        if [str(row[1]) for row in columns] != expected:
-            raise ChannelReplayStateError("Corrupt channel replay reservation schema.")
-        if [int(row[5]) for row in columns[:5]] != [1, 2, 3, 4, 5]:
-            raise ChannelReplayStateError("Corrupt channel replay composite key schema.")
-        for table in ("legacy_replay_blockers", "legacy_replay_imports"):
-            exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (table,),
-            ).fetchone()
-            if exists is None:
-                raise ChannelReplayStateError("Corrupt channel replay legacy schema.")
+        expected_columns = {
+            "replay_reservations": [
+                ("provider", "TEXT", 1, 1),
+                ("account_id", "TEXT", 1, 2),
+                ("scope_id", "TEXT", 1, 3),
+                ("event_kind", "TEXT", 1, 4),
+                ("event_id", "TEXT", 1, 5),
+                ("state", "TEXT", 1, 0),
+                ("created_at", "TEXT", 1, 0),
+                ("updated_at", "TEXT", 1, 0),
+            ],
+            "legacy_replay_blockers": [
+                ("provider", "TEXT", 1, 1),
+                ("event_id", "TEXT", 1, 2),
+                ("imported_at", "TEXT", 1, 0),
+            ],
+            "legacy_replay_imports": [
+                ("provider", "TEXT", 1, 1),
+                ("imported_at", "TEXT", 1, 0),
+            ],
+        }
+        for table, expected in expected_columns.items():
+            columns = connection.execute(f"PRAGMA table_info({table})").fetchall()
+            actual = [
+                (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5])) for row in columns
+            ]
+            if actual != expected:
+                raise ChannelReplayStateError(f"Corrupt channel replay {table} schema.")
         integrity = connection.execute("PRAGMA quick_check").fetchall()
         if integrity != [("ok",)]:
             raise ChannelReplayStateError("Corrupt channel replay database integrity check.")

@@ -49,6 +49,9 @@ def test_f7a_every_durable_state_blocks_after_restart(tmp_path: Path, state: str
 
 def test_f7a_concurrent_reservation_has_one_winner(tmp_path: Path) -> None:
     root = tmp_path / "state"
+    # First-open validation is covered separately; this node isolates reservation contention.
+    bootstrap = _identity(provider="slack", account_id="app-1", event_id="bootstrap")
+    assert channel_state.ChannelStateStore(root).reserve(bootstrap) is True
     identity = _identity(provider="slack", account_id="app-1", event_id="1.23")
 
     def _reserve() -> bool:
@@ -59,7 +62,7 @@ def test_f7a_concurrent_reservation_has_one_winner(tmp_path: Path) -> None:
 
     assert outcomes.count(True) == 1
     assert outcomes.count(False) == 15
-    assert channel_state.ChannelStateStore(root).record_count() == 1
+    assert channel_state.ChannelStateStore(root).record_count() == 2
 
 
 def test_f7a_exact_legacy_import_is_conservative_atomic_and_preserves_bytes(
@@ -172,6 +175,26 @@ def test_f7a_corrupt_or_unsupported_database_fails_closed(
         store.reserve(_identity())
 
 
+@pytest.mark.parametrize("database_kind", ["empty", "unversioned"])
+def test_f7a_existing_unversioned_database_is_never_initialized_as_fresh(
+    tmp_path: Path,
+    database_kind: str,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir(parents=True)
+    database = root / "replay.sqlite3"
+    if database_kind == "empty":
+        database.touch()
+    else:
+        with sqlite3.connect(database) as connection:
+            connection.execute("VACUUM")
+
+    store = channel_state.ChannelStateStore(root)
+    with pytest.raises(channel_state.ChannelReplayStateError, match=r"(?i)unversioned|schema"):
+        store.reserve(_identity())
+    assert database.exists()
+
+
 def test_f7a_reservation_open_failure_is_typed_and_never_fresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -234,6 +257,32 @@ def test_f7a_same_version_unknown_schema_is_not_accepted(tmp_path: Path) -> None
     reopened = channel_state.ChannelStateStore(root)
     with pytest.raises(channel_state.ChannelReplayStateError, match=r"(?i)unsupported|schema"):
         reopened.reserve(_identity(event_id="$event-2"))
+
+
+@pytest.mark.parametrize(
+    ("table", "trigger_body"),
+    [
+        ("replay_reservations", "DELETE FROM replay_reservations;"),
+        ("legacy_replay_blockers", "SELECT RAISE(IGNORE);"),
+        ("legacy_replay_imports", "DELETE FROM legacy_replay_blockers;"),
+    ],
+)
+def test_f7a_unknown_trigger_is_rejected_for_every_replay_table(
+    tmp_path: Path,
+    table: str,
+    trigger_body: str,
+) -> None:
+    root = tmp_path / "state"
+    store = channel_state.ChannelStateStore(root)
+    assert store.reserve(_identity()) is True
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            f"CREATE TRIGGER hostile_{table} AFTER INSERT ON {table} BEGIN {trigger_body} END"
+        )
+
+    reopened = channel_state.ChannelStateStore(root)
+    with pytest.raises(channel_state.ChannelReplayStateError, match=r"(?i)unsupported|schema"):
+        reopened.reserve(_identity(event_id="$event-trigger"))
 
 
 def test_f7a_invalid_row_blocks_without_committing_legacy_import(tmp_path: Path) -> None:

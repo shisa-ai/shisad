@@ -228,32 +228,140 @@ class _ReservedIngressHarness(AdminImplMixin):
         }
 
 
+class _DiscordInteractionAckStub:
+    def __init__(self, store: object) -> None:
+        self._store = store
+        self.acknowledged: list[tuple[object, str]] = []
+        self.discarded: list[object] = []
+
+    async def acknowledge_reserved_interaction(
+        self,
+        identity: object,
+        *,
+        message: str = "",
+    ) -> bool:
+        assert self._store.state_for(identity) == "reserved"
+        self.acknowledged.append((identity, message))
+        return True
+
+    def discard_pending_interaction(self, identity: object) -> None:
+        self.discarded.append(identity)
+
+
 def _internal_reserved_payload(
     harness: _ReservedIngressHarness,
     *,
     event_id: str = "event-1",
     scope_id: str = '["team-1","channel-1"]',
+    provider: str = "slack",
+    event_kind: str = "message",
+    extra_metadata: dict[str, object] | None = None,
 ) -> tuple[dict[str, Any], object]:
     identity = channel_state.ReplayIdentity(
-        provider="slack",
+        provider=provider,
         account_id="app-1",
         scope_id=scope_id,
-        event_kind="message",
+        event_kind=event_kind,
         event_id=event_id,
     )
+    metadata: dict[str, object] = channel_state.replay_identity_metadata(identity)
+    metadata.update(extra_metadata or {})
     payload = {
         "message": {
-            "channel": "slack",
+            "channel": provider,
             "external_user_id": "alice",
             "workspace_hint": "mapped-workspace",
             "content": "hello",
             "message_id": event_id,
             "reply_target": "channel-1",
-            "metadata": channel_state.replay_identity_metadata(identity),
+            "metadata": metadata,
         },
         "_internal_ingress_marker": harness._internal_ingress_marker,
     }
     return payload, identity
+
+
+@pytest.mark.asyncio
+async def test_f7a_discord_interaction_acknowledges_only_after_reservation(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-1",
+        extra_metadata={"approval_interaction_type": "approval_component"},
+    )
+    discord = _DiscordInteractionAckStub(harness._services.channel_state_store)
+    harness._discord_channel = discord
+
+    assert (await harness.do_channel_ingest_reserved(payload))["response"] == "handled"
+    repeated = await harness.do_channel_ingest_reserved(payload)
+
+    assert [item[0] for item in discord.acknowledged] == [identity]
+    assert discord.discarded == [identity]
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert len(harness.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_f7a_discord_missing_code_feedback_is_reserved_ack_only(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-missing-code",
+        extra_metadata={
+            "approval_interaction_type": "approval_invalid",
+            "approval_ack_only": True,
+            "approval_ack_message": "TOTP code is required.",
+        },
+    )
+    discord = _DiscordInteractionAckStub(harness._services.channel_state_store)
+    harness._discord_channel = discord
+
+    first = await harness.do_channel_ingest_reserved(payload)
+    repeated = await harness.do_channel_ingest_reserved(payload)
+
+    assert discord.acknowledged == [(identity, "TOTP code is required.")]
+    assert discord.discarded == [identity]
+    assert harness.calls == []
+    assert first["delivery"]["attempted"] is True
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert harness._services.channel_state_store.state_for(identity) == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_f7a_discord_reservation_failure_discards_without_acknowledging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-reserve-failure",
+        extra_metadata={"approval_interaction_type": "approval_component"},
+    )
+    discord = _DiscordInteractionAckStub(harness._services.channel_state_store)
+    harness._discord_channel = discord
+
+    def _fail_reservation(_identity: object) -> bool:
+        raise channel_state.ChannelReplayStateError("injected reservation failure")
+
+    monkeypatch.setattr(harness._services.channel_state_store, "reserve", _fail_reservation)
+
+    with pytest.raises(channel_state.ChannelReplayStateError, match="reservation"):
+        await harness.do_channel_ingest_reserved(payload)
+
+    assert discord.acknowledged == []
+    assert discord.discarded == [identity]
+    assert harness.calls == []
 
 
 @pytest.mark.asyncio
@@ -418,6 +526,36 @@ async def test_f7a_direct_rpc_uses_peer_and_daemon_scope_not_claimed_channel_sco
     database_bytes = harness._services.channel_state_store.database_path.read_bytes()
     assert b"same semantic request" not in database_bytes
     assert b"forged-guild" not in database_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "peer",
+    [None, {}, {"uid": None}, {"uid": True}],
+)
+async def test_f7a_direct_rpc_without_authenticated_uid_has_no_effect(
+    tmp_path: Path,
+    peer: object,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload: dict[str, Any] = {
+        "message": {
+            "channel": "discord",
+            "external_user_id": "alice",
+            "content": "must not run",
+        }
+    }
+    if peer is not None:
+        payload["_rpc_peer"] = peer
+
+    with pytest.raises(
+        channel_state.ChannelReplayIdentityError,
+        match="authenticated peer identity",
+    ):
+        await harness.do_channel_ingest_reserved(payload)
+
+    assert harness.calls == []
+    assert harness._services.channel_state_store.is_empty()
 
 
 def _gh92_pending_action(*, confirmation_id: str = "old-reminder") -> PendingAction:

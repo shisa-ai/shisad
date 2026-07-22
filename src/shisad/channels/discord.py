@@ -99,6 +99,7 @@ class DiscordChannel(InMemoryChannel):
         self._replay_state_store = replay_state_store
         self._client: Any | None = None
         self._client_task: asyncio.Task[None] | None = None
+        self._pending_interactions: dict[tuple[str, str, str, str, str], Any] = {}
 
     @property
     def available(self) -> bool:
@@ -397,19 +398,22 @@ class DiscordChannel(InMemoryChannel):
                 if parsed.action == "totp_submit":
                     code = self._interaction_totp_code(data)
                     if not code:
-                        await self._acknowledge_approval_interaction(
-                            interaction,
-                            message="TOTP code is required.",
+                        await self._enqueue_approval_interaction(
+                            interaction=interaction,
+                            parsed=parsed,
+                            content="",
+                            interaction_type="approval_invalid",
+                            ack_only_message="TOTP code is required.",
                         )
                         return
-                    enqueued = await self._enqueue_approval_interaction(
+                    await self._enqueue_approval_interaction(
                         interaction=interaction,
                         parsed=parsed,
                         content=f"confirm {parsed.confirmation_id} {code}",
                         interaction_type="approval_modal",
                     )
                 elif parsed.action in {"confirm", "reject"}:
-                    enqueued = await self._enqueue_approval_interaction(
+                    await self._enqueue_approval_interaction(
                         interaction=interaction,
                         parsed=parsed,
                         content=f"{parsed.action} {parsed.confirmation_id}",
@@ -417,8 +421,6 @@ class DiscordChannel(InMemoryChannel):
                     )
                 else:
                     return
-                if enqueued:
-                    await self._acknowledge_approval_interaction(interaction)
 
             event_decorator(on_message)
             event_decorator(on_interaction)
@@ -441,6 +443,7 @@ class DiscordChannel(InMemoryChannel):
                 await self._client_task
             self._client_task = None
         self._client = None
+        self._pending_interactions.clear()
         await super().disconnect()
 
     async def send(
@@ -486,6 +489,7 @@ class DiscordChannel(InMemoryChannel):
         parsed: DiscordApprovalInteraction,
         content: str,
         interaction_type: str,
+        ack_only_message: str = "",
     ) -> bool:
         user = getattr(interaction, "user", None)
         if user is None or bool(getattr(user, "bot", False)):
@@ -506,30 +510,60 @@ class DiscordChannel(InMemoryChannel):
         )
         if replay_metadata is None:
             return False
-        await self._incoming.put(
-            ChannelMessage(
-                channel="discord",
-                external_user_id=user_id,
-                workspace_hint=self.workspace_for_guild(guild_id),
-                content=content.strip(),
-                message_id=interaction_id,
-                reply_target=channel_id,
-                metadata={
-                    **replay_metadata,
-                    "discord_guild_id": guild_id,
-                    "discord_channel_id": channel_id,
-                    "addressed": True,
-                    "interaction_type": interaction_type,
-                    "approval_interaction_type": interaction_type,
-                    "approval_component_action": parsed.action,
-                    "approval_confirmation_id": parsed.confirmation_id,
-                    "approval_decision_nonce": parsed.decision_nonce,
-                    "engagement_mode": "approval-interaction",
-                    "proactive_eligible": False,
-                },
+        identity = ReplayIdentity.from_mapping(replay_metadata["replay_identity"])
+        self._pending_interactions.setdefault(identity.key, interaction)
+        try:
+            await self._incoming.put(
+                ChannelMessage(
+                    channel="discord",
+                    external_user_id=user_id,
+                    workspace_hint=self.workspace_for_guild(guild_id),
+                    content=content.strip(),
+                    message_id=interaction_id,
+                    reply_target=channel_id,
+                    metadata={
+                        **replay_metadata,
+                        "discord_guild_id": guild_id,
+                        "discord_channel_id": channel_id,
+                        "addressed": True,
+                        "interaction_type": interaction_type,
+                        "approval_interaction_type": interaction_type,
+                        "approval_component_action": parsed.action,
+                        "approval_confirmation_id": parsed.confirmation_id,
+                        "approval_decision_nonce": parsed.decision_nonce,
+                        "approval_ack_only": bool(ack_only_message),
+                        "approval_ack_message": ack_only_message,
+                        "engagement_mode": "approval-interaction",
+                        "proactive_eligible": False,
+                    },
+                )
             )
-        )
+        except BaseException:
+            if self._pending_interactions.get(identity.key) is interaction:
+                self._pending_interactions.pop(identity.key, None)
+            raise
         return True
+
+    async def acknowledge_reserved_interaction(
+        self,
+        identity: ReplayIdentity,
+        *,
+        message: str = "",
+    ) -> bool:
+        """Acknowledge one transient Discord interaction after durable reservation."""
+
+        interaction = self._pending_interactions.pop(identity.key, None)
+        if interaction is None:
+            return False
+        return await self._acknowledge_approval_interaction(
+            interaction,
+            message=message or _DISCORD_DEFAULT_APPROVAL_ACK,
+        )
+
+    def discard_pending_interaction(self, identity: ReplayIdentity) -> None:
+        """Discard a transient provider handle for an already-blocked replay."""
+
+        self._pending_interactions.pop(identity.key, None)
 
     async def _open_totp_modal_reserved(
         self,
@@ -606,19 +640,19 @@ class DiscordChannel(InMemoryChannel):
         interaction: Any,
         *,
         message: str = _DISCORD_DEFAULT_APPROVAL_ACK,
-    ) -> None:
+    ) -> bool:
         must_deliver_message = message != _DISCORD_DEFAULT_APPROVAL_ACK
         response = getattr(interaction, "response", None)
         if response is not None:
             send_message = getattr(response, "send_message", None)
             if await _call_discord_response(send_message, message, ephemeral=True):
-                return
+                return True
             defer = getattr(response, "defer", None)
             if await _call_discord_response(defer, ephemeral=True) and not must_deliver_message:
-                return
+                return True
         followup = getattr(interaction, "followup", None)
         followup_send = getattr(followup, "send", None) if followup is not None else None
-        await _call_discord_response(followup_send, message, ephemeral=True)
+        return await _call_discord_response(followup_send, message, ephemeral=True)
 
     def _totp_modal(self, parsed: DiscordApprovalInteraction) -> Any | None:
         if discord is None:

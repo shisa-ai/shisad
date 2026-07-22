@@ -570,6 +570,15 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
     )
     await channel.connect()
     assert channel._client is not None
+    acknowledgements: list[tuple[str, str]] = []
+
+    class _FakeResponse:
+        def __init__(self, source: str) -> None:
+            self.source = source
+
+        async def send_message(self, message: str, **_kwargs: object) -> None:
+            acknowledgements.append((self.source, message))
+
     interaction = SimpleNamespace(
         id="i-1",
         data={
@@ -582,11 +591,23 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
+        response=_FakeResponse("first"),
     )
 
     await channel._client.dispatch_interaction(interaction)
+    replayed_interaction = SimpleNamespace(
+        id=interaction.id,
+        data=interaction.data,
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+        response=_FakeResponse("replayed"),
+    )
+    await channel._client.dispatch_interaction(replayed_interaction)
+    assert acknowledgements == []
 
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    replayed = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert received.channel == "discord"
     assert received.external_user_id == "u-1"
     assert received.workspace_hint == "g-1"
@@ -604,6 +625,16 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
         "event_kind": "interaction",
         "event_id": "i-1",
     }
+    interaction_identity = channel_state.ReplayIdentity.from_mapping(
+        received.metadata["replay_identity"]
+    )
+    assert replay_store.reserve(interaction_identity) is True
+    assert await channel.acknowledge_reserved_interaction(interaction_identity) is True
+    assert acknowledgements == [("first", "Approval response received.")]
+
+    channel.discard_pending_interaction(interaction_identity)
+    assert replayed.message_id == received.message_id
+    assert acknowledgements == [("first", "Approval response received.")]
 
     missing_id = SimpleNamespace(
         id="",
@@ -731,6 +762,12 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
     channel = DiscordChannel(DiscordConfig(bot_token="token"))
     await channel.connect()
     assert channel._client is not None
+    acknowledgements: list[str] = []
+
+    class _FakeResponse:
+        async def send_message(self, message: str, **_kwargs: object) -> None:
+            acknowledgements.append(message)
+
     interaction = SimpleNamespace(
         id="i-2",
         data={
@@ -750,9 +787,11 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
+        response=_FakeResponse(),
     )
 
     await channel._client.dispatch_interaction(interaction)
+    assert acknowledgements == []
 
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert received.message_id == "i-2"
@@ -763,6 +802,28 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
     assert received.metadata["approval_decision_nonce"] == "nonce-2"
     assert received.metadata["replay_identity"]["event_kind"] == "interaction"
     assert received.metadata["replay_identity"]["event_id"] == "i-2"
+
+    missing_code = SimpleNamespace(
+        id="i-3",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="totp_submit",
+                confirmation_id="c-2",
+                decision_nonce="nonce-2",
+            ),
+            "components": [],
+        },
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+        response=_FakeResponse(),
+    )
+    await channel._client.dispatch_interaction(missing_code)
+    assert acknowledgements == []
+    invalid = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert invalid.message_id == "i-3"
+    assert invalid.metadata["approval_ack_only"] is True
+    assert invalid.metadata["approval_ack_message"] == "TOTP code is required."
     await channel.disconnect()
 
 

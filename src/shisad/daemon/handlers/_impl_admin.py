@@ -2290,12 +2290,23 @@ class AdminImplMixin(HandlerMixinBase):
 
         identity = self._channel_replay_identity(params)
         state_store = self._services.channel_state_store
-        if not state_store.reserve(identity):
+        try:
+            inserted = state_store.reserve(identity)
+        except BaseException:
+            self._discard_pending_channel_interaction(params, identity)
+            raise
+        if not inserted:
+            self._discard_pending_channel_interaction(params, identity)
             existing_state = state_store.state_for(identity) or "existing"
             return self._channel_replay_blocked_result(existing_state)
 
         try:
-            result = await self.do_channel_ingest(params)
+            reserved_result = await self._prepare_reserved_channel_interaction(params, identity)
+            result = (
+                reserved_result
+                if reserved_result is not None
+                else await self.do_channel_ingest(params)
+            )
         except asyncio.CancelledError:
             self._mark_channel_replay_uncertain(state_store, identity)
             raise
@@ -2305,6 +2316,69 @@ class AdminImplMixin(HandlerMixinBase):
 
         state_store.mark_terminal(identity)
         return result
+
+    async def _prepare_reserved_channel_interaction(
+        self,
+        params: Mapping[str, Any],
+        identity: ReplayIdentity,
+    ) -> dict[str, Any] | None:
+        metadata = self._discord_approval_interaction_metadata(params, identity)
+        if metadata is None:
+            return None
+        discord_channel = getattr(self, "_discord_channel", None)
+        acknowledge = getattr(discord_channel, "acknowledge_reserved_interaction", None)
+        acknowledged = False
+        if callable(acknowledge):
+            acknowledged = bool(
+                await acknowledge(
+                    identity,
+                    message=str(metadata.get("approval_ack_message") or "").strip(),
+                )
+            )
+        if not _metadata_bool(metadata, "approval_ack_only"):
+            return None
+        response = str(metadata.get("approval_ack_message") or "").strip()
+        return {
+            "session_id": "",
+            "response": response,
+            "ingress_risk": 0.0,
+            "delivery": {
+                "attempted": True,
+                "sent": acknowledged,
+                "reason": (
+                    "discord_interaction_acknowledged"
+                    if acknowledged
+                    else "discord_interaction_ack_unavailable"
+                ),
+                "target": {},
+            },
+            "channel_policy": {"reason": "approval_interaction_ack_only"},
+        }
+
+    def _discard_pending_channel_interaction(
+        self,
+        params: Mapping[str, Any],
+        identity: ReplayIdentity,
+    ) -> None:
+        if self._discord_approval_interaction_metadata(params, identity) is None:
+            return
+        discord_channel = getattr(self, "_discord_channel", None)
+        discard = getattr(discord_channel, "discard_pending_interaction", None)
+        if callable(discard):
+            discard(identity)
+
+    @staticmethod
+    def _discord_approval_interaction_metadata(
+        params: Mapping[str, Any],
+        identity: ReplayIdentity,
+    ) -> dict[str, Any] | None:
+        if identity.provider != "discord" or identity.event_kind != "interaction":
+            return None
+        message = ChannelMessage.model_validate(params.get("message", {}))
+        metadata = dict(message.metadata or {})
+        if not str(metadata.get("approval_interaction_type") or "").strip():
+            return None
+        return metadata
 
     def _channel_replay_identity(self, params: Mapping[str, Any]) -> ReplayIdentity:
         message = ChannelMessage.model_validate(params.get("message", {}))
