@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import os
+import stat
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from shisad.channels.state import (
     ChannelReplayIdentityError,
     ReplayIdentity,
 )
+from shisad.core.atomic_state import AtomicWriteError, atomic_write_bytes
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
@@ -2059,10 +2061,23 @@ class AdminImplMixin(HandlerMixinBase):
         return cast(dict[str, Any], updated.model_dump(mode="json"))
 
     async def do_channel_pairing_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel pairing proposal requires authenticated admin peer")
         limit = max(1, int(params.get("limit", 100)))
         channel_filter = str(params.get("channel") or "").strip().lower()
         workspace_filter = str(params.get("workspace_hint") or "").strip()
-        rows, invalid_entries = self._load_pairing_request_artifacts(limit=max(limit * 5, limit))
+        if not workspace_filter:
+            raise ValueError("workspace_hint is required")
+        if len(workspace_filter) > 256 or any(
+            ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F or char in {"\u2028", "\u2029"}
+            for char in workspace_filter
+        ):
+            raise ValueError("workspace_hint is invalid")
+        owner_uid = int(self._daemon_owner_uid)
+        rows = self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace_filter,
+        )
         deduped: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for row in rows:
@@ -2070,8 +2085,6 @@ class AdminImplMixin(HandlerMixinBase):
             external_user_id = str(row.get("external_user_id", "")).strip()
             workspace_hint = str(row.get("workspace_hint", "")).strip()
             if channel_filter and channel != channel_filter:
-                continue
-            if workspace_filter and workspace_hint != workspace_filter:
                 continue
             key = (channel, external_user_id)
             if key in seen:
@@ -2098,10 +2111,33 @@ class AdminImplMixin(HandlerMixinBase):
 
         proposal_id = uuid.uuid4().hex
         generated_at = datetime.now(UTC).isoformat()
-        proposal_dir = self._config.data_dir / "proposals" / "channel_pairing"
-        proposal_dir.mkdir(parents=True, exist_ok=True)
+        workspace_scope = self._pairing_scope_component(workspace_filter)
+        proposal_dir = (
+            self._config.data_dir
+            / "proposals"
+            / "channel_pairing"
+            / f"uid-{owner_uid}"
+            / workspace_scope
+        )
+        for directory in (
+            self._config.data_dir / "proposals",
+            self._config.data_dir / "proposals" / "channel_pairing",
+            proposal_dir.parent,
+            proposal_dir,
+        ):
+            try:
+                mode = directory.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ValueError("pairing_proposal_path_invalid") from exc
+            if not stat.S_ISDIR(mode):
+                raise ValueError("pairing_proposal_path_invalid")
         proposal_path = proposal_dir / f"{proposal_id}.json"
         proposal_payload = {
+            "schema": 1,
+            "owner_uid": owner_uid,
+            "workspace_hint": workspace_filter,
             "proposal_id": proposal_id,
             "generated_at": generated_at,
             "source": "pairing_requests_artifact",
@@ -2111,18 +2147,30 @@ class AdminImplMixin(HandlerMixinBase):
                 "limit": limit,
             },
             "entries": deduped,
-            "invalid_entries": invalid_entries,
+            "invalid_entries": [],
             "config_patch": {"channel_identity_allowlist": config_patch},
             "applied": False,
         }
-        proposal_path.write_text(
-            json.dumps(proposal_payload, ensure_ascii=True, indent=2),
-            encoding="utf-8",
+        proposal_bytes = (
+            json.dumps(
+                proposal_payload,
+                ensure_ascii=True,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
         )
+        try:
+            atomic_write_bytes(proposal_path, proposal_bytes)
+        except AtomicWriteError as exc:
+            raise ValueError("pairing_proposal_publication_failed") from exc
         await self._event_bus.publish(
             ChannelPairingProposalGenerated(
                 session_id=None,
                 actor="control_api",
+                owner_uid=owner_uid,
+                workspace_hint=workspace_filter,
                 proposal_id=proposal_id,
                 proposal_path=str(proposal_path),
                 entries_count=len(deduped),
@@ -2132,8 +2180,10 @@ class AdminImplMixin(HandlerMixinBase):
             "proposal_id": proposal_id,
             "proposal_path": str(proposal_path),
             "generated_at": generated_at,
+            "owner_uid": owner_uid,
+            "workspace_hint": workspace_filter,
             "entries": deduped,
-            "invalid_entries": invalid_entries,
+            "invalid_entries": [],
             "count": len(deduped),
             "config_patch": config_patch,
             "applied": False,
@@ -2564,22 +2614,44 @@ class AdminImplMixin(HandlerMixinBase):
             and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
         )
         if not allowed_by_identity and not public_policy_access:
+            workspace_hint = message.workspace_hint.strip()
+            if not workspace_hint:
+                raise ValueError("pairing_request_workspace_required")
+            if len(workspace_hint) > 256 or any(
+                ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F or char in {"\u2028", "\u2029"}
+                for char in workspace_hint
+            ):
+                raise ValueError("pairing_request_workspace_invalid")
+            owner_uid = int(self._daemon_owner_uid)
             pairing, is_new = self._identity_map.record_pairing_request(
+                owner_uid=owner_uid,
                 channel=message.channel,
                 external_user_id=message.external_user_id,
-                workspace_hint=message.workspace_hint,
+                workspace_hint=workspace_hint,
                 reason="identity_not_allowlisted",
             )
-            if is_new:
-                self._record_pairing_request_artifact(
+            try:
+                artifact_created = self._record_pairing_request_artifact(
+                    owner_uid=pairing.owner_uid,
                     channel=pairing.channel,
                     external_user_id=pairing.external_user_id,
                     workspace_hint=pairing.workspace_hint,
                     reason=pairing.reason,
+                    requested_at=pairing.requested_at,
                 )
+            except AtomicWriteError as exc:
+                if is_new:
+                    self._identity_map.discard_pairing_request(pairing)
+                raise ValueError("pairing_request_publication_failed") from exc
+            except (OSError, TypeError, ValueError):
+                if is_new:
+                    self._identity_map.discard_pairing_request(pairing)
+                raise
+            if is_new and artifact_created:
                 await self._event_bus.publish(
                     ChannelPairingRequested(
                         actor="channel_ingest",
+                        owner_uid=pairing.owner_uid,
                         channel=pairing.channel,
                         external_user_id=pairing.external_user_id,
                         workspace_hint=pairing.workspace_hint,

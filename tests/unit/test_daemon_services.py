@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -76,9 +77,7 @@ approval_factor_store_path = "/tmp/shisad-u41-factors.json"
 
     assert model_config.model_id == "toml-planner"
     assert model_config.remote_enabled is False
-    assert security_config.approval_factor_store_path.as_posix() == (
-        "/tmp/shisad-u41-factors.json"
-    )
+    assert security_config.approval_factor_store_path.as_posix() == ("/tmp/shisad-u41-factors.json")
 
 
 def _write_browser_wrapper(path) -> None:
@@ -588,9 +587,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
                 "behavior_packs": {"persona": {"enabled": True, "active_version": "2.0.0"}},
             }
         )
-        services.selfmod_manager._persist_inventory_snapshot(
-            services.selfmod_manager._inventory
-        )
+        services.selfmod_manager._persist_inventory_snapshot(services.selfmod_manager._inventory)
         (services.selfmod_manager._proposal_dir / "proposal.json").write_text(
             "{}",
             encoding="utf-8",
@@ -656,6 +653,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             workspace_id=WorkspaceId("ws-extra"),
         )
         services.identity_map.record_pairing_request(
+            owner_uid=os.getuid(),
             channel="matrix",
             external_user_id="pending-user",
             workspace_hint="!room:example.org",
@@ -1028,17 +1026,30 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         impl._plan_violation_counts[session.id] = 3
         impl._confirmation_alerted_at[pending.confirmation_id] = datetime.now(UTC)
         impl._confirmation_failure_tracker.record_failure(user_id="alice", method="totp")
-        impl._identity_map.record_pairing_request(
+        pairing, _ = impl._identity_map.record_pairing_request(
+            owner_uid=os.getuid(),
             channel="matrix",
             external_user_id="mallory",
             workspace_hint="!room:example.org",
         )
-        impl._record_pairing_request_artifact(
+        artifact_created = impl._record_pairing_request_artifact(
+            owner_uid=pairing.owner_uid,
             channel="matrix",
             external_user_id="mallory",
             workspace_hint="!room:example.org",
             reason="identity_not_allowlisted",
+            requested_at=pairing.requested_at,
         )
+        artifact_reused = impl._record_pairing_request_artifact(
+            owner_uid=pairing.owner_uid,
+            channel="matrix",
+            external_user_id="mallory",
+            workspace_hint="!room:example.org",
+            reason="identity_not_allowlisted",
+            requested_at=pairing.requested_at,
+        )
+        assert artifact_created is True
+        assert artifact_reused is False
 
         result = await impl.do_daemon_reset({})
 

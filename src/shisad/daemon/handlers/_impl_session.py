@@ -1702,8 +1702,8 @@ def _pending_confirmation_chat_status_response_text(
 def _internal_ingress_confirmation_approval_not_allowed_text() -> str:
     return (
         "Chat approval commands from this channel are not accepted without proof. "
-        "No action was taken. Use the CLI confirmation command or proof-code flow "
-        "to confirm, or reply with 'reject N' to reject in chat."
+        "No action was taken. Use the approval route shown for each pending action below, "
+        "or reply with 'reject N' to reject in chat."
     )
 
 
@@ -5931,18 +5931,51 @@ def _discord_pending_guidance_lines(
         can_approve = bool(channel_capability.get("can_approve", True))
         can_reject = bool(channel_capability.get("can_reject", can_reject))
         cannot_carry_reason = str(channel_capability.get("cannot_carry_reason") or "").strip()
-    if not can_approve:
-        reason = cannot_carry_reason or "approval_unavailable"
-        lines = [f"Approval route unavailable: {_markdown_code_span(reason)}."]
-        if can_reject:
-            lines.append(_discord_rejection_guidance())
-        return lines
     selected_method = (
         str(getattr(pending, "selected_backend_method", "") if pending is not None else "")
         .strip()
         .lower()
         or "software"
     )
+    backend_available = (
+        bool(channel_capability.get("backend_available", True))
+        if channel_capability is not None
+        else True
+    )
+    if not backend_available:
+        reason = cannot_carry_reason or "approval_unavailable"
+        lines = [f"Approval route unavailable: {_markdown_code_span(reason)}."]
+        if can_reject:
+            lines.append(_discord_rejection_guidance())
+        return lines
+    if selected_method == "recovery_code":
+        return [
+            "Recovery-code approval required; Discord cannot collect this proof.",
+            _discord_rejection_guidance(),
+            "CLI fallback: "
+            f"{_markdown_code_span(_recovery_code_cli_confirm_command(confirmation_id))}",
+        ]
+    if selected_method in {"webauthn", "local_fido2"}:
+        label = "WebAuthn" if selected_method == "webauthn" else "Local FIDO2"
+        route = "browser" if selected_method == "webauthn" else "local_helper"
+        return [
+            f"{label} approval required; Discord cannot carry this proof.",
+            _discord_rejection_guidance(),
+            f"Approval route: {_markdown_code_span(route)}",
+        ]
+    if selected_method in {"kms", "ledger"}:
+        return [
+            "External signer approval required "
+            f"({_markdown_code_span(selected_method)}); Discord cannot carry this proof.",
+            _discord_rejection_guidance(),
+            f"Approval route: {_markdown_code_span('external_signer')}",
+        ]
+    if not can_approve:
+        reason = cannot_carry_reason or "approval_unavailable"
+        lines = [f"Approval route unavailable: {_markdown_code_span(reason)}."]
+        if can_reject:
+            lines.append(_discord_rejection_guidance())
+        return lines
     if selected_method == "software":
         lines = [
             (
@@ -5993,27 +6026,6 @@ def _discord_pending_guidance_lines(
             _discord_rejection_guidance(),
             totp_fallback_line,
             f"CLI fallback: {_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
-        ]
-    if selected_method == "recovery_code":
-        return [
-            "Recovery-code approval required; Discord cannot collect this proof.",
-            _discord_rejection_guidance(),
-            "CLI fallback: "
-            f"{_markdown_code_span(_recovery_code_cli_confirm_command(confirmation_id))}",
-        ]
-    if selected_method in {"webauthn", "local_fido2"}:
-        label = "WebAuthn" if selected_method == "webauthn" else "Local FIDO2"
-        return [
-            f"{label} approval required; Discord cannot carry this proof.",
-            _discord_rejection_guidance(),
-            f"Approval route: {_markdown_code_span('browser')}",
-        ]
-    if selected_method in {"kms", "ledger"}:
-        return [
-            "External signer approval required "
-            f"({_markdown_code_span(selected_method)}); Discord cannot carry this proof.",
-            _discord_rejection_guidance(),
-            f"Approval route: {_markdown_code_span('external_signer')}",
         ]
     return [
         "Selected approval method cannot be carried by Discord.",
@@ -6142,7 +6154,7 @@ def _discord_pending_confirmation_response_text(
             if not preview:
                 preview = str(getattr(pending, "reason", "") or "").strip()
         if preview:
-            lines.extend(["", "**Preview:**", _markdown_fenced_block(preview)])
+            lines.extend(["", "**Review:**", _markdown_fenced_block(preview)])
     lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
     return "\n".join(lines).strip()
 
@@ -6217,36 +6229,91 @@ def _daemon_pending_confirmation_response_text(
         if pending_index_by_id is not None:
             pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
-        lines.append(f"{pending_number}. {confirmation_id}")
+        if index > 1:
+            lines.extend(["", "---", ""])
+        tool_name = "pending action"
         if pending is not None:
-            lines.append(f"   {_pending_action_lifetime_metadata(pending)}")
-        if pending is not None and _pending_uses_totp(pending):
-            if confirmation_id in totp_guidance_ids:
+            tool_name = str(getattr(pending, "tool_name", "") or tool_name).strip() or tool_name
+        lines.extend(
+            [
+                f"{pending_number}. {tool_name}",
+                f"   ID: {confirmation_id}",
+            ]
+        )
+        if pending is not None:
+            lines.append(f"   Lifecycle: {_pending_action_lifetime_metadata(pending)}")
+        lines.append("   Instructions:")
+        capability = (
+            pending_channel_capability_by_id.get(confirmation_id)
+            if pending_channel_capability_by_id is not None
+            else None
+        )
+        can_approve = bool(capability.get("can_approve", True)) if capability else True
+        can_reject = bool(capability.get("can_reject", pending is not None)) if capability else True
+        approval_route = str((capability or {}).get("approval_route", "")).strip()
+        backend_available = bool((capability or {}).get("backend_available", True))
+        state_view = pending_action_state_view(pending) if pending is not None else None
+        if state_view is not None and not state_view.is_live_pending:
+            reason = str(
+                getattr(pending, "status_reason", "")
+                or (
+                    "approval_expired"
+                    if state_view.lifecycle_state == "expired"
+                    else state_view.lifecycle_state
+                )
+            ).strip()
+            lines.append(f"     Approval is no longer pending: {reason}")
+        elif not backend_available:
+            reason = (
+                str((capability or {}).get("cannot_carry_reason", "")).strip()
+                or "approval_unavailable"
+            )
+            lines.append(f"     Approval route unavailable: {reason}")
+            if can_reject:
+                lines.append(f"     Reject: reply with 'reject {pending_number}'")
+        elif pending is not None and _pending_uses_totp(pending):
+            if can_approve:
                 if single_totp_confirmation_id == confirmation_id:
-                    lines.append("   TOTP in chat: reply with the 6-digit code")
+                    lines.append("     TOTP in chat: reply with the 6-digit code")
                 else:
-                    lines.append(f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'")
-                lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
-                lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
+                    lines.append(
+                        f"     TOTP in chat: reply with 'confirm {confirmation_id} 123456'"
+                    )
+                if can_reject:
+                    lines.append(f"     To reject in chat: reply with 'reject {pending_number}'")
+                lines.append(f"     CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
             else:
                 lines.append(
-                    f"   TOTP approval pending: reply with 'reject {pending_number}' to reject"
+                    f"     TOTP approval pending: reply with 'reject {pending_number}' to reject"
                 )
-                lines.append(f"   To approve: {_totp_cli_confirm_command(confirmation_id)}")
+                lines.append(f"     To approve: {_totp_cli_confirm_command(confirmation_id)}")
         elif pending is not None and _pending_uses_recovery_code(pending):
             lines.append(
-                f"   Recovery-code approval pending: reply with 'reject {pending_number}' to reject"
+                "     Recovery-code approval pending: "
+                f"reply with 'reject {pending_number}' to reject"
             )
-            lines.append(f"   To approve: {_recovery_code_cli_confirm_command(confirmation_id)}")
+            lines.append(f"     To approve: {_recovery_code_cli_confirm_command(confirmation_id)}")
+        elif pending is not None and str(
+            getattr(pending, "selected_backend_method", "")
+        ).strip().lower() in {"webauthn", "local_fido2", "kms", "ledger"}:
+            route = str((capability or {}).get("approval_route", "unknown")).strip() or "unknown"
+            method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
+            lines.append(
+                f"     Approval requires {method} via {route}; this channel cannot carry it"
+            )
+            if can_reject:
+                lines.append(f"     Reject: reply with 'reject {pending_number}'")
         else:
-            if allow_chat_approval:
-                lines.append(
-                    f"   In chat: reply with 'confirm {pending_number}' "
-                    f"or 'reject {pending_number}'"
-                )
-            else:
-                lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
-            lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
+            channel_native_approval = can_approve and (
+                allow_chat_approval or approval_route == "channel_native"
+            )
+            if channel_native_approval:
+                lines.append(f"     Approve: reply with 'confirm {pending_number}'")
+                if can_reject:
+                    lines.append(f"     Reject: reply with 'reject {pending_number}'")
+            elif can_reject:
+                lines.append(f"     To reject in chat: reply with 'reject {pending_number}'")
+            lines.append(f"     CLI fallback: shisad action confirm {confirmation_id}")
         preview = ""
         if pending_public_preview_by_id is not None:
             preview = str(pending_public_preview_by_id.get(confirmation_id) or "").strip()
@@ -6256,8 +6323,13 @@ def _daemon_pending_confirmation_response_text(
             if not preview:
                 preview = str(getattr(pending, "reason", "") or "").strip()
         if preview:
-            lines.append("   Preview:")
+            lines.append("   Review:")
             lines.extend(f"     {line}" for line in preview.splitlines())
+        warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
+        warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
+        if warning_lines:
+            lines.append("   Warnings:")
+            lines.extend(f"     - {warning}" for warning in warning_lines)
     lines.extend(["", "Review all pending: shisad action list"])
     return "\n".join(lines).strip()
 
@@ -9473,12 +9545,51 @@ class SessionImplMixin(HandlerMixinBase):
         rows.sort(key=lambda item: item.created_at)
         return rows
 
+    def _pending_channel_capabilities_for_display(
+        self,
+        pending_rows: Sequence[Any],
+    ) -> dict[str, Mapping[str, Any]]:
+        pending_to_dict = getattr(self, "_pending_to_dict", None)
+        if not callable(pending_to_dict):
+            return {}
+        selected_backend_available_for_pending = getattr(
+            self,
+            "_pending_selected_backend_available",
+            None,
+        )
+        capabilities: dict[str, Mapping[str, Any]] = {}
+        for pending in pending_rows:
+            confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+            if not confirmation_id:
+                continue
+            selected_backend_available = None
+            if callable(selected_backend_available_for_pending):
+                try:
+                    selected_backend_available = bool(
+                        selected_backend_available_for_pending(pending)
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    selected_backend_available = False
+            public_pending = pending_to_dict(
+                pending,
+                public=True,
+                selected_backend_available=selected_backend_available,
+            )
+            if not isinstance(public_pending, Mapping):
+                continue
+            capability = public_pending.get("channel_capability")
+            if isinstance(capability, Mapping):
+                capabilities[confirmation_id] = capability
+        return capabilities
+
     @staticmethod
     def _chat_pending_confirmation_summary(
         *,
         pending_rows: Sequence[Any],
         tainted_session: bool,
         allow_chat_approval: bool = True,
+        typed_channel_approval: bool = False,
+        pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> str:
         pending_rows = _live_pending_rows(pending_rows)
         if not pending_rows:
@@ -9486,11 +9597,54 @@ class SessionImplMixin(HandlerMixinBase):
         totp_rows = _totp_pending_rows(pending_rows)
         recovery_code_rows = _recovery_code_pending_rows(pending_rows)
         non_typed_proof_rows = _non_typed_proof_pending_rows(pending_rows)
+
+        def _capability(pending: Any) -> Mapping[str, Any]:
+            confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+            if pending_channel_capability_by_id is None:
+                return {}
+            return pending_channel_capability_by_id.get(confirmation_id, {})
+
+        def _channel_can_approve(pending: Any) -> bool:
+            capability = _capability(pending)
+            return (
+                bool(capability.get("can_approve"))
+                and str(capability.get("approval_route", "")).strip() == "channel_native"
+            )
+
         if tainted_session:
             lines = ["Pending confirmations (tainted session)."]
         else:
             lines = ["Pending confirmations."]
-        if totp_rows or recovery_code_rows:
+        if typed_channel_approval:
+            channel_software_rows = [
+                pending for pending in non_typed_proof_rows if _channel_can_approve(pending)
+            ]
+            channel_totp_rows = [pending for pending in totp_rows if _channel_can_approve(pending)]
+            available_recovery_rows = [
+                pending
+                for pending in recovery_code_rows
+                if bool(_capability(pending).get("backend_available", True))
+                and str(_capability(pending).get("approval_route", "")).strip() == "host_cli"
+            ]
+            route_only_rows = [
+                pending
+                for pending in pending_rows
+                if pending not in channel_software_rows
+                and pending not in channel_totp_rows
+                and pending not in available_recovery_rows
+            ]
+            lines.append("Reply with 'reject N' or 'no to all' to deny pending items.")
+            if channel_software_rows:
+                lines.append(
+                    "For channel-carried software items, reply with 'confirm N' or 'reject N'."
+                )
+            lines.extend(_chat_totp_guidance_lines(pending_rows=channel_totp_rows))
+            lines.extend(_chat_recovery_code_guidance_lines(pending_rows=available_recovery_rows))
+            if route_only_rows:
+                lines.append(
+                    "Items not carried by this channel must use the approval route shown below."
+                )
+        elif totp_rows or recovery_code_rows:
             if non_typed_proof_rows:
                 if allow_chat_approval:
                     lines.append(
@@ -9535,6 +9689,23 @@ class SessionImplMixin(HandlerMixinBase):
                 confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
                 if confirmation_id:
                     lines.append(f"   confirmation ID: {confirmation_id}")
+            if typed_channel_approval and not _channel_can_approve(pending):
+                capability = _capability(pending)
+                selected_method = str(
+                    capability.get("selected_method")
+                    or getattr(pending, "selected_backend_method", "")
+                    or "unknown"
+                ).strip()
+                approval_route = str(capability.get("approval_route") or "unavailable").strip()
+                if selected_method:
+                    lines.append(f"   selected method: {selected_method}")
+                if approval_route == "unavailable":
+                    unavailable_reason = str(
+                        capability.get("cannot_carry_reason") or "approval_unavailable"
+                    ).strip()
+                    lines.append(f"   approval unavailable: {unavailable_reason}")
+                else:
+                    lines.append(f"   approval route: {approval_route}")
             for warning in list(getattr(pending, "warnings", []) or []):
                 warning_text = str(warning).strip()
                 if warning_text.startswith("This action was flagged because:"):
@@ -10067,6 +10238,10 @@ class SessionImplMixin(HandlerMixinBase):
                     pending_rows=displayed_pending_rows,
                     tainted_session=tainted_session,
                     allow_chat_approval=not is_internal_ingress,
+                    typed_channel_approval=is_internal_ingress,
+                    pending_channel_capability_by_id=(
+                        self._pending_channel_capabilities_for_display(displayed_pending_rows)
+                    ),
                 ),
             )
             if pending_status_response:
@@ -10143,6 +10318,21 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                     if intent.action != "none" or visible_command_error_text:
                         error_text = _internal_ingress_confirmation_approval_not_allowed_text()
+                        if displayed_pending_rows:
+                            error_text = (
+                                f"{error_text}\n\n"
+                                + self._chat_pending_confirmation_summary(
+                                    pending_rows=displayed_pending_rows,
+                                    tainted_session=tainted_session,
+                                    allow_chat_approval=False,
+                                    typed_channel_approval=True,
+                                    pending_channel_capability_by_id=(
+                                        self._pending_channel_capabilities_for_display(
+                                            displayed_pending_rows
+                                        )
+                                    ),
+                                )
+                            )
                     elif command_error_targets_id_like_token or (
                         command_error_should_block
                         and visible_pending_confirmation_ids != pending_confirmation_ids
@@ -10328,6 +10518,10 @@ class SessionImplMixin(HandlerMixinBase):
                             pending_rows=visible_remaining,
                             tainted_session=tainted_session,
                             allow_chat_approval=not is_internal_ingress,
+                            typed_channel_approval=is_internal_ingress,
+                            pending_channel_capability_by_id=(
+                                self._pending_channel_capabilities_for_display(visible_remaining)
+                            ),
                         )
                     )
                     response_action_confirmation_ids = [
@@ -10400,6 +10594,10 @@ class SessionImplMixin(HandlerMixinBase):
                         pending_rows=displayed_pending_rows,
                         tainted_session=tainted_session,
                         allow_chat_approval=not is_internal_ingress,
+                        typed_channel_approval=is_internal_ingress,
+                        pending_channel_capability_by_id=(
+                            self._pending_channel_capabilities_for_display(displayed_pending_rows)
+                        ),
                     )
                     system_generated_pending_confirmation_response = True
                     response_action_confirmation_ids = [
@@ -10521,6 +10719,10 @@ class SessionImplMixin(HandlerMixinBase):
                             pending_rows=visible_remaining,
                             tainted_session=tainted_session,
                             allow_chat_approval=not is_internal_ingress,
+                            typed_channel_approval=is_internal_ingress,
+                            pending_channel_capability_by_id=(
+                                self._pending_channel_capabilities_for_display(visible_remaining)
+                            ),
                         )
                     )
                     response_action_confirmation_ids = [

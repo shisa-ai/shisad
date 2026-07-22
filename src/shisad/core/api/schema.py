@@ -1817,14 +1817,35 @@ class ChannelIngestResult(SessionMessageResult):
 
 class ChannelPairingProposalParams(_StrictParams):
     channel: str | None = None
-    workspace_hint: str | None = None
+    workspace_hint: str
     limit: int = 100
+
+    @model_validator(mode="after")
+    def normalize_exact_scope(self) -> ChannelPairingProposalParams:
+        workspace_hint = self.workspace_hint.strip()
+        if not workspace_hint:
+            raise ValueError("workspace_hint is required")
+        if len(workspace_hint) > 256 or not _procedure_candidate_label_safe(workspace_hint):
+            raise ValueError("workspace_hint is invalid")
+        self.workspace_hint = workspace_hint
+        if self.channel is not None:
+            channel = self.channel.strip().lower()
+            if not channel or len(channel) > 64 or not _procedure_candidate_label_safe(channel):
+                raise ValueError("channel is invalid")
+            if any(char.isspace() for char in channel):
+                raise ValueError("channel is invalid")
+            self.channel = channel
+        if not 1 <= self.limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        return self
 
 
 class ChannelPairingProposalResult(BaseModel):
     proposal_id: str = ""
     proposal_path: str = ""
     generated_at: str = ""
+    owner_uid: int | None = None
+    workspace_hint: str = ""
     entries: list[dict[str, Any]] = Field(default_factory=list)
     invalid_entries: list[dict[str, Any]] = Field(default_factory=list)
     count: int = 0

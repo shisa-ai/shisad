@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -259,6 +260,8 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
         assert blocked_sessions == []
         assert received_total >= 1
         assert pairing_matches
+        assert pairing_matches[0]["owner_uid"] == os.getuid()
+        assert pairing_matches[0]["workspace_hint"] == case.workspace_hint
         assert delivery_matches
     finally:
         with suppress(Exception):

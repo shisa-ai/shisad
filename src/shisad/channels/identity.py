@@ -17,6 +17,7 @@ class ChannelIdentity:
 
 @dataclass(frozen=True)
 class ChannelPairingRequest:
+    owner_uid: int
     channel: str
     external_user_id: str
     workspace_hint: str = ""
@@ -38,7 +39,7 @@ class ChannelIdentityMap:
         self._allowlists = (
             {key: set(value) for key, value in allowlists.items()} if allowlists else {}
         )
-        self._pairing_requests: dict[tuple[str, str], ChannelPairingRequest] = {}
+        self._pairing_requests: dict[tuple[int, str, str, str], ChannelPairingRequest] = {}
 
     def bind(
         self,
@@ -83,25 +84,44 @@ class ChannelIdentityMap:
     def record_pairing_request(
         self,
         *,
+        owner_uid: int,
         channel: str,
         external_user_id: str,
         workspace_hint: str = "",
         reason: str = "identity_not_allowlisted",
     ) -> tuple[ChannelPairingRequest, bool]:
+        normalized_channel = channel.strip().lower()
         normalized_external_user_id = external_user_id.strip()
-        key = (channel, normalized_external_user_id)
+        normalized_workspace_hint = workspace_hint.strip()
+        key = (
+            owner_uid,
+            normalized_workspace_hint,
+            normalized_channel,
+            normalized_external_user_id,
+        )
         existing = self._pairing_requests.get(key)
         if existing is not None:
             return existing, False
         request = ChannelPairingRequest(
-            channel=channel,
+            owner_uid=owner_uid,
+            channel=normalized_channel,
             external_user_id=normalized_external_user_id,
-            workspace_hint=workspace_hint,
+            workspace_hint=normalized_workspace_hint,
             reason=reason,
             requested_at=datetime.now(UTC),
         )
         self._pairing_requests[key] = request
         return request, True
+
+    def discard_pairing_request(self, request: ChannelPairingRequest) -> None:
+        key = (
+            request.owner_uid,
+            request.workspace_hint,
+            request.channel,
+            request.external_user_id,
+        )
+        if self._pairing_requests.get(key) == request:
+            self._pairing_requests.pop(key, None)
 
     def list_pairing_requests(self, *, limit: int = 100) -> list[ChannelPairingRequest]:
         items = list(self._pairing_requests.values())

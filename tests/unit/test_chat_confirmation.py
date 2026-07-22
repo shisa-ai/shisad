@@ -20,7 +20,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.daemon.handlers._impl import PendingAction
+from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._impl_session import (
     ChatConfirmationIntent,
@@ -116,6 +116,173 @@ def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
     assert expires_at.isoformat() in response
     assert "turn-f2-lifetime" in response
     assert "pending" in response.casefold()
+
+
+@pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+def test_f7c_typed_channel_confirmation_card_has_separate_structural_sections(
+    delivery_channel: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id="c-card",
+        decision_nonce="nonce-card",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={
+            "path": "README.md",
+            "_rpc_peer": {"uid": 1000},
+            "session_id": "internal-session",
+            "security_critical": True,
+        },
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        safe_preview=(
+            "ACTION CONFIRMATION\n"
+            "Review: Read file: README.md\n"
+            "Action: fs.read\n"
+            "Risk Level: MEDIUM\n"
+            "PARAMETERS:\n"
+            "  path: README.md"
+        ),
+        warnings=["External destination"],
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        pending_index_by_id={pending.confirmation_id: 1},
+        pending_public_preview_by_id={pending.confirmation_id: pending.safe_preview},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={
+            pending.confirmation_id: {
+                "can_approve": True,
+                "can_reject": True,
+                "approval_route": "channel_native",
+                "interaction_mode": "typed_command",
+            }
+        },
+    )
+
+    assert "1. fs.read\n   ID: c-card" in response
+    assert "   Lifecycle: status=pending" in response
+    assert "   Instructions:\n     Approve: reply with 'confirm 1'" in response
+    assert "     Reject: reply with 'reject 1'" in response
+    assert ("   Review:\n     ACTION CONFIRMATION\n     Review: Read file: README.md") in response
+    assert "   Warnings:\n     - External destination" in response
+    assert "_rpc_peer" not in response
+    assert "internal-session" not in response
+    assert "security_critical" not in response
+
+
+def test_f7c_typed_channel_status_guidance_names_only_supported_exact_commands() -> None:
+    pending = PendingAction(
+        confirmation_id="c-card",
+        decision_nonce="nonce-card",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="slack",
+            recipient="target-1",
+            workspace_hint="team-1",
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+
+    summary = SessionImplMixin._chat_pending_confirmation_summary(
+        pending_rows=[pending],
+        tainted_session=False,
+        allow_chat_approval=False,
+        typed_channel_approval=True,
+        pending_channel_capability_by_id={pending.confirmation_id: capability},
+    )
+
+    assert "reply with 'confirm n' or 'reject n'" in summary.lower()
+    assert "yes to all" not in summary.lower()
+    assert "use the cli confirmation command to approve" not in summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_f7c_typed_channel_status_uses_canonical_stronger_method_route(tmp_path) -> None:
+    pending = PendingAction(
+        confirmation_id="c-web-status",
+        decision_nonce="nonce-web-status",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="slack",
+            recipient="target-1",
+            workspace_hint="team-1",
+        ),
+        required_level=ConfirmationLevel.BOUND_APPROVAL,
+        selected_backend_id="webauthn.default",
+        selected_backend_method="webauthn",
+        allowed_channel_principals=["alice"],
+    )
+    harness = _ChatConfirmationHarness(tmp_path)
+    harness._pending_to_dict = HandlerImplementation._pending_to_dict  # type: ignore[attr-defined]
+    harness._pending_selected_backend_available = lambda _pending: True  # type: ignore[attr-defined]
+    harness._pending_actions[pending.confirmation_id] = pending
+    capabilities = harness._pending_channel_capabilities_for_display([pending])
+
+    async def _reject_method_mismatch(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        return {
+            "confirmed": False,
+            "status": "pending",
+            "reason": "webauthn_required",
+        }
+
+    harness.do_action_confirm = _reject_method_mismatch  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=pending.session_id,
+        channel="slack",
+        user_id=pending.user_id,
+        workspace_id=pending.workspace_id,
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=pending.delivery_target,
+        content=f"confirm {pending.confirmation_id}",
+        firewall_result=FirewallResult(
+            sanitized_text=f"confirm {pending.confirmation_id}",
+            original_hash="0" * 64,
+        ),
+        channel_metadata={"channel_principal_id": "alice"},
+    )
+
+    assert result is not None
+    summary = str(result["response"])
+    assert capabilities[pending.confirmation_id]["approval_route"] == "browser"
+    assert "confirm n" not in summary.lower()
+    assert "approval route: browser" in summary.lower()
+    assert "selected method: webauthn" in summary.lower()
 
 
 def test_f1_pending_continuation_scope_requires_origin_and_exact_delivery_target() -> None:
@@ -510,6 +677,11 @@ def test_discord_pending_response_uses_recovery_code_cli_fallback() -> None:
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="target-1",
+            workspace_hint="guild-1",
+        ),
         selected_backend_id="totp.default",
         selected_backend_method="recovery_code",
     )
@@ -521,6 +693,13 @@ def test_discord_pending_response_uses_recovery_code_cli_fallback() -> None:
         binding_pending_rows=[pending],
         allow_chat_approval=False,
         delivery_channel="discord",
+        pending_channel_capability_by_id={
+            pending.confirmation_id: HandlerImplementation._pending_to_dict(
+                pending,
+                public=True,
+                selected_backend_available=True,
+            )["channel_capability"]
+        },
     )
 
     assert "Recovery-code approval required; Discord cannot collect this proof." in response
@@ -866,6 +1045,11 @@ def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> N
         capabilities={Capability.FILE_WRITE},
         created_at=datetime.now(UTC),
         safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="target-1",
+            workspace_hint="guild-1",
+        ),
         required_level=ConfirmationLevel.BOUND_APPROVAL,
         selected_backend_id="webauthn.default",
         selected_backend_method="webauthn",
@@ -882,23 +1066,327 @@ def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> N
         capabilities={Capability.FILE_WRITE},
         created_at=datetime.now(UTC),
         safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="target-1",
+            workspace_hint="guild-1",
+        ),
         required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
         selected_backend_id="kms.default",
         selected_backend_method="kms",
     )
+    local_fido2_pending = PendingAction(
+        confirmation_id="c-local-fido2",
+        decision_nonce="nonce-local-fido2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="target-1",
+            workspace_hint="guild-1",
+        ),
+        required_level=ConfirmationLevel.BOUND_APPROVAL,
+        selected_backend_id="approver.local_fido2",
+        selected_backend_method="local_fido2",
+    )
 
     response = _daemon_pending_confirmation_response_text(
-        pending_confirmation_ids=["c-web", "c-kms"],
-        pending_actions={"c-web": webauthn_pending, "c-kms": kms_pending},
-        pending_index_by_id={"c-web": 1, "c-kms": 2},
-        binding_pending_rows=[webauthn_pending, kms_pending],
+        pending_confirmation_ids=["c-web", "c-kms", "c-local-fido2"],
+        pending_actions={
+            "c-web": webauthn_pending,
+            "c-kms": kms_pending,
+            "c-local-fido2": local_fido2_pending,
+        },
+        pending_index_by_id={"c-web": 1, "c-kms": 2, "c-local-fido2": 3},
+        binding_pending_rows=[webauthn_pending, kms_pending, local_fido2_pending],
         delivery_channel="discord",
+        pending_channel_capability_by_id={
+            pending.confirmation_id: HandlerImplementation._pending_to_dict(
+                pending,
+                public=True,
+                selected_backend_available=True,
+            )["channel_capability"]
+            for pending in (webauthn_pending, kms_pending, local_fido2_pending)
+        },
     )
 
     assert "WebAuthn approval required; Discord cannot carry this proof." in response
     assert "External signer approval required (`kms`); Discord cannot carry this proof." in response
+    assert "Local FIDO2 approval required; Discord cannot carry this proof." in response
+    assert "Approval route: `local_helper`" in response
     assert "use the Approve button" not in response
     assert "open the TOTP modal" not in response
+
+
+@pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+@pytest.mark.parametrize(
+    ("method", "route"),
+    [
+        ("webauthn", "browser"),
+        ("local_fido2", "local_helper"),
+        ("kms", "external_signer"),
+        ("ledger", "external_signer"),
+    ],
+)
+def test_f7c_typed_channel_card_names_exact_stronger_method_route(
+    delivery_channel: str,
+    method: str,
+    route: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id=f"c-{delivery_channel}-{method}",
+        decision_nonce=f"nonce-{delivery_channel}-{method}",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        required_level=ConfirmationLevel.BOUND_APPROVAL,
+        selected_backend_id=f"{method}.default",
+        selected_backend_method=method,
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        pending_index_by_id={pending.confirmation_id: 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={pending.confirmation_id: capability},
+    )
+
+    assert f"Approval requires {method} via {route}; this channel cannot carry it" in response
+    assert "Approve: reply" not in response
+    assert "Reject: reply with 'reject 1'" in response
+
+
+@pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+def test_f7c_typed_channel_totp_card_names_exact_submission_command(
+    delivery_channel: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id=f"c-{delivery_channel}-totp",
+        decision_nonce=f"nonce-{delivery_channel}-totp",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    other = PendingAction(
+        confirmation_id=f"c-{delivery_channel}-totp-other",
+        decision_nonce=f"nonce-{delivery_channel}-totp-other",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+    other_capability = HandlerImplementation._pending_to_dict(
+        other,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id, other.confirmation_id],
+        pending_actions={pending.confirmation_id: pending, other.confirmation_id: other},
+        pending_index_by_id={pending.confirmation_id: 1, other.confirmation_id: 2},
+        binding_pending_rows=[pending, other],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={
+            pending.confirmation_id: capability,
+            other.confirmation_id: other_capability,
+        },
+    )
+
+    assert f"reply with 'confirm {pending.confirmation_id} 123456'" in response
+    assert f"shisad action confirm {pending.confirmation_id} --totp-code 123456" in response
+
+
+@pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+def test_f7c_typed_channel_recovery_code_card_names_host_cli_route(
+    delivery_channel: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id=f"c-{delivery_channel}-recovery",
+        decision_nonce=f"nonce-{delivery_channel}-recovery",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="recovery.default",
+        selected_backend_method="recovery_code",
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        pending_index_by_id={pending.confirmation_id: 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={pending.confirmation_id: capability},
+    )
+
+    assert "Recovery-code approval pending" in response
+    assert f"shisad action confirm {pending.confirmation_id} --recovery-code ABCD-EFGH" in response
+    assert "Approve: reply" not in response
+
+
+@pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+def test_f7c_typed_channel_card_reports_backend_unavailable_truthfully(
+    delivery_channel: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id=f"c-{delivery_channel}-unavailable",
+        decision_nonce=f"nonce-{delivery_channel}-unavailable",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=False,
+    )["channel_capability"]
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        pending_index_by_id={pending.confirmation_id: 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={pending.confirmation_id: capability},
+    )
+
+    assert "Approval route unavailable: confirmation_backend_unavailable" in response
+    assert "Reject: reply with 'reject 1'" in response
+    assert "Approve: reply" not in response
+    assert "CLI fallback" not in response
+
+
+@pytest.mark.parametrize("delivery_channel", ["discord", "slack", "telegram", "matrix"])
+def test_f7c_expired_channel_card_never_advertises_a_decision(
+    delivery_channel: str,
+) -> None:
+    pending = PendingAction(
+        confirmation_id="c-expired-f7c",
+        decision_nonce="nonce-expired-f7c",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC) - timedelta(minutes=10),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        delivery_target=DeliveryTarget(
+            channel=delivery_channel,
+            recipient="target-1",
+            workspace_hint="provider-workspace-1",
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    capability = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )["channel_capability"]
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        pending_index_by_id={pending.confirmation_id: 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel=delivery_channel,
+        pending_channel_capability_by_id={pending.confirmation_id: capability},
+    )
+
+    assert "approval is no longer pending" in response.lower()
+    assert "cli fallback" not in response.lower()
+    assert "reply with 'confirm" not in response.lower()
+    assert "reply with 'reject" not in response.lower()
 
 
 class _ChatConfirmationHarness(SessionImplMixin):

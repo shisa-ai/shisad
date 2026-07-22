@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.approval import (
     ApprovalEnvelope,
     ConfirmationLevel,
@@ -49,6 +50,216 @@ def test_m6_t2_structured_viewer_renders_action_correctly() -> None:
     assert "Action: send_email" in rendered
     assert "Risk Level: MEDIUM" in rendered
     assert "First-time recipient/destination" in rendered
+
+
+def test_f7c_safe_summary_leads_with_action_specific_review_text() -> None:
+    cases = (
+        (
+            "shell.exec",
+            {"command": ["echo", "ok"]},
+            "Review: Run command: echo ok",
+        ),
+        ("fs.read", {"path": "README.md"}, "Review: Read file: README.md"),
+        ("file.read", {"path": "README.md"}, "Review: Read file: README.md"),
+        ("file.write", {"path": "notes.txt"}, "Review: Write file: notes.txt"),
+        ("fs.list", {"path": "docs"}, "Review: List files at: docs"),
+        ("fs.delete", {"path": "scratch.txt"}, "Review: Delete file: scratch.txt"),
+        (
+            "web.fetch",
+            {"url": "https://example.test/release"},
+            "Review: Fetch URL: https://example.test/release",
+        ),
+        (
+            "web.search",
+            {"query": "shisad release notes"},
+            "Review: Search the web for: shisad release notes",
+        ),
+        (
+            "http.request",
+            {"method": "post", "url": "https://example.test/hook"},
+            "Review: Send POST request to: https://example.test/hook",
+        ),
+        (
+            "message.send",
+            {"channel": "slack", "recipient": "alice", "message": "hello"},
+            "Review: Send message to alice on slack",
+        ),
+        (
+            "reminder.create",
+            {"message": "stretch", "when": "in 5 minutes"},
+            "Review: Create reminder: stretch — in 5 minutes",
+        ),
+        (
+            "browser.navigate",
+            {"url": "https://example.test/settings"},
+            "Review: Navigate browser to: https://example.test/settings",
+        ),
+        (
+            "browser.click",
+            {"description": "Save changes"},
+            "Review: Click browser target: Save changes",
+        ),
+        (
+            "browser.type_text",
+            {"description": "Search field"},
+            "Review: Type text into browser target: Search field",
+        ),
+        (
+            "custom.tool",
+            {"target": "record-1"},
+            "Review: Run custom.tool",
+        ),
+    )
+
+    for action, arguments, expected in cases:
+        rendered = render_structured_confirmation(
+            safe_summary(action=action, risk_level="medium", arguments=arguments)
+        )
+        assert expected in rendered
+
+
+def test_f7c_public_summary_structurally_excludes_internal_control_fields() -> None:
+    arguments = {
+        "command": ["echo", "ok"],
+        "_rpc_peer": {"uid": 1000},
+        "_internal_ingress_marker": "opaque",
+        "session_id": "session-secret",
+        "tool_name": "routing-duplicate",
+        "limits": {"max_bytes": 4096},
+        "degraded_mode": True,
+        "security_critical": True,
+        "command_intent": "execute",
+    }
+
+    summary = safe_summary(action="shell.exec", risk_level="high", arguments=arguments)
+    rendered = render_structured_confirmation(summary)
+
+    assert "Review: Run command: echo ok" in rendered
+    for key in arguments.keys() - {"command"}:
+        assert key not in dict(summary.parameters)
+        assert key not in rendered
+
+
+def test_f7c_channel_capability_matrix_is_explicit_for_supported_surfaces() -> None:
+    for channel in ("discord", "slack", "telegram", "matrix"):
+        pending = PendingAction(
+            confirmation_id=f"c-{channel}",
+            decision_nonce=f"nonce-{channel}",
+            session_id=SessionId("s-1"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "README.md"},
+            reason="requires_confirmation",
+            capabilities={Capability.FILE_READ},
+            created_at=datetime.now(UTC),
+            delivery_target=DeliveryTarget(
+                channel=channel,
+                recipient="target-1",
+                workspace_hint="provider-workspace-1",
+            ),
+            selected_backend_id="software.default",
+            selected_backend_method="software",
+        )
+
+        public = HandlerImplementation._pending_to_dict(
+            pending,
+            public=True,
+            selected_backend_available=True,
+        )
+        capability = public["channel_capability"]
+
+        assert capability["surface"] == channel
+        assert capability["interaction_mode"] == (
+            "native_components_with_typed_fallback" if channel == "discord" else "typed_command"
+        )
+        assert capability["carried_methods"] == ["software", "totp"]
+        assert capability["rejection_mode"] == (
+            "native_component_with_typed_fallback" if channel == "discord" else "typed_command"
+        )
+        assert capability["approval_route"] == "channel_native"
+        assert capability["can_collect_selected_method"] is True
+        assert capability["can_carry"] is True
+
+
+def test_f7c_recovery_code_is_not_claimed_as_channel_carried() -> None:
+    pending = PendingAction(
+        confirmation_id="c-recovery",
+        decision_nonce="nonce-recovery",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.test"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="target-1",
+            workspace_hint="guild-1",
+        ),
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="recovery.default",
+        selected_backend_method="recovery_code",
+    )
+
+    public = HandlerImplementation._pending_to_dict(
+        pending,
+        public=True,
+        selected_backend_available=True,
+    )
+    capability = public["channel_capability"]
+
+    assert capability["approval_route"] == "host_cli"
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry"] is False
+    assert capability["cannot_carry_reason"] == "selected_method_requires_host_cli"
+
+
+def test_f7c_stronger_methods_name_exact_nonchannel_routes() -> None:
+    routes = {
+        "webauthn": "browser",
+        "local_fido2": "local_helper",
+        "kms": "external_signer",
+        "ledger": "external_signer",
+    }
+
+    for channel in ("discord", "slack", "telegram", "matrix"):
+        for method, route in routes.items():
+            pending = PendingAction(
+                confirmation_id=f"c-{channel}-{method}",
+                decision_nonce=f"nonce-{channel}-{method}",
+                session_id=SessionId("s-1"),
+                user_id=UserId("alice"),
+                workspace_id=WorkspaceId("w-1"),
+                tool_name=ToolName("fs.write"),
+                arguments={"path": "notes.txt", "content": "reviewed"},
+                reason="requires_confirmation",
+                capabilities={Capability.FILE_WRITE},
+                created_at=datetime.now(UTC),
+                delivery_target=DeliveryTarget(
+                    channel=channel,
+                    recipient="target-1",
+                    workspace_hint="provider-workspace-1",
+                ),
+                required_level=ConfirmationLevel.BOUND_APPROVAL,
+                selected_backend_id=f"{method}.default",
+                selected_backend_method=method,
+            )
+
+            capability = HandlerImplementation._pending_to_dict(
+                pending,
+                public=True,
+                selected_backend_available=True,
+            )["channel_capability"]
+
+            assert capability["approval_route"] == route
+            assert capability["can_collect_selected_method"] is False
+            assert capability["can_carry"] is False
+            assert capability["cannot_carry_reason"] == (
+                f"method_specific_approval_requires_{method}"
+            )
 
 
 def test_gh12_shell_exec_confirmation_preview_includes_literal_command() -> None:
@@ -211,11 +422,11 @@ def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
     assert "command_intent" not in payload["intent_envelope"]["action"]["display_summary"]
     assert "command_intent" not in str(payload)
     assert "command: echo ok" in payload["safe_preview"]
-    assert "command=echo ok" in payload["approval_envelope"]["action_summary"]
-    assert "command=echo ok" in payload["intent_envelope"]["action"]["display_summary"]
+    assert payload["approval_envelope"]["action_summary"] == "Run command: echo ok"
+    assert payload["intent_envelope"]["action"]["display_summary"] == "Run command: echo ok"
 
 
-def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
+def test_f7c_non_shell_pending_payload_hides_internal_intent_marker() -> None:
     pending = PendingAction(
         confirmation_id="c-1",
         decision_nonce="nonce-1",
@@ -235,7 +446,11 @@ def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
 
     payload = HandlerImplementation._pending_to_dict(pending, public=True)
 
-    assert payload["arguments"]["command_intent"] == "execute"
+    assert payload["arguments"] == {"command": ["echo", "ok"]}
+    assert "command_intent" not in str(payload)
+
+    durable_payload = HandlerImplementation._pending_to_dict(pending)
+    assert durable_payload["arguments"]["command_intent"] == "execute"
 
 
 def test_m6_t3_warning_generator_detects_first_time_recipient() -> None:

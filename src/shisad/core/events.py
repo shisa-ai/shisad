@@ -79,6 +79,7 @@ class SessionMessageResponded(BaseEvent):
 class ChannelPairingRequested(BaseEvent):
     """Unmapped external identity attempted ingress on a default-deny channel."""
 
+    owner_uid: int | None = None
     channel: str = ""
     external_user_id: str = ""
     workspace_hint: str = ""
@@ -88,6 +89,8 @@ class ChannelPairingRequested(BaseEvent):
 class ChannelPairingProposalGenerated(BaseEvent):
     """Proposal artifact generated from pairing request evidence."""
 
+    owner_uid: int | None = None
+    workspace_hint: str = ""
     proposal_id: str = ""
     proposal_path: str = ""
     entries_count: int = 0

@@ -12,6 +12,8 @@ import logging
 import math
 import os
 import re
+import shutil
+import stat
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -211,6 +213,7 @@ from shisad.skills.sandbox import SkillExecutionRequest
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
     ConfirmationWarningGenerator,
+    public_confirmation_arguments,
     render_structured_confirmation,
     safe_summary,
 )
@@ -242,10 +245,21 @@ _PENDING_ACTION_STORED_STATUSES = frozenset(
 )
 _SCHEDULER_ACCOUNTING_MODES = frozenset({"", "failure", "shadow_only", "ambiguous"})
 _EXECUTION_AUTHORIZATION_KINDS = frozenset({"", "policy_allow"})
-_INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
-    "shell.exec": frozenset({"command_intent"}),
-    "reminder.create": frozenset({"reminder_intent"}),
-}
+_PAIRING_REQUEST_SCHEMA = 1
+_PAIRING_REQUEST_MAX_FILES = 1000
+_PAIRING_REQUEST_MAX_FILE_BYTES = 8192
+_PAIRING_REQUEST_MAX_TOTAL_BYTES = 1024 * 1024
+_PAIRING_REQUEST_FIELDS = frozenset(
+    {
+        "schema",
+        "owner_uid",
+        "channel",
+        "workspace_hint",
+        "external_user_id",
+        "reason",
+        "requested_at",
+    }
+)
 
 
 def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[str, Any]) -> bool:
@@ -455,9 +469,7 @@ def _redact_sensitive_pending_arguments(
 ) -> dict[str, Any]:
     payload = dict(arguments)
     if hide_internal:
-        canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
-        for key in _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION.get(canonical_name, frozenset()):
-            payload.pop(key, None)
+        payload = public_confirmation_arguments(str(tool_name), payload)
     if _has_sensitive_pending_text(tool_name, payload):
         if "text" in payload:
             payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
@@ -495,8 +507,7 @@ def _confirmation_action_summary(
         ),
         arguments=dict(arguments),
     )
-    details = ", ".join(f"{key}={value}" for key, value in summary.parameters[:6])
-    return f"{summary.action}: {details}".strip()
+    return summary.review
 
 
 def _is_high_risk_confirmation_arguments(
@@ -529,10 +540,7 @@ def _redacted_sensitive_confirmation_summary(
         ),
         arguments=_redact_sensitive_pending_arguments(tool_name, arguments),
     )
-    action_summary = f"{summary.action}: " + ", ".join(
-        f"{key}={value}" for key, value in summary.parameters[:6]
-    )
-    return summary, action_summary.strip()
+    return summary, summary.review
 
 
 class _EventPublisher:
@@ -1514,8 +1522,31 @@ async def _structured_evidence_promote(
     }
 
 
-_CHANNEL_NATIVE_APPROVAL_METHODS = frozenset({"software", "totp", "recovery_code"})
+_CHANNEL_CARRIED_APPROVAL_METHODS = ("software", "totp")
+_HOST_CLI_APPROVAL_METHODS = frozenset({"software", "totp", "recovery_code"})
 _EXTERNAL_SIGNER_APPROVAL_METHODS = frozenset({"kms", "ledger"})
+_CHANNEL_APPROVAL_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "discord": {
+        "interaction_mode": "native_components_with_typed_fallback",
+        "rejection_mode": "native_component_with_typed_fallback",
+        "carried_methods": list(_CHANNEL_CARRIED_APPROVAL_METHODS),
+    },
+    "slack": {
+        "interaction_mode": "typed_command",
+        "rejection_mode": "typed_command",
+        "carried_methods": list(_CHANNEL_CARRIED_APPROVAL_METHODS),
+    },
+    "telegram": {
+        "interaction_mode": "typed_command",
+        "rejection_mode": "typed_command",
+        "carried_methods": list(_CHANNEL_CARRIED_APPROVAL_METHODS),
+    },
+    "matrix": {
+        "interaction_mode": "typed_command",
+        "rejection_mode": "typed_command",
+        "carried_methods": list(_CHANNEL_CARRIED_APPROVAL_METHODS),
+    },
+}
 
 
 def _required_proof_tier(level: ConfirmationLevel | str) -> str:
@@ -1550,10 +1581,17 @@ def _pending_action_kind_value(pending: Any, arguments: dict[str, Any]) -> str:
 
 
 def _approval_route_for_method(method: str, *, origin_channel: str) -> str:
-    if method in _CHANNEL_NATIVE_APPROVAL_METHODS:
-        return "channel_native" if origin_channel else "host_cli"
-    if method in {"webauthn", "local_fido2"}:
+    if (
+        method in _CHANNEL_CARRIED_APPROVAL_METHODS
+        and origin_channel in _CHANNEL_APPROVAL_CAPABILITIES
+    ):
+        return "channel_native"
+    if method in _HOST_CLI_APPROVAL_METHODS:
+        return "host_cli"
+    if method == "webauthn":
         return "browser"
+    if method == "local_fido2":
+        return "local_helper"
     if method in _EXTERNAL_SIGNER_APPROVAL_METHODS:
         return "external_signer"
     return "unknown"
@@ -1596,6 +1634,17 @@ def _pending_channel_capability_payload(
     selected_backend_available: bool | None = None,
 ) -> dict[str, Any]:
     selected_method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
+    surface_capability = _CHANNEL_APPROVAL_CAPABILITIES.get(origin_channel)
+    if surface_capability is None:
+        interaction_mode = "host_cli" if not origin_channel or origin_channel == "cli" else "none"
+        rejection_mode = interaction_mode
+        carried_methods = (
+            list(sorted(_HOST_CLI_APPROVAL_METHODS)) if interaction_mode == "host_cli" else []
+        )
+    else:
+        interaction_mode = str(surface_capability["interaction_mode"])
+        rejection_mode = str(surface_capability["rejection_mode"])
+        carried_methods = list(surface_capability["carried_methods"])
     selected_method_proof_tier = _selected_method_proof_tier(selected_method)
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
@@ -1611,8 +1660,17 @@ def _pending_channel_capability_payload(
         if backend_available
         else "unavailable"
     )
-    can_collect_selected_method = (
-        is_live_pending and backend_available and approval_route in {"channel_native", "host_cli"}
+    can_collect_selected_method = bool(
+        is_live_pending
+        and backend_available
+        and (
+            (surface_capability is not None and selected_method in carried_methods)
+            or (
+                surface_capability is None
+                and interaction_mode == "host_cli"
+                and selected_method in carried_methods
+            )
+        )
     )
     can_carry_t0_identity = (
         can_collect_selected_method and selected_method_proof_tier == "T0_identity"
@@ -1634,6 +1692,8 @@ def _pending_channel_capability_payload(
         cannot_carry_reason = "approval_not_pending"
     elif not backend_available:
         cannot_carry_reason = "confirmation_backend_unavailable"
+    elif approval_route == "host_cli" and surface_capability is not None:
+        cannot_carry_reason = "selected_method_requires_host_cli"
     else:
         cannot_carry_reason = _cannot_carry_reason(
             proof_tier=required_proof_tier,
@@ -1648,7 +1708,11 @@ def _pending_channel_capability_payload(
         if str(value).strip()
     ]
     return {
+        "surface": origin_channel or "host_cli",
         "origin_channel": origin_channel,
+        "interaction_mode": interaction_mode,
+        "rejection_mode": rejection_mode,
+        "carried_methods": carried_methods,
         "approval_route": approval_route,
         "selected_backend_id": str(getattr(pending, "selected_backend_id", "")).strip(),
         "selected_method": selected_method,
@@ -1657,7 +1721,7 @@ def _pending_channel_capability_payload(
         "required_proof_tier": required_proof_tier,
         "required_level": required_level_value,
         "required_methods": list(getattr(pending, "required_methods", ())),
-        "can_approve": bool(selected_method) and backend_available and is_live_pending,
+        "can_approve": bool(selected_method) and can_collect_selected_method,
         "can_reject": is_pending,
         "can_collect_selected_method": can_collect_selected_method,
         "can_carry": can_carry_required_proof_tier,
@@ -1666,7 +1730,9 @@ def _pending_channel_capability_payload(
         "can_carry_t1_stepup": can_carry_t1_stepup,
         "can_carry_method_specific": can_carry_method_specific,
         "requires_channel_principal": bool(
-            allowed_channel_principals and selected_method in {"software", "totp", "recovery_code"}
+            allowed_channel_principals
+            and surface_capability is not None
+            and selected_method in carried_methods
         ),
         "requires_second_factor": selected_method_proof_tier == "T1_stepup",
         "requires_proof_input": selected_method != "software",
@@ -2199,6 +2265,9 @@ class HandlerImplementation(
         self._planner_model_id = services.planner_model_id
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
+        self._daemon_owner_uid = os.getuid()
+        self._pairing_requests_root = self._config.data_dir / "channels" / "pairing_requests"
+        # Retained only to reject and reset pre-F7C unscoped evidence.
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
@@ -2442,6 +2511,12 @@ class HandlerImplementation(
 
     def _clear_handler_test_state(self) -> dict[str, int]:
         pairing_request_artifacts = int(self._pairing_requests_file.exists())
+        if self._pairing_requests_root.is_symlink():
+            pairing_request_artifacts += 1
+        elif self._pairing_requests_root.is_dir():
+            pairing_request_artifacts += sum(
+                1 for path in self._pairing_requests_root.rglob("*") if path.is_file()
+            )
         cleared = {
             "pending_actions": len(self._pending_actions),
             "pending_action_sessions": len(self._pending_by_session),
@@ -2461,6 +2536,10 @@ class HandlerImplementation(
         self._confirmation_failure_tracker._state.clear()
         self._pending_actions_file.unlink(missing_ok=True)
         self._pairing_requests_file.unlink(missing_ok=True)
+        if self._pairing_requests_root.is_symlink():
+            self._pairing_requests_root.unlink(missing_ok=True)
+        elif self._pairing_requests_root.exists():
+            shutil.rmtree(self._pairing_requests_root)
         lockout_state_path = self._confirmation_failure_tracker._state_path
         if lockout_state_path is not None:
             lockout_state_path.unlink(missing_ok=True)
@@ -2553,6 +2632,7 @@ class HandlerImplementation(
             )
             and not self._pending_actions_file.exists()
             and not self._pairing_requests_file.exists()
+            and not self._pairing_requests_root.exists()
             and (
                 self._confirmation_failure_tracker._state_path is None
                 or not self._confirmation_failure_tracker._state_path.exists()
@@ -3580,65 +3660,215 @@ class HandlerImplementation(
         return dict(await self._browser_toolkit.doctor_status())
 
     @staticmethod
+    def _pairing_scope_component(workspace_hint: str) -> str:
+        return hashlib.sha256(workspace_hint.encode("utf-8")).hexdigest()
+
+    def _pairing_workspace_artifact_dir(self, *, owner_uid: int, workspace_hint: str) -> Path:
+        return (
+            self._pairing_requests_root
+            / f"uid-{owner_uid}"
+            / self._pairing_scope_component(workspace_hint)
+        )
+
+    def _pairing_request_artifact_path(
+        self,
+        *,
+        owner_uid: int,
+        workspace_hint: str,
+        channel: str,
+        external_user_id: str,
+    ) -> Path:
+        identity = f"{channel}\0{external_user_id}".encode()
+        request_key = hashlib.sha256(identity).hexdigest()
+        return (
+            self._pairing_workspace_artifact_dir(
+                owner_uid=owner_uid,
+                workspace_hint=workspace_hint,
+            )
+            / f"{request_key}.jsonl"
+        )
+
+    @staticmethod
+    def _strict_pairing_json(line: bytes) -> Any:
+        def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"duplicate_member:{key}")
+                result[key] = value
+            return result
+
+        def _reject_constant(value: str) -> None:
+            raise ValueError(f"non_finite_number:{value}")
+
+        return json.loads(
+            line.decode("utf-8"),
+            object_pairs_hook=_object,
+            parse_constant=_reject_constant,
+        )
+
+    @staticmethod
     def _normalized_pairing_request_entry(
         raw: Mapping[str, Any],
-    ) -> dict[str, str] | None:
-        channel = str(raw.get("channel", "")).strip().lower()
-        external_user_id = str(raw.get("external_user_id", "")).strip()
-        workspace_hint = str(raw.get("workspace_hint", "")).strip()
-        reason = (
-            str(raw.get("reason", "identity_not_allowlisted")).strip() or "identity_not_allowlisted"
-        )
-        if not channel or not external_user_id:
-            return None
-        if len(channel) > 64 or len(external_user_id) > 256:
-            return None
-        if any(ord(char) < 0x20 for char in channel):
-            return None
-        if any(ord(char) < 0x20 for char in external_user_id):
-            return None
-        if any(char.isspace() for char in channel):
-            return None
-        return {
-            "channel": channel,
-            "external_user_id": external_user_id,
-            "workspace_hint": workspace_hint,
-            "reason": reason,
+        *,
+        expected_owner_uid: int,
+        expected_workspace_hint: str,
+    ) -> dict[str, Any]:
+        if set(raw) != _PAIRING_REQUEST_FIELDS:
+            raise ValueError("fields")
+        schema = raw.get("schema")
+        owner_uid = raw.get("owner_uid")
+        if type(schema) is not int or schema != _PAIRING_REQUEST_SCHEMA:
+            raise ValueError("schema")
+        if type(owner_uid) is not int or owner_uid != expected_owner_uid:
+            raise ValueError("owner_uid")
+        string_fields = {
+            key: raw.get(key)
+            for key in (
+                "channel",
+                "workspace_hint",
+                "external_user_id",
+                "reason",
+                "requested_at",
+            )
         }
+        if not all(isinstance(value, str) for value in string_fields.values()):
+            raise ValueError("field_type")
+        channel = cast(str, string_fields["channel"]).strip().lower()
+        workspace_hint = cast(str, string_fields["workspace_hint"]).strip()
+        external_user_id = cast(str, string_fields["external_user_id"]).strip()
+        reason = cast(str, string_fields["reason"]).strip()
+        requested_at = cast(str, string_fields["requested_at"]).strip()
+        values = (channel, workspace_hint, external_user_id, reason, requested_at)
+        if not all(values):
+            raise ValueError("blank_field")
+        if (
+            len(channel) > 64
+            or len(workspace_hint) > 256
+            or len(external_user_id) > 256
+            or len(reason) > 128
+            or len(requested_at) > 64
+        ):
+            raise ValueError("oversized_field")
+        if any(
+            ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F or char in {"\u2028", "\u2029"}
+            for value in values
+            for char in value
+        ):
+            raise ValueError("control_character")
+        if any(char.isspace() for char in channel):
+            raise ValueError("channel")
+        if workspace_hint != expected_workspace_hint:
+            raise ValueError("workspace_hint")
+        try:
+            requested = datetime.fromisoformat(requested_at)
+        except ValueError as exc:
+            raise ValueError("requested_at") from exc
+        if requested.tzinfo is None:
+            raise ValueError("requested_at_timezone")
+        return {
+            "schema": schema,
+            "owner_uid": owner_uid,
+            "channel": channel,
+            "workspace_hint": workspace_hint,
+            "external_user_id": external_user_id,
+            "reason": reason,
+            "requested_at": requested.isoformat(),
+        }
+
+    def _parse_pairing_artifact_bytes(
+        self,
+        raw: bytes,
+        *,
+        owner_uid: int,
+        workspace_hint: str,
+    ) -> list[dict[str, Any]]:
+        if not raw or len(raw) > _PAIRING_REQUEST_MAX_FILE_BYTES or not raw.endswith(b"\n"):
+            raise ValueError("size_or_truncation")
+        rows: list[dict[str, Any]] = []
+        for line in raw.splitlines():
+            if not line:
+                raise ValueError("blank_line")
+            payload = self._strict_pairing_json(line)
+            if not isinstance(payload, Mapping):
+                raise ValueError("shape")
+            rows.append(
+                self._normalized_pairing_request_entry(
+                    payload,
+                    expected_owner_uid=owner_uid,
+                    expected_workspace_hint=workspace_hint,
+                )
+            )
+        return rows
 
     def _load_pairing_request_artifacts(
         self,
         *,
-        limit: int,
-    ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-        rows: list[dict[str, str]] = []
-        invalid: list[dict[str, Any]] = []
-        if not self._pairing_requests_file.exists():
-            return rows, invalid
-        try:
-            lines = self._pairing_requests_file.read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
-            invalid.append({"error": f"artifact_read_failed:{exc.__class__.__name__}"})
-            return rows, invalid
-        for index, line in enumerate(lines, start=1):
-            if not line.strip():
-                continue
+        owner_uid: int,
+        workspace_hint: str,
+    ) -> list[dict[str, Any]]:
+        if self._pairing_requests_file.exists() or self._pairing_requests_file.is_symlink():
+            raise ValueError("pairing_request_artifact_corrupt:legacy_unscoped_artifact")
+        artifact_dir = self._pairing_workspace_artifact_dir(
+            owner_uid=owner_uid,
+            workspace_hint=workspace_hint,
+        )
+        for directory in (
+            self._pairing_requests_root,
+            artifact_dir.parent,
+            artifact_dir,
+        ):
             try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                invalid.append({"line": index, "error": "invalid_json"})
-                continue
-            if not isinstance(payload, Mapping):
-                invalid.append({"line": index, "error": "invalid_shape"})
-                continue
-            normalized = self._normalized_pairing_request_entry(payload)
-            if normalized is None:
-                invalid.append({"line": index, "error": "missing_required_fields"})
-                continue
-            rows.append(normalized)
-            if len(rows) >= limit:
-                break
-        return rows, invalid
+                mode = directory.lstat().st_mode
+            except FileNotFoundError:
+                return []
+            except OSError as exc:
+                raise ValueError(
+                    f"pairing_request_artifact_corrupt:path_read:{exc.__class__.__name__}"
+                ) from exc
+            if not stat.S_ISDIR(mode):
+                raise ValueError("pairing_request_artifact_corrupt:unsafe_path_type")
+        try:
+            artifacts = sorted(artifact_dir.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise ValueError(
+                f"pairing_request_artifact_corrupt:directory_read:{exc.__class__.__name__}"
+            ) from exc
+        if len(artifacts) > _PAIRING_REQUEST_MAX_FILES:
+            raise ValueError("pairing_request_artifact_corrupt:too_many_files")
+        rows: list[dict[str, Any]] = []
+        total_bytes = 0
+        for artifact in artifacts:
+            try:
+                mode = artifact.lstat().st_mode
+            except OSError as exc:
+                raise ValueError(
+                    f"pairing_request_artifact_corrupt:file_stat:{exc.__class__.__name__}"
+                ) from exc
+            if not stat.S_ISREG(mode) or artifact.suffix != ".jsonl":
+                raise ValueError("pairing_request_artifact_corrupt:unsafe_path_type")
+            try:
+                raw = artifact.read_bytes()
+            except OSError as exc:
+                raise ValueError(
+                    f"pairing_request_artifact_corrupt:file_read:{exc.__class__.__name__}"
+                ) from exc
+            total_bytes += len(raw)
+            if total_bytes > _PAIRING_REQUEST_MAX_TOTAL_BYTES:
+                raise ValueError("pairing_request_artifact_corrupt:total_size")
+            try:
+                rows.extend(
+                    self._parse_pairing_artifact_bytes(
+                        raw,
+                        owner_uid=owner_uid,
+                        workspace_hint=workspace_hint,
+                    )
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"pairing_request_artifact_corrupt:{exc.__class__.__name__}"
+                ) from exc
+        return rows
 
     async def _execute_sandbox_config(
         self,
@@ -3765,10 +3995,7 @@ class HandlerImplementation(
             hide_internal=public,
         )
         sensitive_summary = None
-        regenerate_public_summary = pending.sensitive_public_payload or (
-            public
-            and canonical_tool_name(str(pending.tool_name), warn_on_alias=False) == "shell.exec"
-        )
+        regenerate_public_summary = pending.sensitive_public_payload or public
         if browser_sensitive_pending:
             sensitive_summary = _redacted_sensitive_confirmation_summary(
                 pending.tool_name,
@@ -6592,21 +6819,92 @@ class HandlerImplementation(
     def _record_pairing_request_artifact(
         self,
         *,
+        owner_uid: int,
         channel: str,
         external_user_id: str,
         workspace_hint: str,
         reason: str,
-    ) -> None:
-        payload = {
+        requested_at: datetime,
+    ) -> bool:
+        raw_payload = {
+            "schema": _PAIRING_REQUEST_SCHEMA,
+            "owner_uid": owner_uid,
             "channel": channel,
             "external_user_id": external_user_id,
             "workspace_hint": workspace_hint,
             "reason": reason,
-            "requested_at": datetime.now(UTC).isoformat(),
+            "requested_at": requested_at.isoformat(),
         }
-        self._pairing_requests_file.parent.mkdir(parents=True, exist_ok=True)
-        with self._pairing_requests_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+        payload = self._normalized_pairing_request_entry(
+            raw_payload,
+            expected_owner_uid=owner_uid,
+            expected_workspace_hint=workspace_hint,
+        )
+        artifact_path = self._pairing_request_artifact_path(
+            owner_uid=owner_uid,
+            workspace_hint=workspace_hint,
+            channel=channel,
+            external_user_id=external_user_id,
+        )
+        if self._pairing_requests_file.exists() or self._pairing_requests_file.is_symlink():
+            raise ValueError("pairing_request_artifact_corrupt:legacy_unscoped_artifact")
+        directory_chain = (
+            self._pairing_requests_root,
+            artifact_path.parent.parent,
+            artifact_path.parent,
+        )
+        for directory in directory_chain:
+            try:
+                mode = directory.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ValueError("pairing_request_artifact_corrupt:path_stat") from exc
+            if not stat.S_ISDIR(mode):
+                raise ValueError("pairing_request_artifact_corrupt:unsafe_path_type")
+        if artifact_path.exists() or artifact_path.is_symlink():
+            try:
+                if not stat.S_ISREG(artifact_path.lstat().st_mode):
+                    raise ValueError("unsafe_path_type")
+                existing_rows = self._parse_pairing_artifact_bytes(
+                    artifact_path.read_bytes(),
+                    owner_uid=owner_uid,
+                    workspace_hint=workspace_hint,
+                )
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise ValueError("pairing_request_artifact_corrupt:existing_record") from exc
+            if len(existing_rows) != 1:
+                raise ValueError("pairing_request_artifact_corrupt:existing_record_count")
+            existing = existing_rows[0]
+            expected_identity = (owner_uid, workspace_hint, channel, external_user_id, reason)
+            existing_identity = (
+                existing["owner_uid"],
+                existing["workspace_hint"],
+                existing["channel"],
+                existing["external_user_id"],
+                existing["reason"],
+            )
+            if existing_identity != expected_identity:
+                raise ValueError("pairing_request_artifact_corrupt:existing_record_scope")
+            return False
+        encoded = (
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        atomic_write_bytes(artifact_path, encoded)
+        return True
 
     async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:
         count = self._monitor_reject_counts.get(sid, 0) + 1

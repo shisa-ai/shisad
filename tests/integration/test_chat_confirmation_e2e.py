@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import textwrap
 from contextlib import suppress
@@ -60,6 +61,10 @@ def _extract_user_goal(planner_input: str) -> str:
     if match:
         return match.group(1).strip()
     return normalized.strip()
+
+
+def _authenticated_local_context() -> RequestContext:
+    return RequestContext(rpc_peer={"uid": os.getuid(), "gid": os.getgid(), "pid": os.getpid()})
 
 
 def _install_totp_fs_read_planner(
@@ -187,9 +192,7 @@ async def test_pending_action_expiry_and_legacy_null_do_not_revive_after_restart
         await restarted.shutdown()
 
     persisted = json.loads(pending_path.read_text(encoding="utf-8"))
-    persisted_row = next(
-        item for item in persisted if item["confirmation_id"] == confirmation_id
-    )
+    persisted_row = next(item for item in persisted if item["confirmation_id"] == confirmation_id)
     assert persisted_row["decision_nonce"] == ""
     assert persisted_row["status_reason"] == "approval_expired"
     assert persisted_row["expires_at"]
@@ -675,7 +678,7 @@ async def test_gh92_session_result_separates_unrelated_reply_from_stale_action(
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         first = await handlers.handle_channel_ingest(
             ChannelIngestParams(
@@ -851,9 +854,7 @@ async def test_reminder_current_turn_integration_uses_structural_taint_scope(
         )
 
         assert unanchored.executed_actions == 0
-        assert (
-            unanchored.confirmation_required_actions + unanchored.blocked_actions
-        ) >= 1
+        assert (unanchored.confirmation_required_actions + unanchored.blocked_actions) >= 1
         if unanchored.pending_confirmation_ids:
             pending = await handlers.handle_action_pending(
                 ActionPendingParams(
@@ -1262,7 +1263,7 @@ async def test_u9_channel_ingest_totp_code_confirms_trusted_chat_reply(
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
@@ -1409,7 +1410,7 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
@@ -1503,7 +1504,9 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
                     "channel": "discord",
                     "external_user_id": "alice",
                     "workspace_hint": "guild-1",
-                    "content": valid_target_code,
+                    "content": (
+                        f"confirm {pending.actions[0].confirmation_id} {valid_target_code}"
+                    ),
                     "message_id": "m-4",
                     "reply_target": "chan-1",
                 }
@@ -1553,7 +1556,7 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
@@ -1686,7 +1689,7 @@ async def test_u9_channel_ingest_scopes_totp_confirmation_to_pending_delivery_ta
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
@@ -1780,7 +1783,7 @@ async def test_u9_channel_ingest_scopes_totp_confirmation_to_pending_delivery_ta
                     "channel": "discord",
                     "external_user_id": "alice",
                     "workspace_hint": "guild-1",
-                    "content": f"confirm {second_id} {generate_totp_code(str(started.secret))}",
+                    "content": generate_totp_code(str(started.secret)),
                     "message_id": "m-4",
                     "reply_target": "chan-2",
                 }
@@ -1835,7 +1838,7 @@ async def test_u9_channel_ingest_scopes_totp_reject_index_to_visible_target(
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
@@ -1944,7 +1947,7 @@ async def test_u9_channel_ingest_scopes_software_reject_index_to_visible_target(
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         first = await handlers.handle_channel_ingest(
             ChannelIngestParams(
@@ -2056,7 +2059,7 @@ async def test_u9_channel_ingest_wrong_target_reject_uses_reject_cli_recovery_gu
         services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
         services.identity_map.allow_identity(channel="discord", external_user_id="alice")
         handlers = DaemonControlHandlers(services=services)
-        ctx = RequestContext()
+        ctx = _authenticated_local_context()
 
         started = await handlers.handle_two_factor_register_begin(
             TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),

@@ -3377,8 +3377,13 @@ def channel() -> None:
 
 @channel.command("pairing-propose")
 @click.option("--channel", "channel_name", default="", help="Optional channel filter")
-@click.option("--workspace", "workspace_hint", default="", help="Optional workspace hint filter")
-@click.option("--limit", default=100, help="Maximum proposal entries")
+@click.option(
+    "--workspace",
+    "workspace_hint",
+    required=True,
+    help="Exact provider workspace for the proposal",
+)
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum entries")
 def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) -> None:
     """Generate proposal-only channel allowlist patch from pairing artifacts."""
     config = _get_config()
@@ -3387,7 +3392,7 @@ def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) 
         "channel.pairing_propose",
         {
             "channel": channel_name or None,
-            "workspace_hint": workspace_hint or None,
+            "workspace_hint": workspace_hint,
             "limit": limit,
         },
         response_model=ChannelPairingProposalResult,

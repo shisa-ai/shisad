@@ -15,10 +15,28 @@ from urllib.parse import urlparse
 from shisad.core.tools.names import canonical_tool_name
 
 HIGH_VALUE_ACTION_TOKENS = ("send", "share", "delete", "egress", "upload")
-_INTERNAL_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
-    "shell.exec": frozenset({"command_intent"}),
-    "reminder.create": frozenset({"reminder_intent"}),
-}
+_INTERNAL_CONFIRMATION_ARGUMENT_KEYS = frozenset(
+    {
+        "_control_api_authenticated_write",
+        "_internal_ingress_marker",
+        "_rpc_peer",
+        "action_id",
+        "command_intent",
+        "confirmation_id",
+        "decision_nonce",
+        "degraded_mode",
+        "filesystem_intent",
+        "limits",
+        "origin_turn_id",
+        "reminder_intent",
+        "security_critical",
+        "session_id",
+        "task_id",
+        "tool_name",
+        "user_id",
+        "workspace_id",
+    }
+)
 
 
 def _utc_now() -> datetime:
@@ -74,8 +92,89 @@ class ConfirmationSummary:
 
     action: str
     risk_level: str
+    review: str
     parameters: list[tuple[str, str]] = field(default_factory=list)
     hidden_fields: list[str] = field(default_factory=list)
+
+
+def public_confirmation_arguments(
+    action: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return typed tool arguments without daemon/control routing fields."""
+    _ = canonical_tool_name(action, warn_on_alias=False)
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key not in _INTERNAL_CONFIRMATION_ARGUMENT_KEYS
+    }
+
+
+def _review_value(arguments: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return _summarize_scalar(value.strip(), max_len=160)
+    return ""
+
+
+def _action_review(action: str, arguments: Mapping[str, Any]) -> str:
+    normalized_action = canonical_tool_name(action, warn_on_alias=False)
+    if normalized_action == "shell.exec":
+        command = arguments.get("command")
+        if isinstance(command, list):
+            command_summary = _summarize_shell_command(command)
+            if command_summary:
+                return f"Run command: {command_summary}"
+    if normalized_action in {"file.read", "fs.read", "fs.list"}:
+        path = _review_value(arguments, "path")
+        if path:
+            verb = "List files at" if normalized_action == "fs.list" else "Read file"
+            return f"{verb}: {path}"
+    if normalized_action in {"file.write", "fs.write", "fs.delete"}:
+        path = _review_value(arguments, "path")
+        if path:
+            verb = "Delete file" if normalized_action == "fs.delete" else "Write file"
+            return f"{verb}: {path}"
+    if normalized_action == "web.fetch":
+        url = _review_value(arguments, "url")
+        if url:
+            return f"Fetch URL: {url}"
+    if normalized_action == "web.search":
+        query = _review_value(arguments, "query")
+        if query:
+            return f"Search the web for: {query}"
+    if normalized_action == "http.request":
+        url = _review_value(arguments, "url")
+        method = _review_value(arguments, "method") or "GET"
+        if url:
+            return f"Send {method.upper()} request to: {url}"
+    if normalized_action == "message.send":
+        recipient = _review_value(arguments, "recipient", "to")
+        channel = _review_value(arguments, "channel")
+        if recipient and channel:
+            return f"Send message to {recipient} on {channel}"
+        if recipient:
+            return f"Send message to: {recipient}"
+    if normalized_action == "reminder.create":
+        message = _review_value(arguments, "message")
+        when = _review_value(arguments, "when")
+        if message and when:
+            return f"Create reminder: {message} — {when}"
+        if message:
+            return f"Create reminder: {message}"
+    if normalized_action == "browser.navigate":
+        url = _review_value(arguments, "url")
+        if url:
+            return f"Navigate browser to: {url}"
+    if normalized_action == "browser.click":
+        target = _review_value(arguments, "description", "target")
+        if target:
+            return f"Click browser target: {target}"
+    if normalized_action == "browser.type_text":
+        target = _review_value(arguments, "description", "target")
+        return f"Type text into browser target: {target}" if target else "Type text in browser"
+    return f"Run {_summarize_scalar(action, max_len=48)}"
 
 
 def safe_summary(
@@ -88,11 +187,9 @@ def safe_summary(
     params: list[tuple[str, str]] = []
     hidden: list[str] = []
     normalized_action = canonical_tool_name(action, warn_on_alias=False)
-    internal_keys = _INTERNAL_ARGUMENT_KEYS_BY_ACTION.get(normalized_action, frozenset())
-    for key in sorted(arguments.keys()):
-        if key in internal_keys:
-            continue
-        value = arguments[key]
+    public_arguments = public_confirmation_arguments(action, arguments)
+    for key in sorted(public_arguments.keys()):
+        value = public_arguments[key]
         if isinstance(value, dict):
             params.append((key, f"{{{len(value)} keys}}"))
             hidden.append(key)
@@ -111,6 +208,7 @@ def safe_summary(
     return ConfirmationSummary(
         action=_summarize_scalar(action, max_len=48),
         risk_level=risk_level.upper(),
+        review=_action_review(normalized_action, public_arguments),
         parameters=params,
         hidden_fields=hidden,
     )
@@ -125,6 +223,7 @@ def render_structured_confirmation(
     warnings = warnings or []
     lines = [
         "ACTION CONFIRMATION",
+        f"Review: {summary.review}",
         f"Action: {summary.action}",
         f"Risk Level: {summary.risk_level}",
         "PARAMETERS:",

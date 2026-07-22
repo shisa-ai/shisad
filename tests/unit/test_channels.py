@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,6 +60,7 @@ def test_channel_identity_map_default_deny_allowlist_and_pairing_requests() -> N
     assert identity_map.is_allowed(channel="discord", external_user_id="123") is False
 
     pairing, is_new = identity_map.record_pairing_request(
+        owner_uid=os.getuid(),
         channel="discord",
         external_user_id="123",
         workspace_hint="guild-1",
@@ -66,13 +68,26 @@ def test_channel_identity_map_default_deny_allowlist_and_pairing_requests() -> N
     assert is_new is True
     assert pairing.channel == "discord"
     assert pairing.external_user_id == "123"
+    assert pairing.owner_uid == os.getuid()
     repeated, is_new = identity_map.record_pairing_request(
+        owner_uid=os.getuid(),
         channel="discord",
         external_user_id="123",
         workspace_hint="guild-1",
     )
     assert is_new is False
     assert repeated == pairing
+
+    other_workspace, is_new = identity_map.record_pairing_request(
+        owner_uid=os.getuid(),
+        channel="discord",
+        external_user_id="123",
+        workspace_hint="guild-2",
+    )
+    assert is_new is True
+    assert other_workspace != pairing
+    assert other_workspace.workspace_hint == "guild-2"
+    assert len(identity_map.list_pairing_requests()) == 2
 
     identity_map.allow_identity(channel="discord", external_user_id="123")
     # PLN-M2: `is_allowed` intentionally strips whitespace so trailing spaces

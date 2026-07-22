@@ -606,7 +606,16 @@ def test_cli_commands_route_through_rpc_wrapper(
         ["lockdown", "status", "--session", "s-1", "--json"],
     ).output
     assert '"level": "quarantine"' in lockdown_status
-    _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
+    missing_pairing_workspace = runner.invoke(
+        cli_main.cli,
+        ["channel", "pairing-propose", "--limit", "5"],
+    )
+    assert missing_pairing_workspace.exit_code != 0
+    assert "Missing option '--workspace'" in missing_pairing_workspace.output
+    _invoke_ok(
+        runner,
+        ["channel", "pairing-propose", "--workspace", "guild-1", "--limit", "5"],
+    )
     assert (
         "selfmod-proposal-1"
         in _invoke_ok(

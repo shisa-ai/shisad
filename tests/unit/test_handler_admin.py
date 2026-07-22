@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from shisad.core.api.schema import (
     ChannelIngestParams,
@@ -100,7 +101,32 @@ async def test_channel_ingest_wrapper() -> None:
 async def test_channel_pairing_proposal_wrapper() -> None:
     handlers = AdminHandlers(_StubImpl(), internal_ingress_marker=object())  # type: ignore[arg-type]
     result = await handlers.handle_channel_pairing_propose(
-        ChannelPairingProposalParams(limit=5),
+        ChannelPairingProposalParams(workspace_hint="guild-1", limit=5),
         RequestContext(),
     )
     assert result.proposal_id == "p1"
+
+
+def test_f7c_channel_pairing_proposal_requires_exact_workspace() -> None:
+    with pytest.raises(ValidationError, match="workspace_hint"):
+        ChannelPairingProposalParams(limit=5)
+
+    with pytest.raises(ValidationError, match="workspace_hint"):
+        ChannelPairingProposalParams(workspace_hint="   ", limit=5)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"workspace_hint": "guild-\x00one"},
+        {"workspace_hint": "guild-1", "channel": "two words"},
+        {"workspace_hint": "guild-1", "channel": ""},
+        {"workspace_hint": "guild-1", "limit": 0},
+        {"workspace_hint": "guild-1", "limit": 1001},
+    ],
+)
+def test_f7c_channel_pairing_proposal_rejects_invalid_scope_bounds(
+    params: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ChannelPairingProposalParams(**params)  # type: ignore[arg-type]

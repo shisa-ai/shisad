@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
-from shisad.core.api.transport import ControlClient
+from shisad.core.api.transport import ControlClient, JsonRpcCallError
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import (
@@ -639,12 +641,155 @@ async def test_m4_pairing_proposal_uses_pairing_request_artifacts(
 
         proposal = await client.call(
             "channel.pairing_propose",
-            {"channel": "discord", "limit": 20},
+            {"channel": "discord", "workspace_hint": "guild-1", "limit": 20},
         )
         assert proposal["applied"] is False
-        assert proposal["count"] >= 1
+        assert proposal["count"] == 1
         assert "discord" in proposal["config_patch"]
         assert "attacker-user" in proposal["config_patch"]["discord"]
-        assert Path(proposal["proposal_path"]).exists()
+        proposal_path = Path(proposal["proposal_path"])
+        assert proposal_path.exists()
+        proposal_payload = json.loads(proposal_path.read_text(encoding="utf-8"))
+        assert proposal_payload["schema"] == 1
+        assert proposal_payload["owner_uid"] == os.getuid()
+        assert proposal_payload["workspace_hint"] == "guild-1"
+        assert proposal_payload["applied"] is False
+        assert proposal_path.stat().st_mode & 0o777 == 0o600
+
+        artifacts = list((_config.data_dir / "channels" / "pairing_requests").rglob("*.jsonl"))
+        assert len(artifacts) == 1
+        artifact_payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+        assert artifact_payload["schema"] == 1
+        assert artifact_payload["owner_uid"] == os.getuid()
+        assert artifact_payload["workspace_hint"] == "guild-1"
+        assert artifacts[0].stat().st_mode & 0o777 == 0o600
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_f7c_pairing_keeps_same_external_identity_separate_by_workspace(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _config = await _start_daemon(tmp_path)
+    try:
+        for workspace, content in (("guild-1", "hello one"), ("guild-2", "hello two")):
+            ingest = await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "shared-external-user",
+                        "workspace_hint": workspace,
+                        "content": content,
+                    }
+                },
+            )
+            assert "Pairing request recorded" in ingest["response"]
+
+        with pytest.raises(JsonRpcCallError, match="workspace_hint"):
+            await client.call("channel.pairing_propose", {"channel": "discord", "limit": 20})
+
+        proposals = []
+        for workspace in ("guild-1", "guild-2"):
+            proposal = await client.call(
+                "channel.pairing_propose",
+                {"channel": "discord", "workspace_hint": workspace, "limit": 20},
+            )
+            assert proposal["count"] == 1
+            assert proposal["entries"] == [
+                {
+                    "channel": "discord",
+                    "external_user_id": "shared-external-user",
+                    "workspace_hint": workspace,
+                    "reason": "identity_not_allowlisted",
+                }
+            ]
+            proposals.append(Path(proposal["proposal_path"]))
+
+        assert proposals[0].parent != proposals[1].parent
+        artifacts = list((_config.data_dir / "channels" / "pairing_requests").rglob("*.jsonl"))
+        assert len(artifacts) == 2
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_f7c_pairing_publication_failure_is_not_acknowledged(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+
+    def _fail_atomic_write(path: Path, _payload: bytes, **_kwargs: object) -> object:
+        raise AtomicWriteError(
+            path=path,
+            stage=AtomicWriteStage.WRITE,
+            publication_may_have_committed=False,
+        )
+
+    monkeypatch.setattr("shisad.daemon.handlers._impl.atomic_write_bytes", _fail_atomic_write)
+    try:
+        with pytest.raises(JsonRpcCallError, match="pairing_request_publication_failed"):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "unpersisted-user",
+                        "workspace_hint": "guild-1",
+                        "content": "hello",
+                    }
+                },
+            )
+
+        artifact_root = config.data_dir / "channels" / "pairing_requests"
+        assert not artifact_root.exists() or not any(artifact_root.rglob("*.jsonl"))
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_f7c_pairing_proposal_publication_failure_writes_no_partial_artifact(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        ingest = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "proposal-fault-user",
+                    "workspace_hint": "guild-1",
+                    "content": "hello",
+                }
+            },
+        )
+        assert "Pairing request recorded" in ingest["response"]
+
+        def _fail_atomic_write(path: Path, _payload: bytes, **_kwargs: object) -> object:
+            raise AtomicWriteError(
+                path=path,
+                stage=AtomicWriteStage.WRITE,
+                publication_may_have_committed=False,
+            )
+
+        monkeypatch.setattr(
+            "shisad.daemon.handlers._impl_admin.atomic_write_bytes",
+            _fail_atomic_write,
+        )
+        with pytest.raises(JsonRpcCallError, match="pairing_proposal_publication_failed"):
+            await client.call(
+                "channel.pairing_propose",
+                {"channel": "discord", "workspace_hint": "guild-1", "limit": 20},
+            )
+
+        proposal_root = config.data_dir / "proposals" / "channel_pairing"
+        assert not proposal_root.exists() or not any(proposal_root.rglob("*.json"))
     finally:
         await _shutdown(daemon_task, client)
