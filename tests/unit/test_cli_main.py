@@ -2494,6 +2494,47 @@ def test_f6_config_commands_and_env_offer_parseable_json(
     assert any(row["name"] == "SHISAD_UI_THEME" for row in payloads["env"]["variables"])
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["config", "show", "--format", "json"],
+        ["config", "validate", "--format", "json"],
+        ["config", "diff", "--format", "json"],
+        ["env", "--format", "json"],
+        ["init", "--format", "json"],
+    ],
+)
+def test_f6_config_failures_offer_one_parseable_redacted_json_object(
+    args: list[str],
+    tmp_path: Path,
+) -> None:
+    secret = "sk-" + "abcdefghijklmnopqrstuvwx"
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        f'schema_version = 1\n["{secret}"]\nvalue = true\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(config_path), *args],
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "config"
+    assert payload["exit_code"] == 3
+    assert payload["what_failed"].startswith("Could not ")
+    assert payload["what_still_works"]
+    assert payload["likely_cause"]
+    assert payload["next_action"]
+    assert payload["technical_details"].startswith("ConfigFileError:")
+    assert secret not in result.output
+    if args[0] != "init":
+        assert "[REDACTED:openai_key]" in result.output
+    assert not result.output.startswith("Error: ")
+
+
 def test_f6_init_honors_explicit_path_and_refuses_second_publication(tmp_path: Path) -> None:
     config_path = tmp_path / "operator" / "config.toml"
     runner = CliRunner()
@@ -2511,7 +2552,32 @@ def test_f6_init_honors_explicit_path_and_refuses_second_publication(tmp_path: P
     assert json.loads(created.output)["path"] == str(config_path)
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert repeated.exit_code == 3
-    assert "What failed: Could not create operator configuration." in repeated.output
+    assert json.loads(repeated.output)["what_failed"] == (
+        "Could not create operator configuration."
+    )
+
+
+def test_f6_init_honors_environment_path_with_explicit_cli_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / "environment" / "config.toml"
+    explicit_path = tmp_path / "explicit" / "config.toml"
+    monkeypatch.setenv("SHISAD_CONFIG_PATH", str(env_path))
+    runner = CliRunner()
+
+    environment_selected = runner.invoke(cli_main.cli, ["init", "--format", "json"])
+    explicitly_selected = runner.invoke(
+        cli_main.cli,
+        ["--config", str(explicit_path), "init", "--format", "json"],
+    )
+
+    assert environment_selected.exit_code == 0, environment_selected.output
+    assert json.loads(environment_selected.output)["path"] == str(env_path)
+    assert env_path.stat().st_mode & 0o777 == 0o600
+    assert explicitly_selected.exit_code == 0, explicitly_selected.output
+    assert json.loads(explicitly_selected.output)["path"] == str(explicit_path)
+    assert explicit_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
@@ -2531,6 +2597,9 @@ def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
 
         def run(self) -> None:
             return None
+
+    class _FakeWebSnapshotWriteError(RuntimeError):
+        pass
 
     async def _run_once(
         _socket_path: Path,
@@ -2572,7 +2641,10 @@ def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
     monkeypatch.setitem(
         sys.modules,
         "shisad.ui.web",
-        SimpleNamespace(write_web_snapshot=_write_web_snapshot),
+        SimpleNamespace(
+            WebSnapshotWriteError=_FakeWebSnapshotWriteError,
+            write_web_snapshot=_write_web_snapshot,
+        ),
     )
     runner = CliRunner()
 
@@ -2591,6 +2663,48 @@ def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
         assert posture.palette.name == "shisa-high-contrast"
         assert posture.color_enabled is False
         assert posture.capabilities.reduce_motion is True
+
+
+def test_f6_web_ui_distinguishes_output_write_and_daemon_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeWebSnapshotWriteError(RuntimeError):
+        pass
+
+    async def _write_failure(**_kwargs: object) -> Path:
+        raise _FakeWebSnapshotWriteError("PermissionError")
+
+    web_module = SimpleNamespace(
+        WebSnapshotWriteError=_FakeWebSnapshotWriteError,
+        write_web_snapshot=_write_failure,
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: _config(tmp_path))
+    monkeypatch.setitem(sys.modules, "shisad.ui.web", web_module)
+    runner = CliRunner()
+
+    write_failure = runner.invoke(
+        cli_main.cli,
+        ["web-ui", "--output", str(tmp_path / "snapshot.html")],
+    )
+
+    assert write_failure.exit_code == 1
+    assert "What failed: Could not write the dashboard snapshot." in write_failure.output
+    assert "Next action: choose a writable file with --output." in write_failure.output
+    assert "daemon is stopped" not in write_failure.output
+
+    async def _daemon_failure(**_kwargs: object) -> Path:
+        raise OSError("daemon unavailable")
+
+    web_module.write_web_snapshot = _daemon_failure
+    daemon_failure = runner.invoke(
+        cli_main.cli,
+        ["web-ui", "--output", str(tmp_path / "snapshot.html")],
+    )
+
+    assert daemon_failure.exit_code == 2
+    assert "What failed: Could not generate the dashboard snapshot." in daemon_failure.output
+    assert "Likely cause: the daemon is stopped" in daemon_failure.output
 
 
 def test_f6_invalid_config_uses_actionable_exit_three_envelope(tmp_path: Path) -> None:
@@ -3524,6 +3638,37 @@ def test_status_progress_reports_failure_instead_of_done(
 
     result = runner.invoke(cli_main.cli, ["status"])
     assert result.exit_code == 1
+    assert "Querying daemon status failed" in result.output
+    assert "Querying daemon status done" not in result.output
+
+
+def test_f6_status_preserves_daemon_error_exit_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        _method: str,
+        _params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        _ = response_model
+        raise cli_rpc.daemon_cli_error(
+            what_failed="Could not query daemon status.",
+            exc=OSError("daemon unavailable"),
+        )
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(cli_main.cli, ["status"])
+
+    assert result.exit_code == 2
+    assert "What failed: Could not query daemon status." in result.output
     assert "Querying daemon status failed" in result.output
     assert "Querying daemon status done" not in result.output
 

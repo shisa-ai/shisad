@@ -318,7 +318,7 @@ def _thread_list_row(item: dict[str, Any]) -> str:
     )
 
 
-def _get_loaded_config() -> LoadedConfig:
+def _get_loaded_config(*, output_format: str = "human") -> LoadedConfig:
     ctx = click.get_current_context(silent=True)
     configured_path = (ctx.obj or {}).get("config_path") if ctx is not None else None
     try:
@@ -328,6 +328,7 @@ def _get_loaded_config() -> LoadedConfig:
             what_failed="Could not load operator configuration.",
             exc=exc,
             next_action="review the selected TOML or run: shisad config template",
+            output_format=output_format,
         ) from exc
 
 
@@ -550,26 +551,51 @@ class ConfigCliError(click.ClickException):
 
     exit_code = 3
 
+    def __init__(self, payload: Mapping[str, object], *, output_format: str) -> None:
+        self.payload = dict(payload)
+        self.output_format = output_format
+        super().__init__(
+            "\n".join(
+                [
+                    f"What failed: {payload['what_failed']}",
+                    f"What still works: {payload['what_still_works']}",
+                    f"Likely cause: {payload['likely_cause']}",
+                    f"Next action: {payload['next_action']}",
+                    f"Technical details: {payload['technical_details']}",
+                ]
+            )
+        )
+
+    def show(self, file: Any | None = None) -> None:
+        if self.output_format != "json":
+            super().show(file)
+            return
+        if file is None:
+            file = click.get_text_stream("stderr")
+        click.echo(json.dumps(self.payload, sort_keys=True), file=file)
+
 
 def _config_cli_error(
     *,
     what_failed: str,
     exc: ConfigFileError,
     next_action: str,
+    output_format: str = "human",
 ) -> ConfigCliError:
     sanitized = sanitize_terminal_field(str(exc)[:4096])
     redacted, _findings = redact_ingress_secrets(sanitized)
     detail = redacted[:240] or exc.__class__.__name__
     return ConfigCliError(
-        "\n".join(
-            [
-                f"What failed: {what_failed}",
-                "What still works: help, config template, config schema, and version commands.",
-                "Likely cause: the selected config is missing, invalid, unsafe, or unsupported.",
-                f"Next action: {next_action}",
-                f"Technical details: {exc.__class__.__name__}: {detail}",
-            ]
-        )
+        {
+            "error_type": "config",
+            "exit_code": ConfigCliError.exit_code,
+            "what_failed": what_failed,
+            "what_still_works": ("help, config template, config schema, and version commands."),
+            "likely_cause": ("the selected config is missing, invalid, unsafe, or unsupported."),
+            "next_action": next_action,
+            "technical_details": f"{exc.__class__.__name__}: {detail}",
+        },
+        output_format=output_format,
     )
 
 
@@ -728,7 +754,7 @@ def config_template() -> None:
 def config_show(output_format: str) -> None:
     """Print effective values and sources with secrets redacted."""
 
-    projection = _get_loaded_config().redacted_projection()
+    projection = _get_loaded_config(output_format=output_format).redacted_projection()
     _emit_structured_output(
         projection,
         output_format=output_format,
@@ -747,7 +773,7 @@ def config_show(output_format: str) -> None:
 def config_validate(output_format: str) -> None:
     """Validate the selected effective configuration without starting the daemon."""
 
-    _get_loaded_config()
+    _get_loaded_config(output_format=output_format)
     payload: dict[str, object] = {"schema_version": 1, "valid": True}
     _emit_structured_output(
         payload,
@@ -790,7 +816,7 @@ def config_schema(output_format: str) -> None:
 def config_diff(output_format: str) -> None:
     """Show effective fields selected outside typed defaults."""
 
-    payload = config_diff_projection(_get_loaded_config())
+    payload = config_diff_projection(_get_loaded_config(output_format=output_format))
     changes = payload.get("changes", {})
     human = _projection_lines(changes if isinstance(changes, dict) else {})
     _emit_structured_output(payload, output_format=output_format, human_lines=human)
@@ -816,6 +842,7 @@ def init_config(ctx: click.Context, output_format: str) -> None:
             what_failed="Could not create operator configuration.",
             exc=exc,
             next_action="review or remove the selected config path, then rerun: shisad init",
+            output_format=output_format,
         ) from exc
     payload: dict[str, object] = {
         "created": True,
@@ -849,7 +876,7 @@ def init_config(ctx: click.Context, output_format: str) -> None:
 def environment(output_format: str) -> None:
     """List supported environment keys with effective redacted values and sources."""
 
-    payload = environment_projection(_get_loaded_config())
+    payload = environment_projection(_get_loaded_config(output_format=output_format))
     raw_rows = payload.get("variables", [])
     if not isinstance(raw_rows, list):
         raw_rows = []
@@ -956,7 +983,7 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
 )
 def web_ui(output: Path) -> None:
     """Generate optional API-first web dashboard snapshot."""
-    from shisad.ui.web import write_web_snapshot
+    from shisad.ui.web import WebSnapshotWriteError, write_web_snapshot
 
     config = _get_config()
     try:
@@ -967,6 +994,18 @@ def web_ui(output: Path) -> None:
                 ui_posture=_get_ui_posture(config),
             )
         )
+    except WebSnapshotWriteError as exc:
+        raise click.ClickException(
+            "\n".join(
+                [
+                    "What failed: Could not write the dashboard snapshot.",
+                    "What still works: daemon queries, TUI, and other CLI commands.",
+                    "Likely cause: the selected output path is invalid or not writable.",
+                    "Next action: choose a writable file with --output.",
+                    f"Technical details: {exc.__class__.__name__}: {exc}",
+                ]
+            )
+        ) from exc
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise daemon_cli_error(
             what_failed="Could not generate the dashboard snapshot.",
@@ -1349,7 +1388,7 @@ def status() -> None:
             result = rpc_call(config, "daemon.status", response_model=DaemonStatusResult)
     except click.ClickException as exc:
         _echo(f"Status: error ({exc.message})", err=True)
-        sys.exit(1)
+        sys.exit(exc.exit_code)
 
     _echo("Status: running", fg="green")
     click.echo(_dump_model(result))

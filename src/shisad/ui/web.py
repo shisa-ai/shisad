@@ -10,6 +10,10 @@ from shisad.core.api.transport import ControlClient
 from shisad.ui.theme import ThemePalette, UiPosture, resolve_ui_posture, web_css_variables
 
 
+class WebSnapshotWriteError(RuntimeError):
+    """The fetched web snapshot could not be published to its output path."""
+
+
 async def fetch_web_snapshot(socket_path: Path) -> dict[str, Any]:
     """Fetch web-view data from control API."""
     client = ControlClient(socket_path)
@@ -152,6 +156,9 @@ async def write_web_snapshot(
     """Fetch current API data and write a static dashboard HTML snapshot."""
     snapshot = await fetch_web_snapshot(socket_path)
     html_payload = render_web_snapshot(snapshot, ui_posture=ui_posture)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html_payload, encoding="utf-8")
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html_payload, encoding="utf-8")
+    except OSError as exc:
+        raise WebSnapshotWriteError(exc.__class__.__name__) from exc
     return output_path

@@ -405,6 +405,22 @@ def test_f6_init_publishes_one_owner_only_template_without_overwrite(
         config_file.initialize_config_file(destination, environ={})
 
 
+def test_f6_init_uses_the_loader_config_path_precedence(tmp_path: Path) -> None:
+    environment_path = tmp_path / "environment" / "config.toml"
+    explicit_path = tmp_path / "explicit" / "config.toml"
+    environ = {
+        "SHISAD_CONFIG_PATH": str(environment_path),
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+    }
+
+    assert config_file.initialize_config_file(environ=environ) == environment_path
+    assert config_file.initialize_config_file(explicit_path, environ=environ) == explicit_path
+
+    assert environment_path.exists()
+    assert explicit_path.exists()
+    assert not (tmp_path / "xdg" / "shisad" / "config.toml").exists()
+
+
 def test_f6_init_rejects_symlink_and_managed_root_destinations(tmp_path: Path) -> None:
     target = tmp_path / "target.toml"
     target.write_text("do not replace\n", encoding="utf-8")

@@ -2164,3 +2164,29 @@ async def test_web_fetch_and_write_snapshot(
     assert result == output_path
     assert output_path.exists()
     assert "shisad API-first dashboard snapshot" in output_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_f6_web_snapshot_classifies_output_publication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from shisad.ui import web as web_module
+
+    async def _fake_fetch_snapshot(_socket_path: Path) -> dict[str, object]:
+        return {
+            "sessions": [],
+            "pending_actions": [],
+            "alerts": [],
+            "egress_events": [],
+        }
+
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied\n", encoding="utf-8")
+    monkeypatch.setattr(web_module, "fetch_web_snapshot", _fake_fetch_snapshot)
+
+    with pytest.raises(web_module.WebSnapshotWriteError, match="FileExistsError"):
+        await web_module.write_web_snapshot(
+            socket_path=Path("/tmp/control.sock"),
+            output_path=blocked_parent / "snapshot.html",
+        )

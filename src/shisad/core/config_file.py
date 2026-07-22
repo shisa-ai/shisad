@@ -161,6 +161,21 @@ def default_config_path(*, environ: Mapping[str, str] | None = None) -> Path:
     return root / "shisad" / "config.toml"
 
 
+def _selected_config_path(
+    config_path: Path | None,
+    *,
+    environ: Mapping[str, str],
+) -> Path:
+    """Apply the shared CLI, environment, then XDG config-path precedence."""
+
+    if config_path is not None:
+        return Path(config_path).expanduser()
+    env_path_text = str(environ.get("SHISAD_CONFIG_PATH", "")).strip()
+    if env_path_text:
+        return Path(env_path_text).expanduser()
+    return default_config_path(environ=environ)
+
+
 def config_field_inventory() -> list[dict[str, str]]:
     """Return the finite advertised config surface and its runtime disposition."""
 
@@ -341,9 +356,7 @@ def initialize_config_file(
     """Create one owner-only generated config without overwriting existing data."""
 
     effective_env = dict(os.environ if environ is None else environ)
-    destination = (
-        Path(path).expanduser() if path is not None else default_config_path(environ=effective_env)
-    )
+    destination = _selected_config_path(path, environ=effective_env)
     if destination.is_symlink():
         raise ConfigFileError("selected config destination is a symlink")
     baseline = _load_empty_config(environ=effective_env, cli_overrides=None)
@@ -435,13 +448,7 @@ def load_effective_config(
     effective_env = dict(os.environ if environ is None else environ)
     env_path_text = str(effective_env.get("SHISAD_CONFIG_PATH", "")).strip()
     explicit = config_path is not None or bool(env_path_text)
-    selected = (
-        Path(config_path).expanduser()
-        if config_path is not None
-        else Path(env_path_text).expanduser()
-        if env_path_text
-        else default_config_path(environ=effective_env)
-    )
+    selected = _selected_config_path(config_path, environ=effective_env)
     if selected.exists() or explicit:
         loaded = load_config_file(
             selected,
