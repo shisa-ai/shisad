@@ -6,6 +6,7 @@ import json
 import os
 import tomllib
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,9 +64,9 @@ class LoadedConfig:
                 value: object = values.get(name)
                 if name not in values:
                     value = getattr(settings, name)
-                if (
-                    name in _NESTED_SECRET_FIELDS or _field_is_secret(name)
-                ) and _has_secret_value(value):
+                if (name in _NESTED_SECRET_FIELDS or _field_is_secret(name)) and _has_secret_value(
+                    value
+                ):
                     value = "<redacted>"
                 section_projection[name] = {
                     "value": value,
@@ -111,7 +112,7 @@ def load_config_file(
     if unknown_top_level:
         raise ConfigFileError(f"unknown top-level key: {unknown_top_level[0]}")
     schema_version = document.get("schema_version", 1)
-    if schema_version != 1:
+    if type(schema_version) is not int or schema_version != 1:
         raise ConfigFileError(f"unsupported schema_version: {schema_version!r}")
     daemon_document = document.get("daemon", {})
     if isinstance(daemon_document, dict) and "config_path" in daemon_document:
@@ -167,7 +168,9 @@ def config_field_inventory() -> list[dict[str, str]]:
     for section, model_type in _SECTIONS.items():
         for field in model_type.model_fields:
             status = "live"
-            if section == "security" and field == "default_deny":
+            if section == "daemon" and field in {"ui_theme", "reduce_motion"}:
+                consumer = "UiPosture"
+            elif section == "security" and field == "default_deny":
                 status = "compatibility_only"
                 consumer = "PolicyBundle.default_deny"
             elif section == "model":
@@ -203,15 +206,201 @@ def render_config_template() -> str:
             field = row["field"]
             if section == "daemon" and field == "config_path":
                 lines.append("# status=live consumer=config loader")
-                lines.append(
-                    "# config_path is selected only via --config or SHISAD_CONFIG_PATH"
-                )
+                lines.append("# config_path is selected only via --config or SHISAD_CONFIG_PATH")
                 continue
             value = "" if _field_is_secret(field) else defaults.get(field)
             lines.append(f"# status={row['status']} consumer={row['consumer']}")
             lines.append(f"# {field} = {_toml_literal(value)}")
         lines.append("")
     return "\n".join(lines)
+
+
+def config_schema_projection() -> dict[str, object]:
+    """Return the exact finite TOML schema as stable JSON-compatible data."""
+
+    properties: dict[str, object] = {
+        "schema_version": {
+            "type": "integer",
+            "const": 1,
+            "default": 1,
+            "description": "shisad operator configuration schema version",
+        }
+    }
+    definitions: dict[str, object] = {}
+    for section, model_type in _SECTIONS.items():
+        section_schema = deepcopy(model_type.model_json_schema())
+        prefix = f"{section}__"
+        _rewrite_schema_references(section_schema, prefix=prefix)
+        _close_schema_objects(section_schema)
+        raw_definitions = section_schema.pop("$defs", {})
+        if isinstance(raw_definitions, dict):
+            definitions.update(
+                {f"{prefix}{name}": definition for name, definition in raw_definitions.items()}
+            )
+        section_schema["additionalProperties"] = False
+        if section == "daemon":
+            section_properties = section_schema.get("properties")
+            if isinstance(section_properties, dict):
+                section_properties.pop("config_path", None)
+        properties[section] = section_schema
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "shisad operator configuration",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "$defs": definitions,
+    }
+
+
+def _rewrite_schema_references(value: object, *, prefix: str) -> None:
+    """Move model-local Pydantic references into one valid document namespace."""
+
+    if isinstance(value, dict):
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            value["$ref"] = f"#/$defs/{prefix}{reference.removeprefix('#/$defs/')}"
+        for nested in value.values():
+            _rewrite_schema_references(nested, prefix=prefix)
+    elif isinstance(value, list):
+        for nested in value:
+            _rewrite_schema_references(nested, prefix=prefix)
+
+
+def _close_schema_objects(value: object) -> None:
+    """Mirror the loader's unknown-key rejection in generated object schemas."""
+
+    if isinstance(value, dict):
+        if value.get("type") == "object" and isinstance(value.get("properties"), dict):
+            value.setdefault("additionalProperties", False)
+        for nested in value.values():
+            _close_schema_objects(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _close_schema_objects(nested)
+
+
+def config_diff_projection(loaded: LoadedConfig) -> dict[str, object]:
+    """Return non-default effective fields with the same redaction metadata as show."""
+
+    effective = loaded.redacted_projection()
+    defaults = _load_empty_config(environ={}, cli_overrides=None).redacted_projection()
+    changes: dict[str, dict[str, dict[str, object]]] = {}
+    for section in _SECTIONS:
+        section_changes: dict[str, dict[str, object]] = {}
+        for field, row in effective[section].items():
+            if section == "daemon" and field == "config_path":
+                continue
+            if row["source"] != "default" or row["value"] != defaults[section][field]["value"]:
+                section_changes[field] = row
+        if section_changes:
+            changes[section] = section_changes
+    return {"schema_version": 1, "changes": changes}
+
+
+def environment_projection(
+    loaded: LoadedConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Return the supported environment surface without reading raw secret values."""
+
+    effective_env = os.environ if environ is None else environ
+    values = loaded.redacted_projection()
+    rows: list[dict[str, object]] = []
+    for section, model_type in _SECTIONS.items():
+        prefix = str(model_type.model_config.get("env_prefix", ""))
+        for field in model_type.model_fields:
+            rows.append(
+                {
+                    "name": f"{prefix}{field}".upper(),
+                    "section": section,
+                    "field": field,
+                    "value": values[section][field]["value"],
+                    "source": values[section][field]["source"],
+                }
+            )
+    rows.append(
+        {
+            "name": "NO_COLOR",
+            "section": "ui",
+            "field": "no_color",
+            "value": "NO_COLOR" in effective_env,
+            "source": "env:NO_COLOR" if "NO_COLOR" in effective_env else "default",
+        }
+    )
+    rows.sort(key=lambda row: str(row["name"]))
+    return {"variables": rows}
+
+
+def initialize_config_file(
+    path: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Create one owner-only generated config without overwriting existing data."""
+
+    effective_env = dict(os.environ if environ is None else environ)
+    destination = (
+        Path(path).expanduser() if path is not None else default_config_path(environ=effective_env)
+    )
+    if destination.is_symlink():
+        raise ConfigFileError("selected config destination is a symlink")
+    baseline = _load_empty_config(environ=effective_env, cli_overrides=None)
+    _reject_protected_path(
+        destination,
+        protected_roots=(baseline.daemon.data_dir, *baseline.daemon.assistant_fs_roots),
+    )
+    if destination.parent.is_symlink():
+        raise ConfigFileError("selected config parent is a symlink")
+    payload = render_config_template().encode("utf-8")
+    try:
+        destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise ConfigFileError(
+            f"cannot prepare selected config parent: {exc.__class__.__name__}"
+        ) from exc
+    if destination.parent.is_symlink():
+        raise ConfigFileError("selected config parent is a symlink")
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(destination, flags, 0o600)
+    except FileExistsError:
+        raise ConfigFileError("selected config file already exists") from None
+    except OSError as exc:
+        raise ConfigFileError(
+            f"cannot create selected config file: {exc.__class__.__name__}"
+        ) from exc
+
+    try:
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short config write")
+            offset += written
+        os.fsync(descriptor)
+    except OSError as exc:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise ConfigFileError(
+            f"cannot finish selected config file: {exc.__class__.__name__}"
+        ) from exc
+    except BaseException:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise
+    try:
+        os.close(descriptor)
+    except OSError as exc:
+        raise ConfigFileError(
+            f"cannot finish selected config file: {exc.__class__.__name__}"
+        ) from exc
+    return destination
 
 
 def _toml_literal(value: object) -> str:
@@ -501,9 +690,7 @@ def _select_schema_branch(
         if isinstance(property_name, str) and isinstance(mapping, Mapping):
             discriminator_value = value.get(property_name)
             selected_ref = (
-                mapping.get(discriminator_value)
-                if isinstance(discriminator_value, str)
-                else None
+                mapping.get(discriminator_value) if isinstance(discriminator_value, str) else None
             )
             if isinstance(selected_ref, str):
                 return _resolve_schema_reference(

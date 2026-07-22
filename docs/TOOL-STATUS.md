@@ -28,6 +28,12 @@ Note:
   channel client families. Installation alone does not enable a channel,
   authenticate a remote service, or turn a configuration-gated row into
   `WORKS`; the snapshot remains environment-specific.
+- The v0.8.1 config/help/UI commands do not add or enable assistant tools, so
+  they do not change the generated rows below. `shisad init`, config/env
+  inspection, built-in theme/accessibility controls, and the local static
+  `web-ui` export are operator CLI surfaces. `doctor` remains read-only, custom
+  theme-file selection remains unsupported, and the static export is not a
+  live operator web application.
 - The local Linux/amd64 container candidate includes `bwrap`, `pasta`,
   `iptables`, and `nsenter`, but the Docker host decides whether nested
   namespaces are usable. Before daemon startup, the non-root entrypoint probes

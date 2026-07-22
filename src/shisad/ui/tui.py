@@ -14,6 +14,7 @@ from typing import Any
 from shisad.core.api.transport import ControlClient
 from shisad.core.plan_steps import normalize_plan_step_status
 from shisad.ui.confirmation import approval_proof_placeholder, render_pending_action
+from shisad.ui.theme import UiPosture, resolve_ui_posture, rich_style_map
 
 logger = logging.getLogger(__name__)
 
@@ -728,18 +729,18 @@ def _summary_counts_line(snapshot: TuiSnapshot) -> str:
 def _lockdown_style(level: object) -> str:
     normalized = str(level or "").strip().lower()
     if normalized in {"", "normal"}:
-        return "green"
+        return "shisa.success"
     if normalized in {"caution", "warning"}:
-        return "yellow"
-    return "red"
+        return "shisa.warning"
+    return "shisa.danger"
 
 
 def _pending_status_style(status: object) -> str:
     normalized = str(status or "").strip().lower()
     if normalized == "pending":
-        return "yellow"
+        return "shisa.warning"
     if normalized in {"approved", "executed"}:
-        return "green"
+        return "shisa.success"
     if normalized in {
         "rejected",
         "expired",
@@ -749,63 +750,70 @@ def _pending_status_style(status: object) -> str:
         "outcome_unknown",
         "error",
     }:
-        return "red"
-    return "dim"
+        return "shisa.danger"
+    return "shisa.muted"
 
 
 def _plan_step_status_style(status: object) -> str:
     normalized = str(status or "").strip().lower()
     if normalized == "done":
-        return "green"
+        return "shisa.success"
     if normalized in {"in_progress", "blocked"}:
-        return "yellow"
+        return "shisa.warning"
     if normalized == "failed":
-        return "red"
-    return "dim"
+        return "shisa.danger"
+    return "shisa.muted"
 
 
 def _enabled_style(value: object) -> str:
-    return "green" if bool(value) else "dim"
+    return "shisa.success" if bool(value) else "shisa.muted"
 
 
 def _channel_style(row: Mapping[str, Any]) -> str:
     status = _channel_status(row)
     if status == "ok":
-        return "green"
+        return "shisa.success"
     if status == "degraded":
-        return "yellow"
+        return "shisa.warning"
     if status == "misconfigured":
-        return "red"
+        return "shisa.danger"
     if status == "disabled":
-        return "dim"
+        return "shisa.muted"
     if bool(row.get("enabled", False)) and not bool(row.get("available", False)):
-        return "red"
+        return "shisa.danger"
     if bool(row.get("enabled", False)) and not bool(row.get("connected", False)):
-        return "yellow"
+        return "shisa.warning"
     if bool(row.get("connected", False)):
-        return "green"
-    return "dim"
+        return "shisa.success"
+    return "shisa.muted"
 
 
 def _alert_style(row: Mapping[str, Any]) -> str:
     if _alert_acknowledged(row):
-        return "dim"
-    return "red" if str(row.get("event_type", "")).strip() else "dim"
+        return "shisa.muted"
+    return "shisa.danger" if str(row.get("event_type", "")).strip() else "shisa.muted"
 
 
-def render_rich(snapshot: TuiSnapshot) -> str:
+def render_rich(snapshot: TuiSnapshot, *, ui_posture: UiPosture | None = None) -> str:
     """Render snapshot with rich panels when available."""
     try:
         rich_console = importlib.import_module("rich.console")
         rich_panel = importlib.import_module("rich.panel")
         rich_table = importlib.import_module("rich.table")
+        rich_theme = importlib.import_module("rich.theme")
     except ImportError:
         return render_plain(snapshot)
     Console = rich_console.Console
     Panel = rich_panel.Panel
     Table = rich_table.Table
+    Theme = rich_theme.Theme
 
-    console = Console(record=True)
+    posture = ui_posture or resolve_ui_posture()
+    console = Console(
+        record=True,
+        theme=Theme(rich_style_map(posture.palette, color=posture.color_enabled)),
+        no_color=not posture.color_enabled,
+    )
     channel_rows = _configured_channel_rows(snapshot)
     active_alerts = _active_alert_rows(snapshot)
     acknowledged_alerts = _acknowledged_alert_rows(snapshot)
@@ -970,16 +978,26 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     return str(console.export_text())
 
 
-async def run_once(socket_path: Path, *, rich_output: bool = True) -> str:
+async def run_once(
+    socket_path: Path,
+    *,
+    rich_output: bool = True,
+    ui_posture: UiPosture | None = None,
+) -> str:
     """Return one snapshot render suitable for CLI output."""
     snapshot = await fetch_snapshot(socket_path)
     if rich_output:
-        return render_rich(snapshot)
+        return render_rich(snapshot, ui_posture=ui_posture)
     return render_plain(snapshot)
 
 
-async def run_interactive(socket_path: Path) -> None:
+async def run_interactive(
+    socket_path: Path,
+    *,
+    ui_posture: UiPosture | None = None,
+) -> None:
     """Very small interactive loop for session/confirmation/audit inspection."""
+    _ = ui_posture
     while True:
         snapshot = await fetch_snapshot(socket_path)
         print(render_plain(snapshot))

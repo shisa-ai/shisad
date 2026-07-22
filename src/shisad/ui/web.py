@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import html
 import json
 from pathlib import Path
 from typing import Any
 
 from shisad.core.api.transport import ControlClient
-from shisad.ui.theme import ThemePalette, get_builtin_theme, web_css_variables
+from shisad.ui.theme import ThemePalette, UiPosture, resolve_ui_posture, web_css_variables
 
 
 async def fetch_web_snapshot(socket_path: Path) -> dict[str, Any]:
@@ -30,10 +29,32 @@ async def fetch_web_snapshot(socket_path: Path) -> dict[str, Any]:
     }
 
 
-def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None = None) -> str:
+def _json_script_payload(snapshot: dict[str, Any]) -> str:
+    return (
+        json.dumps(snapshot, indent=2, sort_keys=True, ensure_ascii=True)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+
+
+def render_web_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    ui_posture: UiPosture | None = None,
+    theme: ThemePalette | None = None,
+) -> str:
     """Render static HTML using snapshot data from control API."""
-    payload = html.escape(json.dumps(snapshot, indent=2, sort_keys=True))
-    css_variables = web_css_variables(theme or get_builtin_theme())
+    posture = ui_posture or resolve_ui_posture()
+    if theme is not None:
+        posture = UiPosture(
+            palette=theme,
+            capabilities=posture.capabilities,
+            color_enabled=posture.color_enabled,
+        )
+    payload = _json_script_payload(snapshot)
+    css_variables = web_css_variables(posture.palette, color=posture.color_enabled)
+    reduce_motion = str(posture.capabilities.reduce_motion).lower()
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -68,7 +89,7 @@ def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None 
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 12px;
-      box-shadow: 0 6px 20px rgb(12 47 69 / 8%);
+      box-shadow: var(--shadow);
     }}
     section h2 {{
       margin: 0 0 6px;
@@ -92,7 +113,7 @@ def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None 
     }}
   </style>
 </head>
-<body>
+<body data-reduce-motion="{reduce_motion}">
   <header>
     <h1>shisad API-first dashboard snapshot</h1>
   </header>
@@ -105,8 +126,9 @@ def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None 
   <div class="note">
     Static snapshot for investigation/export. Live actions still run through control API.
   </div>
+  <script type="application/json" id="snapshot-data">{payload}</script>
   <script>
-    const snapshot = JSON.parse(`{payload}`);
+    const snapshot = JSON.parse(document.getElementById("snapshot-data").textContent);
     document.getElementById("sessions").textContent =
       JSON.stringify(snapshot.sessions, null, 2);
     document.getElementById("pending").textContent =
@@ -121,10 +143,15 @@ def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None 
 """
 
 
-async def write_web_snapshot(*, socket_path: Path, output_path: Path) -> Path:
+async def write_web_snapshot(
+    *,
+    socket_path: Path,
+    output_path: Path,
+    ui_posture: UiPosture | None = None,
+) -> Path:
     """Fetch current API data and write a static dashboard HTML snapshot."""
     snapshot = await fetch_web_snapshot(socket_path)
-    html_payload = render_web_snapshot(snapshot)
+    html_payload = render_web_snapshot(snapshot, ui_posture=ui_posture)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html_payload, encoding="utf-8")
     return output_path

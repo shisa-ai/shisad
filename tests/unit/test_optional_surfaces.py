@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.ui import theme as theme_module
 from shisad.ui.tui import TuiSnapshot, render_plain
 from shisad.ui.web import render_web_snapshot
 
@@ -108,9 +109,28 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
 def test_f1_tui_pending_status_style_uses_canonical_lifecycle() -> None:
     from shisad.ui import tui as tui_module
 
-    assert tui_module._pending_status_style("executed") == "green"
-    assert tui_module._pending_status_style("superseded") == "red"
-    assert tui_module._pending_status_style("outcome_unknown") == "red"
+    assert tui_module._pending_status_style("executed") == "shisa.success"
+    assert tui_module._pending_status_style("superseded") == "shisa.danger"
+    assert tui_module._pending_status_style("outcome_unknown") == "shisa.danger"
+
+
+def test_f6_tui_rich_no_color_keeps_semantic_styles_renderable() -> None:
+    from shisad.ui import tui as tui_module
+
+    posture = theme_module.resolve_ui_posture(
+        no_color=True,
+        environ={"TERM": "xterm-256color", "LANG": "C.UTF-8"},
+        isatty=True,
+    )
+    snapshot = TuiSnapshot(
+        sessions=[{"id": "s1", "user_id": "u1", "lockdown_level": "normal"}],
+    )
+
+    rendered = tui_module.render_rich(snapshot, ui_posture=posture)
+
+    assert "s1" in rendered
+    assert "u1" in rendered
+    assert "\x1b[" not in rendered
 
 
 def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> None:
@@ -455,6 +475,33 @@ def test_web_snapshot_renderer_includes_key_sections() -> None:
     assert "API-first dashboard snapshot" in html
     assert "Pending confirmations" in html
     assert "Egress events" in html
+
+
+def test_f6_web_snapshot_uses_inert_json_node_and_escapes_script_termination() -> None:
+    hostile = '</script><script>document.body.dataset.pwned="yes"</script>&'
+    posture = theme_module.resolve_ui_posture(
+        theme_name="shisa-light",
+        reduce_motion=True,
+        environ={"TERM": "dumb"},
+        isatty=False,
+    )
+
+    rendered = render_web_snapshot(
+        {
+            "sessions": [{"id": hostile}],
+            "pending_actions": [],
+            "alerts": [],
+            "egress_events": [],
+        },
+        ui_posture=posture,
+    )
+
+    assert '<script type="application/json" id="snapshot-data">' in rendered
+    assert 'JSON.parse(document.getElementById("snapshot-data").textContent)' in rendered
+    assert hostile not in rendered
+    assert "\\u003c/script\\u003e" in rendered
+    assert 'data-reduce-motion="true"' in rendered
+    assert posture.palette.semantic["background"] in rendered
 
 
 @pytest.mark.asyncio
@@ -860,8 +907,16 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     created_consoles: list[object] = []
 
     class _FakeConsole:
-        def __init__(self, *, record: bool = False) -> None:
+        def __init__(
+            self,
+            *,
+            record: bool = False,
+            theme: object | None = None,
+            no_color: bool = False,
+        ) -> None:
             self.record = record
+            self.theme = theme
+            self.no_color = no_color
             self.panels: list[object] = []
             created_consoles.append(self)
 
@@ -889,10 +944,15 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
             self.rows.append(tuple(row))
             self.styles.append(str(kwargs.get("style", "")))
 
+    class _FakeTheme:
+        def __init__(self, styles: dict[str, str]) -> None:
+            self.styles = styles
+
     modules = {
         "rich.console": SimpleNamespace(Console=_FakeConsole),
         "rich.panel": SimpleNamespace(Panel=_FakePanel),
         "rich.table": SimpleNamespace(Table=_FakeTable),
+        "rich.theme": SimpleNamespace(Theme=_FakeTheme),
     }
 
     monkeypatch.setattr(tui_module.importlib, "import_module", lambda name: modules[name])
@@ -981,9 +1041,13 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
             }
         ],
     )
-    rendered = tui_module.render_rich(snapshot)
+    rendered = tui_module.render_rich(
+        snapshot,
+        ui_posture=theme_module.resolve_ui_posture(environ={}),
+    )
     assert rendered == "rich-output"
     assert len(created_consoles) == 1
+    assert created_consoles[0].theme.styles["shisa.success"]  # type: ignore[union-attr]
     panel_tables = [panel[1] for panel in created_consoles[0].panels if isinstance(panel, tuple)]
     assert any(getattr(table, "title", "") == "Audit Events" for table in panel_tables)
     sessions_table = next(
@@ -1020,12 +1084,12 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert "step-1 1 Current request blocked yes pending_confirmation" in plan_text
     assert "2026-06-29T12:01:00+00:00" in task_text
     assert "confirmation=c1 proof=T0_identity method=totp route=host_cli" in task_text
-    assert sessions_table.styles == ["green"]
-    assert pending_table.styles == ["yellow"]
-    assert plan_table.styles == ["yellow"]
-    assert tasks_table.styles == ["green"]
-    assert channels_table.styles == ["green", "yellow", "red"]
-    assert alerts_table.styles == ["red", "dim"]
+    assert sessions_table.styles == ["shisa.success"]
+    assert pending_table.styles == ["shisa.warning"]
+    assert plan_table.styles == ["shisa.warning"]
+    assert tasks_table.styles == ["shisa.success"]
+    assert channels_table.styles == ["shisa.success", "shisa.warning", "shisa.danger"]
+    assert alerts_table.styles == ["shisa.danger", "shisa.muted"]
 
 
 @pytest.mark.asyncio
@@ -1142,7 +1206,7 @@ async def test_tui_run_once_respects_rich_output_toggle(monkeypatch: pytest.Monk
         return TuiSnapshot()
 
     monkeypatch.setattr(tui_module, "fetch_snapshot", _fake_fetch_snapshot)
-    monkeypatch.setattr(tui_module, "render_rich", lambda snapshot: "RICH")
+    monkeypatch.setattr(tui_module, "render_rich", lambda snapshot, **_kwargs: "RICH")
     monkeypatch.setattr(tui_module, "render_plain", lambda snapshot: "PLAIN")
     assert await tui_module.run_once(Path("/tmp/control.sock"), rich_output=True) == "RICH"
     assert await tui_module.run_once(Path("/tmp/control.sock"), rich_output=False) == "PLAIN"

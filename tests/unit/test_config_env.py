@@ -34,17 +34,21 @@ def test_gh33_web_and_browser_allowed_domains_still_accept_json_arrays(
     assert config.browser_allowed_domains == ["browser.example.com"]
 
 
-def test_u41_removed_ui_theme_env_surface_is_not_advertised(
+def test_f6_builtin_ui_theme_and_motion_env_are_live_but_custom_path_is_hidden(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     theme_path = tmp_path / "theme.theme"
     monkeypatch.setenv("SHISAD_UI_THEME", "shisa-light")
+    monkeypatch.setenv("SHISAD_REDUCE_MOTION", "true")
     monkeypatch.setenv("SHISAD_UI_THEME_PATH", str(theme_path))
 
     config = DaemonConfig(data_dir=tmp_path / "data")
 
-    assert "ui_theme" not in config.__class__.model_fields
+    assert config.ui_theme == "shisa-light"
+    assert config.reduce_motion is True
+    assert "ui_theme" in config.__class__.model_fields
+    assert "reduce_motion" in config.__class__.model_fields
     assert "ui_theme_path" not in config.__class__.model_fields
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
-import click
 import pytest
 
 from shisad.cli import rpc
@@ -119,10 +118,15 @@ def test_rpc_call_reports_connection_failures_with_socket_path(
     monkeypatch.setattr(rpc, "ControlClient", _FailingClient)
     config = _config(tmp_path)
 
-    with pytest.raises(click.ClickException, match="Unable to connect to daemon") as exc:
+    with pytest.raises(
+        rpc.DaemonCliError,
+        match="What failed: Could not connect to the shisad daemon",
+    ) as exc:
         rpc.rpc_call(config, "daemon.status", response_model=SessionCreateResult)
 
     assert str(config.socket_path) in str(exc.value)
+    assert exc.value.exit_code == 2
+    assert "Next action: shisad start --foreground" in str(exc.value)
 
 
 def test_rpc_run_wraps_operation_errors(
@@ -145,5 +149,7 @@ def test_rpc_run_wraps_operation_errors(
     monkeypatch.setattr(rpc, "ControlClient", _FakeClient)
     config = _config(tmp_path)
 
-    with pytest.raises(click.ClickException, match=r"events\.subscribe failed: boom"):
+    with pytest.raises(rpc.DaemonCliError, match=r"What failed: events\.subscribe failed\.") as exc:
         rpc.rpc_run(config, _operation, action="events.subscribe")
+
+    assert "Technical details: RuntimeError: boom" in str(exc.value)

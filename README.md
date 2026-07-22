@@ -136,6 +136,43 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
+The v0.8.1 development CLI can create and inspect the typed operator TOML
+surface without starting the daemon:
+
+```bash
+shisad init
+shisad config validate
+shisad config show --format human
+shisad config diff --format human
+shisad config schema --format json
+shisad env --format human
+```
+
+`shisad init` creates one owner-only commented template at
+`$XDG_CONFIG_HOME/shisad/config.toml` (normally
+`~/.config/shisad/config.toml`) and refuses an existing or symlink destination.
+It is deliberately not a setup wizard: it does not copy ambient secrets,
+configure a provider or policy, create daemon state, or start the daemon. Use
+root `--config FILE` to select another path. Effective precedence remains
+command-line override, environment, TOML, then typed default; show, diff, env,
+and validation output redact secret-bearing fields.
+
+Chat, the one-shot terminal dashboard, and the static web snapshot share the
+three built-in palettes `shisa-dark`, `shisa-light`, and
+`shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional
+motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
+`NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
+selection is not a supported configuration surface. `shisad web-ui` writes a
+local static investigation/export artifact; it is not the planned live
+operator web application.
+
+Expected CLI failures use exit status 1 for command/user-state errors, 2 for
+daemon-connect/RPC errors (and Click usage compatibility), and 3 for invalid or
+unsafe configuration; success is 0. `doctor` remains read-only and has no
+automatic `--fix` mode. Root help advertises the canonical `reality-check`
+spelling while the legacy `realitycheck` spelling remains a hidden
+compatibility alias.
+
 **Recommended: use the runner harness** for local development. It handles env isolation, secret loading, and policy bootstrapping:
 
 ```bash

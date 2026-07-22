@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from shisad.ui import theme as theme_module
 from shisad.ui.theme import (
     BASE16_SLOTS,
     SEMANTIC_ALIASES,
@@ -113,7 +114,9 @@ def test_u1_theme_bridge_outputs_and_no_color_suppression() -> None:
     rich_styles = rich_style_map(palette)
     assert rich_styles["shisa.accent"] == f"bold {palette.semantic['accent']}"
     assert rich_styles["shisa.warning"] == palette.semantic["warning"]
-    assert rich_style_map(palette, color=False) == {}
+    no_color_styles = rich_style_map(palette, color=False)
+    assert set(no_color_styles) == set(rich_styles)
+    assert not any(no_color_styles.values())
 
     textual_css = textual_theme_css(palette)
     assert "Screen" in textual_css
@@ -125,8 +128,11 @@ def test_u1_theme_bridge_outputs_and_no_color_suppression() -> None:
     assert f"--accent: {palette.semantic['accent']};" in web_css
 
 
-def test_u1_web_snapshot_uses_theme_css_variables() -> None:
+def test_u1_web_snapshot_uses_theme_css_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     palette = get_builtin_theme("shisa-high-contrast")
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
     rendered = render_web_snapshot(
         {
@@ -140,3 +146,48 @@ def test_u1_web_snapshot_uses_theme_css_variables() -> None:
 
     assert f"--bg: {palette.semantic['background']};" in rendered
     assert f"--panel: {palette.semantic['panel']};" in rendered
+
+    monkeypatch.setenv("NO_COLOR", "")
+    no_color_rendered = render_web_snapshot(
+        {
+            "sessions": [],
+            "pending_actions": [],
+            "alerts": [],
+            "egress_events": [],
+        },
+        theme=palette,
+    )
+    assert "--bg: Canvas;" in no_color_rendered
+    assert "--shadow: none;" in no_color_rendered
+    assert palette.semantic["background"] not in no_color_rendered
+
+
+def test_f6_ui_posture_resolves_theme_no_color_and_reduce_motion_precedence() -> None:
+    posture = theme_module.resolve_ui_posture(
+        theme_name="shisa-high-contrast",
+        reduce_motion=True,
+        no_color=True,
+        environ={
+            "TERM": "xterm-256color",
+            "COLORTERM": "truecolor",
+            "LANG": "C.UTF-8",
+        },
+        isatty=True,
+    )
+
+    assert posture.palette.name == "shisa-high-contrast"
+    assert posture.color_enabled is False
+    assert posture.capabilities.no_color is True
+    assert posture.capabilities.reduce_motion is True
+    assert posture.capabilities.animation_enabled is False
+
+
+def test_f6_environment_no_color_overrides_selected_light_palette() -> None:
+    posture = theme_module.resolve_ui_posture(
+        theme_name="shisa-light",
+        environ={"NO_COLOR": "", "TERM": "xterm-256color", "LANG": "C.UTF-8"},
+        isatty=True,
+    )
+
+    assert posture.palette.name == "shisa-light"
+    assert posture.color_enabled is False

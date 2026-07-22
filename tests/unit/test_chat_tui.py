@@ -12,6 +12,7 @@ from textual.widgets import Markdown, Static, TextArea
 
 from shisad import __version__
 from shisad.core.api.transport import JsonRpcCallError
+from shisad.ui import theme as theme_module
 from shisad.ui.chat import ChatApp, format_assistant_message, format_user_message
 
 
@@ -50,6 +51,21 @@ def test_format_user_message_strips_whitespace() -> None:
 def test_format_assistant_message_handles_empty() -> None:
     result = format_assistant_message("")
     assert isinstance(result, str)
+
+
+def test_f6_chat_app_uses_runtime_theme_and_motion_posture() -> None:
+    posture = theme_module.resolve_ui_posture(
+        theme_name="shisa-light",
+        reduce_motion=True,
+        environ={"TERM": "xterm-256color", "LANG": "C.UTF-8"},
+        isatty=True,
+    )
+
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), ui_posture=posture)
+
+    assert app.ui_posture is posture
+    assert posture.palette.semantic["background"] in app.CSS
+    assert app._terminal_capabilities.reduce_motion is True
 
 
 def test_format_assistant_message_renders_literal_newline_escapes() -> None:

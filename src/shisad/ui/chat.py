@@ -25,8 +25,14 @@ from textual.widgets import Footer, Header, Markdown, Static, TextArea
 from shisad import __version__
 from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal
-from shisad.ui.motion import TerminalCapabilities, format_key_hints
-from shisad.ui.theme import get_builtin_theme, textual_theme_css
+from shisad.ui.motion import format_key_hints
+from shisad.ui.theme import (
+    ThemePalette,
+    UiPosture,
+    get_builtin_theme,
+    resolve_ui_posture,
+    textual_theme_css,
+)
 
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
 _INLINE_LIST_BULLET_CONT_RE = re.compile(r"(?<!\d)\s+(?P<marker>[-*+])\s+(?=\S)")
@@ -278,6 +284,76 @@ def _is_session_id_validation_error(lowered_message: str) -> bool:
     )
 
 
+def _chat_css(theme: ThemePalette, *, color: bool = True) -> str:
+    """Build Textual CSS at app construction so config is not frozen at import."""
+
+    semantic = theme.semantic
+    status_colors = (
+        f"background: {semantic['panel']};\n        color: {semantic['muted']};" if color else ""
+    )
+    muted_color = f"color: {semantic['muted']};" if color else ""
+    accent_color = f"color: {semantic['accent']};" if color else ""
+    success_color = f"color: {semantic['success']};" if color else ""
+    info_color = f"color: {semantic['info']};" if color else ""
+    border = semantic["border"] if color else "$foreground"
+    focus = semantic["focus"] if color else "$foreground"
+    return (
+        textual_theme_css(theme, color=color)
+        + f"""
+    Screen {{
+        layout: vertical;
+    }}
+    #chat-status {{
+        height: 1;
+        padding: 0 1;
+        {status_colors}
+    }}
+    #chat-log {{
+        height: 1fr;
+        border: round {border};
+        padding: 0 1;
+    }}
+    .chat-turn {{
+        height: auto;
+        margin: 0 0 1 0;
+    }}
+    .turn-meta {{
+        {muted_color}
+        text-style: bold;
+        height: 1;
+    }}
+    .user-meta {{
+        {accent_color}
+    }}
+    .assistant-meta {{
+        {success_color}
+    }}
+    .status-meta {{
+        {muted_color}
+    }}
+    .assistant-message {{
+        height: auto;
+    }}
+    .evidence-message {{
+        {info_color}
+    }}
+    #chat-input {{
+        height: 3;
+        max-height: 8;
+        margin: 0 0;
+        border: round {border};
+        padding: 0 1;
+    }}
+    #chat-log:focus {{
+        border: heavy {focus};
+    }}
+    #chat-input:focus {{
+        border: heavy {focus};
+    }}
+    """
+    )
+
+
 class ChatApp(App[None]):
     """Interactive chat with the shisad daemon."""
 
@@ -289,62 +365,7 @@ class ChatApp(App[None]):
     TRANSCRIPT_REPLAY_LIMIT = 50
     THEME = get_builtin_theme()
 
-    CSS = (
-        textual_theme_css(THEME)
-        + f"""
-    Screen {{
-        layout: vertical;
-    }}
-    #chat-status {{
-        height: 1;
-        padding: 0 1;
-        background: {THEME.semantic["panel"]};
-        color: {THEME.semantic["muted"]};
-    }}
-    #chat-log {{
-        height: 1fr;
-        border: round {THEME.semantic["border"]};
-        padding: 0 1;
-    }}
-    .chat-turn {{
-        height: auto;
-        margin: 0 0 1 0;
-    }}
-    .turn-meta {{
-        color: {THEME.semantic["muted"]};
-        text-style: bold;
-        height: 1;
-    }}
-    .user-meta {{
-        color: {THEME.semantic["accent"]};
-    }}
-    .assistant-meta {{
-        color: {THEME.semantic["success"]};
-    }}
-    .status-meta {{
-        color: {THEME.semantic["muted"]};
-    }}
-    .assistant-message {{
-        height: auto;
-    }}
-    .evidence-message {{
-        color: {THEME.semantic["info"]};
-    }}
-    #chat-input {{
-        height: 3;
-        max-height: 8;
-        margin: 0 0;
-        border: round {THEME.semantic["border"]};
-        padding: 0 1;
-    }}
-    #chat-log:focus {{
-        border: heavy {THEME.semantic["focus"]};
-    }}
-    #chat-input:focus {{
-        border: heavy {THEME.semantic["focus"]};
-    }}
-    """
-    )
+    CSS = _chat_css(THEME)
 
     BINDINGS = [  # noqa: RUF012
         Binding("ctrl+c", "quit", "Quit", show=True),
@@ -364,7 +385,15 @@ class ChatApp(App[None]):
         workspace_id: str = "default",
         session_id: str | None = None,
         reuse_bound_session: bool = True,
+        ui_posture: UiPosture | None = None,
     ) -> None:
+        self.ui_posture = ui_posture or resolve_ui_posture()
+        self.THEME = self.ui_posture.palette
+        object.__setattr__(
+            self,
+            "CSS",
+            _chat_css(self.THEME, color=self.ui_posture.color_enabled),
+        )
         super().__init__()
         self._socket_path = socket_path
         self._transcript_root = None if data_dir is None else data_dir / "sessions"
@@ -381,7 +410,7 @@ class ChatApp(App[None]):
         self._connection_state = "disconnected"
         self._channel = "cli"
         self._lockdown_level = "normal"
-        self._terminal_capabilities = TerminalCapabilities.from_env()
+        self._terminal_capabilities = self.ui_posture.capabilities
 
     def compose(self) -> ComposeResult:
         yield Header()

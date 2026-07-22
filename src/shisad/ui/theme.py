@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
+
+from shisad.ui.motion import TerminalCapabilities
 
 BASE16_SLOTS: tuple[str, ...] = tuple(f"base{index:02X}" for index in range(16))
 SEMANTIC_ALIASES: tuple[str, ...] = (
@@ -55,6 +57,41 @@ class ThemePalette:
         if normalized in self.semantic:
             return self.semantic[normalized]
         return self.base16[normalized]
+
+
+@dataclass(frozen=True, slots=True)
+class UiPosture:
+    """Resolved palette and terminal accessibility controls for live renderers."""
+
+    palette: ThemePalette
+    capabilities: TerminalCapabilities
+    color_enabled: bool
+
+
+def resolve_ui_posture(
+    *,
+    theme_name: str = "shisa-dark",
+    reduce_motion: bool = False,
+    no_color: bool = False,
+    environ: Mapping[str, str] | None = None,
+    isatty: bool | None = None,
+) -> UiPosture:
+    """Resolve typed config, standard environment, and CLI accessibility posture."""
+
+    capabilities = TerminalCapabilities.from_env(environ, isatty=isatty)
+    effective_no_color = bool(no_color or capabilities.no_color)
+    effective_reduce_motion = bool(reduce_motion or capabilities.reduce_motion)
+    capabilities = replace(
+        capabilities,
+        color_mode="none" if effective_no_color else capabilities.color_mode,
+        no_color=effective_no_color,
+        reduce_motion=effective_reduce_motion,
+    )
+    return UiPosture(
+        palette=get_builtin_theme(theme_name),
+        capabilities=capabilities,
+        color_enabled=not effective_no_color,
+    )
 
 
 def _normalize_name(value: object) -> str:
@@ -339,9 +376,7 @@ def parse_btop_theme(text: str, *, name: str = "btop") -> ThemePalette:
 
 def rich_style_map(palette: ThemePalette, *, color: bool = True) -> dict[str, str]:
     """Return Rich style names for theme-aware renderers."""
-    if not color:
-        return {}
-    return {
+    styles = {
         "shisa.text": palette.semantic["text"],
         "shisa.muted": palette.semantic["muted"],
         "shisa.accent": f"bold {palette.semantic['accent']}",
@@ -352,6 +387,9 @@ def rich_style_map(palette: ThemePalette, *, color: bool = True) -> dict[str, st
         "shisa.border": palette.semantic["border"],
         "shisa.focus": f"bold {palette.semantic['focus']}",
     }
+    if not color:
+        return {name: "" for name in styles}
+    return styles
 
 
 def textual_theme_css(palette: ThemePalette, *, color: bool = True) -> str:
@@ -380,8 +418,28 @@ Screen {{
 """.strip()
 
 
-def web_css_variables(palette: ThemePalette) -> str:
+def web_css_variables(palette: ThemePalette, *, color: bool = True) -> str:
     """Return CSS custom properties for static web dashboard rendering."""
+
+    if not color:
+        return "\n".join(
+            [
+                ":root {",
+                "  --bg: Canvas;",
+                "  --panel: Canvas;",
+                "  --surface: Canvas;",
+                "  --ink: CanvasText;",
+                "  --muted: CanvasText;",
+                "  --accent: CanvasText;",
+                "  --success: CanvasText;",
+                "  --warn: CanvasText;",
+                "  --danger: CanvasText;",
+                "  --info: CanvasText;",
+                "  --border: CanvasText;",
+                "  --shadow: none;",
+                "}",
+            ]
+        )
     return "\n".join(
         [
             ":root {",
@@ -396,6 +454,7 @@ def web_css_variables(palette: ThemePalette) -> str:
             f"  --danger: {palette.semantic['danger']};",
             f"  --info: {palette.semantic['info']};",
             f"  --border: {palette.semantic['border']};",
+            "  --shadow: 0 6px 20px rgb(12 47 69 / 8%);",
             "}",
         ]
     )

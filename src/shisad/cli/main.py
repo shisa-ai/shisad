@@ -11,11 +11,11 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 import click
@@ -24,7 +24,7 @@ import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
-from shisad.cli.rpc import rpc_call, rpc_run, run_async
+from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
@@ -112,6 +112,10 @@ from shisad.core.config import DaemonConfig
 from shisad.core.config_file import (
     ConfigFileError,
     LoadedConfig,
+    config_diff_projection,
+    config_schema_projection,
+    environment_projection,
+    initialize_config_file,
     load_effective_config,
     render_config_template,
 )
@@ -121,11 +125,13 @@ from shisad.interop.a2a_envelope import (
     load_public_key_from_path,
     write_ed25519_keypair,
 )
+from shisad.security.firewall.secrets import redact_ingress_secrets
 from shisad.ui.evidence import (
     render_evidence_refs_for_terminal,
     sanitize_terminal_field,
     sanitize_terminal_text,
 )
+from shisad.ui.theme import UiPosture, resolve_ui_posture
 
 _MEMORY_WRITE_ENTRY_TYPES = (
     "persona_fact",
@@ -318,11 +324,23 @@ def _get_loaded_config() -> LoadedConfig:
     try:
         return load_effective_config(configured_path)
     except ConfigFileError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            next_action="review the selected TOML or run: shisad config template",
+        ) from exc
 
 
 def _get_config() -> DaemonConfig:
     return _get_loaded_config().daemon
+
+
+def _get_ui_posture(config: DaemonConfig) -> UiPosture:
+    return resolve_ui_posture(
+        theme_name=config.ui_theme,
+        reduce_motion=config.reduce_motion,
+        no_color=not _colors_enabled(),
+    )
 
 
 def _last_session_path() -> Path:
@@ -527,7 +545,149 @@ def _progress(label: str) -> Any:
         _echo(f"{label} done ({elapsed:.2f}s)", fg="green")
 
 
-@click.group()
+class ConfigCliError(click.ClickException):
+    """Invalid or unsafe user configuration."""
+
+    exit_code = 3
+
+
+def _config_cli_error(
+    *,
+    what_failed: str,
+    exc: ConfigFileError,
+    next_action: str,
+) -> ConfigCliError:
+    sanitized = sanitize_terminal_field(str(exc)[:4096])
+    redacted, _findings = redact_ingress_secrets(sanitized)
+    detail = redacted[:240] or exc.__class__.__name__
+    return ConfigCliError(
+        "\n".join(
+            [
+                f"What failed: {what_failed}",
+                "What still works: help, config template, config schema, and version commands.",
+                "Likely cause: the selected config is missing, invalid, unsafe, or unsupported.",
+                f"Next action: {next_action}",
+                f"Technical details: {exc.__class__.__name__}: {detail}",
+            ]
+        )
+    )
+
+
+class TaskGroupedGroup(click.Group):
+    """Click group with canonical aliases and task-oriented root help."""
+
+    group_class = type
+
+    _ALIASES: ClassVar[dict[str, str]] = {"realitycheck": "reality-check"}
+    _ROOT_SECTIONS = (
+        (
+            "Get started",
+            ("init", "start", "status", "chat", "tui", "web-ui", "doctor", "stop", "restart"),
+        ),
+        (
+            "Work with shisad",
+            (
+                "session",
+                "task",
+                "note",
+                "todo",
+                "memory",
+                "thread",
+                "web",
+                "reality-check",
+                "fs",
+                "git",
+                "skill",
+            ),
+        ),
+        (
+            "Review and security",
+            (
+                "action",
+                "approval",
+                "2fa",
+                "signer",
+                "confirmation",
+                "lockdown",
+                "audit",
+                "events",
+                "dashboard",
+                "policy",
+                "channel",
+                "a2a",
+            ),
+        ),
+        (
+            "Administration",
+            ("config", "env", "completion", "admin", "dev"),
+        ),
+    )
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        canonical = self._ALIASES.get(cmd_name, cmd_name)
+        return super().get_command(ctx, canonical)
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        if "start" not in self.commands:
+            super().format_commands(ctx, formatter)
+            return
+        visible = {name: command for name, command in self.commands.items() if not command.hidden}
+        emitted: set[str] = set()
+        for heading, names in self._ROOT_SECTIONS:
+            rows = []
+            for name in names:
+                command = visible.get(name)
+                if command is None:
+                    continue
+                emitted.add(name)
+                rows.append((name, command.get_short_help_str(limit=formatter.width - 6)))
+            if rows:
+                with formatter.section(heading):
+                    formatter.write_dl(rows)
+        remaining = sorted(set(visible) - emitted)
+        if remaining:
+            with formatter.section("Other commands"):
+                formatter.write_dl(
+                    [
+                        (name, visible[name].get_short_help_str(limit=formatter.width - 6))
+                        for name in remaining
+                    ]
+                )
+
+
+def _emit_structured_output(
+    payload: Mapping[str, object],
+    *,
+    output_format: str,
+    human_lines: list[str],
+) -> None:
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo("\n".join(human_lines))
+
+
+def _projection_lines(projection: Mapping[str, object]) -> list[str]:
+    lines: list[str] = []
+    for section, raw_fields in sorted(projection.items()):
+        if not isinstance(raw_fields, dict):
+            continue
+        for field, raw_row in sorted(raw_fields.items()):
+            if not isinstance(raw_row, dict):
+                continue
+            value = json.dumps(raw_row.get("value"), sort_keys=True)
+            lines.append(f"{section}.{field} = {value} [{raw_row.get('source', 'unknown')}]")
+    return lines or ["No values to display."]
+
+
+@click.group(
+    cls=TaskGroupedGroup,
+    epilog=(
+        "Fresh setup: shisad init\n"
+        "Daemon stopped: shisad start --foreground\n"
+        "Configured system: shisad status && shisad chat"
+    ),
+)
 @click.option("--no-color", is_flag=True, help="Disable colored output.")
 @click.option(
     "--config",
@@ -558,10 +718,147 @@ def config_template() -> None:
 
 
 @config_group.command("show")
-def config_show() -> None:
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="json",
+    show_default=True,
+)
+def config_show(output_format: str) -> None:
     """Print effective values and sources with secrets redacted."""
 
-    click.echo(json.dumps(_get_loaded_config().redacted_projection(), indent=2, sort_keys=True))
+    projection = _get_loaded_config().redacted_projection()
+    _emit_structured_output(
+        projection,
+        output_format=output_format,
+        human_lines=_projection_lines(projection),
+    )
+
+
+@config_group.command("validate")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+def config_validate(output_format: str) -> None:
+    """Validate the selected effective configuration without starting the daemon."""
+
+    _get_loaded_config()
+    payload: dict[str, object] = {"schema_version": 1, "valid": True}
+    _emit_structured_output(
+        payload,
+        output_format=output_format,
+        human_lines=["Configuration is valid (schema_version=1)."],
+    )
+
+
+@config_group.command("schema")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="json",
+    show_default=True,
+)
+def config_schema(output_format: str) -> None:
+    """Print the finite JSON Schema for the supported TOML surface."""
+
+    payload = config_schema_projection()
+    _emit_structured_output(
+        payload,
+        output_format=output_format,
+        human_lines=[
+            "Configuration schema_version=1.",
+            "Sections: daemon, model, security.",
+            "Use --format json for the complete machine schema.",
+        ],
+    )
+
+
+@config_group.command("diff")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+def config_diff(output_format: str) -> None:
+    """Show effective fields selected outside typed defaults."""
+
+    payload = config_diff_projection(_get_loaded_config())
+    changes = payload.get("changes", {})
+    human = _projection_lines(changes if isinstance(changes, dict) else {})
+    _emit_structured_output(payload, output_format=output_format, human_lines=human)
+
+
+@cli.command("init")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def init_config(ctx: click.Context, output_format: str) -> None:
+    """Create a minimal commented user config without overwriting existing data."""
+
+    selected = (ctx.obj or {}).get("config_path")
+    try:
+        destination = initialize_config_file(selected if isinstance(selected, Path) else None)
+    except ConfigFileError as exc:
+        raise _config_cli_error(
+            what_failed="Could not create operator configuration.",
+            exc=exc,
+            next_action="review or remove the selected config path, then rerun: shisad init",
+        ) from exc
+    payload: dict[str, object] = {
+        "created": True,
+        "path": str(destination),
+        "next_actions": [
+            "shisad config validate",
+            "shisad config show --format human",
+            "shisad start --foreground",
+        ],
+    }
+    _emit_structured_output(
+        payload,
+        output_format=output_format,
+        human_lines=[
+            f"Created owner-only config template: {destination}",
+            "Next: shisad config validate",
+            "Then review values with: shisad config show --format human",
+            "This minimal command does not configure providers or policy.",
+        ],
+    )
+
+
+@cli.command("env")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+def environment(output_format: str) -> None:
+    """List supported environment keys with effective redacted values and sources."""
+
+    payload = environment_projection(_get_loaded_config())
+    raw_rows = payload.get("variables", [])
+    if not isinstance(raw_rows, list):
+        raw_rows = []
+    human = [
+        f"{row['name']} = {json.dumps(row['value'], sort_keys=True)} [{row['source']}]"
+        for row in raw_rows
+        if isinstance(row, dict)
+    ]
+    _emit_structured_output(payload, output_format=output_format, human_lines=human)
 
 
 @cli.command("completion")
@@ -589,10 +886,24 @@ def tui(interactive: bool, plain: bool) -> None:
     from shisad.ui.tui import run_interactive, run_once
 
     config = _get_config()
-    if interactive:
-        run_async(run_interactive(config.socket_path))
-        return
-    rendered = run_async(run_once(config.socket_path, rich_output=not plain))
+    ui_posture = _get_ui_posture(config)
+    try:
+        if interactive:
+            run_async(run_interactive(config.socket_path, ui_posture=ui_posture))
+            return
+        rendered = run_async(
+            run_once(
+                config.socket_path,
+                rich_output=not plain,
+                ui_posture=ui_posture,
+            )
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise daemon_cli_error(
+            what_failed="Could not connect to the shisad daemon.",
+            exc=exc,
+            next_action="shisad start --foreground",
+        ) from exc
     click.echo(rendered)
 
 
@@ -631,6 +942,7 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
         workspace_id=workspace,
         session_id=session_id or None,
         reuse_bound_session=not new_session,
+        ui_posture=_get_ui_posture(config),
     )
     app.run()
 
@@ -647,7 +959,19 @@ def web_ui(output: Path) -> None:
     from shisad.ui.web import write_web_snapshot
 
     config = _get_config()
-    out_path = run_async(write_web_snapshot(socket_path=config.socket_path, output_path=output))
+    try:
+        out_path = run_async(
+            write_web_snapshot(
+                socket_path=config.socket_path,
+                output_path=output,
+                ui_posture=_get_ui_posture(config),
+            )
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise daemon_cli_error(
+            what_failed="Could not generate the dashboard snapshot.",
+            exc=exc,
+        ) from exc
     _echo(f"Wrote dashboard snapshot: {out_path}", fg="green")
 
 
@@ -4542,7 +4866,7 @@ def web_fetch(url: str, snapshot: bool) -> None:
     click.echo(_dump_model(result))
 
 
-@cli.group("realitycheck")
+@cli.group("reality-check")
 def realitycheck_group() -> None:
     """Reality Check scoped search/read operations."""
 

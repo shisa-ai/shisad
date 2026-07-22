@@ -18,7 +18,9 @@ import pytest
 from click.testing import CliRunner, Result
 
 from shisad.cli import main as cli_main
+from shisad.cli import rpc as cli_rpc
 from shisad.core.config import DaemonConfig
+from shisad.ui.theme import UiPosture
 
 
 def _config(tmp_path: Path) -> DaemonConfig:
@@ -2409,11 +2411,7 @@ def test_u41_root_config_option_loads_toml_for_nonstarting_status(
     monkeypatch.setenv("SHISAD_SOCKET_PATH", str(socket_path))
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        (
-            "schema_version = 1\n[daemon]\n"
-            f'data_dir = "{data_dir}"\n'
-            f'socket_path = "{socket_path}"\n'
-        ),
+        (f'schema_version = 1\n[daemon]\ndata_dir = "{data_dir}"\nsocket_path = "{socket_path}"\n'),
         encoding="utf-8",
     )
     captured: list[DaemonConfig] = []
@@ -2457,6 +2455,261 @@ def test_u41_config_template_and_redacted_show(
     assert "<redacted>" in shown.output
     assert "never-print-this" not in shown.output
     assert '"source": "toml"' in shown.output
+
+
+def test_f6_config_commands_and_env_offer_parseable_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'schema_version = 1\n[daemon]\nui_theme = "shisa-light"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "never-print-this")
+    runner = CliRunner()
+
+    results = {
+        name: runner.invoke(
+            cli_main.cli,
+            ["--config", str(config_path), *args, "--format", "json"],
+        )
+        for name, args in {
+            "show": ["config", "show"],
+            "validate": ["config", "validate"],
+            "schema": ["config", "schema"],
+            "diff": ["config", "diff"],
+            "env": ["env"],
+        }.items()
+    }
+
+    payloads = {}
+    for name, result in results.items():
+        assert result.exit_code == 0, f"{name}: {result.output}"
+        assert "never-print-this" not in result.output
+        payloads[name] = json.loads(result.output)
+    assert payloads["validate"]["valid"] is True
+    assert payloads["schema"]["properties"]["schema_version"]["const"] == 1
+    assert payloads["diff"]["changes"]["daemon"]["ui_theme"]["value"] == "shisa-light"
+    assert any(row["name"] == "SHISAD_UI_THEME" for row in payloads["env"]["variables"])
+
+
+def test_f6_init_honors_explicit_path_and_refuses_second_publication(tmp_path: Path) -> None:
+    config_path = tmp_path / "operator" / "config.toml"
+    runner = CliRunner()
+
+    created = runner.invoke(
+        cli_main.cli,
+        ["--config", str(config_path), "init", "--format", "json"],
+    )
+    repeated = runner.invoke(
+        cli_main.cli,
+        ["--config", str(config_path), "init", "--format", "json"],
+    )
+
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.output)["path"] == str(config_path)
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert repeated.exit_code == 3
+    assert "What failed: Could not create operator configuration." in repeated.output
+
+
+def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path).model_copy(
+        update={"ui_theme": "shisa-high-contrast", "reduce_motion": True}
+    )
+    captured: dict[str, UiPosture] = {}
+
+    class _FakeChatApp:
+        def __init__(self, **kwargs: object) -> None:
+            posture = kwargs.get("ui_posture")
+            assert isinstance(posture, UiPosture)
+            captured["chat"] = posture
+
+        def run(self) -> None:
+            return None
+
+    async def _run_once(
+        _socket_path: Path,
+        *,
+        rich_output: bool = True,
+        ui_posture: UiPosture | None = None,
+    ) -> str:
+        _ = rich_output
+        assert ui_posture is not None
+        captured["tui"] = ui_posture
+        return "dashboard"
+
+    async def _run_interactive(
+        _socket_path: Path,
+        *,
+        ui_posture: UiPosture | None = None,
+    ) -> None:
+        assert ui_posture is not None
+        captured["interactive"] = ui_posture
+
+    async def _write_web_snapshot(
+        *,
+        socket_path: Path,
+        output_path: Path,
+        ui_posture: UiPosture | None = None,
+    ) -> Path:
+        _ = socket_path
+        assert ui_posture is not None
+        captured["web"] = ui_posture
+        return output_path
+
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeChatApp))
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.tui",
+        SimpleNamespace(run_interactive=_run_interactive, run_once=_run_once),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.web",
+        SimpleNamespace(write_web_snapshot=_write_web_snapshot),
+    )
+    runner = CliRunner()
+
+    results = [
+        runner.invoke(cli_main.cli, ["--no-color", "chat", "--session", "s1"]),
+        runner.invoke(cli_main.cli, ["--no-color", "tui"]),
+        runner.invoke(
+            cli_main.cli,
+            ["--no-color", "web-ui", "--output", str(tmp_path / "snapshot.html")],
+        ),
+    ]
+
+    assert all(result.exit_code == 0 for result in results), [result.output for result in results]
+    assert set(captured) == {"chat", "tui", "web"}
+    for posture in captured.values():
+        assert posture.palette.name == "shisa-high-contrast"
+        assert posture.color_enabled is False
+        assert posture.capabilities.reduce_motion is True
+
+
+def test_f6_invalid_config_uses_actionable_exit_three_envelope(tmp_path: Path) -> None:
+    secret = "sk-" + "abcdefghijklmnopqrstuvwx"
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        f'schema_version = 1\n["{secret}"]\nvalue = true\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(config_path), "config", "validate"],
+    )
+
+    assert result.exit_code == 3
+    assert "What failed: Could not load operator configuration." in result.output
+    assert "What still works: help, config template, config schema, and version commands." in (
+        result.output
+    )
+    assert "Likely cause:" in result.output
+    assert "Next action:" in result.output
+    assert "Technical details: ConfigFileError:" in result.output
+    assert secret not in result.output
+    assert "[REDACTED:openai_key]" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_f6_rpc_validation_error_omits_payload_and_terminal_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-" + "abcdefghijklmnopqrstuvwx"
+
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+
+        async def connect(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def call(
+            self,
+            _method: str,
+            params: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            _ = params
+            return {"session_id": [f"{secret}\x1b[31m"]}
+
+    monkeypatch.setattr(cli_rpc, "ControlClient", _FakeClient)
+
+    with pytest.raises(cli_rpc.DaemonCliError) as exc:
+        cli_rpc.rpc_call(
+            _config(tmp_path),
+            "session.create",
+            response_model=cli_main.SessionCreateResult,
+        )
+
+    rendered = str(exc.value)
+    assert "session_id:string_type" in rendered
+    assert secret not in rendered
+    assert "input_value" not in rendered
+    assert "\x1b" not in rendered
+
+
+def test_f6_root_help_groups_tasks_and_hides_compatibility_alias() -> None:
+    result = CliRunner().invoke(cli_main.cli, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    for heading in ("Get started", "Work with shisad", "Review and security", "Administration"):
+        assert heading in result.output
+    assert "Fresh setup:" in result.output
+    assert "Daemon stopped:" in result.output
+    assert "reality-check" in result.output
+    assert "realitycheck" not in result.output
+
+
+def test_f6_reality_check_canonical_and_legacy_alias_share_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {
+            "ok": True,
+            "query": "roadmap",
+            "mode": "local",
+            "results": [],
+            "taint_labels": ["untrusted"],
+            "evidence": {"operation": "realitycheck.search"},
+            "error": "",
+        }
+        return response_model.model_validate(payload) if response_model else payload  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    canonical = runner.invoke(cli_main.cli, ["reality-check", "search", "roadmap"])
+    legacy = runner.invoke(cli_main.cli, ["realitycheck", "search", "roadmap"])
+
+    assert canonical.exit_code == 0, canonical.output
+    assert legacy.exit_code == 0, legacy.output
+    assert calls == [
+        ("realitycheck.search", {"query": "roadmap", "limit": 5, "mode": "auto"}),
+        ("realitycheck.search", {"query": "roadmap", "limit": 5, "mode": "auto"}),
+    ]
 
 
 def test_session_message_command_renders_evidence_stub_block(
@@ -4073,6 +4326,7 @@ def test_chat_command_runs_textual_app(
             workspace_id: str,
             session_id: str | None,
             reuse_bound_session: bool,
+            ui_posture: object,
         ) -> None:
             captured["socket_path"] = socket_path
             captured["data_dir"] = data_dir
@@ -4080,6 +4334,7 @@ def test_chat_command_runs_textual_app(
             captured["workspace_id"] = workspace_id
             captured["session_id"] = session_id
             captured["reuse_bound_session"] = reuse_bound_session
+            captured["ui_posture"] = ui_posture
 
         def run(self) -> None:
             captured["ran"] = True
@@ -4099,6 +4354,7 @@ def test_chat_command_runs_textual_app(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] == "sess-123"
     assert captured["reuse_bound_session"] is True
+    assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 
 
@@ -4120,6 +4376,7 @@ def test_chat_command_new_forces_fresh_session_binding(
             workspace_id: str,
             session_id: str | None,
             reuse_bound_session: bool,
+            ui_posture: object,
         ) -> None:
             captured["socket_path"] = socket_path
             captured["data_dir"] = data_dir
@@ -4127,6 +4384,7 @@ def test_chat_command_new_forces_fresh_session_binding(
             captured["workspace_id"] = workspace_id
             captured["session_id"] = session_id
             captured["reuse_bound_session"] = reuse_bound_session
+            captured["ui_posture"] = ui_posture
 
         def run(self) -> None:
             captured["ran"] = True
@@ -4146,6 +4404,7 @@ def test_chat_command_new_forces_fresh_session_binding(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] is None
     assert captured["reuse_bound_session"] is False
+    assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 
 

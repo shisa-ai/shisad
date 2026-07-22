@@ -278,6 +278,22 @@ class DaemonConfig(BaseSettings):
         default="before_side_effects",
         description="When to create checkpoints during tool execution.",
     )
+
+    # Live UI posture. Custom theme files remain an internal foundation until
+    # a supported authority and reload contract exists.
+    ui_theme: Literal[
+        "shisa-dark",
+        "shisa-light",
+        "shisa-high-contrast",
+    ] = Field(
+        default="shisa-dark",
+        description="Built-in palette used by chat, dashboard, and web snapshot renderers.",
+    )
+    reduce_motion: bool = Field(
+        default=False,
+        description="Disable optional UI motion while retaining visible status updates.",
+    )
+
     # Trace recording
     trace_enabled: bool = Field(
         default=False,
@@ -1021,6 +1037,7 @@ class DaemonConfig(BaseSettings):
                 f"entries: {', '.join(sorted(wildcard_scope))}"
             )
         return self
+
     @model_validator(mode="after")
     def _validate_approval_origin(self) -> Self:
         origin = self.approval_origin.strip()
@@ -1109,9 +1126,7 @@ def effective_approval_factor_store_path(
     """
 
     configured = (
-        SecurityConfig().approval_factor_store_path
-        if configured_path is None
-        else configured_path
+        SecurityConfig().approval_factor_store_path if configured_path is None else configured_path
     )
     default_path = SecurityConfig.model_fields["approval_factor_store_path"].default
     if configured == default_path:

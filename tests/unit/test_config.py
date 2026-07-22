@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from shisad.core import config_file
 from shisad.core.config_file import (
     ConfigFileError,
     config_field_inventory,
@@ -131,9 +132,11 @@ def test_u41_toml_does_not_interpolate_environment_placeholders(tmp_path: Path) 
     ("text", "error"),
     [
         ("schema_version = 2\n", "unsupported schema_version"),
+        ("schema_version = true\n", "unsupported schema_version"),
+        ("schema_version = 1.0\n", "unsupported schema_version"),
         ("schema_version = 1\n[daemon\n", "invalid TOML"),
         ("schema_version = 1\n[daemon]\nnot_a_field = true\n", "unknown daemon field"),
-        ("schema_version = 1\nvalue = \"${HOME}\"\n", "unknown top-level key"),
+        ('schema_version = 1\nvalue = "${HOME}"\n', "unknown top-level key"),
     ],
 )
 def test_u41_config_rejects_malformed_or_unknown_input(
@@ -204,11 +207,8 @@ public_key_path = "/private/a2a-key.pub"
             '[[daemon.mcp_servers]]\nname = "demo"\ntransport = "stdio"\n'
             'command = ["server"]\nunknown = true\n'
         ),
-        (
-            '[[daemon.discord_channel_rules]]\nguild_id = "guild"\n'
-            'unknown = true\n'
-        ),
-        '[model.planner_capabilities]\nunknown = true\n',
+        ('[[daemon.discord_channel_rules]]\nguild_id = "guild"\nunknown = true\n'),
+        "[model.planner_capabilities]\nunknown = true\n",
     ],
 )
 def test_u41_unknown_nested_toml_keys_fail_closed(
@@ -241,9 +241,7 @@ def test_u41r_unhashable_nested_discriminator_is_actionable(tmp_path: Path) -> N
         load_config_file(
             config_path,
             environ={
-                "SHISAD_MCP_SERVERS": (
-                    '[{"name":"demo","transport":[],"command":["server"]}]'
-                )
+                "SHISAD_MCP_SERVERS": ('[{"name":"demo","transport":[],"command":["server"]}]')
             },
         )
 
@@ -302,7 +300,9 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     assert all(row["status"] != "unclassified" for row in inventory)
     by_name = {(row["section"], row["field"]): row for row in inventory}
     assert by_name[("security", "default_deny")]["status"] == "compatibility_only"
-    assert ("daemon", "ui_theme") not in by_name
+    assert by_name[("daemon", "ui_theme")]["status"] == "live"
+    assert by_name[("daemon", "ui_theme")]["consumer"] == "UiPosture"
+    assert by_name[("daemon", "reduce_motion")]["consumer"] == "UiPosture"
     assert ("daemon", "ui_theme_path") not in by_name
     assert by_name[("model", "planner_api_key")]["consumer"] == "ModelRouter"
     for removed in (
@@ -320,11 +320,129 @@ def test_u41_commented_template_is_generated_from_live_inventory() -> None:
 
     assert template.startswith("schema_version = 1\n")
     assert "[daemon]" in template
-    assert "# log_level = \"INFO\"" in template
+    assert '# log_level = "INFO"' in template
     assert "[model]" in template
-    assert "# api_key = \"\"" in template
-    assert "ui_theme" not in template
+    assert '# api_key = ""' in template
+    assert '# ui_theme = "shisa-dark"' in template
+    assert "# reduce_motion = false" in template
+    assert "ui_theme_path" not in template
     assert "config_path =" not in template
     assert "config_path is selected only via --config or SHISAD_CONFIG_PATH" in template
     assert "require_confirmation_for_writes" not in template
     assert "log_prompts" not in template
+
+
+def test_f6_schema_diff_and_environment_projections_share_redaction(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(
+        tmp_path / "config.toml",
+        """
+schema_version = 1
+[daemon]
+ui_theme = "shisa-light"
+[model]
+api_key = "never-project-this"
+""",
+    )
+    loaded = load_config_file(
+        config_path,
+        environ={"SHISAD_REDUCE_MOTION": "true"},
+    )
+
+    schema = config_file.config_schema_projection()
+    diff = config_file.config_diff_projection(loaded)
+    environment = config_file.environment_projection(
+        loaded,
+        environ={"SHISAD_REDUCE_MOTION": "true"},
+    )
+
+    assert schema["properties"]["schema_version"]["const"] == 1
+    assert schema["properties"]["daemon"]["additionalProperties"] is False
+    assert "required" not in schema
+    assert "config_path" not in schema["properties"]["daemon"]["properties"]
+    assert schema["properties"]["daemon"]["properties"]["a2a"]["$ref"] == (
+        "#/$defs/daemon__A2aConfig"
+    )
+    assert (
+        schema["properties"]["model"]["properties"]["planner_request_parameters"]["$ref"]
+        == "#/$defs/model__RequestParameters"
+    )
+    assert schema["$defs"]["daemon__A2aConfig"]["additionalProperties"] is False
+    assert schema["$defs"]["model__RequestParameters"]["additionalProperties"] is False
+    assert "ui_theme_path" not in str(schema)
+    assert diff["changes"]["daemon"]["ui_theme"] == {
+        "value": "shisa-light",
+        "source": "toml",
+    }
+    assert diff["changes"]["model"]["api_key"] == {
+        "value": "<redacted>",
+        "source": "toml",
+    }
+    rows = {row["name"]: row for row in environment["variables"]}
+    assert rows["SHISAD_REDUCE_MOTION"]["source"] == "env:SHISAD_REDUCE_MOTION"
+    assert rows["SHISAD_MODEL_API_KEY"]["value"] == "<redacted>"
+    assert "never-project-this" not in str(diff)
+    assert "never-project-this" not in str(environment)
+
+
+def test_f6_init_publishes_one_owner_only_template_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "config-home" / "shisad" / "config.toml"
+
+    created = config_file.initialize_config_file(
+        destination,
+        environ={"SHISAD_MODEL_API_KEY": "never-write-this"},
+    )
+
+    assert created == destination
+    assert destination.stat().st_mode & 0o777 == 0o600
+    text = destination.read_text(encoding="utf-8")
+    assert text.startswith("schema_version = 1\n")
+    assert "never-write-this" not in text
+    with pytest.raises(ConfigFileError, match="already exists"):
+        config_file.initialize_config_file(destination, environ={})
+
+
+def test_f6_init_rejects_symlink_and_managed_root_destinations(tmp_path: Path) -> None:
+    target = tmp_path / "target.toml"
+    target.write_text("do not replace\n", encoding="utf-8")
+    linked = tmp_path / "linked.toml"
+    linked.symlink_to(target)
+
+    with pytest.raises(ConfigFileError, match="symlink"):
+        config_file.initialize_config_file(linked, environ={})
+
+    managed = tmp_path / "managed"
+    with pytest.raises(ConfigFileError, match="managed root"):
+        config_file.initialize_config_file(
+            managed / "config.toml",
+            environ={"SHISAD_DATA_DIR": str(managed)},
+        )
+
+
+def test_f6_init_write_failure_keeps_owner_only_path_without_racy_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "config.toml"
+
+    def _fail_write(_descriptor: int, _payload: bytes) -> int:
+        raise OSError("simulated short device failure")
+
+    monkeypatch.setattr(config_file.os, "write", _fail_write)
+
+    with pytest.raises(ConfigFileError, match="cannot finish selected config file"):
+        config_file.initialize_config_file(destination, environ={})
+
+    assert destination.exists()
+    assert destination.stat().st_mode & 0o777 == 0o600
+
+
+def test_f6_init_parent_preparation_failure_uses_config_error(tmp_path: Path) -> None:
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied\n", encoding="utf-8")
+
+    with pytest.raises(ConfigFileError, match="cannot prepare selected config parent"):
+        config_file.initialize_config_file(blocked_parent / "config.toml", environ={})

@@ -21,9 +21,11 @@ There are three kinds of env vars in the current codebase:
 3. tool or CLI internal env vars (`_SHISAD_COMPLETE`, opt-in live-test vars, placeholders)
 
 The same typed settings are available in an operator-authored TOML file. Use
-`shisad config template` to print the classified commented schema and
-`shisad config show` to inspect effective values and sources with secrets
-redacted.
+`shisad init` for one no-overwrite owner-only commented template,
+`shisad config template` to print that template without writing it, and
+`shisad config validate|show|schema|diff` plus `shisad env` for human or JSON
+inspection. Effective values and sources are derived from the same typed loader
+and secret-bearing fields are redacted.
 
 ## Artifact Profiles
 
@@ -62,6 +64,13 @@ Parsing is read-only and does not create the configured data directory.
 There is intentionally no `init --from-env` migration command in this release.
 Use the generated template and `config show` rather than assuming environment
 values were written to disk.
+
+`shisad init` writes only the generated comments/default examples. It refuses
+existing files, symlink destinations, and destinations inside configured data
+or assistant-managed roots; it does not configure providers or policy, create
+daemon state, or start the daemon. `config validate`, `config show`, `config
+schema`, `config diff`, and `shisad env` are read-only. Each accepts `--format
+human|json`; `config show` retains JSON as its compatibility default.
 
 ## Child-Process Environment Boundaries
 
@@ -110,11 +119,25 @@ component-scoped credentials documented above.
 | `SHISAD_DATA_DIR` | Root runtime data directory |
 | `SHISAD_SOCKET_PATH` | Unix control socket path; defaults to `$XDG_RUNTIME_DIR/shisad/control.sock` when `XDG_RUNTIME_DIR` is an absolute path, otherwise `/tmp/shisad-<uid>/control.sock` |
 | `SHISAD_POLICY_PATH` | Trusted policy bundle path |
+| `SHISAD_CONFIG_PATH` | Explicit operator TOML path; equivalent to root `--config` at lower precedence |
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
+| `SHISAD_UI_THEME` | Built-in renderer palette: `shisa-dark`, `shisa-light`, or `shisa-high-contrast` |
+| `SHISAD_REDUCE_MOTION` | Disable optional UI motion while retaining visible status updates |
 | `SHISAD_TRACE_ENABLED` | Enable trace recording |
 | `SHISAD_REQUIRE_LOCAL_ADAPTERS` | Require pre-installed coding-agent binaries; disallow runtime `npx` fetches (`1`/`true`/`yes`) |
+
+UI accessibility notes:
+
+- Presence of the standard `NO_COLOR` variable suppresses palette color in
+  chat, the one-shot terminal dashboard, and static web snapshots. Root
+  `shisad --no-color ...` does the same for that invocation.
+- `SHISAD_REDUCE_MOTION=true` disables optional motion; it does not hide
+  connection, lifecycle, or status text.
+- `SHISAD_UI_THEME_PATH` and other custom theme-file selectors are not
+  accepted. The three built-in names above are the complete supported theme
+  configuration surface for this release.
 
 ## Channel and Identity Settings
 
@@ -525,9 +548,9 @@ and `SHISAD_SECURITY_AUDIT_LOG_PATH` names had no runtime consumer and are not
 accepted as configuration. Confirmation and egress posture come from the
 policy bundle; credential/audit storage is constructed by the live daemon.
 
-`SHISAD_UI_THEME` and `SHISAD_UI_THEME_PATH` are also not accepted in this
-release because no renderer consumes them. F6 may introduce a wired theme
-surface; until then generated configuration does not advertise inert controls.
+`SHISAD_UI_THEME_PATH` remains unaccepted because custom theme-file authority
+and reload behavior are not defined. `SHISAD_UI_THEME` is live only for the
+three built-in palettes documented above.
 
 ## `SHISAD_MODEL_*`
 

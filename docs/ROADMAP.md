@@ -76,10 +76,13 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.8.0` is published: the stable release covers command-channel approval
   parity, TUI/confirmation polish, task panels, and the broader UX overhaul
   foundation.
-- `v0.8.1` is in development. Its distribution milestone adds a locked
-  `shisad[assistant]` consumer profile plus a tested local Linux/amd64 image
-  candidate with non-root runtime, health, and persistent-volume journeys.
-  No registry image is published or signed by this milestone.
+- `v0.8.1` is in development. Its current tree adds a locked
+  `shisad[assistant]` consumer profile, a tested local Linux/amd64 image
+  candidate, and bounded CLI/config/runtime UX closure: no-overwrite minimal
+  init, typed config/env inspection, grouped help and actionable errors,
+  built-in theme/accessibility wiring, and a safe static web snapshot. No
+  registry image is published or signed, and this work does not claim the
+  later setup wizard or live operator web application.
 
 ## Milestones
 
@@ -381,13 +384,19 @@ TOTP entry remain deferred to `v0.8.0`.
   with CLI fallback, TOTP stays on trusted command channels when possible, and
   stronger method-specific proofs route to browser/helper/signer surfaces
   truthfully
-- v0.8.1 patch line (in development) — supported package assembly and a local
-  container candidate, followed by the remaining security/UX closeout
-  milestones; registry publication remains a release-close decision
-- TUI visual overhaul — theme system, chat/dashboard/confirmation chrome
-- CLI & config — TOML config file, help text, error messages, naming consistency
-- Onboarding — first-run wizard, tutorial bot, upgrade flow
-- Operator web UI on top of daemon/event-stream surfaces
+- v0.8.1 patch line (in development) — supported package assembly, a local
+  container candidate, minimal no-overwrite init, typed config/env inspection,
+  grouped help/actionable errors, and built-in chat/dashboard/static-snapshot
+  theme and accessibility wiring, followed by the remaining security/UX
+  closeout milestones; registry publication remains a release-close decision
+- TUI visual overhaul — built-in theme and accessibility wiring is present;
+  broader chat/dashboard/confirmation chrome remains in the v0.8 line
+- CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
+  help grouping, exit statuses, and naming compatibility
+- Onboarding — the interactive wizard, tutorial bot, and upgrade flow remain
+  later work; v0.8.1 `init` is only a minimal template publisher
+- Operator web UI on top of daemon/event-stream surfaces remains later work;
+  v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls
 
 ### v0.9 — Security quality and consolidation
