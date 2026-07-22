@@ -283,9 +283,20 @@ async def test_f9_a2a_pending_action_is_shared_with_control_confirmation(
         action = pending["actions"][0]
         confirmation_id = str(action["confirmation_id"])
         decision_nonce = str(action["decision_nonce"])
+        proof_requirement = {
+            key: action[key]
+            for key in (
+                "required_proof_tier",
+                "required_level",
+                "required_methods",
+                "required_capabilities",
+                "fallback",
+            )
+        }
         assert action["session_id"] == session_id
         assert action["user_id"] == "remote-agent"
         assert action["workspace_id"] == "local-agent"
+        assert action["lifecycle_state"] == "pending"
 
         confirm_params = {
             "confirmation_id": confirmation_id,
@@ -298,6 +309,23 @@ async def test_f9_a2a_pending_action_is_shared_with_control_confirmation(
             confirmed = await client.call("action.confirm", confirm_params)
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
+        assert confirmed["lifecycle_state"] == "executed"
+        confirmed_identity = confirmed["identity"]
+        result_id = str(confirmed_identity["result_id"])
+        assert result_id.startswith("result-")
+        assert confirmed_identity["confirmation_id"] == confirmation_id
+        assert confirmed_identity["session_id"] == session_id
+        assert confirmed_identity["user_id"] == "remote-agent"
+        assert confirmed_identity["workspace_id"] == "local-agent"
+        assert confirmed["approval_level"] == proof_requirement["required_level"]
+        assert len(confirmed["tool_outputs"]) == 1
+        tool_output = confirmed["tool_outputs"][0]
+        assert tool_output["tool_name"] == "time.now"
+        assert tool_output["success"] is True
+        assert tool_output["payload"]["ok"] is True
+        assert tool_output["payload"]["timezone"] == "UTC"
+        assert tool_output["payload"]["source"] == "daemon_clock"
+        assert tool_output["action_identity"] == confirmed_identity
 
         terminal = await client.call(
             "action.pending",
@@ -308,7 +336,13 @@ async def test_f9_a2a_pending_action_is_shared_with_control_confirmation(
         assert terminal_action["confirmation_id"] == confirmation_id
         assert terminal_action["decision_nonce"] == decision_nonce
         assert terminal_action["session_id"] == session_id
+        assert terminal_action["user_id"] == "remote-agent"
+        assert terminal_action["workspace_id"] == "local-agent"
         assert terminal_action["status"] == "approved"
+        assert terminal_action["lifecycle_state"] == "executed"
+        assert terminal_action["result_id"] == result_id
+        assert terminal_action["identity"] == confirmed_identity
+        assert {key: terminal_action[key] for key in proof_requirement} == proof_requirement
 
         ingress = services.a2a_runtime._ingress
         assert ingress._session_create.__self__ is services.control_handlers

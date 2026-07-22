@@ -210,6 +210,34 @@ async def test_f9_daemon_services_owns_handler_graph_when_a2a_disabled(
 
 
 @pytest.mark.asyncio
+async def test_f9_second_facade_construction_reuses_service_owner(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        owned = services.control_handlers
+        impl = owned._impl
+        second = control_handlers_module.DaemonControlHandlers(services=services)
+
+        assert second is owned
+        assert second._impl is impl
+        assert services.approval_web._registration_context_cb.__self__ is impl
+        assert services.approval_web._registration_complete_cb.__self__ is impl
+        assert services.approval_web._approval_context_cb.__self__ is impl
+        assert services.approval_web._approval_complete_cb.__self__ is impl
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_f9_handler_construction_failure_releases_data_root_lock(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -757,7 +785,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         initialized_realm_id = services.credential_store.get_or_create_local_fido2_realm_id(
             seed="realm"
         )
-        assert initialized_realm_id
+        assert initialized_realm_id == services.control_handlers._impl._daemon_id
 
         services.identity_map.configure_channel_trust(channel="matrix", trust_level="trusted")
         services.identity_map.allow_identity(channel="matrix", external_user_id="extra-user")

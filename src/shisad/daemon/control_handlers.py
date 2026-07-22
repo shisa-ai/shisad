@@ -241,7 +241,24 @@ if TYPE_CHECKING:
 class DaemonControlHandlers:
     """Thin routing facade over split handler modules."""
 
+    def __new__(
+        cls,
+        *,
+        services: DaemonServices,
+    ) -> DaemonControlHandlers:
+        owned = getattr(services, "control_handlers", None)
+        if isinstance(owned, cls):
+            return owned
+        return super().__new__(cls)
+
     def __init__(self, *, services: DaemonServices) -> None:
+        if "_impl" in self.__dict__:
+            existing_impl = self.__dict__["_impl"]
+            if not isinstance(existing_impl, HandlerImplementation):
+                raise RuntimeError("control handler facade has an invalid implementation owner")
+            if existing_impl._services is not services:
+                raise RuntimeError("control handler facade cannot change service owner")
+            return
         impl = HandlerImplementation(services=services)
         self._impl = impl
         internal_ingress_marker = services.internal_ingress_marker

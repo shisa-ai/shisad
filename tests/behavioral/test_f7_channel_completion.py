@@ -155,6 +155,7 @@ async def _attach_memory_channels(
         state_root=services.config.data_dir / "channels" / "delivery",
         transcript_store=services.transcript_store,
     )
+    services.control_handlers._impl._delivery = services.delivery
     return channels
 
 
