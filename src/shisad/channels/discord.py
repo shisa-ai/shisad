@@ -480,6 +480,7 @@ class DiscordChannel(InMemoryChannel):
                                 kwargs["view"] = view
                             await send(message, **kwargs)
                             return
+            raise RuntimeError("Discord could not resolve the delivery target")
         await super().send(message, target=target, metadata=metadata)
 
     async def _enqueue_approval_interaction(

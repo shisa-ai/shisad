@@ -214,14 +214,18 @@ class TranscriptStore:
     def read_blob(self, content_hash: str) -> str | None:
         """Read a large blob by its content hash."""
         path = self._blob_dir / f"{content_hash}.txt"
-        if not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        with contextlib.suppress(OSError, UnicodeError):
+            return path.read_text(encoding="utf-8")
+        return None
 
     def entry_content(self, entry: TranscriptEntry) -> str | None:
-        if entry.blob_ref:
-            return self.read_blob(entry.blob_ref)
-        return entry.content_preview
+        content = self.read_blob(entry.blob_ref) if entry.blob_ref else entry.content_preview
+        digest = hashlib.sha256(content.encode()).hexdigest() if content is not None else ""
+        return (
+            content
+            if entry.blob_ref in {None, entry.content_hash} and digest == entry.content_hash
+            else None
+        )
 
     @staticmethod
     def _ensure_dir_permissions(path: Path) -> None:

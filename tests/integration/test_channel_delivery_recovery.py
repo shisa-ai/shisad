@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import sqlite3
 from dataclasses import replace
@@ -644,7 +646,7 @@ async def test_proactive_transcript_recovery_does_not_duplicate_marker(
     transcripts.append(
         SessionId("session-1"),
         role="assistant",
-        content="[proactive] one result",
+        content="one result",
         metadata={
             "outbound_delivery_reservation_id": reservation.reservation_id,
             "delivery_target": _intent().target.model_dump(mode="json"),
@@ -658,6 +660,60 @@ async def test_proactive_transcript_recovery_does_not_duplicate_marker(
     await restarted.recover()
 
     assert channel.send_calls[0]["message"] == "[proactive] one result"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["invalid_json", "preview_hash", "blob_ref"])
+async def test_corrupt_committed_transcript_never_becomes_recovered_content(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    root = tmp_path / "channels" / "delivery"
+    session_root = tmp_path / "sessions"
+    transcripts = TranscriptStore(session_root)
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.NEITHER)
+    await channel.connect()
+    first = ChannelDeliveryService(
+        {"matrix": channel}, state_root=root, transcript_store=transcripts
+    )
+    reservation = first.reserve(_intent(source_id=f"corrupt-transcript-{corruption}"))
+    content = "committed result" if corruption != "blob_ref" else "x" * 5000
+    transcripts.append(
+        SessionId("session-1"),
+        role="assistant",
+        content=content,
+        metadata={
+            "outbound_delivery_reservation_id": reservation.reservation_id,
+            "delivery_target": _intent().target.model_dump(mode="json"),
+        },
+        durable=True,
+    )
+    transcript_path = session_root / "transcripts" / "session-1.jsonl"
+    if corruption == "invalid_json":
+        transcript_path.write_text("{not-json}\n", encoding="utf-8")
+    else:
+        payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+        if corruption == "preview_hash":
+            payload["content_preview"] = "tampered result"
+        else:
+            alternate = "tampered blob"
+            alternate_hash = hashlib.sha256(alternate.encode()).hexdigest()
+            (session_root / "blobs" / f"{alternate_hash}.txt").write_text(
+                alternate, encoding="utf-8"
+            )
+            payload["blob_ref"] = alternate_hash
+        transcript_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    restarted = ChannelDeliveryService(
+        {"matrix": channel},
+        state_root=root,
+        transcript_store=TranscriptStore(session_root),
+    )
+    recovered = await restarted.recover()
+
+    assert recovered == []
+    assert restarted.record(reservation.reservation_id).state == "failed_pre_effect"
+    assert channel.send_calls == []
 
 
 @pytest.mark.asyncio
@@ -742,6 +798,42 @@ async def test_imported_transcript_row_cannot_spoof_local_delivery_receipt(
 
 
 @pytest.mark.asyncio
+async def test_tampered_local_transcript_marker_never_becomes_delivery_receipt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "channels" / "delivery"
+    transcripts = TranscriptStore(tmp_path / "sessions")
+    first = ChannelDeliveryService({}, state_root=root, transcript_store=transcripts)
+    intent = DeliveryIntent(
+        source_id="f2-tampered-local-receipt",
+        kind="message_send",
+        target=DeliveryTarget(channel="session", recipient="session-1"),
+    )
+    reservation = first.reserve(intent)
+    prepared = first.prepare(reservation.reservation_id, message="authentic reminder")
+    assert first._store is not None
+    assert first._store.claim_attempt(prepared.reservation_id) is not None
+    transcripts.append(
+        SessionId("session-1"),
+        role="assistant",
+        content="tampered reminder",
+        metadata={
+            "delivery_target": intent.target.model_dump(mode="json"),
+            "outbound_delivery_id": prepared.delivery_id,
+        },
+        durable=True,
+    )
+
+    restarted = ChannelDeliveryService({}, state_root=root, transcript_store=transcripts)
+    recovered = await restarted.recover()
+
+    assert len(recovered) == 1
+    assert recovered[0].reason == "delivery_state_unavailable"
+    assert len(transcripts.list_entries(SessionId("session-1"))) == 1
+    assert restarted.health_status()["_outbox"]["status"] == "degraded"
+
+
+@pytest.mark.asyncio
 async def test_capability_notification_restart_never_replays_stale_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -802,6 +894,66 @@ async def test_capability_notification_restart_never_replays_stale_url(
     for sidecar in root.glob("outbox.sqlite3*"):
         assert b"secret-token" not in sidecar.read_bytes()
         assert b"approval.example" not in sidecar.read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_state", ["delivered", "outcome_unknown"])
+async def test_capability_restart_rotates_delivered_or_uncertain_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_state: str,
+) -> None:
+    root = tmp_path / "channels" / "delivery"
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.NEITHER)
+    await channel.connect()
+    first = ChannelDeliveryService({"matrix": channel}, state_root=root)
+    issued_tokens: list[str] = []
+
+    async def resolve(
+        intent: CapabilityDeliveryIntent,
+        *,
+        rotate: bool,
+    ) -> CapabilityPayload:
+        _ = rotate
+        token = f"rotated-{len(issued_tokens) + 1}"
+        issued_tokens.append(token)
+        return CapabilityPayload(
+            message=f"https://approval.invalid/{intent.confirmation_id}?token={token}",
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        )
+
+    original_send = channel.send
+    if prior_state == "outcome_unknown":
+
+        async def fail_send(
+            _message: str,
+            *,
+            target: DeliveryTarget | None = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> ProviderDeliveryReceipt:
+            _ = (target, metadata)
+            raise RuntimeError("provider outcome unavailable")
+
+        monkeypatch.setattr(channel, "send", fail_send)
+    initial = await first.send_capability(
+        intent=CapabilityDeliveryIntent(
+            confirmation_id=f"confirm-{prior_state}",
+            target=DeliveryTarget(channel="matrix", recipient="!room:example.org"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        ),
+        resolver=resolve,
+    )
+    assert initial.state == prior_state
+    monkeypatch.setattr(channel, "send", original_send)
+    first.close()
+
+    restarted = ChannelDeliveryService({"matrix": channel}, state_root=root)
+    recovered = await restarted.recover(capability_resolver=resolve)
+
+    assert len(recovered) == 1
+    assert recovered[0].sent is True
+    assert issued_tokens == ["rotated-1", "rotated-2"]
+    assert restarted.record(initial.reservation_id).state == "superseded"
 
 
 @pytest.mark.asyncio
@@ -913,13 +1065,41 @@ async def test_unsafe_or_unsupported_outbox_never_becomes_fresh_work(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "schema_variant",
+    ["missing_columns", "wrong_unique_target", "wrong_type_and_nullability"],
+)
 async def test_same_version_wrong_schema_degrades_before_new_effect(
     tmp_path: Path,
+    schema_variant: str,
 ) -> None:
     root = tmp_path / "channels" / "delivery"
     root.mkdir(parents=True)
     with sqlite3.connect(root / "outbox.sqlite3") as connection:
-        connection.execute("CREATE TABLE deliveries (reservation_id TEXT PRIMARY KEY)")
+        if schema_variant == "missing_columns":
+            connection.execute("CREATE TABLE deliveries (reservation_id TEXT PRIMARY KEY)")
+        else:
+            reservation_type = "BLOB" if schema_variant == "wrong_type_and_nullability" else "TEXT"
+            intent_required = "" if schema_variant == "wrong_type_and_nullability" else " NOT NULL"
+            delivery_unique = "" if schema_variant == "wrong_unique_target" else " UNIQUE"
+            payload_unique = " UNIQUE" if schema_variant == "wrong_unique_target" else ""
+            connection.execute(
+                f"""
+                CREATE TABLE deliveries (
+                    reservation_id {reservation_type} PRIMARY KEY,
+                    delivery_id TEXT{delivery_unique},
+                    intent_json TEXT{intent_required},
+                    payload TEXT NOT NULL{payload_unique},
+                    payload_digest TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    receipt_json TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
         connection.execute("PRAGMA user_version = 1")
     channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.NEITHER)
     await channel.connect()

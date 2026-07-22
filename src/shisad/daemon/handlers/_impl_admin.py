@@ -2837,11 +2837,6 @@ class AdminImplMixin(HandlerMixinBase):
                 explicit_memory_ingress_context.handle_id
             )
         response = await self.do_session_message(session_message_payload)
-        if proactive:
-            marker = discord_decision.proactive_marker.strip() or "[proactive]"
-            response_text = str(response.get("response", "")).strip()
-            if response_text and not response_text.startswith(marker):
-                response["response"] = f"{marker} {response_text}"
         delivery_metadata: dict[str, Any] = {}
         if message.channel == "discord":
             discord_channel = getattr(self, "_discord_channel", None)
@@ -2862,15 +2857,12 @@ class AdminImplMixin(HandlerMixinBase):
                     and bool(can_build_view(candidate_metadata))
                 ):
                     delivery_metadata = candidate_metadata
-        delivery_message = str(response.get("response", ""))
-        marker = proactive_prefix.rstrip()
-        if marker and delivery_message.startswith(marker):
-            delivery_message = delivery_message[len(marker) :].lstrip()
         prepared = self._delivery.prepare(
             delivery_reservation.reservation_id,
-            message=delivery_message,
+            message=str(response.get("response", "")),
             metadata=delivery_metadata,
         )
+        response["response"] = prepared.payload
         delivery_result = await self._delivery.send_prepared(prepared.reservation_id)
         if proactive:
             self._channel_proactive_last_sent_at[cooldown_key] = datetime.now(UTC)

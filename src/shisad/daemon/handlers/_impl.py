@@ -7137,11 +7137,7 @@ class HandlerImplementation(
                     reason = "session_delivery_session_not_found"
                 if reason:
                     delivery_result = DeliveryResult(
-                        attempted=False,
-                        sent=False,
-                        reason=reason,
-                        target=target,
-                        state="failed_pre_effect",
+                        False, False, reason, target, state="failed_pre_effect"
                     )
                 else:
                     delivery_metadata = {

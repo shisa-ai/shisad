@@ -31,6 +31,12 @@ _SCHEMA_VERSION = 1
 _MAX_MESSAGE_BYTES = 64 * 1024
 _KINDS = frozenset({"channel_result", "message_send", "approval_capability"})
 _TERMINAL = ("delivered", "failed_pre_effect", "outcome_unknown", "superseded", "cancelled")
+_DELIVERY_SCHEMA = (
+    "CREATE TABLE deliveries (reservation_id TEXT PRIMARY KEY, delivery_id TEXT UNIQUE, "
+    "intent_json TEXT NOT NULL, payload TEXT NOT NULL, payload_digest TEXT NOT NULL, "
+    "metadata_json TEXT NOT NULL, state TEXT NOT NULL, receipt_json TEXT NOT NULL, "
+    "reason TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+)
 
 
 class DeliveryStateError(RuntimeError): ...
@@ -159,23 +165,7 @@ class _DeliveryStore:
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA synchronous = FULL")
             if not existed:
-                self._db.execute(
-                    """
-                    CREATE TABLE deliveries (
-                        reservation_id TEXT PRIMARY KEY,
-                        delivery_id TEXT UNIQUE,
-                        intent_json TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        payload_digest TEXT NOT NULL,
-                        metadata_json TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        receipt_json TEXT NOT NULL,
-                        reason TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
+                self._db.execute(_DELIVERY_SCHEMA)
                 self._db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._db.commit()
                 sync_parent_directory(root)
@@ -192,23 +182,25 @@ class _DeliveryStore:
 
     def _validate(self) -> None:
         version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
-        columns = self._db.execute("PRAGMA table_info(deliveries)").fetchall()
         objects = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
                 "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
             )
         }
+        schema_row = self._db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'"
+        ).fetchone()
+        schema_sql = str(schema_row[0]) if schema_row else ""
+        index_targets = {
+            tuple(str(row[2]) for row in self._db.execute(f"PRAGMA index_info({name})"))
+            for name in ("sqlite_autoindex_deliveries_1", "sqlite_autoindex_deliveries_2")
+        }
         if (
             version != _SCHEMA_VERSION
             or objects != {("table", "deliveries")}
-            or " ".join(str(row[1]) for row in columns)
-            != (
-                "reservation_id delivery_id intent_json payload payload_digest metadata_json "
-                "state receipt_json reason created_at updated_at"
-            )
-            or int(columns[0][5]) != 1
-            or sum(int(row[2]) for row in self._db.execute("PRAGMA index_list(deliveries)")) != 2
+            or " ".join(schema_sql.split()) != " ".join(_DELIVERY_SCHEMA.split())
+            or index_targets != {("reservation_id",), ("delivery_id",)}
         ):
             raise DeliveryStateError("delivery database schema is unsupported")
         if str(self._db.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
@@ -348,7 +340,7 @@ class _DeliveryStore:
             reservation_id,
             "superseded",
             f"superseded_by:{successor_id}",
-            allowed={"attempt_started", "outcome_unknown", "prepared"},
+            allowed={"attempt_started", "outcome_unknown", "delivered"},
         )
         return self._required(reservation_id)
 
@@ -690,7 +682,7 @@ class ChannelDeliveryService:
         try:
             store = self._require_store()
             self._reconcile_preparing(store)
-            records = store.records("prepared", "attempt_started")
+            records = store.records("prepared", "attempt_started", *_TERMINAL[:3:2])
         except DeliveryStateError as exc:
             self._store, self._state_error = None, str(exc)
             return [self._unavailable()]
@@ -709,7 +701,11 @@ class ChannelDeliveryService:
                             )
                         )
                     continue
-                if record.intent.kind == "approval_capability" and capability_resolver:
+                if record.intent.kind != "approval_capability":
+                    if record.state == "attempt_started":
+                        results.append(await self._recover_attempt(record))
+                    continue
+                if capability_resolver:
                     successor = store.reserve(
                         replace(
                             record.intent,
@@ -727,13 +723,11 @@ class ChannelDeliveryService:
                             rotate=True,
                         )
                     )
-                elif record.intent.kind == "approval_capability":
+                elif record.state == "attempt_started":
                     unresolved = store.mark_outcome_unknown(
                         record.reservation_id, "capability_resolver_unavailable"
                     )
                     results.append(self._result(unresolved))
-                else:
-                    results.append(await self._recover_attempt(record))
             except DeliveryStateError as exc:
                 with contextlib.suppress(Exception):
                     store.close()
@@ -894,7 +888,7 @@ class ChannelDeliveryService:
             else:
                 store.prepare(
                     record.reservation_id,
-                    message=match,
+                    message=f"{record.intent.message_prefix}{match}",
                     metadata={},
                 )
 
@@ -902,16 +896,17 @@ class ChannelDeliveryService:
         if self._transcripts is None:
             return None
         expected_target = record.intent.target.model_dump(mode="json")
-        for session_id in self._transcripts.list_session_ids():
-            for entry in self._transcripts.list_entries(session_id):
-                if (
-                    entry.role == "assistant"
-                    and not entry.metadata.get("_archive_imported")
-                    and str(entry.metadata.get("outbound_delivery_reservation_id", ""))
-                    == record.reservation_id
-                    and entry.metadata.get("delivery_target") == expected_target
-                ):
-                    return self._transcripts.entry_content(entry)
+        with contextlib.suppress(OSError, UnicodeError, ValueError):
+            for session_id in self._transcripts.list_session_ids():
+                for entry in self._transcripts.list_entries(session_id):
+                    if (
+                        entry.role == "assistant"
+                        and not entry.metadata.get("_archive_imported")
+                        and str(entry.metadata.get("outbound_delivery_reservation_id", ""))
+                        == record.reservation_id
+                        and entry.metadata.get("delivery_target") == expected_target
+                    ):
+                        return self._transcripts.entry_content(entry)
         return None
 
     def _append_local(self, record: DeliveryRecord, message: str) -> ProviderDeliveryReceipt:
@@ -941,12 +936,23 @@ class ChannelDeliveryService:
     def _local_receipt(self, record: DeliveryRecord) -> ProviderDeliveryReceipt | None:
         if self._transcripts is None:
             return None
-        entries = self._transcripts.list_entries(SessionId(record.intent.target.recipient))
+        try:
+            entries = self._transcripts.list_entries(SessionId(record.intent.target.recipient))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise DeliveryStateError("local delivery transcript is unreadable") from exc
+        expected_target = record.intent.target.model_dump(mode="json")
         for entry in entries:
-            if entry.metadata.get("_archive_imported"):
+            entry_delivery_id = str(entry.metadata.get("outbound_delivery_id", ""))
+            if entry.metadata.get("_archive_imported") or entry_delivery_id != record.delivery_id:
                 continue
-            if str(entry.metadata.get("outbound_delivery_id", "")) == record.delivery_id:
-                return ProviderDeliveryReceipt("session", entry.entry_id, record.delivery_id)
+            if (
+                entry.role != "assistant"
+                or entry.metadata.get("delivery_target") != expected_target
+                or entry.content_hash != record.payload_digest
+                or self._transcripts.entry_content(entry) != record.payload
+            ):
+                raise DeliveryStateError("local delivery receipt is inconsistent")
+            return ProviderDeliveryReceipt("session", entry.entry_id, record.delivery_id)
         return None
 
     def _pre_effect_block(self, record: DeliveryRecord) -> str:

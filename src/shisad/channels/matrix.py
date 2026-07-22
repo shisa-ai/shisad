@@ -116,11 +116,13 @@ class MatrixChannel(InMemoryChannel):
                 room_id = self._config.room_id
                 if target is not None and target.recipient.strip():
                     room_id = target.recipient.strip()
-                await room_send(
+                response = await room_send(
                     room_id=room_id,
                     message_type="m.room.message",
                     content={"msgtype": "m.text", "body": message},
                 )
+                if isinstance(response, getattr(nio, "RoomSendError", ())):
+                    raise RuntimeError("Matrix rejected the room send")
                 return
         await super().send(message, target=target)
 

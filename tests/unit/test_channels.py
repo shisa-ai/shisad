@@ -320,6 +320,83 @@ async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent(
     )
     assert result.sent is False
     assert result.reason == "channel_dependency_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_f7b_matrix_typed_error_response_never_commits_delivered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import matrix as matrix_module
+
+    class _RoomSendError:
+        pass
+
+    async def room_send(**_kwargs: object) -> _RoomSendError:
+        return _RoomSendError()
+
+    monkeypatch.setattr(matrix_module, "nio", SimpleNamespace(RoomSendError=_RoomSendError))
+    channel = MatrixChannel(
+        MatrixConfig(
+            homeserver="https://matrix.invalid",
+            user_id="@bot:matrix.invalid",
+            access_token="token",
+            room_id="!room:matrix.invalid",
+        )
+    )
+    await InMemoryChannel.connect(channel)
+    channel._client = SimpleNamespace(room_send=room_send)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+
+    result = await delivery.send(
+        intent=DeliveryIntent(
+            source_id="matrix-error-result",
+            kind="channel_result",
+            target=DeliveryTarget(channel="matrix", recipient="!room:matrix.invalid"),
+        ),
+        message="must not be tombstoned as delivered",
+    )
+
+    assert result.outcome_unknown is True
+    assert delivery.record(result.reservation_id).state == "outcome_unknown"
+    assert channel.pending_outgoing() == 0
+
+
+@pytest.mark.asyncio
+async def test_f7b_discord_configured_client_never_falls_back_after_target_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    async def fetch_channel(_channel_id: int) -> None:
+        return None
+
+    monkeypatch.setattr(discord_module, "discord", SimpleNamespace())
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await InMemoryChannel.connect(channel)
+    channel._client = SimpleNamespace(
+        get_channel=lambda _channel_id: None,
+        fetch_channel=fetch_channel,
+    )
+    delivery = ChannelDeliveryService(
+        {"discord": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+
+    result = await delivery.send(
+        intent=DeliveryIntent(
+            source_id="discord-target-miss",
+            kind="channel_result",
+            target=DeliveryTarget(channel="discord", recipient="123"),
+        ),
+        message="must not enter the local fallback queue",
+    )
+
+    assert result.outcome_unknown is True
+    assert delivery.record(result.reservation_id).state == "outcome_unknown"
+    assert channel.pending_outgoing() == 0
     await channel.disconnect()
 
 

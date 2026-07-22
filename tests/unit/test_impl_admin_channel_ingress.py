@@ -58,14 +58,15 @@ class _DeliveryStub:
         metadata: dict[str, Any] | None = None,
     ) -> object:
         intent = self._intents[reservation_id]
+        payload = f"{intent.message_prefix}{message}"  # type: ignore[attr-defined]
         self.calls.append(
             {
                 "target": intent.target,  # type: ignore[attr-defined]
-                "message": f"{intent.message_prefix}{message}",  # type: ignore[attr-defined]
+                "message": payload,
                 "metadata": metadata,
             }
         )
-        return SimpleNamespace(reservation_id=reservation_id)
+        return SimpleNamespace(reservation_id=reservation_id, payload=payload)
 
     async def send_prepared(self, reservation_id: str) -> _DeliveryResult:
         _ = reservation_id
