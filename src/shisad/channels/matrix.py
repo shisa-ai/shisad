@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.state import (
+    ReplayIdentity,
+    replay_identity_metadata,
+    structural_replay_id,
+)
 
 try:  # pragma: no cover - optional dependency.
     import nio  # type: ignore
@@ -155,7 +160,15 @@ class MatrixChannel(InMemoryChannel):
         body = str(getattr(event, "body", ""))
         sender = str(getattr(event, "sender", ""))
         room_id = str(getattr(room, "room_id", self._config.room_id))
-        if not body or not sender:
+        event_id = str(getattr(event, "event_id", "") or "").strip()
+        if (
+            not body
+            or not sender
+            or not room_id.strip()
+            or not event_id
+            or not self._config.homeserver.strip()
+            or not self._config.user_id.strip()
+        ):
             return
         await self._incoming.put(
             ChannelMessage(
@@ -163,8 +176,20 @@ class MatrixChannel(InMemoryChannel):
                 external_user_id=sender,
                 workspace_hint=self.workspace_for_room(room_id),
                 content=body,
-                message_id=str(getattr(event, "event_id", "") or ""),
+                message_id=event_id,
                 reply_target=room_id,
-                thread_id=str(getattr(event, "event_id", "") or ""),
+                thread_id=event_id,
+                metadata=replay_identity_metadata(
+                    ReplayIdentity(
+                        provider="matrix",
+                        account_id=structural_replay_id(
+                            self._config.homeserver,
+                            self._config.user_id,
+                        ),
+                        scope_id=structural_replay_id(room_id),
+                        event_kind="message",
+                        event_id=event_id,
+                    )
+                ),
             )
         )

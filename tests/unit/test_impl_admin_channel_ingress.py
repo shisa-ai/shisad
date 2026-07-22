@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from shisad.channels import state as channel_state
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.discord_policy import DiscordChannelPolicyDecision
 from shisad.channels.identity import ChannelIdentityMap
@@ -197,6 +198,226 @@ class _AdminChannelIngressHarness(AdminImplMixin):
     async def do_session_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.message_payloads.append(dict(payload))
         return {"session_id": str(payload["session_id"]), "response": "ok"}
+
+
+class _ReservedIngressHarness(AdminImplMixin):
+    def __init__(self, *, tmp_path: Path) -> None:
+        self._internal_ingress_marker = object()
+        self._config = SimpleNamespace(data_dir=tmp_path / "data")
+        self._services = SimpleNamespace(
+            channel_state_store=channel_state.ChannelStateStore(
+                self._config.data_dir / "channels" / "state"
+            )
+        )
+        self.calls: list[dict[str, Any]] = []
+        self.expected_identity: object | None = None
+        self.fail_ingest = False
+
+    async def do_channel_ingest(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self.expected_identity is not None:
+            assert (
+                self._services.channel_state_store.state_for(self.expected_identity) == "reserved"
+            )
+        self.calls.append(dict(params))
+        if self.fail_ingest:
+            raise RuntimeError("handler effect failed")
+        return {
+            "session_id": "session-1",
+            "response": "handled",
+            "ingress_risk": 0.1,
+        }
+
+
+def _internal_reserved_payload(
+    harness: _ReservedIngressHarness,
+    *,
+    event_id: str = "event-1",
+    scope_id: str = '["team-1","channel-1"]',
+) -> tuple[dict[str, Any], object]:
+    identity = channel_state.ReplayIdentity(
+        provider="slack",
+        account_id="app-1",
+        scope_id=scope_id,
+        event_kind="message",
+        event_id=event_id,
+    )
+    payload = {
+        "message": {
+            "channel": "slack",
+            "external_user_id": "alice",
+            "workspace_hint": "mapped-workspace",
+            "content": "hello",
+            "message_id": event_id,
+            "reply_target": "channel-1",
+            "metadata": channel_state.replay_identity_metadata(identity),
+        },
+        "_internal_ingress_marker": harness._internal_ingress_marker,
+    }
+    return payload, identity
+
+
+@pytest.mark.asyncio
+async def test_f7a_common_ingest_reserves_before_effect_and_blocks_duplicate(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(harness)
+    harness.expected_identity = identity
+
+    first = await harness.do_channel_ingest_reserved(payload)
+    payload["message"]["content"] = "changed prose cannot evade the reservation"
+    repeated = await harness.do_channel_ingest_reserved(payload)
+
+    assert first["response"] == "handled"
+    assert repeated["response"] == "Inbound event already reserved; no action was repeated."
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert len(harness.calls) == 1
+    assert harness._services.channel_state_store.state_for(identity) == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_f7a_common_ingest_failure_is_uncertain_and_never_retried(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(harness)
+    harness.expected_identity = identity
+    harness.fail_ingest = True
+
+    with pytest.raises(RuntimeError, match="handler effect failed"):
+        await harness.do_channel_ingest_reserved(payload)
+    harness.fail_ingest = False
+    repeated = await harness.do_channel_ingest_reserved(payload)
+
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert len(harness.calls) == 1
+    assert harness._services.channel_state_store.state_for(identity) == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_f7a_terminal_update_failure_leaves_reserved_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(harness)
+    harness.expected_identity = identity
+    store = harness._services.channel_state_store
+    mark_terminal = store.mark_terminal
+
+    def _fail_terminal(_identity: object) -> None:
+        raise channel_state.ChannelReplayStateError("injected terminal update failure")
+
+    monkeypatch.setattr(store, "mark_terminal", _fail_terminal)
+    with pytest.raises(channel_state.ChannelReplayStateError, match="terminal"):
+        await harness.do_channel_ingest_reserved(payload)
+    assert store.state_for(identity) == "reserved"
+
+    monkeypatch.setattr(store, "mark_terminal", mark_terminal)
+    repeated = await harness.do_channel_ingest_reserved(payload)
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert len(harness.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_f7a_uncertain_update_failure_preserves_original_error_and_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(harness)
+    harness.expected_identity = identity
+    harness.fail_ingest = True
+    store = harness._services.channel_state_store
+
+    def _fail_uncertain(_identity: object) -> None:
+        raise channel_state.ChannelReplayStateError("injected uncertain update failure")
+
+    monkeypatch.setattr(store, "mark_uncertain", _fail_uncertain)
+    with pytest.raises(RuntimeError, match="handler effect failed"):
+        await harness.do_channel_ingest_reserved(payload)
+
+    assert store.state_for(identity) == "reserved"
+    assert len(harness.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_f7a_missing_internal_identity_fails_before_handler(tmp_path: Path) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, _identity = _internal_reserved_payload(harness)
+    payload["message"]["metadata"] = {}
+
+    with pytest.raises(channel_state.ChannelReplayIdentityError, match="replay identity"):
+        await harness.do_channel_ingest_reserved(payload)
+    assert harness.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["provider", "event_id"])
+async def test_f7a_internal_identity_mismatch_fails_before_handler(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, _identity = _internal_reserved_payload(harness)
+    if mismatch == "provider":
+        payload["message"]["channel"] = "matrix"
+    else:
+        payload["message"]["message_id"] = "different-event"
+
+    with pytest.raises(channel_state.ChannelReplayIdentityError, match=mismatch):
+        await harness.do_channel_ingest_reserved(payload)
+    assert harness.calls == []
+
+
+@pytest.mark.asyncio
+async def test_f7a_direct_rpc_uses_peer_and_daemon_scope_not_claimed_channel_scope(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    first = {
+        "message": {
+            "channel": "discord",
+            "external_user_id": "alice",
+            "workspace_hint": "forged-guild-1",
+            "content": "same semantic request",
+            "message_id": "caller-id-1",
+            "reply_target": "forged-channel-1",
+            "metadata": {
+                "replay_identity": {
+                    "provider": "matrix",
+                    "account_id": "forged",
+                    "scope_id": "forged",
+                    "event_kind": "message",
+                    "event_id": "forged",
+                }
+            },
+        },
+        "_rpc_peer": {"pid": 123, "uid": 1000, "gid": 1000},
+    }
+    forged_variant = json.loads(json.dumps(first))
+    forged_variant["message"].update(
+        {
+            "channel": "matrix",
+            "workspace_hint": "forged-room-2",
+            "message_id": "caller-id-2",
+            "reply_target": "forged-target-2",
+            "metadata": {"replay_identity": {"provider": "telegram"}},
+        }
+    )
+
+    assert (await harness.do_channel_ingest_reserved(first))["response"] == "handled"
+    repeated = await harness.do_channel_ingest_reserved(forged_variant)
+    distinct = json.loads(json.dumps(first))
+    distinct["message"]["content"] = "a genuinely different request"
+    assert (await harness.do_channel_ingest_reserved(distinct))["response"] == "handled"
+
+    assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert len(harness.calls) == 2
+    assert harness._services.channel_state_store.record_count() == 2
+    database_bytes = harness._services.channel_state_store.database_path.read_bytes()
+    assert b"same semantic request" not in database_bytes
+    assert b"forged-guild" not in database_bytes
 
 
 def _gh92_pending_action(*, confirmation_id: str = "old-reminder") -> PendingAction:

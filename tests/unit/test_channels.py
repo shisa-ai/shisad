@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
 from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels import state as channel_state
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.channels.delivery import ChannelDeliveryService
 from shisad.channels.discord import (
@@ -20,7 +20,6 @@ from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelR
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
 from shisad.channels.slack import SlackChannel, SlackConfig
-from shisad.channels.state import ChannelStateStore
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.config import DaemonConfig
 from shisad.core.tools.registry import ToolRegistry
@@ -309,127 +308,99 @@ async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent(
     await channel.disconnect()
 
 
-def test_channel_state_store_persists_seen_message_ids(tmp_path) -> None:
-    store = ChannelStateStore(tmp_path / "state")
-    assert store.is_replay(channel="matrix", message_id="m1") is False
-    assert store.is_replay(channel="matrix", message_id="m1") is True
-
-    reloaded = ChannelStateStore(tmp_path / "state")
-    assert reloaded.is_replay(channel="matrix", message_id="m1") is True
-    assert reloaded.is_replay(channel="matrix", message_id="m2") is False
-
-
-def test_m4_channel_state_store_persists_journal_before_compaction(tmp_path) -> None:
-    store = ChannelStateStore(
-        tmp_path / "state",
-        max_seen_ids=32,
-        journal_compact_every=64,
+def _replay_identity(
+    *,
+    provider: str = "matrix",
+    account_id: str = "@bot:example.org",
+    scope_id: str = '["https://matrix.example.org","!room:example.org"]',
+    event_kind: str = "message",
+    event_id: str = "$event-1",
+) -> object:
+    return channel_state.ReplayIdentity(
+        provider=provider,
+        account_id=account_id,
+        scope_id=scope_id,
+        event_kind=event_kind,
+        event_id=event_id,
     )
 
-    store.mark_seen(channel="discord", message_id="m1")
 
-    journal = tmp_path / "state" / "discord.state.journal"
-    assert journal.exists()
-    assert '"m1"' in journal.read_text(encoding="utf-8")
-
-    reloaded = ChannelStateStore(
-        tmp_path / "state",
-        max_seen_ids=32,
-        journal_compact_every=64,
-    )
-    assert reloaded.has_seen(channel="discord", message_id="m1") is True
-
-
-def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_path) -> None:
-    store = ChannelStateStore(
-        tmp_path / "state",
-        max_seen_ids=32,
-        journal_compact_every=2,
-    )
-
-    for index in range(34):
-        store.mark_seen(channel="slack", message_id=f"m{index:02d}")
-
-    state_file = tmp_path / "state" / "slack.state.json"
-    payload = json.loads(state_file.read_text(encoding="utf-8"))
-    assert payload["seen_message_ids"] == [f"m{index:02d}" for index in range(2, 34)]
-
-    journal = tmp_path / "state" / "slack.state.journal"
-    if journal.exists():
-        assert journal.read_text(encoding="utf-8").strip() == ""
-
-    reloaded = ChannelStateStore(
-        tmp_path / "state",
-        max_seen_ids=32,
-        journal_compact_every=2,
-    )
-    assert reloaded.has_seen(channel="slack", message_id="m00") is False
-    assert reloaded.has_seen(channel="slack", message_id="m33") is True
-
-
-def test_m4_channel_state_store_has_seen_is_bounded_for_full_window(tmp_path) -> None:
-    store = ChannelStateStore(tmp_path / "state", max_seen_ids=2048)
-    for index in range(2048):
-        store.mark_seen(channel="telegram", message_id=f"msg-{index}")
-
-    class _ExplodingContainsDeque(deque[str]):
-        def __contains__(self, _value: object) -> bool:  # pragma: no cover - guard path
-            raise AssertionError("has_seen regressed to linear deque membership")
-
-    store._seen_ids["telegram"] = _ExplodingContainsDeque(store._seen_ids["telegram"])
-    for _ in range(25_000):
-        assert store.has_seen(channel="telegram", message_id="msg-2047") is True
-    assert store.has_seen(channel="telegram", message_id="msg-missing") is False
-
-
-def test_m4_channel_state_store_journal_roundtrip_preserves_multiline_ids(tmp_path) -> None:
-    store = ChannelStateStore(tmp_path / "state", max_seen_ids=64, journal_compact_every=64)
-    message_id = "id\nsub-id"
-    store.mark_seen(channel="discord", message_id=message_id)
-
-    reloaded = ChannelStateStore(tmp_path / "state", max_seen_ids=64, journal_compact_every=64)
-    assert reloaded.has_seen(channel="discord", message_id=message_id) is True
-    assert reloaded.has_seen(channel="discord", message_id="sub-id") is False
-
-
-def test_m5_channel_state_store_isolates_channels_with_sanitized_name_collision(
-    tmp_path,
-) -> None:
-    store = ChannelStateStore(tmp_path / "state", max_seen_ids=64)
-    store.mark_seen(channel="matrix", message_id="m1")
-
-    assert store.has_seen(channel="ma$trix", message_id="m1") is False
-    assert store.has_seen(channel=" matrix ", message_id="m1") is False
-    store.mark_seen(channel="ma$trix", message_id="m2")
-    assert store.has_seen(channel="matrix", message_id="m2") is False
-    store.mark_seen(channel=" matrix ", message_id="m3")
-    assert store.has_seen(channel="matrix", message_id="m3") is False
-
-
-def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
+def test_f7a_channel_state_store_reserves_and_survives_restart(tmp_path) -> None:
     root = tmp_path / "state"
-    root.mkdir(parents=True, exist_ok=True)
-    legacy_state = root / "matrix.state.json"
-    legacy_state.write_text(
-        json.dumps({"channel": "matrix", "seen_message_ids": ["legacy-1"]}),
-        encoding="utf-8",
+    identity = _replay_identity()
+    store = channel_state.ChannelStateStore(root)
+
+    assert store.reserve(identity) is True
+    assert store.state_for(identity) == "reserved"
+    store.mark_terminal(identity)
+    assert store.state_for(identity) == "terminal"
+
+    restarted = channel_state.ChannelStateStore(root)
+    assert restarted.reserve(identity) is False
+    assert restarted.state_for(identity) == "terminal"
+    assert restarted.record_count() == 1
+
+
+def test_f7a_channel_state_store_distinguishes_scope_and_event_kind(tmp_path) -> None:
+    store = channel_state.ChannelStateStore(tmp_path / "state")
+    message = _replay_identity(provider="discord", account_id="bot-1", event_id="123")
+    other_scope = _replay_identity(
+        provider="discord",
+        account_id="bot-1",
+        scope_id='["guild-2","channel-9"]',
+        event_id="123",
     )
-    legacy_journal = root / "matrix.state.journal"
-    legacy_journal.write_text('"legacy-2"\n', encoding="utf-8")
+    interaction = _replay_identity(
+        provider="discord",
+        account_id="bot-1",
+        event_kind="interaction",
+        event_id="123",
+    )
 
-    store = ChannelStateStore(root, max_seen_ids=64)
-    assert store.has_seen(channel="matrix", message_id="legacy-1") is True
-    assert store.has_seen(channel="matrix", message_id="legacy-2") is True
+    assert store.reserve(message) is True
+    assert store.reserve(message) is False
+    assert store.reserve(other_scope) is True
+    assert store.reserve(interaction) is True
+    assert store.record_count() == 3
 
 
-def test_m5_channel_state_store_loads_legacy_raw_numeric_journal_ids(tmp_path) -> None:
+def test_f7a_channel_state_store_never_evicts_old_reservations(tmp_path) -> None:
     root = tmp_path / "state"
-    root.mkdir(parents=True, exist_ok=True)
-    legacy_journal = root / "discord.state.journal"
-    legacy_journal.write_text("1234567890\n", encoding="utf-8")
+    store = channel_state.ChannelStateStore(root)
+    oldest = _replay_identity(provider="telegram", account_id="bot-1", event_id="msg-0")
+    assert store.reserve(oldest) is True
+    for index in range(1, 2_100):
+        assert (
+            store.reserve(
+                _replay_identity(
+                    provider="telegram",
+                    account_id="bot-1",
+                    event_id=f"msg-{index}",
+                )
+            )
+            is True
+        )
 
-    store = ChannelStateStore(root, max_seen_ids=64)
-    assert store.has_seen(channel="discord", message_id="1234567890") is True
+    restarted = channel_state.ChannelStateStore(root)
+    assert restarted.reserve(oldest) is False
+    assert restarted.record_count() == 2_100
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["provider", "account_id", "scope_id", "event_kind", "event_id"],
+)
+def test_f7a_replay_identity_rejects_empty_members(field: str) -> None:
+    values = {
+        "provider": "slack",
+        "account_id": "app-1",
+        "scope_id": '["team-1","channel-1"]',
+        "event_kind": "message",
+        "event_id": "1.23",
+    }
+    values[field] = "  "
+    with pytest.raises(channel_state.ChannelReplayIdentityError, match=field):
+        channel_state.ReplayIdentity(**values)
 
 
 @pytest.mark.asyncio
@@ -542,12 +513,22 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     assert received.reply_target == "c-1"
     # Bot mention tag should be stripped from content.
     assert received.content == "hello"
+    replay = received.metadata["replay_identity"]
+    assert replay == {
+        "provider": "discord",
+        "account_id": "bot-999",
+        "scope_id": '["g-1","c-1"]',
+        "event_kind": "message",
+        "event_id": "m-1",
+    }
+    assert "token" not in json.dumps(replay)
     await channel.disconnect()
 
 
 @pytest.mark.asyncio
 async def test_discord_channel_approval_component_enqueues_bound_confirmation(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     from shisad.channels import discord as discord_module
 
@@ -582,7 +563,11 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
         SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
     )
 
-    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    replay_store = channel_state.ChannelStateStore(tmp_path / "state")
+    channel = DiscordChannel(
+        DiscordConfig(bot_token="token"),
+        replay_state_store=replay_store,
+    )
     await channel.connect()
     assert channel._client is not None
     interaction = SimpleNamespace(
@@ -606,11 +591,103 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
     assert received.external_user_id == "u-1"
     assert received.workspace_hint == "g-1"
     assert received.reply_target == "chan-1"
+    assert received.message_id == "i-1"
     assert received.content == "confirm c-1"
     assert received.metadata["interaction_type"] == "approval_component"
     assert received.metadata["approval_component_action"] == "confirm"
     assert received.metadata["approval_confirmation_id"] == "c-1"
     assert received.metadata["approval_decision_nonce"] == "nonce-1"
+    assert received.metadata["replay_identity"] == {
+        "provider": "discord",
+        "account_id": "bot-999",
+        "scope_id": '["g-1","chan-1"]',
+        "event_kind": "interaction",
+        "event_id": "i-1",
+    }
+
+    missing_id = SimpleNamespace(
+        id="",
+        data=interaction.data,
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+    )
+    await channel._client.dispatch_interaction(missing_id)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+
+    opened_modals: list[str] = []
+
+    async def _record_modal(_interaction: object, _parsed: object) -> None:
+        opened_modals.append("opened")
+
+    channel._open_totp_modal = _record_modal  # type: ignore[method-assign]
+    missing_totp_id = SimpleNamespace(
+        id="",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="totp",
+                confirmation_id="c-1",
+                decision_nonce="nonce-1",
+            )
+        },
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+    )
+    await channel._client.dispatch_interaction(missing_totp_id)
+    assert opened_modals == []
+
+    totp_interaction = SimpleNamespace(
+        id="i-totp-open",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="totp",
+                confirmation_id="c-1",
+                decision_nonce="nonce-1",
+            )
+        },
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+    )
+    await channel._client.dispatch_interaction(totp_interaction)
+    await channel._client.dispatch_interaction(totp_interaction)
+    totp_identity = channel_state.ReplayIdentity(
+        provider="discord",
+        account_id="bot-999",
+        scope_id='["g-1","chan-1"]',
+        event_kind="interaction",
+        event_id="i-totp-open",
+    )
+    assert opened_modals == ["opened"]
+    assert replay_store.state_for(totp_identity) == "terminal"
+    assert channel_state.ChannelStateStore(tmp_path / "state").reserve(totp_identity) is False
+
+    async def _fail_modal(_interaction: object, _parsed: object) -> None:
+        raise RuntimeError("injected modal-open failure")
+
+    channel._open_totp_modal = _fail_modal  # type: ignore[method-assign]
+    failing_interaction = SimpleNamespace(
+        id="i-totp-failed",
+        data=totp_interaction.data,
+        user=interaction.user,
+        guild=interaction.guild,
+        channel=interaction.channel,
+    )
+    with pytest.raises(RuntimeError, match="modal-open failure"):
+        await channel._client.dispatch_interaction(failing_interaction)
+    failed_identity = channel_state.ReplayIdentity(
+        provider="discord",
+        account_id="bot-999",
+        scope_id='["g-1","chan-1"]',
+        event_kind="interaction",
+        event_id="i-totp-failed",
+    )
+    assert replay_store.state_for(failed_identity) == "uncertain"
+    channel._open_totp_modal = _record_modal  # type: ignore[method-assign]
+    await channel._client.dispatch_interaction(failing_interaction)
+    assert opened_modals == ["opened"]
     await channel.disconnect()
 
 
@@ -678,11 +755,14 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
     await channel._client.dispatch_interaction(interaction)
 
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.message_id == "i-2"
     assert received.content == "confirm c-2 123456"
     assert received.metadata["interaction_type"] == "approval_modal"
     assert received.metadata["approval_component_action"] == "totp_submit"
     assert received.metadata["approval_confirmation_id"] == "c-2"
     assert received.metadata["approval_decision_nonce"] == "nonce-2"
+    assert received.metadata["replay_identity"]["event_kind"] == "interaction"
+    assert received.metadata["replay_identity"]["event_id"] == "i-2"
     await channel.disconnect()
 
 
@@ -1850,13 +1930,28 @@ async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(channel.receive(), timeout=0.05)
     await channel._app.invoke_message(
-        event={"user": "U1", "text": "hello", "channel": "C1", "ts": "1.23"},
+        event={"user": "U1", "text": "missing app", "channel": "C1", "ts": "1.22"},
         body={"team_id": "T1"},
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+    await channel._app.invoke_message(
+        event={"user": "U1", "text": "hello", "channel": "C1", "ts": "1.23"},
+        body={"api_app_id": "A1", "team_id": "T1"},
     )
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "slack"
     assert message.external_user_id == "U1"
     assert message.workspace_hint == "T1"
+    assert message.metadata["replay_identity"] == {
+        "provider": "slack",
+        "account_id": "A1",
+        "scope_id": '["T1","C1"]',
+        "event_kind": "message",
+        "event_id": "1.23",
+    }
+    assert "xoxb" not in json.dumps(message.metadata)
+    assert "xapp" not in json.dumps(message.metadata)
     await channel.disconnect()
 
 
@@ -1888,7 +1983,7 @@ async def test_telegram_channel_ignores_bot_messages(
         def __init__(self) -> None:
             self.handlers: list[_FakeMessageHandler] = []
             self.updater = _FakeUpdater()
-            self.bot = SimpleNamespace(send_message=self._send_message)
+            self.bot = SimpleNamespace(id="bot-1", send_message=self._send_message)
 
         async def _send_message(self, **_kwargs: object) -> None:
             return None
@@ -1953,6 +2048,14 @@ async def test_telegram_channel_ignores_bot_messages(
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "telegram"
     assert message.external_user_id == "u-1"
+    assert message.metadata["replay_identity"] == {
+        "provider": "telegram",
+        "account_id": "bot-1",
+        "scope_id": '["chat-1"]',
+        "event_kind": "message",
+        "event_id": "m2",
+    }
+    assert "token" not in json.dumps(message.metadata)
     await channel.disconnect()
 
 
@@ -1976,10 +2079,13 @@ async def test_matrix_channel_fallback_and_workspace_mapping(
     )
 
     await channel.connect()
-    await channel.inject(
-        external_user_id="@alice:example.org",
-        content="hello from matrix",
-        workspace_hint="!room:example.org",
+    await channel._on_room_message(
+        SimpleNamespace(room_id="!room:example.org"),
+        SimpleNamespace(
+            body="hello from matrix",
+            sender="@alice:example.org",
+            event_id="$event-1",
+        ),
     )
     message = await channel.receive()
 
@@ -1987,4 +2093,12 @@ async def test_matrix_channel_fallback_and_workspace_mapping(
     assert message.external_user_id == "@alice:example.org"
     assert channel.workspace_for_room("!room:example.org") == "workspace-1"
     assert channel.is_user_verified("@alice:example.org")
+    assert message.metadata["replay_identity"] == {
+        "provider": "matrix",
+        "account_id": '["https://matrix.example.org","@bot:example.org"]',
+        "scope_id": '["!room:example.org"]',
+        "event_kind": "message",
+        "event_id": "$event-1",
+    }
+    assert "token" not in json.dumps(message.metadata)
     await channel.disconnect()

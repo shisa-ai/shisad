@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.state import (
+    ReplayIdentity,
+    replay_identity_metadata,
+    structural_replay_id,
+)
 
 _slack_app_module: Any | None
 _slack_handler_module: Any | None
@@ -74,17 +79,36 @@ class SlackChannel(InMemoryChannel):
             text = str(event.get("text", "")).strip()
             channel_id = str(event.get("channel", "")).strip()
             team_id = str((body.get("team_id") if isinstance(body, dict) else "") or "").strip()
-            if not user_id or not text:
+            app_id = str((body.get("api_app_id") if isinstance(body, dict) else "") or "").strip()
+            event_id = str(event.get("client_msg_id") or event.get("ts") or "").strip()
+            if (
+                not user_id
+                or not text
+                or not channel_id
+                or not team_id
+                or not app_id
+                or not event_id
+            ):
                 return
+            metadata = replay_identity_metadata(
+                ReplayIdentity(
+                    provider="slack",
+                    account_id=app_id,
+                    scope_id=structural_replay_id(team_id, channel_id),
+                    event_kind="message",
+                    event_id=event_id,
+                )
+            )
             await self._incoming.put(
                 ChannelMessage(
                     channel="slack",
                     external_user_id=user_id,
                     workspace_hint=self.workspace_for_team(team_id),
                     content=text,
-                    message_id=str(event.get("client_msg_id") or event.get("ts") or ""),
+                    message_id=event_id,
                     reply_target=channel_id,
                     thread_id=str(event.get("thread_ts", "")),
+                    metadata=metadata,
                 )
             )
 

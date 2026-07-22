@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from shisad.channels import state as channel_state
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.discord import DiscordChannel
 from shisad.channels.discord_policy import DiscordChannelRule
@@ -100,6 +102,33 @@ _CASES: tuple[_PumpCase, ...] = (
 )
 
 
+def _injected_replay_metadata(
+    *,
+    channel_name: str,
+    workspace_hint: str,
+    event_id: str,
+) -> dict[str, object]:
+    account_ids = {
+        "matrix": '["https://matrix.example.org","@bot:example.org"]',
+        "discord": "test-discord-bot",
+        "telegram": "test-telegram-bot",
+        "slack": "test-slack-app",
+    }
+    scope_parts = (
+        [workspace_hint, "test-channel"]
+        if channel_name in {"discord", "slack"}
+        else [workspace_hint]
+    )
+    identity = channel_state.ReplayIdentity(
+        provider=channel_name,
+        account_id=account_ids[channel_name],
+        scope_id=json.dumps(scope_parts, separators=(",", ":")),
+        event_kind="message",
+        event_id=event_id,
+    )
+    return channel_state.replay_identity_metadata(identity)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", _CASES, ids=[item.channel_name for item in _CASES])
 async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit(
@@ -110,8 +139,22 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
 ) -> None:
     async def _fake_connect(self: InMemoryChannel) -> None:
         await InMemoryChannel.connect(self)
-        await self.inject(case.blocked_user, "blocked inbound message", case.workspace_hint)
-        await self.inject(case.allowed_user, "allowed inbound message", case.workspace_hint)
+        for suffix, user, content in (
+            ("blocked", case.blocked_user, "blocked inbound message"),
+            ("allowed", case.allowed_user, "allowed inbound message"),
+        ):
+            event_id = f"{case.channel_name}-{suffix}"
+            await self.inject(
+                user,
+                content,
+                case.workspace_hint,
+                message_id=event_id,
+                metadata=_injected_replay_metadata(
+                    channel_name=case.channel_name,
+                    workspace_hint=case.workspace_hint,
+                    event_id=event_id,
+                ),
+            )
 
     monkeypatch.setattr(case.channel_cls, "connect", _fake_connect)
 
@@ -321,6 +364,11 @@ async def test_gh41_slack_confirm_reply_completes_without_reentering_planner(
             workspace_hint="team-1",
             message_id="gh41-slack-1",
             reply_target="D1",
+            metadata=_injected_replay_metadata(
+                channel_name="slack",
+                workspace_hint="team-1",
+                event_id="gh41-slack-1",
+            ),
         )
         pending_before: dict[str, Any] = {}
         sid = ""
@@ -353,6 +401,11 @@ async def test_gh41_slack_confirm_reply_completes_without_reentering_planner(
             workspace_hint="team-1",
             message_id="gh41-slack-2",
             reply_target="D1",
+            metadata=_injected_replay_metadata(
+                channel_name="slack",
+                workspace_hint="team-1",
+                event_id="gh41-slack-2",
+            ),
         )
         pending_after: dict[str, Any] = {}
         received_total = 0

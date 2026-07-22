@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -223,7 +224,7 @@ async def test_matrix_receive_pump_forwards_message_as_internal_ingress() -> Non
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> None:
+async def test_channel_receive_pump_delegates_replay_admission_to_common_handler() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -233,102 +234,14 @@ async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> No
         message_id="m-1",
     )
     channel = _MatrixChannelStub(message)
-
-    class _StateStore:
-        def __init__(self) -> None:
-            self.marked: list[str] = []
-
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
-            return False
-
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
-            self.marked.append(f"{channel}:{message_id}")
-            shutdown_event.set()
-
-    class _Handler:
-        async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
-            _ = (params, ctx)
-
-    state_store = _StateStore()
-    await channel_receive_pump(
-        channel_name="discord",
-        channel=channel,  # type: ignore[arg-type]
-        shutdown_event=shutdown_event,
-        handlers=_Handler(),
-        state_store=state_store,  # type: ignore[arg-type]
-    )
-
-    assert state_store.marked == ["discord:m-1"]
-
-
-@pytest.mark.asyncio
-async def test_channel_receive_pump_does_not_mark_replay_when_ingest_fails() -> None:
-    shutdown_event = asyncio.Event()
-    message = _MatrixMessage(
-        channel="discord",
-        external_user_id="u1",
-        workspace_hint="ws1",
-        content="hello",
-        message_id="m-1",
-    )
-    channel = _MatrixChannelStub(message)
-
-    class _StateStore:
-        def __init__(self) -> None:
-            self.marked: list[str] = []
-
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
-            return False
-
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
-            self.marked.append(f"{channel}:{message_id}")
-
-    class _FailingHandler:
-        async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
-            _ = (params, ctx)
-            shutdown_event.set()
-            raise RuntimeError("ingest failed")
-
-    state_store = _StateStore()
-    await channel_receive_pump(
-        channel_name="discord",
-        channel=channel,  # type: ignore[arg-type]
-        shutdown_event=shutdown_event,
-        handlers=_FailingHandler(),
-        state_store=state_store,  # type: ignore[arg-type]
-    )
-
-    assert state_store.marked == []
-
-
-@pytest.mark.asyncio
-async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> None:
-    shutdown_event = asyncio.Event()
-    message = _MatrixMessage(
-        channel="discord",
-        external_user_id="u1",
-        workspace_hint="ws1",
-        content="hello",
-        message_id="m-1",
-    )
-    channel = _MatrixChannelStub(message)
-
-    class _StateStore:
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
-            _ = (channel, message_id)
-            raise RuntimeError("state read failed")
-
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
-            _ = (channel, message_id)
-            shutdown_event.set()
 
     class _Handler:
         def __init__(self) -> None:
-            self.calls = 0
+            self.calls: list[tuple[dict[str, Any], bool]] = []
 
         async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
-            _ = (params, ctx)
-            self.calls += 1
+            self.calls.append((params.model_dump(mode="json"), ctx.is_internal_ingress))
+            shutdown_event.set()
 
     handler = _Handler()
     await channel_receive_pump(
@@ -336,10 +249,12 @@ async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> 
         channel=channel,  # type: ignore[arg-type]
         shutdown_event=shutdown_event,
         handlers=handler,  # type: ignore[arg-type]
-        state_store=_StateStore(),  # type: ignore[arg-type]
     )
 
-    assert handler.calls == 1
+    assert "state_store" not in inspect.signature(channel_receive_pump).parameters
+    assert len(handler.calls) == 1
+    assert handler.calls[0][0]["message"]["message_id"] == "m-1"
+    assert handler.calls[0][1] is True
 
 
 @pytest.mark.asyncio

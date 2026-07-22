@@ -13,6 +13,7 @@ import pytest
 from filelock import FileLock
 from pydantic import ValidationError
 
+from shisad.channels.state import ReplayIdentity
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.config_file import load_config_file
 from shisad.core.events import EventBus, SessionCreated
@@ -565,7 +566,8 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             tool_name="note.create",
         )
         services.checkpoint_store.create(session)
-        services.channel_state_store.mark_seen(channel="matrix", message_id="msg-1")
+        replay_identity = ReplayIdentity("matrix", "test-account", "test-scope", "message", "msg-1")
+        assert services.channel_state_store.reserve(replay_identity) is True
         services.evidence_store.store(
             session.id,
             "evidence payload",
@@ -722,6 +724,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert result["cleared"]["checkpoints"] == 1
         assert result["cleared"]["channel_state_files"] == 1
         assert result["cleared"]["channel_state_channels"] == 1
+        assert result["cleared"]["channel_state_records"] == 1
         assert result["cleared"]["evidence_refs"] == 1
         assert result["cleared"]["ingestion_records"] == 1
         assert result["cleared"]["selfmod_entries"] == 2
@@ -748,7 +751,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert services.rate_limiter._by_tool_burst == {}
         assert services.audit_log.entry_count == 0
         assert list(services.checkpoint_store._dir.iterdir()) == []
-        assert services.channel_state_store.snapshot("matrix")["seen_count"] == 0
+        assert services.channel_state_store.is_empty()
         assert (
             services.timeline_index.search(
                 query="timeline reset marker",

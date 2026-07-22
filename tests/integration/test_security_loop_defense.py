@@ -17,6 +17,7 @@ from shisad.channels.discord import DiscordChannel
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.matrix import MatrixChannel
 from shisad.channels.slack import SlackChannel
+from shisad.channels.state import ReplayIdentity, replay_identity_metadata
 from shisad.channels.telegram import TelegramChannel
 from shisad.cli.main import cli
 from shisad.core.api.transport import ControlClient
@@ -55,6 +56,12 @@ def _decision_nonce_for_confirmation(
             continue
         return str(raw.get("decision_nonce", "")).strip()
     return ""
+
+
+def _pump_replay(provider: str, scope: str, event_id: str) -> dict[str, object]:
+    return replay_identity_metadata(
+        ReplayIdentity(provider, f"test-{provider}", json.dumps([scope]), "message", event_id)
+    )
 
 
 async def _wait_for_future_started(
@@ -1750,11 +1757,15 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
             "@alice:example.org",
             "hello from matrix ingestion pump",
             "!room:example.org",
+            message_id="matrix-pump-1",
+            metadata=_pump_replay("matrix", "!room:example.org", "matrix-pump-1"),
         )
         await self.inject(
             "@alice:example.org",
             "second message from same user",
             "!room:example.org",
+            message_id="matrix-pump-2",
+            metadata=_pump_replay("matrix", "!room:example.org", "matrix-pump-2"),
         )
 
     monkeypatch.setattr(MatrixChannel, "connect", _fake_connect)
@@ -1863,11 +1874,15 @@ async def test_m5_discord_receive_pump_ingests_inbound_messages(
             "discord-user",
             "hello from discord ingestion pump",
             "guild-1",
+            message_id="discord-pump-1",
+            metadata=_pump_replay("discord", "guild-1", "discord-pump-1"),
         )
         await self.inject(
             "discord-user",
             "second discord message",
             "guild-1",
+            message_id="discord-pump-2",
+            metadata=_pump_replay("discord", "guild-1", "discord-pump-2"),
         )
 
     monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
@@ -1906,11 +1921,15 @@ async def test_m5_telegram_receive_pump_ingests_inbound_messages(
             "telegram-user",
             "hello from telegram ingestion pump",
             "chat-1",
+            message_id="telegram-pump-1",
+            metadata=_pump_replay("telegram", "chat-1", "telegram-pump-1"),
         )
         await self.inject(
             "telegram-user",
             "second telegram message",
             "chat-1",
+            message_id="telegram-pump-2",
+            metadata=_pump_replay("telegram", "chat-1", "telegram-pump-2"),
         )
 
     monkeypatch.setattr(TelegramChannel, "connect", _fake_connect)
@@ -1949,11 +1968,15 @@ async def test_m5_slack_receive_pump_ingests_inbound_messages(
             "slack-user",
             "hello from slack ingestion pump",
             "team-1",
+            message_id="slack-pump-1",
+            metadata=_pump_replay("slack", "team-1", "slack-pump-1"),
         )
         await self.inject(
             "slack-user",
             "second slack message",
             "team-1",
+            message_id="slack-pump-2",
+            metadata=_pump_replay("slack", "team-1", "slack-pump-2"),
         )
 
     monkeypatch.setattr(SlackChannel, "connect", _fake_connect)

@@ -824,6 +824,7 @@ class DaemonServices:
                     channel=channel_name,
                     external_user_ids={item for item in entries if item},
                 )
+            channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
             matrix_channel = await _build_matrix_channel(config)
             if matrix_channel is not None:
@@ -835,7 +836,10 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            discord_channel = await _build_discord_channel(config)
+            discord_channel = await _build_discord_channel(
+                config,
+                replay_state_store=channel_state_store,
+            )
             if discord_channel is not None:
                 channels["discord"] = discord_channel
                 for user_id in config.discord_trusted_users:
@@ -866,7 +870,6 @@ class DaemonServices:
                         )
 
             delivery = ChannelDeliveryService(channels)
-            channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
             local_fallback = LocalPlannerProvider()
             provider: LocalPlannerProvider | RoutedOpenAIProvider = local_fallback
@@ -1281,15 +1284,11 @@ class DaemonServices:
         _wipe_dir_contents(self.checkpoint_store._dir)
 
         # -- Channel state --
-        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
-        channel_state_root = self.channel_state_store._root_dir
-        cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
-        self.channel_state_store._seen_ids.clear()
-        self.channel_state_store._seen_id_sets.clear()
-        self.channel_state_store._journal_appends_since_compaction.clear()
-        self.channel_state_store._loaded_channels.clear()
-        self.channel_state_store._compaction_warning_logged.clear()
-        _wipe_dir_contents(channel_state_root)
+        channel_state_reset = self.channel_state_store.reset()
+        cleared["channel_state_records"] = channel_state_reset["records"]
+        # Retain the established summary keys for reset-result compatibility.
+        cleared["channel_state_channels"] = channel_state_reset["providers"]
+        cleared["channel_state_files"] = channel_state_reset["files"]
 
         # -- Transcripts --
         cleared["transcripts"] = _count_files_recursive(
@@ -1557,7 +1556,11 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     return matrix_channel
 
 
-async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
+async def _build_discord_channel(
+    config: DaemonConfig,
+    *,
+    replay_state_store: ChannelStateStore,
+) -> DiscordChannel | None:
     if not config.discord_enabled:
         return None
     from shisad.channels.discord import DiscordChannel, DiscordConfig
@@ -1573,7 +1576,8 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
             guild_workspace_map=dict(config.discord_guild_workspace_map),
             trusted_users=set(config.discord_trusted_users),
             channel_rules=list(config.discord_channel_rules),
-        )
+        ),
+        replay_state_store=replay_state_store,
     )
     await channel.connect()
     return channel

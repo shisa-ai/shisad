@@ -7,7 +7,6 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 from shisad.channels.base import Channel
-from shisad.channels.state import ChannelStateStore
 from shisad.core.api.schema import ChannelIngestParams
 from shisad.core.api.transport import ControlServer
 from shisad.core.events import (
@@ -359,14 +358,12 @@ async def matrix_receive_pump(
     matrix_channel: MatrixChannel,
     shutdown_event: asyncio.Event,
     handlers: _ChannelIngestHandler,
-    state_store: ChannelStateStore | None = None,
 ) -> None:
     await channel_receive_pump(
         channel_name="matrix",
         channel=matrix_channel,
         shutdown_event=shutdown_event,
         handlers=handlers,
-        state_store=state_store,
     )
 
 
@@ -376,7 +373,6 @@ async def channel_receive_pump(
     channel: Channel,
     shutdown_event: asyncio.Event,
     handlers: _ChannelIngestHandler,
-    state_store: ChannelStateStore | None = None,
 ) -> None:
     """Continuously ingest channel messages until shutdown is requested."""
     while not shutdown_event.is_set():
@@ -392,16 +388,6 @@ async def channel_receive_pump(
             continue
 
         message_id = str(getattr(message, "message_id", "")).strip()
-        if (
-            state_store is not None
-            and message_id
-            and _is_replay_message(
-                state_store=state_store,
-                channel_name=channel_name,
-                message_id=message_id,
-            )
-        ):
-            continue
 
         try:
             await handlers.handle_channel_ingest(
@@ -422,41 +408,3 @@ async def channel_receive_pump(
         except Exception:
             logger.exception("%s ingress processing failed", channel_name)
             continue
-
-        if state_store is not None and message_id:
-            _mark_processed_message(
-                state_store=state_store,
-                channel_name=channel_name,
-                message_id=message_id,
-            )
-
-
-def _is_replay_message(
-    *,
-    state_store: ChannelStateStore,
-    channel_name: str,
-    message_id: str,
-) -> bool:
-    try:
-        return state_store.has_seen(channel=channel_name, message_id=message_id)
-    except Exception:
-        logger.exception(
-            "%s replay guard read failed; continuing without replay check",
-            channel_name,
-        )
-        return False
-
-
-def _mark_processed_message(
-    *,
-    state_store: ChannelStateStore,
-    channel_name: str,
-    message_id: str,
-) -> None:
-    try:
-        state_store.mark_seen(channel=channel_name, message_id=message_id)
-    except Exception:
-        logger.exception(
-            "%s replay guard persist failed after successful ingest",
-            channel_name,
-        )

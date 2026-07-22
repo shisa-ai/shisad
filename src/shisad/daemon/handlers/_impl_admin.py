@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -20,6 +21,10 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
+from shisad.channels.state import (
+    ChannelReplayIdentityError,
+    ReplayIdentity,
+)
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
@@ -2278,6 +2283,120 @@ class AdminImplMixin(HandlerMixinBase):
             "discord_approval_confirmation_ids": approval_confirmation_ids,
             "discord_totp_modal_confirmation_ids": totp_modal_confirmation_ids,
             "discord_reject_confirmation_ids": reject_confirmation_ids,
+        }
+
+    async def do_channel_ingest_reserved(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Reserve one trusted ingress identity before invoking channel effects."""
+
+        identity = self._channel_replay_identity(params)
+        state_store = self._services.channel_state_store
+        if not state_store.reserve(identity):
+            existing_state = state_store.state_for(identity) or "existing"
+            return self._channel_replay_blocked_result(existing_state)
+
+        try:
+            result = await self.do_channel_ingest(params)
+        except asyncio.CancelledError:
+            self._mark_channel_replay_uncertain(state_store, identity)
+            raise
+        except Exception:
+            self._mark_channel_replay_uncertain(state_store, identity)
+            raise
+
+        state_store.mark_terminal(identity)
+        return result
+
+    def _channel_replay_identity(self, params: Mapping[str, Any]) -> ReplayIdentity:
+        message = ChannelMessage.model_validate(params.get("message", {}))
+        internal_ingress = params.get("_internal_ingress_marker") is self._internal_ingress_marker
+        if internal_ingress:
+            identity = ReplayIdentity.from_mapping(
+                dict(message.metadata or {}).get("replay_identity")
+            )
+            channel = message.channel.strip()
+            if identity.provider != channel:
+                raise ChannelReplayIdentityError(
+                    "Trusted replay identity provider does not match the channel."
+                )
+            if identity.event_id != message.message_id.strip():
+                raise ChannelReplayIdentityError(
+                    "Trusted replay identity event_id does not match the raw message ID."
+                )
+            if channel == "discord":
+                if identity.event_kind not in {"message", "interaction"}:
+                    raise ChannelReplayIdentityError(
+                        "Discord replay identity event kind is invalid."
+                    )
+            elif channel in {"matrix", "slack", "telegram"}:
+                if identity.event_kind != "message":
+                    raise ChannelReplayIdentityError(
+                        f"{channel} replay identity event kind must be message."
+                    )
+            else:
+                raise ChannelReplayIdentityError(
+                    "Trusted replay identity names an unsupported channel provider."
+                )
+            return identity
+
+        peer = params.get("_rpc_peer")
+        uid = peer.get("uid") if isinstance(peer, Mapping) else None
+        if isinstance(uid, bool) or not isinstance(uid, int):
+            raise ChannelReplayIdentityError(
+                "Direct channel ingress requires authenticated peer identity."
+            )
+        semantic_request = {
+            "external_user_id": message.external_user_id,
+            "content": message.content,
+        }
+        event_id = hashlib.sha256(
+            json.dumps(
+                semantic_request,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        data_root = Path(self._config.data_dir).resolve(strict=False)
+        scope_digest = hashlib.sha256(str(data_root).encode("utf-8")).hexdigest()
+        return ReplayIdentity(
+            provider="direct-rpc",
+            account_id=f"uid:{uid}",
+            scope_id=f"data-root:{scope_digest}",
+            event_kind="channel.ingest",
+            event_id=event_id,
+        )
+
+    @staticmethod
+    def _mark_channel_replay_uncertain(
+        state_store: Any,
+        identity: ReplayIdentity,
+    ) -> None:
+        try:
+            state_store.mark_uncertain(identity)
+        except Exception as exc:
+            logger.error(
+                "Channel replay uncertainty update failed; reserved row remains blocking "
+                "(provider=%s, error=%s)",
+                identity.provider,
+                exc.__class__.__name__,
+            )
+
+    @staticmethod
+    def _channel_replay_blocked_result(state: str) -> dict[str, Any]:
+        return {
+            "session_id": "",
+            "response": "Inbound event already reserved; no action was repeated.",
+            "ingress_risk": 0.0,
+            "delivery": {
+                "attempted": False,
+                "sent": False,
+                "reason": "inbound_replay_blocked",
+                "target": {},
+            },
+            "channel_policy": {
+                "reason": "inbound_replay_blocked",
+                "replay_state": state,
+            },
         }
 
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:

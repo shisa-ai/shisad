@@ -46,7 +46,7 @@ class _StubImpl:
     async def do_risk_calibrate(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"version": "v1", "thresholds": {}}
 
-    async def do_channel_ingest(self, _payload: dict[str, object]) -> dict[str, object]:
+    async def do_channel_ingest_reserved(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"session_id": "s1", "response": "ok", "ingress_risk": 0.1}
 
     async def do_channel_pairing_propose(self, _payload: dict[str, object]) -> dict[str, object]:

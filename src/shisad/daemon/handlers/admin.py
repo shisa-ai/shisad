@@ -141,7 +141,9 @@ class AdminHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
-        return ChannelIngestResult.model_validate(await self._impl.do_channel_ingest(payload))
+        return ChannelIngestResult.model_validate(
+            await self._impl.do_channel_ingest_reserved(payload)
+        )
 
     async def handle_channel_pairing_propose(
         self,

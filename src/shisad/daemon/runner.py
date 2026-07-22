@@ -584,7 +584,6 @@ async def _serve_daemon(
                     channel=channel,
                     shutdown_event=services.shutdown_event,
                     handlers=handlers,
-                    state_store=services.channel_state_store,
                 )
             )
         )

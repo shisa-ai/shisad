@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.state import (
+    ReplayIdentity,
+    replay_identity_metadata,
+    structural_replay_id,
+)
 
 _telegram_ext: Any | None
 try:  # pragma: no cover - optional dependency.
@@ -74,15 +79,32 @@ class TelegramChannel(InMemoryChannel):
             if not text:
                 return
             chat_id = str(getattr(chat, "id", "")) if chat is not None else ""
+            message_id = str(getattr(message, "message_id", "")).strip()
+            context_bot = getattr(_context, "bot", None)
+            application_bot = (
+                getattr(self._application, "bot", None) if self._application is not None else None
+            )
+            bot_id = str(getattr(context_bot or application_bot, "id", "") or "").strip()
+            if not chat_id.strip() or not message_id or not bot_id:
+                return
             await self._incoming.put(
                 ChannelMessage(
                     channel="telegram",
                     external_user_id=str(getattr(user, "id", "")),
                     workspace_hint=self.workspace_for_chat(chat_id),
                     content=text,
-                    message_id=str(getattr(message, "message_id", "")),
+                    message_id=message_id,
                     reply_target=chat_id,
                     thread_id=str(getattr(message, "message_thread_id", "") or ""),
+                    metadata=replay_identity_metadata(
+                        ReplayIdentity(
+                            provider="telegram",
+                            account_id=bot_id,
+                            scope_id=structural_replay_id(chat_id),
+                            event_kind="message",
+                            event_id=message_id,
+                        )
+                    ),
                 )
             )
 

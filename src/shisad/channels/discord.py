@@ -23,6 +23,12 @@ from shisad.channels.discord_policy import (
     DiscordChannelPolicyDecision,
     DiscordChannelRule,
 )
+from shisad.channels.state import (
+    ChannelStateStore,
+    ReplayIdentity,
+    replay_identity_metadata,
+    structural_replay_id,
+)
 
 # Resolve optional runtime dependency dynamically so type-checking does not
 # require the external discord package to be installed.
@@ -81,10 +87,16 @@ async def _call_discord_response(
 class DiscordChannel(InMemoryChannel):
     """Discord wrapper with in-memory fallback when discord.py is unavailable."""
 
-    def __init__(self, config: DiscordConfig) -> None:
+    def __init__(
+        self,
+        config: DiscordConfig,
+        *,
+        replay_state_store: ChannelStateStore | None = None,
+    ) -> None:
         super().__init__(name="discord")
         self._config = config
         self._channel_policy = DiscordChannelPolicy(tuple(config.channel_rules or ()))
+        self._replay_state_store = replay_state_store
         self._client: Any | None = None
         self._client_task: asyncio.Task[None] | None = None
 
@@ -138,6 +150,17 @@ class DiscordChannel(InMemoryChannel):
                 guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
                 channel_obj = getattr(message, "channel", None)
                 channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
+                replay_metadata = self._replay_metadata(
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    event_kind="message",
+                    event_id=message_id,
+                )
+                if replay_metadata is None:
+                    logger.warning(
+                        "Discord ingress dropped because structural replay identity is missing"
+                    )
+                    return
                 author = getattr(message, "author", None)
                 if author is None:
                     logger.debug(
@@ -239,6 +262,7 @@ class DiscordChannel(InMemoryChannel):
                                         message_id=message_id,
                                         reply_target=channel_id,
                                         metadata={
+                                            **replay_metadata,
                                             "discord_guild_id": guild_id,
                                             "discord_channel_id": channel_id,
                                             "addressed": addressed,
@@ -344,6 +368,7 @@ class DiscordChannel(InMemoryChannel):
                         message_id=message_id,
                         reply_target=channel_id,
                         metadata={
+                            **replay_metadata,
                             "discord_guild_id": guild_id,
                             "discord_channel_id": channel_id,
                             "addressed": True,
@@ -355,6 +380,11 @@ class DiscordChannel(InMemoryChannel):
                 )
 
             async def on_interaction(interaction: Any) -> None:
+                if not str(getattr(interaction, "id", "") or "").strip():
+                    logger.warning(
+                        "Discord interaction dropped because its raw interaction ID is missing"
+                    )
+                    return
                 data = getattr(interaction, "data", None)
                 if not isinstance(data, Mapping):
                     return
@@ -362,7 +392,7 @@ class DiscordChannel(InMemoryChannel):
                 if parsed is None:
                     return
                 if parsed.action == "totp":
-                    await self._open_totp_modal(interaction, parsed)
+                    await self._open_totp_modal_reserved(interaction, parsed)
                     return
                 if parsed.action == "totp_submit":
                     code = self._interaction_totp_code(data)
@@ -468,20 +498,24 @@ class DiscordChannel(InMemoryChannel):
         channel_obj = getattr(interaction, "channel", None)
         channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
         interaction_id = str(getattr(interaction, "id", "")).strip()
-        message_id = (
-            f"discord-interaction:{interaction_id}:{parsed.action}:{parsed.confirmation_id}"
-            if interaction_id
-            else ""
+        replay_metadata = self._replay_metadata(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            event_kind="interaction",
+            event_id=interaction_id,
         )
+        if replay_metadata is None:
+            return False
         await self._incoming.put(
             ChannelMessage(
                 channel="discord",
                 external_user_id=user_id,
                 workspace_hint=self.workspace_for_guild(guild_id),
                 content=content.strip(),
-                message_id=message_id,
+                message_id=interaction_id,
                 reply_target=channel_id,
                 metadata={
+                    **replay_metadata,
                     "discord_guild_id": guild_id,
                     "discord_channel_id": channel_id,
                     "addressed": True,
@@ -496,6 +530,54 @@ class DiscordChannel(InMemoryChannel):
             )
         )
         return True
+
+    async def _open_totp_modal_reserved(
+        self,
+        interaction: Any,
+        parsed: DiscordApprovalInteraction,
+    ) -> None:
+        guild = getattr(interaction, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or "").strip() if guild is not None else ""
+        channel = getattr(interaction, "channel", None)
+        channel_id = str(getattr(channel, "id", "") or "").strip() if channel is not None else ""
+        event_id = str(getattr(interaction, "id", "") or "").strip()
+        metadata = self._replay_metadata(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            event_kind="interaction",
+            event_id=event_id,
+        )
+        state_store = self._replay_state_store
+        if metadata is None or state_store is None:
+            logger.warning(
+                "Discord TOTP modal interaction dropped because replay state is unavailable"
+            )
+            return
+        identity = ReplayIdentity.from_mapping(metadata["replay_identity"])
+        if not state_store.reserve(identity):
+            return
+        try:
+            await self._open_totp_modal(interaction, parsed)
+        except asyncio.CancelledError:
+            self._mark_replay_uncertain(identity)
+            raise
+        except Exception:
+            self._mark_replay_uncertain(identity)
+            raise
+        state_store.mark_terminal(identity)
+
+    def _mark_replay_uncertain(self, identity: ReplayIdentity) -> None:
+        state_store = self._replay_state_store
+        if state_store is None:
+            return
+        try:
+            state_store.mark_uncertain(identity)
+        except Exception as exc:
+            logger.error(
+                "Discord TOTP replay uncertainty update failed; reservation remains blocking "
+                "(error=%s)",
+                exc.__class__.__name__,
+            )
 
     async def _open_totp_modal(
         self,
@@ -658,6 +740,28 @@ class DiscordChannel(InMemoryChannel):
         if guild_id:
             return mapping.get(guild_id, guild_id)
         return "discord"
+
+    def _replay_metadata(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        event_kind: str,
+        event_id: str,
+    ) -> dict[str, dict[str, str]] | None:
+        bot_user = getattr(self._client, "user", None) if self._client is not None else None
+        bot_id = str(getattr(bot_user, "id", "") or "").strip()
+        if not bot_id or not channel_id.strip() or not event_id.strip():
+            return None
+        return replay_identity_metadata(
+            ReplayIdentity(
+                provider="discord",
+                account_id=bot_id,
+                scope_id=structural_replay_id(guild_id, channel_id),
+                event_kind=event_kind,
+                event_id=event_id,
+            )
+        )
 
     def policy_decision_for(
         self,

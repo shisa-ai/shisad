@@ -131,6 +131,44 @@ async def test_daemon_reset_allows_new_work(
 
 
 @pytest.mark.asyncio
+async def test_f7a_daemon_reset_clears_durable_channel_replay_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import state as channel_state
+
+    clear_remote_provider_env(monkeypatch)
+    identity = channel_state.ReplayIdentity(
+        provider="matrix",
+        account_id='["https://matrix.example.org","@bot:example.org"]',
+        scope_id='["!room:example.org"]',
+        event_kind="message",
+        event_id="$reset-event",
+    )
+
+    def _seed_replay_state(config: object) -> None:
+        data_dir = Path(config.data_dir)  # type: ignore[attr-defined]
+        store = channel_state.ChannelStateStore(data_dir / "channels" / "state")
+        assert store.reserve(identity) is True
+        store.mark_uncertain(identity)
+
+    async with daemon_harness(tmp_path, prestart=_seed_replay_state) as harness:
+        result = await harness.reset()
+        root = harness.config.data_dir / "channels" / "state"
+
+        assert result["status"] == "reset"
+        assert result["quiescent"] is True
+        assert result["cleared"]["channel_state_records"] == 1
+        assert result["invariants"]["channel_state_empty"] is True
+        assert result["invariants"]["channel_state_disk_empty"] is True
+        assert not root.exists() or not any(root.iterdir())
+
+        reset_store = channel_state.ChannelStateStore(root)
+        assert reset_store.is_empty() is True
+        assert reset_store.reserve(identity) is True
+
+
+@pytest.mark.asyncio
 async def test_daemon_harness_context_manager_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
