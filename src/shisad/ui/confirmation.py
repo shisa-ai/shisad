@@ -68,6 +68,23 @@ def _summarize_shell_command(command: list[Any], *, max_len: int = 240) -> str |
     return _summarize_scalar(shlex.join(command), max_len=max_len)
 
 
+def _summarize_review_scalar(value: Any, *, max_len: int = 96) -> str:
+    raw = _stringify(value).replace("\n", "\\n")
+    if len(raw) <= max_len:
+        return raw
+    return f"{raw[:max_len]}… [{len(raw)} chars]"
+
+
+def _summarize_review_shell_command(
+    command: list[Any],
+    *,
+    max_len: int = 240,
+) -> str | None:
+    if not command or not all(isinstance(item, str) for item in command):
+        return None
+    return _summarize_review_scalar(shlex.join(command), max_len=max_len)
+
+
 def _recipient_hint(arguments: dict[str, Any]) -> str:
     for key in ("to", "recipient", "email", "destination", "url"):
         value = arguments.get(key)
@@ -114,7 +131,7 @@ def _review_value(arguments: Mapping[str, Any], *keys: str) -> str:
     for key in keys:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
-            return _summarize_scalar(value.strip(), max_len=160)
+            return _summarize_review_scalar(value.strip(), max_len=160)
     return ""
 
 
@@ -123,7 +140,7 @@ def _action_review(action: str, arguments: Mapping[str, Any]) -> str:
     if normalized_action == "shell.exec":
         command = arguments.get("command")
         if isinstance(command, list):
-            command_summary = _summarize_shell_command(command)
+            command_summary = _summarize_review_shell_command(command)
             if command_summary:
                 return f"Run command: {command_summary}"
     if normalized_action in {"file.read", "fs.read", "fs.list"}:
@@ -174,7 +191,7 @@ def _action_review(action: str, arguments: Mapping[str, Any]) -> str:
     if normalized_action == "browser.type_text":
         target = _review_value(arguments, "description", "target")
         return f"Type text into browser target: {target}" if target else "Type text in browser"
-    return f"Run {_summarize_scalar(action, max_len=48)}"
+    return f"Run {_summarize_review_scalar(action, max_len=48)}"
 
 
 def safe_summary(

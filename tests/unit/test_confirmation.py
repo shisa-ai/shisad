@@ -118,6 +118,57 @@ def test_f7c_safe_summary_leads_with_action_specific_review_text() -> None:
         assert expected in rendered
 
 
+def test_f7c_action_review_preserves_literal_metacharacters() -> None:
+    cases = (
+        (
+            "shell.exec",
+            {"command": ["printf", "%s", "a&b<c>"]},
+            "Review: Run command: printf %s 'a&b<c>'",
+        ),
+        (
+            "fs.read",
+            {"path": "notes/a&b<c>.txt"},
+            "Review: Read file: notes/a&b<c>.txt",
+        ),
+        (
+            "web.fetch",
+            {"url": "https://example.test/?a=1&b=<two>"},
+            "Review: Fetch URL: https://example.test/?a=1&b=<two>",
+        ),
+        (
+            "message.send",
+            {"channel": "slack&matrix", "recipient": "ops<primary>"},
+            "Review: Send message to ops<primary> on slack&matrix",
+        ),
+        (
+            "reminder.create",
+            {"message": "review A&B", "when": "before <deploy>"},
+            "Review: Create reminder: review A&B — before <deploy>",
+        ),
+        (
+            "browser.click",
+            {"description": "Save & <continue>"},
+            "Review: Click browser target: Save & <continue>",
+        ),
+    )
+
+    for action, arguments, expected in cases:
+        summary = safe_summary(action=action, risk_level="medium", arguments=arguments)
+        rendered = render_structured_confirmation(summary)
+        assert expected in rendered
+        assert "&amp;" not in summary.review
+        assert "&lt;" not in summary.review
+
+    shell_parameters = dict(
+        safe_summary(
+            action="shell.exec",
+            risk_level="high",
+            arguments={"command": ["printf", "%s", "a&b<c>"]},
+        ).parameters
+    )
+    assert "a&amp;b&lt;c&gt;" in shell_parameters["command"]
+
+
 def test_f7c_public_summary_structurally_excludes_internal_control_fields() -> None:
     arguments = {
         "command": ["echo", "ok"],

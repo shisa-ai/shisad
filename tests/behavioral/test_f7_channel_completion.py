@@ -2,281 +2,622 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+import os
+import textwrap
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-from shisad.channels.base import DeliveryTarget
-from shisad.core.approval import ConfirmationLevel
-from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, SessionId, SessionMode, ToolName, UserId, WorkspaceId
-from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
-from shisad.daemon.handlers._impl_session import (
-    SessionImplMixin,
-    _daemon_pending_confirmation_response_text,
+from shisad.channels.base import InMemoryChannel
+from shisad.channels.delivery import ChannelDeliveryService
+from shisad.core.api.schema import (
+    ActionPendingParams,
+    AuditQueryParams,
+    ChannelIngestParams,
+    TwoFactorRegisterBeginParams,
+    TwoFactorRegisterConfirmParams,
 )
-from shisad.daemon.handlers._pending_approval import pending_action_state_view
-from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
-from shisad.security.firewall import FirewallResult
-from shisad.security.firewall.output import OutputFirewallResult
+from shisad.core.approval import generate_totp_code
+from shisad.core.config import DaemonConfig
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
+from shisad.core.request_context import RequestContext
+from shisad.core.types import ToolName
+from shisad.daemon.control_handlers import DaemonControlHandlers
+from shisad.daemon.services import DaemonServices
 
 _CHANNELS = ("discord", "slack", "telegram", "matrix")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_README_PATH = _REPO_ROOT / "README.md"
 
 
-class _BehavioralConfirmationHarness(SessionImplMixin):
-    def __init__(self, transcript_root) -> None:
-        self._pending_actions: dict[str, PendingAction] = {}
-        self.confirm_calls: list[dict[str, object]] = []
-        self.reject_calls: list[dict[str, object]] = []
-        self._output_firewall = SimpleNamespace(inspect=self._inspect_output)
-        self._lockdown_manager = SimpleNamespace(
-            user_notification=lambda _sid: "",
-            state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="none")),
+def _authenticated_local_context() -> RequestContext:
+    return RequestContext(rpc_peer={"uid": os.getuid(), "gid": os.getgid(), "pid": os.getpid()})
+
+
+def _channel_user(channel: str) -> str:
+    return f"alice-{channel}"
+
+
+def _channel_workspace(channel: str) -> str:
+    return f"workspace-{channel}"
+
+
+def _channel_target(channel: str) -> str:
+    return f"target-{channel}"
+
+
+def _completion_policy() -> str:
+    return (
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - file.read
+            tools:
+              fs.read:
+                capabilities_required:
+                  - file.read
+                confirmation:
+                  level: software
+                  methods:
+                    - software
+              fs.list:
+                capabilities_required:
+                  - file.read
+                confirmation:
+                  level: reauthenticated
+                  methods:
+                    - totp
+            """
+        ).strip()
+        + "\n"
+    )
+
+
+def _configure_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> DaemonConfig:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_completion_policy(), encoding="utf-8")
+    return DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[_REPO_ROOT],
+        log_level="INFO",
+    )
+
+
+def _install_confirmation_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        nonlocal call_count
+        _ = (tools, persona_tone_override)
+        call_count += 1
+        totp = "queue totp" in user_content.casefold()
+        tool_name = ToolName("fs.list" if totp else "fs.read")
+        arguments = {"path": str(_REPO_ROOT if totp else _README_PATH)}
+        proposal = ActionProposal(
+            action_id=f"f7c-channel-{call_count}",
+            tool_name=tool_name,
+            arguments=arguments,
+            reasoning="exercise the real chosen-channel confirmation path",
+            data_sources=[],
         )
-        self._transcript_root = transcript_root
-        self._transcript_store = TranscriptStore(transcript_root)
-        self._event_bus = SimpleNamespace(publish=self._noop_publish)
-        self._control_plane = SimpleNamespace(active_plan_hash=self._active_plan_hash)
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="pending chosen-channel approval",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
 
-    async def _noop_publish(self, _event: object) -> None:
-        return None
-
-    @staticmethod
-    def _inspect_output(text: str, context: object) -> OutputFirewallResult:
-        _ = context
-        return OutputFirewallResult(sanitized_text=text)
-
-    @staticmethod
-    def _active_plan_hash(_session_id: str) -> str:
-        raise ControlPlaneUnavailableError(reason_code="control_plane.unavailable")
-
-    def _session_has_tainted_history(self, _sid: SessionId) -> bool:
-        return False
-
-    async def do_action_confirm(self, params: dict[str, object]) -> dict[str, object]:
-        self.confirm_calls.append(dict(params))
-        pending = self._pending_actions[str(params["confirmation_id"])]
-        if not pending_action_state_view(pending).is_live_pending:
-            pending.status = "failed"
-            pending.status_reason = "approval_expired"
-            return {
-                "confirmed": False,
-                "status": "failed",
-                "status_reason": "approval_expired",
-                "reason": "approval_expired",
-            }
-        pending.status = "approved"
-        pending.status_reason = "chat_confirmation"
-        return {
-            "confirmed": True,
-            "status": "approved",
-            "tool_outputs": [
-                {
-                    "tool_name": str(pending.tool_name),
-                    "success": True,
-                    "payload": {"ok": True, "path": "README.md"},
-                    "taint_labels": [],
-                }
-            ],
-        }
-
-    async def do_action_reject(self, params: dict[str, object]) -> dict[str, object]:
-        self.reject_calls.append(dict(params))
-        pending = self._pending_actions[str(params["confirmation_id"])]
-        pending.status = "rejected"
-        pending.status_reason = "chat_confirmation"
-        return {"rejected": True, "status": "rejected"}
+    monkeypatch.setattr(Planner, "propose", _planner)
 
 
-def _pending(
+async def _attach_memory_channels(
+    services: DaemonServices,
+) -> dict[str, InMemoryChannel]:
+    services.delivery.close()
+    channels = {name: InMemoryChannel(name) for name in _CHANNELS}
+    for channel in channels.values():
+        await channel.connect()
+    services.channels.clear()
+    services.channels.update(channels)
+    services.delivery = ChannelDeliveryService(
+        channels,
+        state_root=services.config.data_dir / "channels" / "delivery",
+        transcript_store=services.transcript_store,
+    )
+    return channels
+
+
+def _trust_channel_identities(services: DaemonServices, *, include_attackers: bool = False) -> None:
+    for channel in _CHANNELS:
+        services.identity_map.configure_channel_trust(channel=channel, trust_level="trusted")
+        services.identity_map.allow_identity(
+            channel=channel,
+            external_user_id=_channel_user(channel),
+        )
+        if include_attackers:
+            services.identity_map.allow_identity(
+                channel=channel,
+                external_user_id=f"mallory-{channel}",
+            )
+
+
+async def _ingest(
+    handlers: DaemonControlHandlers,
+    ctx: RequestContext,
     *,
     channel: str,
-    suffix: str,
-    method: str = "software",
-    expires_at: datetime | None = None,
-) -> PendingAction:
-    required_level = (
-        ConfirmationLevel.REAUTHENTICATED if method == "totp" else ConfirmationLevel.SOFTWARE
-    )
-    pending = PendingAction(
-        confirmation_id=f"c-{channel}-{suffix}",
-        decision_nonce=f"nonce-{channel}-{suffix}",
-        session_id=SessionId(f"session-{channel}"),
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("workspace-1"),
-        tool_name=ToolName("fs.read"),
-        arguments={"path": "README.md"},
-        reason="requires_confirmation",
-        capabilities={Capability.FILE_READ},
-        created_at=datetime.now(UTC),
-        expires_at=expires_at,
-        safe_preview=(
-            "ACTION CONFIRMATION\n"
-            "Review: Read file: README.md\n"
-            "Action: fs.read\n"
-            "Risk Level: MEDIUM\n"
-            "PARAMETERS:\n"
-            "  path: README.md"
-        ),
-        delivery_target=DeliveryTarget(
-            channel=channel,
-            recipient=f"target-{channel}",
-            workspace_hint=f"provider-workspace-{channel}",
-        ),
-        required_level=required_level,
-        selected_backend_id=f"{method}.default",
-        selected_backend_method=method,
-        allowed_channel_principals=["alice"],
-    )
-    return pending
-
-
-async def _submit(
-    harness: _BehavioralConfirmationHarness,
-    pending: PendingAction,
-    *,
     content: str,
-    principal: str = "alice",
-    target: DeliveryTarget | None = None,
-) -> dict[str, object] | None:
-    return await SessionImplMixin._maybe_handle_chat_confirmation(
-        harness,
-        sid=pending.session_id,
-        channel=str(pending.delivery_target.channel),
-        user_id=pending.user_id,
-        workspace_id=pending.workspace_id,
-        session_mode=SessionMode.DEFAULT,
-        trust_level="trusted",
-        trusted_input=True,
-        is_internal_ingress=True,
-        delivery_target=target or pending.delivery_target,
-        content=content,
-        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
-        channel_metadata={"channel_principal_id": principal},
+    message_id: str,
+    recipient: str | None = None,
+    external_user_id: str | None = None,
+) -> Any:
+    return await handlers.handle_channel_ingest(
+        ChannelIngestParams(
+            message={
+                "channel": channel,
+                "external_user_id": external_user_id or _channel_user(channel),
+                "workspace_hint": _channel_workspace(channel),
+                "content": content,
+                "message_id": message_id,
+                "reply_target": recipient or _channel_target(channel),
+            }
+        ),
+        ctx,
     )
 
 
-@pytest.mark.asyncio
-async def test_f7c_supported_channel_approval_completion(tmp_path) -> None:
-    """Every supported chosen channel can display, approve, TOTP, and reject."""
-
-    for channel in _CHANNELS:
-        harness = _BehavioralConfirmationHarness(tmp_path / channel)
-        software = _pending(channel=channel, suffix="software")
-        harness._pending_actions[software.confirmation_id] = software
-        public = HandlerImplementation._pending_to_dict(
-            software,
-            public=True,
-            selected_backend_available=True,
-        )
-        capability = public["channel_capability"]
-        assert capability["surface"] == channel
-        assert capability["carried_methods"] == ["software", "totp"]
-        card = _daemon_pending_confirmation_response_text(
-            pending_confirmation_ids=[software.confirmation_id],
-            pending_actions={software.confirmation_id: software},
-            pending_index_by_id={software.confirmation_id: 1},
-            pending_public_preview_by_id={software.confirmation_id: software.safe_preview},
-            binding_pending_rows=[software],
-            allow_chat_approval=False,
-            delivery_channel=channel,
-            pending_channel_capability_by_id={software.confirmation_id: capability},
-        )
-        assert "Read file: README.md" in card
-        assert "reject" in card.casefold()
-
-        result = await _submit(
-            harness,
-            software,
-            content=f"confirm {software.confirmation_id}",
-        )
-        assert result is not None
-        assert software.status == "approved"
-        assert harness.confirm_calls[-1]["decision_nonce"] == software.decision_nonce
-
-        totp = _pending(channel=channel, suffix="totp", method="totp")
-        harness._pending_actions[totp.confirmation_id] = totp
-        result = await _submit(
-            harness,
-            totp,
-            content=f"confirm {totp.confirmation_id} 123456",
-        )
-        assert result is not None
-        assert totp.status == "approved"
-        assert harness.confirm_calls[-1]["proof"] == {"totp_code": "123456"}
-
-        rejected = _pending(channel=channel, suffix="reject")
-        harness._pending_actions[rejected.confirmation_id] = rejected
-        result = await _submit(
-            harness,
-            rejected,
-            content=f"reject {rejected.confirmation_id}",
-        )
-        assert result is not None
-        assert rejected.status == "rejected"
-        assert harness.reject_calls[-1]["decision_nonce"] == rejected.decision_nonce
+async def _assert_durable_delivery(
+    services: DaemonServices,
+    channels: dict[str, InMemoryChannel],
+    response: Any,
+    *,
+    channel: str,
+    recipient: str | None = None,
+) -> str:
+    expected_recipient = recipient or _channel_target(channel)
+    delivery = dict(response.delivery)
+    assert delivery["attempted"] is True
+    assert delivery["sent"] is True
+    assert delivery["state"] == "delivered"
+    assert delivery["target"]["channel"] == channel
+    assert delivery["target"]["recipient"] == expected_recipient
+    reservation_id = str(delivery["reservation_id"])
+    record = services.delivery.record(reservation_id)
+    assert record is not None
+    assert record.state == "delivered"
+    assert record.intent.kind == "channel_result"
+    assert record.intent.target.channel == channel
+    assert record.intent.target.recipient == expected_recipient
+    assert record.receipt is not None
+    assert record.receipt.delivery_id == record.delivery_id
+    envelope = await channels[channel].pop_outgoing_delivery()
+    assert envelope.target.channel == channel
+    assert envelope.target.recipient == expected_recipient
+    assert envelope.content == response.response
+    return reservation_id
 
 
 @pytest.mark.asyncio
-async def test_f7c_supported_channel_restart_and_binding(tmp_path) -> None:
-    """Persisted identity survives restart-shaped reload while bindings stay exact."""
+async def test_f7c_supported_channel_approval_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every chosen channel uses canonical execution and durable result delivery."""
 
-    for channel in _CHANNELS:
-        original = _pending(
-            channel=channel,
-            suffix="restart",
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        )
-        durable = HandlerImplementation._pending_to_dict(original)
-        restarted = deepcopy(original)
-        assert restarted.confirmation_id == durable["confirmation_id"]
-        assert restarted.decision_nonce == durable["decision_nonce"]
-        assert restarted.expires_at is not None
-        assert restarted.expires_at.isoformat() == durable["expires_at"]
-        assert restarted.delivery_target is not None
-        assert restarted.delivery_target.model_dump(mode="json") == durable["delivery_target"]
+    config = _configure_runtime(tmp_path, monkeypatch)
+    _install_confirmation_planner(monkeypatch)
+    services = await DaemonServices.build(config)
+    try:
+        channels = await _attach_memory_channels(services)
+        _trust_channel_identities(services)
+        handlers = DaemonControlHandlers(services=services)
+        ctx = _authenticated_local_context()
 
-        harness = _BehavioralConfirmationHarness(tmp_path / f"{channel}-restart")
-        harness._pending_actions[restarted.confirmation_id] = restarted
-        wrong_target = restarted.delivery_target.model_copy(update={"recipient": "other-target"})
-        denied = await _submit(
-            harness,
-            restarted,
-            content=f"confirm {restarted.confirmation_id}",
-            target=wrong_target,
-        )
-        assert denied is not None
-        assert restarted.status == "pending"
-        assert harness.confirm_calls == []
-
-        accepted = await _submit(
-            harness,
-            restarted,
-            content=f"confirm {restarted.confirmation_id}",
-        )
-        assert accepted is not None
-        assert restarted.status == "approved"
-        assert len(harness.confirm_calls) == 1
-
-        expired = _pending(
-            channel=channel,
-            suffix="expired",
-            expires_at=datetime.now(UTC) - timedelta(seconds=1),
-        )
-        harness._pending_actions[expired.confirmation_id] = expired
-        denied = await _submit(
-            harness,
-            expired,
-            content=f"confirm {expired.confirmation_id}",
-        )
-        assert denied is not None
-        assert expired.status == "failed"
-        assert expired.status_reason == "approval_expired"
-        assert (
-            sum(
-                call["confirmation_id"] == expired.confirmation_id for call in harness.confirm_calls
+        for channel in _CHANNELS:
+            user_id = _channel_user(channel)
+            started = await handlers.handle_two_factor_register_begin(
+                TwoFactorRegisterBeginParams(
+                    method="totp",
+                    user_id=user_id,
+                    name=f"{channel}-operator",
+                ),
+                ctx,
             )
-            == 1
-        )
+            enrolled = await handlers.handle_two_factor_register_confirm(
+                TwoFactorRegisterConfirmParams(
+                    enrollment_id=started.enrollment_id,
+                    verify_code=generate_totp_code(str(started.secret)),
+                ),
+                ctx,
+            )
+            assert enrolled.registered is True
+
+            software = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"queue software approval on {channel}",
+                message_id=f"{channel}-software-queue",
+            )
+            assert software.confirmation_required_actions == 1
+            software_id = str(software.pending_confirmation_ids[0])
+            software_text = str(software.response)
+            assert "Read file:" in software_text
+            assert "reject" in software_text.casefold()
+            await _assert_durable_delivery(
+                services,
+                channels,
+                software,
+                channel=channel,
+            )
+
+            confirmed = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {software_id}",
+                message_id=f"{channel}-software-confirm",
+            )
+            assert confirmed.executed_actions == 1
+            assert confirmed.confirmation_required_actions == 0
+            assert any(
+                str(output.get("tool_name", "")) == "fs.read" and bool(output.get("success", False))
+                for output in confirmed.tool_outputs
+            )
+            await _assert_durable_delivery(
+                services,
+                channels,
+                confirmed,
+                channel=channel,
+            )
+            software_terminal = await handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=software_id),
+                ctx,
+            )
+            assert software_terminal.actions[0].lifecycle_state == "executed"
+
+            totp = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"queue totp approval on {channel}",
+                message_id=f"{channel}-totp-queue",
+            )
+            assert totp.confirmation_required_actions == 1
+            totp_id = str(totp.pending_confirmation_ids[0])
+            assert "6-digit" in str(totp.response)
+            await _assert_durable_delivery(
+                services,
+                channels,
+                totp,
+                channel=channel,
+            )
+
+            totp_confirmed = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {totp_id} {generate_totp_code(str(started.secret))}",
+                message_id=f"{channel}-totp-confirm",
+            )
+            assert totp_confirmed.executed_actions == 1
+            assert any(
+                str(output.get("tool_name", "")) == "fs.list" and bool(output.get("success", False))
+                for output in totp_confirmed.tool_outputs
+            )
+            await _assert_durable_delivery(
+                services,
+                channels,
+                totp_confirmed,
+                channel=channel,
+            )
+
+            rejection = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"queue rejected approval on {channel}",
+                message_id=f"{channel}-reject-queue",
+            )
+            rejection_id = str(rejection.pending_confirmation_ids[0])
+            await _assert_durable_delivery(
+                services,
+                channels,
+                rejection,
+                channel=channel,
+            )
+            rejected = await _ingest(
+                handlers,
+                ctx,
+                channel=channel,
+                content=f"reject {rejection_id}",
+                message_id=f"{channel}-reject",
+            )
+            assert rejected.executed_actions == 0
+            assert rejected.blocked_actions >= 1
+            await _assert_durable_delivery(
+                services,
+                channels,
+                rejected,
+                channel=channel,
+            )
+            rejection_terminal = await handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=rejection_id),
+                ctx,
+            )
+            assert rejection_terminal.actions[0].lifecycle_state == "rejected"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f7c_supported_channel_restart_and_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real persisted actions and F7B deliveries remain exact across restart."""
+
+    config = _configure_runtime(tmp_path, monkeypatch)
+    _install_confirmation_planner(monkeypatch)
+    ctx = _authenticated_local_context()
+    live_by_channel: dict[str, dict[str, str]] = {}
+    expired_by_channel: dict[str, str] = {}
+
+    first = await DaemonServices.build(config)
+    try:
+        first_channels = await _attach_memory_channels(first)
+        _trust_channel_identities(first)
+        first_handlers = DaemonControlHandlers(services=first)
+        for channel in _CHANNELS:
+            live = await _ingest(
+                first_handlers,
+                ctx,
+                channel=channel,
+                content=f"queue software restart approval on {channel}",
+                message_id=f"{channel}-restart-live-queue",
+            )
+            live_id = str(live.pending_confirmation_ids[0])
+            await _assert_durable_delivery(
+                first,
+                first_channels,
+                live,
+                channel=channel,
+            )
+            live_row = (
+                await first_handlers.handle_action_pending(
+                    ActionPendingParams(confirmation_id=live_id),
+                    ctx,
+                )
+            ).actions[0]
+            live_by_channel[channel] = {
+                "confirmation_id": live_id,
+                "decision_nonce": live_row.decision_nonce,
+                "action_id": live_row.action_id,
+                "result_id": live_row.result_id,
+                "session_id": live_row.session_id,
+            }
+
+            expiring = await _ingest(
+                first_handlers,
+                ctx,
+                channel=channel,
+                content=f"queue software expiring approval on {channel}",
+                message_id=f"{channel}-restart-expiring-queue",
+            )
+            expiring_ids = {
+                str(item) for item in expiring.pending_confirmation_ids if str(item) != live_id
+            }
+            assert len(expiring_ids) == 1
+            expired_by_channel[channel] = expiring_ids.pop()
+            await _assert_durable_delivery(
+                first,
+                first_channels,
+                expiring,
+                channel=channel,
+            )
+    finally:
+        await first.shutdown()
+
+    result_deliveries: dict[str, str] = {}
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_channels = await _attach_memory_channels(restarted)
+        _trust_channel_identities(restarted, include_attackers=True)
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+
+        for channel in _CHANNELS:
+            expected = live_by_channel[channel]
+            confirmation_id = expected["confirmation_id"]
+            loaded = (
+                await restarted_handlers.handle_action_pending(
+                    ActionPendingParams(confirmation_id=confirmation_id),
+                    ctx,
+                )
+            ).actions[0]
+            assert loaded.lifecycle_state == "pending"
+            assert loaded.decision_nonce == expected["decision_nonce"]
+            assert loaded.action_id == expected["action_id"]
+            assert loaded.result_id == expected["result_id"]
+            assert loaded.session_id == expected["session_id"]
+            assert loaded.user_id == _channel_user(channel)
+            assert loaded.workspace_id == _channel_workspace(channel)
+            assert loaded.origin_channel == channel
+            assert loaded.delivery_target == {
+                "channel": channel,
+                "recipient": _channel_target(channel),
+                "thread_id": "",
+                "workspace_hint": _channel_workspace(channel),
+            }
+
+            cross_principal = await _ingest(
+                restarted_handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {confirmation_id}",
+                message_id=f"{channel}-restart-cross-principal",
+                external_user_id=f"mallory-{channel}",
+            )
+            assert cross_principal.executed_actions == 0
+            await _assert_durable_delivery(
+                restarted,
+                restarted_channels,
+                cross_principal,
+                channel=channel,
+            )
+
+            wrong_recipient = f"other-{channel}"
+            wrong_target = await _ingest(
+                restarted_handlers,
+                ctx,
+                channel=channel,
+                content=f"approve {confirmation_id}",
+                message_id=f"{channel}-restart-wrong-target",
+                recipient=wrong_recipient,
+            )
+            assert wrong_target.executed_actions == 0
+            await _assert_durable_delivery(
+                restarted,
+                restarted_channels,
+                wrong_target,
+                channel=channel,
+                recipient=wrong_recipient,
+            )
+            still_pending = await restarted_handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=confirmation_id),
+                ctx,
+            )
+            assert still_pending.actions[0].lifecycle_state == "pending"
+
+            accepted = await _ingest(
+                restarted_handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {confirmation_id} please",
+                message_id=f"{channel}-restart-confirm",
+            )
+            assert accepted.executed_actions == 1
+            result_id = str(accepted.action_followup_identity["result_id"])
+            assert result_id
+            expected["result_id"] = result_id
+            result_deliveries[channel] = await _assert_durable_delivery(
+                restarted,
+                restarted_channels,
+                accepted,
+                channel=channel,
+            )
+
+            duplicate = await _ingest(
+                restarted_handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {confirmation_id} please",
+                message_id=f"{channel}-restart-duplicate",
+            )
+            assert duplicate.executed_actions == 0
+            assert duplicate.delivery["reason"] == "inbound_replay_blocked"
+            terminal = await restarted_handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=confirmation_id),
+                ctx,
+            )
+            assert terminal.actions[0].lifecycle_state == "executed"
+            assert terminal.actions[0].result_id == expected["result_id"]
+
+            expired_id = expired_by_channel[channel]
+            expired_pending = restarted_handlers._impl._pending_actions[expired_id]
+            expired_pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            expired = await _ingest(
+                restarted_handlers,
+                ctx,
+                channel=channel,
+                content=f"confirm {expired_id}",
+                message_id=f"{channel}-restart-expired",
+            )
+            assert expired.executed_actions == 0
+            await _assert_durable_delivery(
+                restarted,
+                restarted_channels,
+                expired,
+                channel=channel,
+            )
+            expired_row = await restarted_handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=expired_id),
+                ctx,
+            )
+            assert expired_row.actions[0].lifecycle_state == "expired"
+
+            executed_events = await restarted_handlers.handle_audit_query(
+                AuditQueryParams(
+                    event_type="ToolExecuted",
+                    session_id=expected["session_id"],
+                    limit=100,
+                ),
+                ctx,
+            )
+            matching_results = [
+                event
+                for event in executed_events.events
+                if str(event.get("data", {}).get("result_id", "")) == expected["result_id"]
+            ]
+            assert len(matching_results) == 1
+    finally:
+        await restarted.shutdown()
+
+    final = await DaemonServices.build(config)
+    try:
+        final_channels = await _attach_memory_channels(final)
+        _trust_channel_identities(final)
+        final_handlers = DaemonControlHandlers(services=final)
+        for channel in _CHANNELS:
+            expected = live_by_channel[channel]
+            terminal = await final_handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=expected["confirmation_id"]),
+                ctx,
+            )
+            assert terminal.actions[0].lifecycle_state == "executed"
+            assert terminal.actions[0].result_id == expected["result_id"]
+            expired = await final_handlers.handle_action_pending(
+                ActionPendingParams(confirmation_id=expired_by_channel[channel]),
+                ctx,
+            )
+            assert expired.actions[0].lifecycle_state == "expired"
+            result_record = final.delivery.record(result_deliveries[channel])
+            assert result_record is not None
+            assert result_record.state == "delivered"
+            assert result_record.intent.target.channel == channel
+            assert result_record.receipt is not None
+
+        assert await final.delivery.recover() == []
+        assert all(channel.pending_outgoing() == 0 for channel in final_channels.values())
+    finally:
+        await final.shutdown()
