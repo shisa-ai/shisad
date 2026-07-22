@@ -8442,7 +8442,8 @@ async def test_finalize_response_uses_global_pending_indexes_for_new_actions() -
 
     text = str(response["response"])
     assert "1. c-new" not in text
-    assert "2. c-new" in text
+    assert "2. pending action" in text
+    assert "ID: c-new" in text
     assert "confirm 2" in text
 
 
@@ -8485,9 +8486,10 @@ async def test_finalize_response_hides_totp_code_path_for_new_non_totp_action() 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert "2. c-new" in text
+    assert "2. pending action" in text
+    assert "ID: c-new" in text
     assert "confirm 2" in text
-    assert "TOTP approval pending" in text
+    assert "TOTP in chat: reply with 'confirm c-old 123456'" in text
     assert "confirm 1" not in text
     assert "reject 1" in text
     assert "shisad action confirm c-old --totp-code 123456" in text
@@ -8537,7 +8539,8 @@ async def test_finalize_response_targets_new_totp_when_older_totp_is_visible() -
     text = str(response["response"])
     assert "TOTP in chat: reply with 'confirm c-new 123456'" in text
     assert "TOTP in chat: reply with the 6-digit code" not in text
-    assert "TOTP approval pending: reply with 'reject 1' to reject" in text
+    assert "TOTP in chat: reply with 'confirm c-old 123456'" in text
+    assert "To reject in chat: reply with 'reject 1'" in text
     assert "shisad action confirm c-old --totp-code 123456" in text
 
 

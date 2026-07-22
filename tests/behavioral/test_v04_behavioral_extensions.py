@@ -12,7 +12,7 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -21,8 +21,12 @@ import pytest
 import yaml
 
 from shisad.approver.main import ApproverService
-from shisad.channels.base import DeliveryTarget, InMemoryChannel
-from shisad.channels.delivery import ChannelDeliveryService, DeliveryResult
+from shisad.channels.base import InMemoryChannel
+from shisad.channels.delivery import (
+    ChannelDeliveryService,
+    DeliveryIntent,
+    DeliveryResult,
+)
 from shisad.channels.discord import DiscordChannel
 from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.core.api.transport import ControlClient
@@ -828,11 +832,12 @@ async def test_behavioral_due_reminder_executes_without_confirmation_or_lockdown
     async def _successful_send(
         self: ChannelDeliveryService,
         *,
-        target: DeliveryTarget,
+        intent: DeliveryIntent,
         message: str,
+        metadata: Mapping[str, Any] | None = None,
     ) -> DeliveryResult:
-        _ = (self, message)
-        return DeliveryResult(attempted=True, sent=True, reason="sent", target=target)
+        _ = (self, message, metadata)
+        return DeliveryResult(attempted=True, sent=True, reason="sent", target=intent.target)
 
     monkeypatch.setattr(ChannelDeliveryService, "send", _successful_send)
     daemon_task, client, _config = await _start_daemon(tmp_path)
@@ -1107,9 +1112,7 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         assert action["approval_envelope"]["schema_version"] == "shisad.approval.v2"
         assert action["approval_envelope"]["pending_action_id"] == action_id
         assert str(action["approval_envelope"]["action_digest"]).startswith("sha256:")
-        assert str(action["approval_envelope"]["approval_contract_hash"]).startswith(
-            "sha256:"
-        )
+        assert str(action["approval_envelope"]["approval_contract_hash"]).startswith("sha256:")
         assert str(action["approval_envelope_hash"]).startswith("sha256:")
 
         confirmed = await client.call(

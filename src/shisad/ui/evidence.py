@@ -201,7 +201,11 @@ def _sanitize_terminal_assistant_segment(
             normalized_lines.append(line)
         else:
             normalized_lines.append(_normalize_literal_linebreak_escapes(line))
-        if preserve_pending_preview_escapes and in_pending_block and line == "   Preview:":
+        if (
+            preserve_pending_preview_escapes
+            and in_pending_block
+            and line in {"   Preview:", "   Review:"}
+        ):
             in_pending_preview = True
         if preserve_pending_preview_escapes and in_pending_block and line in _PENDING_FOOTERS:
             in_pending_block = False
