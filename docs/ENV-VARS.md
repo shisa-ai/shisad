@@ -635,6 +635,9 @@ These are still part of the live surface:
 | Env var | Purpose |
 |---|---|
 | `SHISAD_MEMORY_MASTER_KEY` | Optional memory-encryption secret override |
+| `SHISAD_SESSION_ID` | CLI current-session default when a command has no explicit `--session`; otherwise the CLI may use its last-session cache where that command permits it |
+| `SHISAD_USER` | CLI owner-scope default used together with `SHISAD_WORKSPACE` when explicit `--user` / `--workspace` flags are absent |
+| `SHISAD_WORKSPACE` | CLI owner-scope default used together with `SHISAD_USER`; setting only one of the pair is an error |
 | `OPENAI_API_KEY` | OpenAI preset credential discovery |
 | `SHISA_API_KEY` | SHISA preset credential discovery |
 | `OPENROUTER_API_KEY` | OpenRouter preset credential discovery |

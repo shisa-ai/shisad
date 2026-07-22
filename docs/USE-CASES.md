@@ -30,13 +30,13 @@ These are the most commonly cited use cases across all source articles, rank-ord
 | **1** | **Email triage / read / send** | Partial | Local MsgVault read/search works when configured; draft/send is absent | Future connector work |
 | **2** | **Calendar read / write** | Missing | Calendar connector and credential lifecycle | Future connector work |
 | **3** | **Morning briefing (full)** | Partial | Scheduler and configured email reads exist; calendar is absent | Future connector work |
-| **4** | **Attachment pipeline (voice + image)** | Partial | Local bounded manifest ingest in `v0.6.6`; STT/OCR/channel download plumbing still needed | **v0.7** |
+| **4** | **Attachment pipeline (voice + image)** | Partial | Local bounded manifest ingest in `v0.6.6`; STT/OCR/channel download plumbing still needed | Future connector work |
 | **5** | **Code generation / dev workflows** | Supported (config-gated) | Requires a configured coding-agent adapter and repository root | Current |
 | **6** | **Memory / preference learning** | Partial | Structured memory and configurable extraction exist; richer semantic preference schema/extraction still needed | Future refinement |
 | **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | Future connector work |
 | **8** | **Group chat @mention gating** | Partial | Per-channel routing config + group-scoped policy model | Future refinement |
-| **9** | **Scheduled task guardrails** | Partial | Task cancellation propagation, output sanitization | **v0.4** |
-| **10** | **Browser automation** | Partial | Baseline sandboxed browser tools shipped in `v0.6.0` M6; authenticated/admin follow-ons still need more hardening | **v0.6 (baseline)** |
+| **9** | **Scheduled task guardrails** | Partial | Task cancellation propagation, output sanitization | Future refinement |
+| **10** | **Browser automation** | Partial | Baseline sandboxed browser tools shipped in `v0.6.0` M6; authenticated/admin follow-ons still need more hardening | Current baseline; future hardening |
 
 ### Key Insight: The Foundations Exist; Connectors Define the Remaining Gaps
 
@@ -973,7 +973,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Separate Docker-sandboxed agents per role | Per-identity capability scoping via PEP | Centralized policy enforcement is stronger than per-container policy |
 | iMessage as primary channel | Discord/Telegram/Slack/Matrix | iMessage lacks stable bot API; shisad uses protocols with official bot support |
 | Agent-to-agent escalation | Permission escalation with owner confirmation | Same security outcome via PEP rather than inter-process communication |
-| Dedicated MacBook Air hardware | Any Linux/macOS server | shisad is platform-agnostic; systemd service model |
+| Dedicated MacBook Air hardware | Supported Linux deployment with the required containment backend | The current daemon/control and systemd deployment path is Linux-scoped; macOS pure-state/import CI is not a daemon-support claim |
 
 ### Cannot Support / Needs Workaround
 

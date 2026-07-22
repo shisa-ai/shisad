@@ -140,7 +140,8 @@ and provenance attestations, the published `v0.6.3` critical UX
 stabilization lane, the shipped `v0.6.4` textguard migration, the shipped
 `v0.6.5` MCP/A2A interop lane, the shipped `v0.6.6` connector/skill expansion
 lane, and the shipped `v0.6.7` Ledger signer line from the first external pull
-request. The `v0.7` memory foundation is next.
+request. The published `v0.7` memory line and the later v0.8 lines are
+described below.
 
 #### v0.6.1 — Security hardening
 
@@ -156,7 +157,8 @@ lane adds sidecar-isolated control-plane analysis, PromptGuard 2 runtime
 screening, the fixed shipped YARA unicode-steganography detector, structured
 warning-only phantom-action detection, runtime Tool Dependency Graph
 verification with clean COMMAND-declared task roots, and metadata-only
-reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
+reviewed-skill schema-drift observability. At that 2026-04-05 close,
+`v0.6.2` was the next planned lane; it is now published.
 
 #### v0.6.2 — Hardware-backed approval and signing
 
@@ -181,8 +183,9 @@ metadata stays plaintext, the shipped default remains plaintext blobs when no
 remote key boundary is configured, and approval-factor / recovery-code
 at-rest hardening remains follow-on. Consumer-Ledger clear-signing /
 trusted-display work also remains follow-on. With `A0`-`A3`, `L2`, and `L1`
-now review-closed and the release-close bundle complete, the next planned lane
-is `v0.6.3` rather than another in-line `v0.6.2` milestone.
+now review-closed and the release-close bundle complete, `v0.6.3` was the next
+planned lane at that 2026-04-09 close; it is now published rather than another
+in-line `v0.6.2` milestone.
 
 Approval-level mapping for v0.6.2:
 
@@ -413,10 +416,12 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.9 — Security quality and consolidation
 
-- Extend the bounded v0.8.1 secret-pattern consolidation to broader content
-  firewall and credential-consumer policy where evidence warrants it
-- Simplify the broader network enforcement stack after v0.8.1 establishes one
-  canonical URL/SSRF primitive for current consumers
+- After the planned bounded v0.8.1 secret-pattern consolidation lands, extend
+  it to broader content-firewall and credential-consumer policy where evidence
+  warrants it
+- If the planned v0.8.1 canonical URL/SSRF primitive lands for current
+  consumers, use that boundary before simplifying the broader network
+  enforcement stack
 - Simplify network enforcement layers (single PEP decision point)
 - Unify crypto key management across signing and encryption systems
 - Wire or remove unused policy scope compilation code
@@ -436,27 +441,29 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ## Roadmap Alignment
 
-| Capability | Target |
+| Capability | Release / destination |
 | --- | --- |
-| Personal reminder / notetaker baseline | v0.5 |
-| Evidence references | v0.5 |
-| Multi-agent orchestration | v0.6.0 |
-| Web tools + browser automation | v0.6.0 |
-| Control-plane isolation | v0.6.1 |
-| Hardware-backed approvals | v0.6.2 |
-| Critical UX stabilization | v0.6.3 |
-| textguard port | v0.6.4 |
-| MCP/A2A interop | v0.6.5 |
-| Local email connector baseline | v0.6.6 |
-| Local attachment ingest baseline | v0.6.6 |
-| Full attachment processing pipeline | v0.7+ |
-| Long-term memory | v0.7 |
-| Command-chat UX bug fixes (no-regex, lockdown recovery, state inspection) | v0.7.1 |
-| Memory hardening + benchmark closure | v0.7.2 |
-| Open-threads UX + procedural memory pilot + timeline search | v0.7.3 |
-| UX overhaul + operator web UI | v0.8 |
-| Security infrastructure consolidation | v0.9 |
-| Multitenant support | v0.10 |
+| Personal reminder / notetaker baseline | v0.5 (shipped) |
+| Evidence references | v0.5 (shipped) |
+| Multi-agent orchestration | v0.6.0 (shipped) |
+| Web tools + browser automation baseline | v0.6.0 (shipped) |
+| Control-plane isolation | v0.6.1 (shipped) |
+| Hardware-backed approvals | v0.6.2 (shipped) |
+| Critical UX stabilization | v0.6.3 (shipped) |
+| textguard port | v0.6.4 (shipped) |
+| MCP/A2A interop | v0.6.5 (shipped) |
+| Local email connector baseline | v0.6.6 (shipped) |
+| Local attachment ingest baseline | v0.6.6 (shipped) |
+| Full attachment processing pipeline | Future connector work |
+| Long-term memory | v0.7 (shipped) |
+| Command-chat UX bug fixes (no-regex, lockdown recovery, state inspection) | v0.7.1 (shipped) |
+| Memory hardening + benchmark closure | v0.7.2 (shipped) |
+| Open-threads UX + procedural memory pilot + timeline search | v0.7.3 (shipped) |
+| UX overhaul foundation | v0.8.0 (shipped) |
+| Reliable-foundation patch line | v0.8.1 (development) |
+| Live operator web UI | Later operator UX |
+| Security infrastructure consolidation | v0.9 (planned) |
+| Multitenant support | v0.10 (planned) |
 
 ## Critical Path
 
@@ -472,9 +479,10 @@ TOTP entry remain deferred to `v0.8.0`.
 10. Command-chat bug-fix point release (`v0.7.1`)
 11. Memory hardening + benchmark closure (`v0.7.2`)
 12. Open threads + procedural memory pilot + timeline search (`v0.7.3`)
-13. UX overhaul and operator web UI (`v0.8`)
-14. Security infrastructure consolidation (`v0.9`)
-15. Multi-tenant support (`v0.10`)
+13. UX overhaul foundation (`v0.8.0`); live operator web UI remains later work
+14. Reliable-foundation patch line (`v0.8.1`, development)
+15. Security infrastructure consolidation (`v0.9`, planned)
+16. Multi-tenant support (`v0.10`, planned)
 
 ## Public Announcement Criteria
 
