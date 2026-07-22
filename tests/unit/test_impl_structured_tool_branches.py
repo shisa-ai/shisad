@@ -52,6 +52,7 @@ class _EventCollector:
 class _ExecutionRecorder:
     def __init__(self) -> None:
         self.results: list[bool] = []
+        self.uncertainties: list[bool] = []
 
     def record_execution(
         self,
@@ -59,9 +60,11 @@ class _ExecutionRecorder:
         action: object,
         success: bool,
         idempotency_key: str = "",
+        outcome_unknown: bool = False,
     ) -> None:
-        _ = action, idempotency_key
+        _ = action, idempotency_key, outcome_unknown
         self.results.append(success)
+        self.uncertainties.append(outcome_unknown)
 
 
 class _NoopRateLimiter:
@@ -126,14 +129,24 @@ class _FsWriteToolkitStub:
 
 
 class _DeliveryStub:
-    def __init__(self, *, sent: bool, reason: str = "sent") -> None:
+    def __init__(self, *, sent: bool, reason: str = "sent", outcome_unknown: bool = False) -> None:
         self._sent = sent
         self._reason = reason
+        self._outcome_unknown = outcome_unknown
         self.calls: list[tuple[str, str, str]] = []
 
-    async def send(self, *, target: Any, message: str) -> Any:
+    async def send(
+        self, *, intent: Any, message: str, metadata: dict[str, Any] | None = None
+    ) -> Any:
+        _ = metadata
+        target = intent.target
         self.calls.append((str(target.channel), str(target.recipient), message))
-        return SimpleNamespace(sent=self._sent, reason=self._reason, target=target)
+        return SimpleNamespace(
+            sent=self._sent,
+            reason=self._reason,
+            target=target,
+            outcome_unknown=self._outcome_unknown,
+        )
 
 
 class _TranscriptStoreStub:
@@ -178,6 +191,7 @@ class _StructuredBranchHarness:
         git_status_payload: dict[str, Any],
         delivery_sent: bool = True,
         delivery_reason: str = "sent",
+        delivery_outcome_unknown: bool = False,
     ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
@@ -194,7 +208,11 @@ class _StructuredBranchHarness:
         self._web_toolkit = _WebToolkitStub(web_payload)
         self._browser_toolkit = _BrowserToolkitStub()
         self._fs_git_toolkit = _FsGitToolkitStub(git_status_payload)
-        self._delivery = _DeliveryStub(sent=delivery_sent, reason=delivery_reason)
+        self._delivery = _DeliveryStub(
+            sent=delivery_sent,
+            reason=delivery_reason,
+            outcome_unknown=delivery_outcome_unknown,
+        )
         self._transcript_store = _TranscriptStoreStub()
         self._scheduler = _SchedulerStub()
         self._memory_ingress_registry = IngressContextRegistry()
@@ -221,6 +239,11 @@ class _StructuredBranchHarness:
             skill_name=skill_name,
             task_id=task_id,
         )
+
+    @staticmethod
+    def _registered_skill_identity(*, tool: object, arguments: object) -> tuple[str, str]:
+        _ = (tool, arguments)
+        return "", ""
 
     @staticmethod
     def _sanitize_tool_output_text(raw: str) -> str:
@@ -1927,6 +1950,36 @@ async def test_g3_impl_message_send_branch_uses_delivery_service_and_records_suc
 
 
 @pytest.mark.asyncio
+async def test_f7b_message_send_propagates_delivery_uncertainty_to_f2_accounting() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True, "status": "clean"},
+        delivery_sent=False,
+        delivery_reason="provider_attempt_failed",
+        delivery_outcome_unknown=True,
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("message.send"),
+        arguments={
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "Reminder: standup",
+        },
+        capabilities=set(),
+        approval_actor="scheduler",
+    )
+
+    assert result.success is False
+    assert result.outcome_unknown is True
+    assert harness._control_plane.results == [False]
+    assert harness._control_plane.uncertainties == [True]
+
+
+@pytest.mark.asyncio
 async def test_m1_message_send_branch_normalizes_none_optional_target_fields() -> None:
     harness = _StructuredBranchHarness(
         web_payload={"ok": True, "results": []},
@@ -1958,7 +2011,7 @@ async def test_m1_message_send_branch_normalizes_none_optional_target_fields() -
 
 
 @pytest.mark.asyncio
-async def test_m1_message_send_session_branch_appends_transcript_for_scheduler_delivery() -> None:
+async def test_f7b_message_send_session_branch_uses_durable_delivery_service() -> None:
     harness = _StructuredBranchHarness(
         web_payload={"ok": True, "results": []},
         git_status_payload={"ok": True, "status": "clean"},
@@ -1982,14 +2035,8 @@ async def test_m1_message_send_session_branch_appends_transcript_for_scheduler_d
     assert result.tool_output is not None
     payload = result.tool_output.content
     assert '"sent": true' in payload
-    assert harness._delivery.calls == []
-    assert len(harness._transcript_store.calls) == 1
-    appended = harness._transcript_store.calls[0]
-    assert appended["session_id"] == str(harness.session_id)
-    assert appended["role"] == "assistant"
-    assert appended["content"] == "Reminder: standup"
-    assert appended["metadata"]["channel"] == "session"
-    assert appended["metadata"]["delivered_by"] == "scheduler"
+    assert harness._delivery.calls == [("session", str(harness.session_id), "Reminder: standup")]
+    assert harness._transcript_store.calls == []
     assert harness._control_plane.results == [True]
 
 

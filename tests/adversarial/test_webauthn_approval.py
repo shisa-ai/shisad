@@ -9,7 +9,7 @@ import re
 import socket
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -424,6 +424,49 @@ async def test_approval_token_claim_blocks_concurrent_reuse_and_reuses_same_link
         assert third_status == 400
         assert third_payload["reason"] == "invalid_webauthn_assertion"
         assert service.issue_approval_link("c-1") == approval_url
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_rotating_approval_link_revokes_prior_bearer() -> None:
+    port = _reserve_local_port()
+    service = ApprovalWebService(
+        origin=f"http://127.0.0.1:{port}",
+        bind_host="127.0.0.1",
+        bind_port=port,
+        link_ttl_seconds=600,
+        rate_limit_window_seconds=60,
+        rate_limit_max_attempts=2,
+    )
+
+    async def _context(_target_id: str) -> dict[str, Any]:
+        return {"ok": True, "public_key": {"challenge": "abc"}}
+
+    async def _complete(_target_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        return {"confirmed": True}
+
+    loop = asyncio.get_running_loop()
+    service.bind_callbacks(
+        loop=loop,
+        registration_context=_context,
+        registration_complete=_complete,
+        approval_context=_context,
+        approval_complete=_complete,
+    )
+    await service.start()
+    try:
+        expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        original = service.issue_approval_link("c-1", expires_at=expires_at)
+        replacement = service.rotate_approval_link("c-1", expires_at=expires_at)
+
+        original_status, original_payload = await asyncio.to_thread(_http_get_json, original)
+        replacement_status, _headers, _body = await asyncio.to_thread(_http_get, replacement)
+
+        assert replacement != original
+        assert original_status == 403
+        assert original_payload["reason"] == "invalid_or_expired_token"
+        assert replacement_status == 200
     finally:
         await service.stop()
 

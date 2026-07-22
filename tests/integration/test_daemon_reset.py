@@ -169,6 +169,40 @@ async def test_f7a_daemon_reset_clears_durable_channel_replay_authority(
 
 
 @pytest.mark.asyncio
+async def test_f7b_daemon_reset_clears_durable_delivery_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels.base import DeliveryTarget
+    from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent
+
+    clear_remote_provider_env(monkeypatch)
+
+    def _seed_delivery_state(config: object) -> None:
+        data_dir = Path(config.data_dir)  # type: ignore[attr-defined]
+        delivery = ChannelDeliveryService({}, state_root=data_dir / "channels" / "delivery")
+        delivery.reserve(
+            DeliveryIntent(
+                source_id="reset-source",
+                kind="message_send",
+                target=DeliveryTarget(channel="session", recipient="session-1"),
+            )
+        )
+        delivery.close()
+
+    async with daemon_harness(tmp_path, prestart=_seed_delivery_state) as harness:
+        result = await harness.reset()
+
+        assert result["status"] == "reset"
+        assert result["cleared"]["channel_delivery_records"] == 1
+        delivery = ChannelDeliveryService(
+            {}, state_root=harness.config.data_dir / "channels" / "delivery"
+        )
+        assert delivery._store.records() == []
+        delivery.close()
+
+
+@pytest.mark.asyncio
 async def test_daemon_harness_context_manager_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

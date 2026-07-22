@@ -5026,6 +5026,26 @@ async def test_finalize_response_preserves_non_web_preliminary_without_synthesis
 
 
 @pytest.mark.asyncio
+async def test_f7b_final_response_commits_outbound_reservation_marker_durably() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs),
+        list_entries=lambda _sid: [],
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="hello back")
+    params = execution.planner_dispatch.planner_context.validated.params
+    assert isinstance(params, dict)
+    params["_outbound_delivery_reservation_id"] = "dres-test"
+    execution.planner_dispatch.planner_context.validated.is_internal_ingress = True
+
+    await SessionImplMixin._finalize_response(harness, execution)
+
+    assert appended["metadata"]["outbound_delivery_reservation_id"] == "dres-test"
+    assert appended["durable"] is True
+
+
+@pytest.mark.asyncio
 async def test_rc_lus_finalize_response_prefixes_unrequested_clean_url_from_tool_turn() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._evidence_store = None
@@ -5628,6 +5648,80 @@ def test_direct_response_blocked_output_policy_includes_reason_hint() -> None:
     assert appended["content"] == response["response"]
 
 
+def test_f7b_direct_response_commits_outbound_reservation_marker_durably() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "hello",
+            "_outbound_delivery_reservation_id": "dres-test",
+        }
+    )
+    validated.is_internal_ingress = True
+
+    SessionImplMixin._direct_response_with_transcript(
+        harness,
+        validated=validated,
+        response="hello back",
+    )
+
+    assert appended["metadata"]["outbound_delivery_reservation_id"] == "dres-test"
+    assert appended["durable"] is True
+
+
+def test_f7b_external_response_ignores_private_outbound_reservation_field() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "hello",
+            "_outbound_delivery_reservation_id": "attacker-controlled",
+        }
+    )
+
+    SessionImplMixin._direct_response_with_transcript(
+        harness,
+        validated=validated,
+        response="hello back",
+    )
+
+    assert "outbound_delivery_reservation_id" not in appended["metadata"]
+    assert "durable" not in appended
+
+
+def test_f7b_shortcut_response_commits_outbound_reservation_marker_durably() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "yes",
+            "_outbound_delivery_reservation_id": "dres-shortcut",
+        }
+    )
+    validated.is_internal_ingress = True
+
+    SessionImplMixin._skill_command_response(
+        harness,
+        validated=validated,
+        response="Loaded skill",
+    )
+
+    assert appended["metadata"]["outbound_delivery_reservation_id"] == "dres-shortcut"
+    assert appended["durable"] is True
+
+
 def test_direct_response_malformed_url_policy_block_is_actionable() -> None:
     harness = _FinalizeEvidenceHarness()
     appended: dict[str, Any] = {}
@@ -5766,12 +5860,17 @@ async def test_m5_task_handoff_transcript_preserves_shared_delivery_target(tmp_p
         thread_id="thread-1",
     )
     validated = _validation_result(
-        params={"session_id": "sess-g1", "content": "run the task"},
+        params={
+            "session_id": "sess-g1",
+            "content": "run the task",
+            "_outbound_delivery_reservation_id": "dres-handoff",
+        },
         sanitized_text="run the task",
     )
     validated.channel = "discord"
     validated.session.channel = "discord"
     validated.delivery_target = delivery_target
+    validated.is_internal_ingress = True
     handoff = TaskSessionHandoff(
         task_session_id=SessionId("task-1"),
         success=True,
@@ -5801,6 +5900,7 @@ async def test_m5_task_handoff_transcript_preserves_shared_delivery_target(tmp_p
     assert len(entries) == 1
     assert entries[0].metadata["channel"] == "discord"
     assert entries[0].metadata["delivery_target"] == delivery_target.model_dump(mode="json")
+    assert entries[0].metadata["outbound_delivery_reservation_id"] == "dres-handoff"
     timeline = TimelineIndex(
         tmp_path / "timeline-task-handoff",
         transcript_store=harness._transcript_store,

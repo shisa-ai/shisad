@@ -1003,6 +1003,7 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
         delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
         content="yes",
         firewall_result=FirewallResult(sanitized_text="yes", original_hash="0" * 64),
+        outbound_delivery_reservation_id="dres-chat-confirmation",
     )
 
     assert result is not None
@@ -1011,6 +1012,8 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
     assert result["plan_hash"] == ""
     assert result["checkpoint_ids"] == []
     assert result["checkpoints_created"] == 0
+    entries = harness._transcript_store.list_entries(SessionId("sess-chat"))
+    assert entries[-1].metadata["outbound_delivery_reservation_id"] == ("dres-chat-confirmation")
 
 
 @pytest.mark.asyncio

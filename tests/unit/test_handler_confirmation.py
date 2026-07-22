@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.channels.base import DeliveryTarget
+from shisad.channels.delivery import CapabilityDeliveryIntent
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingEntry,
@@ -366,9 +367,15 @@ class _ApprovalWebRecorder:
     def __init__(self) -> None:
         self.issued: list[str] = []
 
-    def issue_approval_link(self, confirmation_id: str) -> str:
+    def issue_approval_link(
+        self, confirmation_id: str, *, expires_at: datetime | None = None
+    ) -> str:
+        _ = expires_at
         self.issued.append(confirmation_id)
         return f"https://approvals.test/{confirmation_id}"
+
+    def rotate_approval_link(self, confirmation_id: str, *, expires_at: datetime) -> str:
+        return self.issue_approval_link(confirmation_id, expires_at=expires_at)
 
     def qr_ascii(self, approval_url: str) -> str:
         return f"QR {approval_url}"
@@ -377,10 +384,23 @@ class _ApprovalWebRecorder:
 class _DeliveryRecorder:
     def __init__(self) -> None:
         self.messages: list[dict[str, object]] = []
+        self.intents: list[object] = []
 
-    async def send(self, *, target: DeliveryTarget, message: str) -> object:
-        self.messages.append({"target": target, "message": message})
-        return SimpleNamespace(attempted=True, sent=True, reason="sent", target=target)
+    async def send_capability(
+        self, *, intent: object, resolver: object, rotate: bool = False
+    ) -> object:
+        self.intents.append(intent)
+        payload = await resolver(intent, rotate=rotate)  # type: ignore[operator]
+        if payload is not None:
+            self.messages.append(
+                {
+                    "intent": intent,
+                    "target": intent.target,  # type: ignore[attr-defined]
+                    "message": payload.message,
+                    "expires_at": payload.expires_at,
+                }
+            )
+        return SimpleNamespace(attempted=payload is not None, sent=payload is not None)
 
 
 class _AvailableWebAuthnRouteBackend:
@@ -449,9 +469,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
-        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
-            b"a" * 32
-        )
+        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(b"a" * 32)
         self._credential_store = InMemoryCredentialStore()
         self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
         self._pending_two_factor_enrollments: dict[str, object] = {}
@@ -626,9 +644,7 @@ class _QueuePendingHarness(HandlerImplementation):
         self._pending_actions_file = tmp_path / "pending_actions.json"
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
-        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
-            b"a" * 32
-        )
+        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(b"a" * 32)
         self._credential_store = InMemoryCredentialStore()
         self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
@@ -1441,9 +1457,7 @@ async def test_f2_confirmed_post_effect_exception_persists_uncertainty(
     assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
     assert pending.decision_nonce == ""
     assert pending.recovery_effect_invoked is True
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
     assert durable["status"] == "outcome_unknown"
     assert durable["decision_nonce"] == ""
@@ -1502,9 +1516,7 @@ async def test_f2_confirmed_exception_revokes_stage2_when_fallback_containment_f
     assert harness.effect_calls == 1
     assert harness.fallback_containment_attempts == 1
     assert pending.stage2_correlation_id
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
     assert durable["status"] == "executing"
     assert durable["stage2_correlation_id"] == pending.stage2_correlation_id
@@ -1566,9 +1578,7 @@ async def test_f2_cancelled_confirmed_effect_contains_uncertainty_and_authority(
     assert scheduler.task.enabled is False
     assert scheduler.run_outcomes == []
     assert pending.stage2_correlation_id
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
 
 
 @pytest.mark.asyncio
@@ -1607,14 +1617,10 @@ async def test_f2_cancelled_stage2_ready_transition_revokes_correlation(
 
     assert harness.effect_calls == 0
     assert pending.stage2_correlation_id
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     assert pending.status in {"failed", "cancelled"}
     assert pending.status_reason
-    assert scheduler.run_outcomes == [
-        {"task_id": pending.task_id, "success": False}
-    ]
+    assert scheduler.run_outcomes == [{"task_id": pending.task_id, "success": False}]
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
     assert durable["status"] in {"failed", "cancelled"}
     assert durable["status_reason"]
@@ -1645,9 +1651,7 @@ async def test_f2_cancelled_stage2_reconciliation_terminates_session(tmp_path: P
     )
 
     assert cancelled is False
-    assert terminated == [
-        (pending.session_id, "stage2_authority_reconciliation_failed")
-    ]
+    assert terminated == [(pending.session_id, "stage2_authority_reconciliation_failed")]
 
 
 @pytest.mark.asyncio
@@ -1861,9 +1865,7 @@ async def test_f2_neighbor_terminal_families_commit_before_side_effects(
 
     harness._pending_state_fault_injector = _fail_terminal_write
     if terminal_family == "lockdown":
-        harness._lockdown_manager = SimpleNamespace(
-            should_block_all_actions=lambda _sid: True
-        )
+        harness._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: True)
 
     with pytest.raises(AtomicWriteError):
         if terminal_family == "task_cancel":
@@ -1947,9 +1949,7 @@ async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
     elif terminal_family == "backend":
         pending.selected_backend_id = "missing.backend"
     if terminal_family == "lockdown":
-        harness._lockdown_manager = SimpleNamespace(
-            should_block_all_actions=lambda _sid: True
-        )
+        harness._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: True)
     _bind_pending_action_identity(pending)
     harness._pending_actions[pending.confirmation_id] = pending
     harness._persist_pending_actions()
@@ -2266,9 +2266,7 @@ async def test_f2_stage2_ready_write_fault_resolves_durable_attempt_before_effec
             f"execution:{pending.execution_attempt_id}:control-plane",
         )
     ]
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     assert sum(isinstance(event, PlanAmended) for event in harness.published_events) == 1
     assert pending.status == "failed"
     assert pending.status_reason == "stage2_ready_transition_failed"
@@ -2383,9 +2381,7 @@ async def test_f2_stage2_post_commit_task_cancellation_resolves_durable_attempt(
     assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     assert pending.status in {"failed", "cancelled"}
     assert pending.status_reason
-    durable = json.loads(
-        (tmp_path / "pending_actions.json").read_text(encoding="utf-8")
-    )[0]
+    durable = json.loads((tmp_path / "pending_actions.json").read_text(encoding="utf-8"))[0]
     assert durable["status"] in {"failed", "cancelled"}
     assert durable["status_reason"]
     assert harness.effect_calls == 0
@@ -2463,9 +2459,7 @@ async def test_f2_stage2_event_publication_failure_cancels_exact_correlation(
         )
 
     assert pending.stage2_correlation_id
-    assert harness._control_plane.cancelled_correlations == [
-        pending.stage2_correlation_id
-    ]
+    assert harness._control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     assert harness.effect_calls == 0
 
 
@@ -2494,9 +2488,7 @@ async def test_f2_pending_purge_rolls_back_when_deletion_is_not_durable(
     harness._pending_state_fault_injector = _fail_purge_write
 
     with pytest.raises(AtomicWriteError):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 7, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     assert harness._pending_actions[pending.confirmation_id] is pending
     assert harness._pending_by_session[pending.session_id] == [pending.confirmation_id]
@@ -2528,9 +2520,7 @@ async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deleti
     harness._persist_pending_actions()
 
     with pytest.raises(RuntimeError, match="scheduler confirmation publication fault"):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 7, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
     assert durable["status"] == "failed"
@@ -2549,9 +2539,7 @@ async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deleti
     assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
     assert len(scheduler.run_outcomes) == 1
 
-    purge_result = await restarted.do_action_purge(
-        {"status": "terminal", "limit": 10}
-    )
+    purge_result = await restarted.do_action_purge({"status": "terminal", "limit": 10})
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
     assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
 
@@ -2576,9 +2564,7 @@ async def test_f2_pending_purge_retry_completes_terminal_accounting_before_delet
     harness._persist_pending_actions()
 
     with pytest.raises(RuntimeError, match="scheduler confirmation publication fault"):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 7, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     assert pending.status == "failed"
     assert pending.scheduler_accounting_pending is True
@@ -2748,9 +2734,7 @@ async def test_f2_pending_purge_deletion_fault_restores_committed_terminal_row(
     harness._pending_state_fault_injector = _fail_deletion_write
 
     with pytest.raises(AtomicWriteError):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 7, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     assert harness._pending_actions[pending.confirmation_id] is pending
     assert pending.status == "failed"
@@ -2763,9 +2747,7 @@ async def test_f2_pending_purge_deletion_fault_restores_committed_terminal_row(
     assert durable["scheduler_accounting_pending"] is False
 
     harness._pending_state_fault_injector = None
-    purge_result = await harness.do_action_purge(
-        {"status": "terminal", "limit": 10}
-    )
+    purge_result = await harness.do_action_purge({"status": "terminal", "limit": 10})
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
     assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
 
@@ -2792,9 +2774,7 @@ async def test_f2_pending_purge_failed_rollback_surfaces_degradation(
     harness._pending_state_fault_injector = _fail_parent_fsync
 
     with pytest.raises(AtomicWriteError):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 7, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     assert harness._pending_actions[pending.confirmation_id] is pending
     assert pending.status == "failed"
@@ -2833,9 +2813,7 @@ async def test_f2_confirmation_rejects_valid_shape_approval_contract_drift(
 ) -> None:
     harness = _AtomicConfirmationHarness(tmp_path)
     execute_after = (
-        datetime.now(UTC) + timedelta(seconds=30)
-        if drift.startswith("execute_after_")
-        else None
+        datetime.now(UTC) + timedelta(seconds=30) if drift.startswith("execute_after_") else None
     )
     pending = _pending_action(nonce="expected", execute_after=execute_after)
     if drift == "arguments":
@@ -2864,9 +2842,7 @@ async def test_f2_confirmation_rejects_valid_shape_approval_contract_drift(
     result = await harness.do_action_confirm(
         {
             "confirmation_id": pending.confirmation_id,
-            "decision_nonce": (
-                "replacement-nonce" if drift == "decision_nonce" else "expected"
-            ),
+            "decision_nonce": ("replacement-nonce" if drift == "decision_nonce" else "expected"),
         }
     )
 
@@ -3019,11 +2995,7 @@ def test_f2_real_proof_backends_reject_coherent_fabricated_evidence(
             )
             assert pending.approval_envelope is not None
             pending.approval_envelope = pending.approval_envelope.model_copy(
-                update={
-                    "intent_envelope_hash": intent_envelope_hash(
-                        pending.intent_envelope
-                    )
-                }
+                update={"intent_envelope_hash": intent_envelope_hash(pending.intent_envelope)}
             )
         elif isinstance(backend, WebAuthnBackend):
             factor.webauthn_rp_id = backend.rp_id
@@ -3221,13 +3193,12 @@ def test_f2_approval_contract_validator_is_shared_across_proof_backends(
         _register_totp_factor(harness)
         pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
     elif proof_backend == "webauthn":
-        harness._confirmation_backend_registry.register(
-            _AvailableWebAuthnRouteBackend()
-        )
+        harness._confirmation_backend_registry.register(_AvailableWebAuthnRouteBackend())
         pending = _webauthn_pending_action(nonce="expected")
     else:
         pending = _pending_action(nonce="expected")
         if proof_backend == "signer":
+
             class _AvailableSignerBackend:
                 backend_id = "kms.test"
                 method = "kms"
@@ -3257,8 +3228,7 @@ def test_f2_approval_contract_validator_is_shared_across_proof_backends(
     pending.arguments = {"query": "different query"}
 
     assert (
-        harness._pending_approval_contract_invalid_reason(pending)
-        == "approval_contract_mismatch"
+        harness._pending_approval_contract_invalid_reason(pending) == "approval_contract_mismatch"
     )
 
 
@@ -3540,9 +3510,7 @@ def test_f2_load_terminalizes_execute_after_contract_drift(
     if drift == "removed":
         payload["execute_after"] = ""
     elif drift == "shortened":
-        payload["execute_after"] = (
-            pending.created_at + timedelta(seconds=1)
-        ).isoformat()
+        payload["execute_after"] = (pending.created_at + timedelta(seconds=1)).isoformat()
     else:
         assert pending.execute_after is not None
         payload["execute_after"] = pending.execute_after.replace(tzinfo=None).isoformat()
@@ -3671,6 +3639,68 @@ async def test_a1_chat_notifications_skip_webauthn_link_when_backend_unavailable
         delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
     )
 
+    assert approval_web.issued == []
+    assert delivery.messages == []
+    assert delivery.intents == []
+
+
+@pytest.mark.asyncio
+async def test_f7b_chat_approval_notification_resolves_ephemeral_capability(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    delivery = _DeliveryRecorder()
+    harness._approval_web = approval_web
+    harness._delivery = delivery
+    harness._confirmation_backend_registry.register(_AvailableWebAuthnRouteBackend())
+    pending = _webauthn_pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    target = DeliveryTarget(channel="discord", recipient="chan-1")
+
+    await harness._send_chat_approval_link_notifications(
+        confirmation_ids=[pending.confirmation_id],
+        delivery_target=target,
+    )
+
+    assert approval_web.issued == [pending.confirmation_id]
+    assert len(delivery.messages) == 1
+    delivered = delivery.messages[0]
+    intent = delivered["intent"]
+    assert isinstance(intent, CapabilityDeliveryIntent)
+    assert intent.confirmation_id == pending.confirmation_id
+    assert intent.target == target
+    assert "https://approvals.test/c-webauthn" in str(delivered["message"])
+    assert "https://" not in repr(intent)
+
+
+@pytest.mark.asyncio
+async def test_f7b_chat_approval_capability_rejects_cross_target_resolution(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    delivery = _DeliveryRecorder()
+    harness._approval_web = approval_web
+    harness._delivery = delivery
+    harness._confirmation_backend_registry.register(_AvailableWebAuthnRouteBackend())
+    pending = _webauthn_pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    await harness._send_chat_approval_link_notifications(
+        confirmation_ids=[pending.confirmation_id],
+        delivery_target=DeliveryTarget(channel="discord", recipient="other-room"),
+    )
+    recovered = await harness._resolve_chat_approval_capability(
+        CapabilityDeliveryIntent(
+            confirmation_id=pending.confirmation_id,
+            target=DeliveryTarget(channel="discord", recipient="other-room"),
+            expires_at=pending.expires_at,
+        ),
+        rotate=True,
+    )
+
+    assert recovered is None
     assert approval_web.issued == []
     assert delivery.messages == []
 
@@ -4465,9 +4495,7 @@ def _load_pending_actions_harness(
     harness._registry = _registry_for_confirmation()
     harness._confirmation_backend_registry = ConfirmationBackendRegistry()
     harness._confirmation_backend_registry.register(SoftwareConfirmationBackend())
-    harness._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
-        b"a" * 32
-    )
+    harness._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(b"a" * 32)
     return harness
 
 
@@ -5431,9 +5459,7 @@ async def test_f2_non_ascii_decision_nonce_fails_closed(
     pending = _pending_action(nonce="expected")
     harness._pending_actions[pending.confirmation_id] = pending
     decision = (
-        harness.do_action_confirm
-        if decision_method == "confirm"
-        else harness.do_action_reject
+        harness.do_action_confirm if decision_method == "confirm" else harness.do_action_reject
     )
 
     result = await decision(

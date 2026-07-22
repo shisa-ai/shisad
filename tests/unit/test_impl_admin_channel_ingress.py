@@ -43,15 +43,32 @@ class _DeliveryResult:
 class _DeliveryStub:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self._intents: dict[str, object] = {}
 
-    async def send(
+    def reserve(self, intent: object) -> object:
+        reservation_id = f"reservation-{len(self._intents) + 1}"
+        self._intents[reservation_id] = intent
+        return SimpleNamespace(reservation_id=reservation_id)
+
+    def prepare(
         self,
+        reservation_id: str,
         *,
-        target: object,
         message: str,
         metadata: dict[str, Any] | None = None,
-    ) -> _DeliveryResult:
-        self.calls.append({"target": target, "message": message, "metadata": metadata})
+    ) -> object:
+        intent = self._intents[reservation_id]
+        self.calls.append(
+            {
+                "target": intent.target,  # type: ignore[attr-defined]
+                "message": f"{intent.message_prefix}{message}",  # type: ignore[attr-defined]
+                "metadata": metadata,
+            }
+        )
+        return SimpleNamespace(reservation_id=reservation_id)
+
+    async def send_prepared(self, reservation_id: str) -> _DeliveryResult:
+        _ = reservation_id
         return _DeliveryResult()
 
 
@@ -655,9 +672,7 @@ def test_gh92_discord_metadata_builder_revalidates_current_action_binding(
     metadata = harness._discord_pending_delivery_metadata(
         {
             "pending_confirmation_ids": [pending.confirmation_id for pending in candidates],
-            "response_action_confirmation_ids": [
-                pending.confirmation_id for pending in candidates
-            ],
+            "response_action_confirmation_ids": [pending.confirmation_id for pending in candidates],
         },
         principal_id="alice",
         workspace_id="guild-1",
@@ -705,7 +720,8 @@ async def test_gh92_unrelated_reply_never_carries_stale_action_controls(
     )
 
     assert result["response"] == "It's 1:51 PM JST right now."
-    assert harness._delivery.calls[-1]["metadata"] is None
+    assert harness._delivery.calls[-1]["metadata"] == {}
+    assert harness.message_payloads[-1]["_outbound_delivery_reservation_id"]
 
     async def _related_response(payload: dict[str, Any]) -> dict[str, Any]:
         harness.message_payloads.append(dict(payload))
@@ -734,6 +750,34 @@ async def test_gh92_unrelated_reply_never_carries_stale_action_controls(
     metadata = harness._delivery.calls[-1]["metadata"]
     assert isinstance(metadata, dict)
     assert metadata["discord_component_confirmation_ids"] == [pending.confirmation_id]
+
+
+@pytest.mark.asyncio
+async def test_f7b_proactive_channel_result_applies_marker_exactly_once(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+
+    result = await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-proactive",
+                "content": "observed message",
+                "metadata": {
+                    "interaction_type": "observed",
+                    "proactive_eligible": True,
+                },
+            }
+        }
+    )
+
+    assert result["response"] == "[proactive] ok"
+    assert harness._delivery.calls[-1]["message"] == "[proactive] ok"
+    assert harness.message_payloads[-1]["_outbound_delivery_reservation_id"]
 
 
 @pytest.mark.asyncio

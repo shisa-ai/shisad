@@ -16,6 +16,8 @@ from typing import Any, Literal
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
+from shisad.channels.base import DeliveryTarget
+from shisad.channels.delivery import CapabilityDeliveryIntent, CapabilityPayload
 from shisad.core.approval import (
     ConfirmationEvidence,
     ConfirmationLevel,
@@ -148,15 +150,9 @@ def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
         recovery_scheduler_restore_enabled=bool(
             getattr(pending, "recovery_scheduler_restore_enabled", False)
         ),
-        recovery_scheduler_accounted=bool(
-            getattr(pending, "recovery_scheduler_accounted", False)
-        ),
-        scheduler_accounting_pending=bool(
-            getattr(pending, "scheduler_accounting_pending", False)
-        ),
-        scheduler_accounting_mode=str(
-            getattr(pending, "scheduler_accounting_mode", "")
-        ),
+        recovery_scheduler_accounted=bool(getattr(pending, "recovery_scheduler_accounted", False)),
+        scheduler_accounting_pending=bool(getattr(pending, "scheduler_accounting_pending", False)),
+        scheduler_accounting_mode=str(getattr(pending, "scheduler_accounting_mode", "")),
         confirmation_evidence=getattr(pending, "confirmation_evidence", None),
     )
 
@@ -567,9 +563,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if (
                 adapter_registration is None
                 or retry_descriptor is None
-                or str(
-                    getattr(retry_descriptor, "stable_adapter_guarantee_id", "")
-                ).strip()
+                or str(getattr(retry_descriptor, "stable_adapter_guarantee_id", "")).strip()
                 != adapter_registration.guarantee_id
             ):
                 return "approval_contract_mismatch"
@@ -718,9 +712,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending.status = "failed"
         pending.status_reason = reason
         pending.decision_nonce = ""
-        pending.scheduler_accounting_pending = bool(
-            str(getattr(pending, "task_id", "")).strip()
-        )
+        pending.scheduler_accounting_pending = bool(str(getattr(pending, "task_id", "")).strip())
         pending.scheduler_accounting_mode = (
             "failure" if pending.scheduler_accounting_pending else ""
         )
@@ -811,9 +803,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if cancel_reason:
                 raise RuntimeError("unexpected_terminal_scheduler_cancel_reason")
             return
-        accounting_mode = str(
-            getattr(pending, "scheduler_accounting_mode", "")
-        ).strip()
+        accounting_mode = str(getattr(pending, "scheduler_accounting_mode", "")).strip()
         self._sync_task_confirmation_status(pending)
         if accounting_mode not in {"shadow_only", "ambiguous"}:
             self._record_task_confirmation_failure(pending)
@@ -1212,9 +1202,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
                 if pending.scheduler_accounting_pending:
                     if not callable(finalize_accounting):
-                        raise RuntimeError(
-                            "terminal_scheduler_accounting_finalizer_unavailable"
-                        )
+                        raise RuntimeError("terminal_scheduler_accounting_finalizer_unavailable")
                     finalize_accounting(pending)
         except (Exception, asyncio.CancelledError):
             if task_id:
@@ -1484,6 +1472,48 @@ class ConfirmationImplMixin(HandlerMixinBase):
             }
         )
 
+    async def _resolve_chat_approval_capability(
+        self,
+        intent: CapabilityDeliveryIntent,
+        *,
+        rotate: bool,
+    ) -> CapabilityPayload | None:
+        approval_web = getattr(self, "_approval_web", None)
+        pending = self._pending_actions.get(intent.confirmation_id)
+        if approval_web is None or not approval_web.enabled or pending is None:
+            return None
+        expires_at = getattr(pending, "expires_at", None)
+        pending_target = getattr(pending, "delivery_target", None)
+        if not isinstance(expires_at, datetime) or not isinstance(pending_target, DeliveryTarget):
+            return None
+        normalized_expiry = expires_at.astimezone(UTC)
+        intent_expiry = intent.expires_at.astimezone(UTC)
+        if (
+            normalized_expiry != intent_expiry
+            or pending_target != intent.target
+            or pending.required_level.priority < ConfirmationLevel.REAUTHENTICATED.priority
+            or str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn"
+            or not pending_action_is_live_pending(pending)
+            or not self._selected_backend_available_for_pending(pending)
+        ):
+            return None
+        issue = approval_web.rotate_approval_link if rotate else approval_web.issue_approval_link
+        approval_url = issue(intent.confirmation_id, expires_at=normalized_expiry)
+        if not approval_url:
+            return None
+        public_pending = self._pending_to_dict(pending, public=True)
+        lines = [
+            "Approval required",
+            str(public_pending.get("safe_preview") or pending.reason),
+            f"Level: {pending.required_level.value}",
+            "Open this link in a system browser:",
+            approval_url,
+        ]
+        qr_ascii = approval_web.qr_ascii(approval_url)
+        if qr_ascii:
+            lines.extend(["QR:", qr_ascii])
+        return CapabilityPayload(message="\n".join(lines).strip(), expires_at=normalized_expiry)
+
     async def _send_chat_approval_link_notifications(
         self,
         *,
@@ -1491,37 +1521,31 @@ class ConfirmationImplMixin(HandlerMixinBase):
         delivery_target: Any,
     ) -> None:
         approval_web = getattr(self, "_approval_web", None)
-        if approval_web is None or not approval_web.enabled:
+        if (
+            approval_web is None
+            or not approval_web.enabled
+            or not isinstance(delivery_target, DeliveryTarget)
+        ):
             return
         for confirmation_id in confirmation_ids:
             pending = self._pending_actions.get(str(confirmation_id))
-            if pending is None:
+            if pending is None or pending.expires_at is None:
                 continue
-            if pending.required_level.priority < ConfirmationLevel.REAUTHENTICATED.priority:
+            if (
+                pending.delivery_target != delivery_target
+                or pending.required_level.priority < ConfirmationLevel.REAUTHENTICATED.priority
+                or str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn"
+                or not pending_action_is_live_pending(pending)
+                or not self._selected_backend_available_for_pending(pending)
+            ):
                 continue
-            if str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn":
-                continue
-            if not pending_action_is_live_pending(pending):
-                continue
-            if not self._selected_backend_available_for_pending(pending):
-                continue
-            approval_url = approval_web.issue_approval_link(str(pending.confirmation_id))
-            if not approval_url:
-                continue
-            qr_ascii = approval_web.qr_ascii(approval_url)
-            public_pending = self._pending_to_dict(pending, public=True)
-            lines = [
-                "Approval required",
-                str(public_pending.get("safe_preview") or pending.reason),
-                f"Level: {pending.required_level.value}",
-                "Open this link in a system browser:",
-                approval_url,
-            ]
-            if qr_ascii:
-                lines.extend(["QR:", qr_ascii])
-            await self._delivery.send(
-                target=delivery_target,
-                message="\n".join(lines).strip(),
+            await self._delivery.send_capability(
+                intent=CapabilityDeliveryIntent(
+                    confirmation_id=str(pending.confirmation_id),
+                    target=delivery_target,
+                    expires_at=pending.expires_at,
+                ),
+                resolver=self._resolve_chat_approval_capability,
             )
 
     async def do_two_factor_register_begin(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1947,7 +1971,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 and selected_backend_available
             ):
                 approval_url = self._approval_web.issue_approval_link(
-                    str(getattr(item, "confirmation_id", ""))
+                    str(getattr(item, "confirmation_id", "")),
+                    expires_at=item.expires_at,
                 )
                 if approval_url:
                     payload["approval_url"] = approval_url

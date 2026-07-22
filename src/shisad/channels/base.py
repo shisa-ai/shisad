@@ -6,7 +6,9 @@ import asyncio
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
@@ -19,6 +21,37 @@ class DeliveryTarget(BaseModel):
     recipient: str
     workspace_hint: str = ""
     thread_id: str = ""
+
+
+class DeliveryRecoveryKind(StrEnum):
+    EXACT_IDEMPOTENCY_KEY = "exact_idempotency_key"
+    AUTHORITATIVE_RECONCILIATION = "authoritative_reconciliation"
+    NEITHER = "neither"
+
+
+class DeliveryReconciliationStatus(StrEnum):
+    DELIVERED = "delivered"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryRecoveryCapability:
+    kind: DeliveryRecoveryKind
+    guarantee_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderDeliveryReceipt:
+    provider: str
+    receipt_id: str
+    delivery_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryReconciliation:
+    status: DeliveryReconciliationStatus
+    receipt: ProviderDeliveryReceipt | None = None
 
 
 class DeliveryEnvelope(BaseModel):
@@ -53,13 +86,22 @@ class Channel(Protocol):
         *,
         target: DeliveryTarget | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None: ...
+    ) -> ProviderDeliveryReceipt | None: ...
 
     async def receive(self) -> ChannelMessage: ...
 
     async def heartbeat(self) -> None: ...
 
     def health_status(self) -> dict[str, Any]: ...
+
+    def delivery_recovery_capability(self) -> DeliveryRecoveryCapability: ...
+
+    async def reconcile_delivery(
+        self,
+        *,
+        delivery_id: str,
+        target: DeliveryTarget,
+    ) -> DeliveryReconciliation: ...
 
 
 class InMemoryChannel:
@@ -101,7 +143,7 @@ class InMemoryChannel:
         *,
         target: DeliveryTarget | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> ProviderDeliveryReceipt | None:
         envelope = DeliveryEnvelope(
             target=target
             or DeliveryTarget(
@@ -113,8 +155,14 @@ class InMemoryChannel:
         )
         if not self._connected:
             self._offline_outgoing.append(envelope)
-            return
-        await self._outgoing.put(envelope)
+        else:
+            await self._outgoing.put(envelope)
+        delivery_id = str((metadata or {}).get("shisad_delivery_id", "")).strip()
+        return ProviderDeliveryReceipt(
+            provider=self._name,
+            receipt_id=f"memory-{uuid.uuid4().hex}",
+            delivery_id=delivery_id,
+        )
 
     async def receive(self) -> ChannelMessage:
         if not self._connected:
@@ -137,6 +185,21 @@ class InMemoryChannel:
             "pending_outgoing": self.pending_outgoing(),
             "pending_incoming": self._incoming.qsize(),
         }
+
+    def delivery_recovery_capability(self) -> DeliveryRecoveryCapability:
+        return DeliveryRecoveryCapability(
+            kind=DeliveryRecoveryKind.NEITHER,
+            guarantee_id=f"shisad.channel.{self._name}.neither.v1",
+        )
+
+    async def reconcile_delivery(
+        self,
+        *,
+        delivery_id: str,
+        target: DeliveryTarget,
+    ) -> DeliveryReconciliation:
+        _ = (delivery_id, target)
+        return DeliveryReconciliation(status=DeliveryReconciliationStatus.UNKNOWN)
 
     async def run_with_reconnect(
         self,

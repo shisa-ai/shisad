@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 
 from shisad.channels import state as channel_state
-from shisad.channels.base import ChannelMessage
+from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent
 from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.daemon.handlers.admin import AdminHandlers
@@ -91,3 +92,54 @@ async def test_channel_ingress_reservation_survives_restart_without_redispatch(
     restarted_store = channel_state.ChannelStateStore(root)
     assert restarted_store.state_for(identity) == "terminal"
     assert restarted_store.record_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_channel_result_outbox_survives_restart_without_duplicate_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shipped no-proof channel exposes uncertainty without replaying its effect."""
+
+    class _AcceptedThenLostChannel(InMemoryChannel):
+        def __init__(self) -> None:
+            super().__init__(name="matrix")
+            self.effects: list[str] = []
+
+        async def send(
+            self,
+            message: str,
+            *,
+            target: DeliveryTarget | None = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            _ = (target, metadata)
+            self.effects.append(message)
+
+    root = tmp_path / "data" / "channels" / "delivery"
+    channel = _AcceptedThenLostChannel()
+    await channel.connect()
+    first = ChannelDeliveryService({"matrix": channel}, state_root=root)
+
+    def lose_receipt(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated process loss after provider acceptance")
+
+    monkeypatch.setattr(first._store, "mark_delivered", lose_receipt)
+    result = await first.send(
+        intent=DeliveryIntent(
+            source_id="trusted-matrix-replay-identity",
+            kind="channel_result",
+            target=DeliveryTarget(channel="matrix", recipient="!room:example.org"),
+        ),
+        message="one committed result",
+    )
+    assert result.outcome_unknown is True
+    assert channel.effects == ["one committed result"]
+
+    restarted = ChannelDeliveryService({"matrix": channel}, state_root=root)
+    recovery = await restarted.recover()
+
+    assert len(recovery) == 1
+    assert recovery[0].outcome_unknown is True
+    assert channel.effects == ["one committed result"]
+    assert restarted.record(result.reservation_id).state == "outcome_unknown"

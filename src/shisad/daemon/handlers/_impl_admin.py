@@ -16,6 +16,7 @@ from typing import Any, ClassVar, cast
 from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
+from shisad.channels.delivery import DeliveryIntent
 from shisad.channels.discord_components import (
     DISCORD_VIEW_COMPONENT_LIMIT,
     discord_approval_custom_id,
@@ -1925,8 +1926,7 @@ class AdminImplMixin(HandlerMixinBase):
         if component != "all" and check_states:
             overall = check_states[0]
         elif any(
-            state in {ReadinessState.BLOCKED, ReadinessState.DEGRADED}
-            for state in check_states
+            state in {ReadinessState.BLOCKED, ReadinessState.DEGRADED} for state in check_states
         ):
             overall = ReadinessState.DEGRADED.value
         elif any(
@@ -2200,22 +2200,19 @@ class AdminImplMixin(HandlerMixinBase):
             if (
                 str(getattr(pending, "user_id", "")).strip() != normalized_principal_id
                 or normalized_principal_id not in allowed_channel_principals
-                or str(getattr(pending, "workspace_id", "")).strip()
-                != normalized_workspace_id
+                or str(getattr(pending, "workspace_id", "")).strip() != normalized_workspace_id
             ):
                 continue
             pending_delivery_target = getattr(pending, "delivery_target", None)
             if isinstance(pending_delivery_target, Mapping):
                 try:
-                    pending_delivery_target = DeliveryTarget.model_validate(
-                        pending_delivery_target
-                    )
+                    pending_delivery_target = DeliveryTarget.model_validate(pending_delivery_target)
                 except (TypeError, ValueError):
                     pending_delivery_target = None
-            if (
-                not isinstance(pending_delivery_target, DeliveryTarget)
-                or pending_delivery_target.model_dump(mode="json")
-                != delivery_target.model_dump(mode="json")
+            if not isinstance(
+                pending_delivery_target, DeliveryTarget
+            ) or pending_delivery_target.model_dump(mode="json") != delivery_target.model_dump(
+                mode="json"
             ):
                 continue
             decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()
@@ -2301,11 +2298,17 @@ class AdminImplMixin(HandlerMixinBase):
             return self._channel_replay_blocked_result(existing_state)
 
         try:
-            reserved_result = await self._prepare_reserved_channel_interaction(params, identity)
+            reserved_params = dict(params)
+            reserved_params["_delivery_source_id"] = json.dumps(
+                identity.as_dict(), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+            )
+            reserved_result = await self._prepare_reserved_channel_interaction(
+                reserved_params, identity
+            )
             result = (
                 reserved_result
                 if reserved_result is not None
-                else await self.do_channel_ingest(params)
+                else await self.do_channel_ingest(reserved_params)
             )
         except asyncio.CancelledError:
             self._mark_channel_replay_uncertain(state_store, identity)
@@ -2799,6 +2802,20 @@ class AdminImplMixin(HandlerMixinBase):
             content=result.sanitized_text,
             taint_labels=list(result.taint_labels),
         )
+        delivery_source_id = str(params.get("_delivery_source_id", "")).strip() or (
+            f"internal:{message.channel}:{message.message_id}"
+        )
+        proactive_prefix = ""
+        if proactive:
+            proactive_prefix = f"{discord_decision.proactive_marker.strip() or '[proactive]'} "
+        delivery_reservation = self._delivery.reserve(
+            DeliveryIntent(
+                source_id=delivery_source_id,
+                kind="channel_result",
+                target=delivery_target,
+                message_prefix=proactive_prefix,
+            )
+        )
         session_message_payload: dict[str, Any] = {
             "session_id": sid,
             "channel": message.channel,
@@ -2810,6 +2827,7 @@ class AdminImplMixin(HandlerMixinBase):
             "_firewall_result": result.model_dump(mode="json"),
             "_delivery_target": delivery_target.model_dump(mode="json"),
             "_channel_message_id": message.message_id,
+            "_outbound_delivery_reservation_id": delivery_reservation.reservation_id,
         }
         approval_metadata = _approval_interaction_metadata(metadata)
         if approval_metadata:
@@ -2844,17 +2862,16 @@ class AdminImplMixin(HandlerMixinBase):
                     and bool(can_build_view(candidate_metadata))
                 ):
                     delivery_metadata = candidate_metadata
-        if delivery_metadata:
-            delivery_result = await self._delivery.send(
-                target=delivery_target,
-                message=str(response.get("response", "")),
-                metadata=delivery_metadata,
-            )
-        else:
-            delivery_result = await self._delivery.send(
-                target=delivery_target,
-                message=str(response.get("response", "")),
-            )
+        delivery_message = str(response.get("response", ""))
+        marker = proactive_prefix.rstrip()
+        if marker and delivery_message.startswith(marker):
+            delivery_message = delivery_message[len(marker) :].lstrip()
+        prepared = self._delivery.prepare(
+            delivery_reservation.reservation_id,
+            message=delivery_message,
+            metadata=delivery_metadata,
+        )
+        delivery_result = await self._delivery.send_prepared(prepared.reservation_id)
         if proactive:
             self._channel_proactive_last_sent_at[cooldown_key] = datetime.now(UTC)
         response["delivery"] = delivery_result.as_dict()

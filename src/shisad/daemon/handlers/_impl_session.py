@@ -1989,6 +1989,13 @@ def _validated_origin_turn_id(validated: Any, *, fallback_action_id: str = "") -
     return f"proposal:{fallback_action_id}" if fallback_action_id.strip() else ""
 
 
+def _outbound_delivery_reservation_id(validated: Any) -> str:
+    params = getattr(validated, "params", {})
+    if not getattr(validated, "is_internal_ingress", False) or not isinstance(params, Mapping):
+        return ""
+    return str(params.get("_outbound_delivery_reservation_id", "")).strip()
+
+
 def _validated_tool_event_identity_fields(
     validated: Any,
     *,
@@ -6075,8 +6082,7 @@ def _discord_pending_confirmation_response_text(
         )
         if pending is not None:
             lines.append(
-                "Lifecycle: "
-                + _markdown_code_span(_pending_action_lifetime_metadata(pending))
+                "Lifecycle: " + _markdown_code_span(_pending_action_lifetime_metadata(pending))
             )
         _ = pending_number, allow_chat_approval, totp_guidance_ids, single_totp_confirmation_id
         component_available = (
@@ -9722,6 +9728,7 @@ class SessionImplMixin(HandlerMixinBase):
         content: str,
         firewall_result: FirewallResult,
         channel_metadata: Mapping[str, Any] | None = None,
+        outbound_delivery_reservation_id: str = "",
     ) -> dict[str, Any] | None:
         allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
         allow_direct_trusted_cli_confirmation = _is_direct_trusted_cli_default_ingress(
@@ -9989,12 +9996,17 @@ class SessionImplMixin(HandlerMixinBase):
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
             elif returned_pending_confirmation_ids and normalized_pending_response is not None:
                 assistant_transcript_metadata["pending_confirmation_bridge"] = True
+            if outbound_delivery_reservation_id:
+                assistant_transcript_metadata["outbound_delivery_reservation_id"] = (
+                    outbound_delivery_reservation_id
+                )
             self._transcript_store.append(
                 sid,
                 role="assistant",
                 content=response_text,
                 taint_labels=response_taint_labels,
                 metadata=assistant_transcript_metadata,
+                **({"durable": True} if outbound_delivery_reservation_id else {}),
             )
             await self._event_bus.publish(
                 SessionMessageResponded(
@@ -10906,6 +10918,11 @@ class SessionImplMixin(HandlerMixinBase):
                 channel_metadata=channel_metadata,
                 content=content,
                 firewall_result=firewall_result,
+                outbound_delivery_reservation_id=(
+                    str(params.get("_outbound_delivery_reservation_id", "")).strip()
+                    if is_internal_ingress
+                    else ""
+                ),
             )
 
         raw_allowlist = session.metadata.get("tool_allowlist")
@@ -13762,16 +13779,15 @@ class SessionImplMixin(HandlerMixinBase):
             session_manager.persist(validated.session.id)
         return None
 
-    @staticmethod
     def _skill_command_response(
+        self,
         *,
         validated: SessionMessageValidationResult,
         response: str,
     ) -> dict[str, Any]:
-        return {
-            "session_id": str(validated.sid),
-            "response": response,
-        }
+        if _outbound_delivery_reservation_id(validated):
+            return self._direct_response_with_transcript(validated=validated, response=response)
+        return {"session_id": str(validated.sid), "response": response}
 
     @staticmethod
     def _format_skill_last_used(value: datetime | None) -> str:
@@ -13955,16 +13971,15 @@ class SessionImplMixin(HandlerMixinBase):
             response="\n".join(lines),
         )
 
-    @staticmethod
     def _identity_command_response(
+        self,
         *,
         validated: SessionMessageValidationResult,
         response: str,
     ) -> dict[str, Any]:
-        return {
-            "session_id": str(validated.sid),
-            "response": response,
-        }
+        if _outbound_delivery_reservation_id(validated):
+            return self._direct_response_with_transcript(validated=validated, response=response)
+        return {"session_id": str(validated.sid), "response": response}
 
     def _lockdown_notice_response_fragment(
         self,
@@ -14076,12 +14091,18 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_transcript_metadata["delivery_target"] = (
                 transcript_delivery_target.model_dump(mode="json")
             )
+        outbound_reservation_id = _outbound_delivery_reservation_id(validated)
+        if outbound_reservation_id:
+            assistant_transcript_metadata["outbound_delivery_reservation_id"] = (
+                outbound_reservation_id
+            )
         self._transcript_store.append(
             validated.sid,
             role="assistant",
             content=response_text,
             taint_labels=response_taint_labels,
             metadata=assistant_transcript_metadata,
+            **({"durable": True} if outbound_reservation_id else {}),
         )
         return {
             "session_id": str(validated.sid),
@@ -15488,15 +15509,6 @@ class SessionImplMixin(HandlerMixinBase):
             )
         )
 
-        notification_delivery_target = validated.delivery_target
-        if notification_delivery_target is None and validated.is_internal_ingress:
-            notification_delivery_target = _stored_delivery_target_from_session(validated.session)
-        if notification_delivery_target is not None and execution.pending_confirmation_ids:
-            await self._send_chat_approval_link_notifications(
-                confirmation_ids=list(execution.pending_confirmation_ids),
-                delivery_target=notification_delivery_target,
-            )
-
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
@@ -15528,6 +15540,11 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_transcript_metadata["delivery_target"] = (
                 transcript_delivery_target.model_dump(mode="json")
             )
+        outbound_reservation_id = _outbound_delivery_reservation_id(validated)
+        if outbound_reservation_id:
+            assistant_transcript_metadata["outbound_delivery_reservation_id"] = (
+                outbound_reservation_id
+            )
         self._transcript_store.append(
             sid,
             role="assistant",
@@ -15535,7 +15552,16 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=response_taint_labels,
             metadata=assistant_transcript_metadata,
             evidence_ref_id=evidence_ref_ids[0] if evidence_ref_ids else None,
+            **({"durable": True} if outbound_reservation_id else {}),
         )
+        notification_delivery_target = validated.delivery_target
+        if notification_delivery_target is None and validated.is_internal_ingress:
+            notification_delivery_target = _stored_delivery_target_from_session(validated.session)
+        if notification_delivery_target is not None and execution.pending_confirmation_ids:
+            await self._send_chat_approval_link_notifications(
+                confirmation_ids=list(execution.pending_confirmation_ids),
+                delivery_target=notification_delivery_target,
+            )
         for entry in supplemental_entries:
             self._transcript_store.append(
                 sid,
@@ -16579,12 +16605,18 @@ class SessionImplMixin(HandlerMixinBase):
             "self_check_status": handoff.self_check_status,
             "self_check_ref": handoff.self_check_ref or "",
         }
+        outbound_reservation_id = _outbound_delivery_reservation_id(validated)
+        if outbound_reservation_id:
+            assistant_transcript_metadata["outbound_delivery_reservation_id"] = (
+                outbound_reservation_id
+            )
         self._transcript_store.append(
             sid,
             role="assistant",
             content=response_text,
             taint_labels={TaintLabel.UNTRUSTED},
             metadata=assistant_transcript_metadata,
+            **({"durable": True} if outbound_reservation_id else {}),
         )
 
         effective_caps = self._lockdown_manager.apply_capability_restrictions(

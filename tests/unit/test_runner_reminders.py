@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from shisad.daemon.runner import _reminder_delivery_pump
+import shisad.daemon.runner as runner_module
+from shisad.daemon.runner import _reminder_delivery_pump, _serve_daemon
 from shisad.scheduler.schema import Schedule, TaskRunRequest
 
 
@@ -66,6 +67,62 @@ class _FailingImplStub(_ImplStub):
         if run.task_id == self._failing_task_id:
             raise RuntimeError("boom")
         return await super().do_task_execute_due_run(run, event_type=event_type)
+
+
+@pytest.mark.asyncio
+async def test_f7b_startup_recovers_delivery_before_server_accepts_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    resolver = object()
+    shutdown_event = asyncio.Event()
+
+    class _Handlers:
+        def __init__(self, *, services: object) -> None:
+            _ = services
+            self._impl = SimpleNamespace(_resolve_chat_approval_capability=resolver)
+
+    class _ApprovalWeb:
+        async def start(self) -> None:
+            events.append("approval_web")
+
+    class _Delivery:
+        async def recover(self, *, capability_resolver: object) -> None:
+            assert capability_resolver is resolver
+            events.append("delivery_recovery")
+
+    class _Server:
+        async def start(self) -> None:
+            events.append("server")
+            shutdown_event.set()
+
+    async def _idle_pump(*, services: object, handlers: object) -> None:
+        _ = (services, handlers)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runner_module, "DaemonControlHandlers", _Handlers)
+    monkeypatch.setattr(runner_module, "_method_specs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(runner_module, "_warn_on_startup_config_gaps", lambda _config: None)
+    monkeypatch.setattr(runner_module, "_reminder_delivery_pump", _idle_pump)
+    config = SimpleNamespace(
+        test_mode=False,
+        web_search_enabled=False,
+        web_fetch_enabled=False,
+        web_search_backend_url="",
+        web_allowed_domains=[],
+        assistant_fs_roots=[],
+    )
+    services = SimpleNamespace(
+        approval_web=_ApprovalWeb(),
+        delivery=_Delivery(),
+        server=_Server(),
+        shutdown_event=shutdown_event,
+        channels={},
+    )
+
+    await _serve_daemon(config, services, None)  # type: ignore[arg-type]
+
+    assert events == ["approval_web", "delivery_recovery", "server"]
 
 
 @pytest.mark.asyncio

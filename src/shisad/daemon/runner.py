@@ -534,6 +534,9 @@ async def _serve_daemon(
 ) -> None:
     handlers = DaemonControlHandlers(services=services)
     await services.approval_web.start()
+    await services.delivery.recover(
+        capability_resolver=handlers._impl._resolve_chat_approval_capability
+    )
 
     for method_name, method_handler, admin_only, params_model in _method_specs(
         handlers,

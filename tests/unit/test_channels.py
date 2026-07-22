@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from shisad.channels import state as channel_state
-from shisad.channels.base import DeliveryTarget, InMemoryChannel
-from shisad.channels.delivery import ChannelDeliveryService
+from shisad.channels.base import DeliveryRecoveryKind, DeliveryTarget, InMemoryChannel
+from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent
 from shisad.channels.discord import (
     DiscordChannel,
     DiscordConfig,
@@ -274,12 +275,18 @@ async def test_inmemory_channel_offline_buffer_heartbeat_and_health() -> None:
 
 
 @pytest.mark.asyncio
-async def test_channel_delivery_service_routes_to_targeted_channel() -> None:
+async def test_channel_delivery_service_routes_to_targeted_channel(tmp_path: Path) -> None:
     channel = InMemoryChannel(name="discord")
     await channel.connect()
-    delivery = ChannelDeliveryService({"discord": channel})
+    delivery = ChannelDeliveryService(
+        {"discord": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
     result = await delivery.send(
-        target=DeliveryTarget(channel="discord", recipient="chan-1", workspace_hint="guild-1"),
+        intent=DeliveryIntent(
+            source_id="test-route-1",
+            kind="channel_result",
+            target=DeliveryTarget(channel="discord", recipient="chan-1", workspace_hint="guild-1"),
+        ),
         message="hello world",
     )
     assert result.sent is True
@@ -290,7 +297,9 @@ async def test_channel_delivery_service_routes_to_targeted_channel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent() -> None:
+async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent(
+    tmp_path: Path,
+) -> None:
     class _UnavailableChannel(InMemoryChannel):
         @property
         def available(self) -> bool:
@@ -298,14 +307,41 @@ async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent(
 
     channel = _UnavailableChannel(name="discord")
     await channel.connect()
-    delivery = ChannelDeliveryService({"discord": channel})
+    delivery = ChannelDeliveryService(
+        {"discord": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
     result = await delivery.send(
-        target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        intent=DeliveryIntent(
+            source_id="test-unavailable-1",
+            kind="channel_result",
+            target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        ),
         message="hello world",
     )
     assert result.sent is False
     assert result.reason == "channel_dependency_unavailable"
     await channel.disconnect()
+
+
+def test_f7b_shipped_network_adapters_declare_no_automatic_recovery_proof() -> None:
+    channels = [
+        DiscordChannel(DiscordConfig(bot_token="discord-secret")),
+        SlackChannel(SlackConfig(bot_token="slack-secret", app_token="app-secret")),
+        TelegramChannel(TelegramConfig(bot_token="telegram-secret")),
+        MatrixChannel(
+            MatrixConfig(
+                homeserver="https://matrix.example.org",
+                user_id="@bot:example.org",
+                access_token="matrix-secret",
+                room_id="!room:example.org",
+            )
+        ),
+    ]
+
+    declarations = [channel.delivery_recovery_capability() for channel in channels]
+
+    assert [item.kind for item in declarations] == [DeliveryRecoveryKind.NEITHER] * 4
+    assert all(item.guarantee_id for item in declarations)
 
 
 def _replay_identity(

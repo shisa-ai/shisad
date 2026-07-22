@@ -156,8 +156,13 @@ class ApprovalWebService:
         if thread is not None:
             await asyncio.to_thread(thread.join, 2.0)
 
-    def issue_approval_link(self, confirmation_id: str) -> str:
-        return self._issue_link("approve", confirmation_id)
+    def issue_approval_link(
+        self, confirmation_id: str, *, expires_at: datetime | None = None
+    ) -> str:
+        return self._issue_link("approve", confirmation_id, expires_at=expires_at)
+
+    def rotate_approval_link(self, confirmation_id: str, *, expires_at: datetime) -> str:
+        return self._issue_link("approve", confirmation_id, expires_at=expires_at, rotate=True)
 
     def issue_registration_link(self, enrollment_id: str) -> str:
         return self._issue_link("register", enrollment_id)
@@ -171,9 +176,27 @@ class ApprovalWebService:
         matrix = qr.get_matrix()
         return "\n".join("".join("##" if cell else "  " for cell in row) for row in matrix)
 
-    def _issue_link(self, kind: Literal["approve", "register"], target_id: str) -> str:
+    def _issue_link(
+        self,
+        kind: Literal["approve", "register"],
+        target_id: str,
+        *,
+        expires_at: datetime | None = None,
+        rotate: bool = False,
+    ) -> str:
         normalized_target_id = target_id.strip()
         if not self.enabled or not normalized_target_id:
+            return ""
+        now = datetime.now(UTC)
+        token_expiry = now + timedelta(seconds=self.link_ttl_seconds)
+        if expires_at is not None:
+            action_expiry = (
+                expires_at.replace(tzinfo=UTC)
+                if expires_at.tzinfo is None
+                else expires_at.astimezone(UTC)
+            )
+            token_expiry = min(token_expiry, action_expiry)
+        if token_expiry <= now:
             return ""
         self._prune_state()
         with self._lock:
@@ -181,16 +204,19 @@ class ApprovalWebService:
             existing_token = self._target_tokens.get(key)
             if existing_token is not None:
                 existing = self._tokens.get(existing_token)
-                if existing is not None and existing.expires_at > datetime.now(UTC):
+                if not rotate and existing is not None and existing.expires_at > now:
+                    existing.expires_at = min(existing.expires_at, token_expiry)
                     return self._link_url(
                         kind=kind, target_id=normalized_target_id, token=existing_token
                     )
+                self._tokens.pop(existing_token, None)
+                self._attempts.pop(existing_token, None)
                 self._target_tokens.pop(key, None)
             token = secrets.token_urlsafe(32)
             self._tokens[token] = _CeremonyToken(
                 kind=kind,
                 target_id=normalized_target_id,
-                expires_at=datetime.now(UTC) + timedelta(seconds=self.link_ttl_seconds),
+                expires_at=token_expiry,
             )
             self._target_tokens[key] = token
         return self._link_url(kind=kind, target_id=normalized_target_id, token=token)

@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.storage_platform import sync_parent_directory
 from shisad.core.types import SessionId, TaintLabel
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class TranscriptStore:
         metadata: dict[str, Any] | None = None,
         evidence_ref_id: str | None = None,
         timestamp: datetime | None = None,
+        durable: bool = False,
     ) -> TranscriptEntry:
         """Append a transcript entry for a session."""
         raw = content.encode("utf-8")
@@ -107,6 +109,9 @@ class TranscriptStore:
             if not blob_path.exists():
                 blob_path.write_text(content)
             self._ensure_file_permissions(blob_path)
+            if durable:
+                self._sync_file(blob_path)
+                sync_parent_directory(self._blob_dir)
 
         entry = TranscriptEntry(
             role=role,
@@ -120,9 +125,15 @@ class TranscriptStore:
         )
 
         transcript_path = self._transcript_dir / f"{session_id}.jsonl"
+        transcript_existed = transcript_path.exists()
         with transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(entry.model_dump_json() + "\n")
+            if durable:
+                handle.flush()
+                os.fsync(handle.fileno())
         self._ensure_file_permissions(transcript_path)
+        if durable and not transcript_existed:
+            sync_parent_directory(self._transcript_dir)
         for observer in list(self._append_observers):
             try:
                 observer(session_id, entry, content)
@@ -207,6 +218,11 @@ class TranscriptStore:
             return None
         return path.read_text(encoding="utf-8")
 
+    def entry_content(self, entry: TranscriptEntry) -> str | None:
+        if entry.blob_ref:
+            return self.read_blob(entry.blob_ref)
+        return entry.content_preview
+
     @staticmethod
     def _ensure_dir_permissions(path: Path) -> None:
         with contextlib.suppress(OSError):
@@ -216,6 +232,11 @@ class TranscriptStore:
     def _ensure_file_permissions(path: Path) -> None:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)
+
+    @staticmethod
+    def _sync_file(path: Path) -> None:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
 
     @staticmethod
     def _normalize_timestamp(timestamp: datetime | None) -> datetime:

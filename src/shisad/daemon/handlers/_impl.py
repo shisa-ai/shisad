@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
 from shisad.channels.base import DeliveryTarget
+from shisad.channels.delivery import DeliveryIntent, DeliveryResult
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
@@ -2042,9 +2043,7 @@ def _ensure_trusted_recovery_event_identity_marker(pending: PendingAction) -> No
     ):
         pending.recovery_anonymous_accounting_id = uuid.uuid4().hex
     pending.recovery_event_identity_trusted_at = pending.recovery_event_identity_untrusted_at
-    pending.recovery_anonymous_accounting_id_trusted = (
-        pending.recovery_anonymous_accounting_id
-    )
+    pending.recovery_anonymous_accounting_id_trusted = pending.recovery_anonymous_accounting_id
 
 
 def _unauthenticated_recovery_event_identity_fields() -> dict[str, Any]:
@@ -2077,10 +2076,7 @@ def _neutralize_untrusted_scheduler_accounting_intent(
             pending.scheduler_accounting_pending
             or (
                 accounting_mode
-                and not (
-                    accounting_mode == "ambiguous"
-                    and pending.recovery_scheduler_accounted
-                )
+                and not (accounting_mode == "ambiguous" and pending.recovery_scheduler_accounted)
             )
         )
         if intent_present is None
@@ -3302,9 +3298,10 @@ class HandlerImplementation(
         if degraded:
             payload["status"] = "degraded"
             payload["problems"] = sorted(
-                [*payload.get("problems", []), *(
-                    f"{row['component']}_state_{row['status']}" for row in degraded
-                )]
+                [
+                    *payload.get("problems", []),
+                    *(f"{row['component']}_state_{row['status']}" for row in degraded),
+                ]
             )
         lock_held = bool(self._services.data_lock.is_locked)
         payload["components"] = components
@@ -4125,11 +4122,7 @@ class HandlerImplementation(
             if start_executing
             else ""
         )
-        result_id = (
-            result_id.strip() or f"result-{uuid.uuid4().hex}"
-            if start_executing
-            else ""
-        )
+        result_id = result_id.strip() or f"result-{uuid.uuid4().hex}" if start_executing else ""
         requirement = (
             confirmation_requirement.model_copy(deep=True)
             if confirmation_requirement is not None
@@ -4818,18 +4811,16 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            raw_started_authority_present = (
-                _loaded_pending_payload_has_started_execution_authority(item)
+            raw_started_authority_present = _loaded_pending_payload_has_started_execution_authority(
+                item
             )
             raw_recovery_event_identity_marker_present = (
                 _loaded_pending_payload_has_recovery_event_identity_marker(item)
             )
             raw_scheduler_accounting_mode = item.get("scheduler_accounting_mode", "")
-            raw_terminal_scheduler_shadow = (
-                _loaded_pending_has_terminal_scheduler_shadow(
-                    getattr(self, "_scheduler", None),
-                    item,
-                )
+            raw_terminal_scheduler_shadow = _loaded_pending_has_terminal_scheduler_shadow(
+                getattr(self, "_scheduler", None),
+                item,
             )
             raw_scheduler_accounting_intent_present = (
                 item.get("scheduler_accounting_pending", False) is not False
@@ -4848,10 +4839,7 @@ class HandlerImplementation(
                 continue
             item = sanitized_item
             item, identity_binding_invalid = self._canonicalize_loaded_pending_identity(item)
-            if (
-                raw_recovery_event_identity_marker_present
-                and not raw_started_authority_present
-            ):
+            if raw_recovery_event_identity_marker_present and not raw_started_authority_present:
                 item["recovery_event_identity_untrusted"] = False
                 item["recovery_event_identity_untrusted_at"] = ""
                 item["recovery_anonymous_accounting_id"] = ""
@@ -5078,8 +5066,7 @@ class HandlerImplementation(
                 ) = _loaded_state_text(item.get("recovery_anonymous_accounting_id", ""))
                 recovery_anonymous_accounting_id_valid = (
                     recovery_anonymous_accounting_id_valid
-                    and recovery_event_identity_untrusted
-                    == bool(recovery_anonymous_accounting_id)
+                    and recovery_event_identity_untrusted == bool(recovery_anonymous_accounting_id)
                 )
                 recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
                     _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
@@ -6160,9 +6147,7 @@ class HandlerImplementation(
     ) -> dict[str, Any]:
         evidence = pending.confirmation_evidence if authority_authenticated else None
         approval_timestamp = (
-            self._recovery_event_timestamp(pending).isoformat()
-            if authority_authenticated
-            else ""
+            self._recovery_event_timestamp(pending).isoformat() if authority_authenticated else ""
         )
         return {
             **(
@@ -6457,8 +6442,7 @@ class HandlerImplementation(
                 or not task_id
                 or not confirmation_id
                 or pending.scheduler_accounting_mode.strip()
-                or terminal_status
-                not in {"failed", "rejected", "cancelled", "superseded"}
+                or terminal_status not in {"failed", "rejected", "cancelled", "superseded"}
             ):
                 continue
             recorded_outcome = (
@@ -6715,9 +6699,7 @@ class HandlerImplementation(
                 task_id=task_id,
                 preflight_action=execution_action,
                 merged_policy=merged_policy,
-                strip_direct_tool_execute_envelope_keys=(
-                    strip_direct_tool_execute_envelope_keys
-                ),
+                strip_direct_tool_execute_envelope_keys=(strip_direct_tool_execute_envelope_keys),
                 origin_turn_id=origin_turn_id,
                 action_id=action_id,
                 execution_attempt_id=execution_attempt_id,
@@ -6990,9 +6972,7 @@ class HandlerImplementation(
                     tool_name=tool_name,
                     success=success,
                     error=error,
-                    details=(
-                        {"outcome_unknown": True} if provider_outcome_unknown else {}
-                    ),
+                    details=({"outcome_unknown": True} if provider_outcome_unknown else {}),
                     **approval_event_fields,
                 )
             )
@@ -7142,8 +7122,10 @@ class HandlerImplementation(
                 thread_id=optional_string(arguments.get("thread_id", "")),
             )
             message_text = optional_string(arguments.get("message", ""))
+            delivery_metadata: dict[str, Any] = {}
+            delivery_result: Any
+            reason = ""
             if target.channel == "session":
-                reason = ""
                 target_session = (
                     self._session_manager.get(SessionId(target.recipient))
                     if target.recipient
@@ -7154,131 +7136,36 @@ class HandlerImplementation(
                 elif target_session is None:
                     reason = "session_delivery_session_not_found"
                 if reason:
-                    delivery_payload = {
-                        "attempted": True,
-                        "sent": False,
-                        "reason": reason,
-                        "target": {
-                            "channel": target.channel,
-                            "recipient": target.recipient,
-                            "workspace_hint": target.workspace_hint,
-                            "thread_id": target.thread_id,
-                        },
+                    delivery_result = DeliveryResult(
+                        attempted=False,
+                        sent=False,
+                        reason=reason,
+                        target=target,
+                        state="failed_pre_effect",
+                    )
+                else:
+                    delivery_metadata = {
+                        "session_mode": (target_session or session).mode.value,
+                        "user_id": str((target_session or session).user_id),
+                        "workspace_id": str((target_session or session).workspace_id),
+                        "delivered_by": approval_actor,
                     }
-                    await self._event_bus.publish(
-                        ToolRejected(
-                            session_id=sid,
-                            actor="tool_runtime",
-                            tool_name=tool_name,
-                            reason=reason,
-                            **approval_event_fields,
-                        )
-                    )
-                    await self._event_bus.publish(
-                        ToolExecuted(
-                            session_id=sid,
-                            actor="tool_runtime",
-                            tool_name=tool_name,
-                            success=False,
-                            **approval_event_fields,
-                        )
-                    )
-                    await _call_control_plane(
-                        self,
-                        "record_execution",
-                        action=executed_action,
-                        success=False,
-                        idempotency_key=control_plane_execution_key,
-                    )
-                    return ApprovedToolExecutionResult(
-                        success=False,
-                        checkpoint_id=checkpoint_id,
-                        tool_output=HandlerImplementation._with_tool_output_ingress(
-                            self,
-                            session=session,
-                            tool_output=ToolOutputRecord(
-                                tool_name=str(tool_name),
-                                content=self._sanitize_tool_output_text(
-                                    json.dumps(delivery_payload, ensure_ascii=True)
-                                ),
-                                success=False,
-                                taint_labels=set(),
-                            ),
-                        ),
-                    )
-
-                transcript_metadata: dict[str, Any] = {
-                    "channel": "session",
-                    "timestamp_utc": datetime.now(UTC).isoformat(),
-                    "session_mode": (target_session or session).mode.value,
-                    "user_id": str((target_session or session).user_id),
-                    "workspace_id": str((target_session or session).workspace_id),
-                    "delivered_by": approval_actor,
-                    "delivery_target": {
-                        "channel": target.channel,
-                        "recipient": target.recipient,
-                        "workspace_hint": target.workspace_hint,
-                        "thread_id": target.thread_id,
-                    },
-                }
-                task_id = str(executed_action.origin.task_id).strip()
-                if task_id:
-                    transcript_metadata["task_id"] = task_id
-                self._transcript_store.append(
-                    SessionId(target.recipient),
-                    role="assistant",
-                    content=message_text,
-                    taint_labels=set(),
-                    metadata=transcript_metadata,
-                )
-                delivery_payload = {
-                    "attempted": True,
-                    "sent": True,
-                    "reason": "session_transcript_appended",
-                    "target": {
-                        "channel": target.channel,
-                        "recipient": target.recipient,
-                        "workspace_hint": target.workspace_hint,
-                        "thread_id": target.thread_id,
-                    },
-                }
-                await self._event_bus.publish(
-                    ToolExecuted(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        success=True,
-                        **approval_event_fields,
-                    )
-                )
-                await _call_control_plane(
-                    self,
-                    "record_execution",
-                    action=executed_action,
-                    success=True,
-                    idempotency_key=control_plane_execution_key,
-                )
-                return ApprovedToolExecutionResult(
-                    success=True,
-                    checkpoint_id=checkpoint_id,
-                    tool_output=HandlerImplementation._with_tool_output_ingress(
-                        self,
-                        session=session,
-                        tool_output=ToolOutputRecord(
-                            tool_name=str(tool_name),
-                            content=self._sanitize_tool_output_text(
-                                json.dumps(delivery_payload, ensure_ascii=True)
-                            ),
-                            success=True,
-                            taint_labels=set(),
-                        ),
+                    task_id = str(executed_action.origin.task_id).strip()
+                    if task_id:
+                        delivery_metadata["task_id"] = task_id
+            if target.channel != "session" or not reason:
+                source_id = (
+                    control_plane_execution_key or operation_identity.execution_attempt_id
+                ).strip()
+                delivery_result = await self._delivery.send(
+                    intent=DeliveryIntent(
+                        source_id=f"f2:{source_id}",
+                        kind="message_send",
+                        target=target,
                     ),
+                    message=message_text,
+                    metadata=delivery_metadata,
                 )
-
-            delivery_result = await self._delivery.send(
-                target=target,
-                message=message_text,
-            )
             as_dict = getattr(delivery_result, "as_dict", None)
             if callable(as_dict):
                 delivery_payload = as_dict()
@@ -7295,6 +7182,7 @@ class HandlerImplementation(
                     },
                 }
             success = bool(delivery_result.sent)
+            outcome_unknown = bool(getattr(delivery_result, "outcome_unknown", False))
             if not success:
                 await self._event_bus.publish(
                     ToolRejected(
@@ -7319,12 +7207,14 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=success,
+                outcome_unknown=outcome_unknown,
                 idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=success,
                 checkpoint_id=checkpoint_id,
                 error="" if success else delivery_result.reason or "message_send_failed",
+                outcome_unknown=outcome_unknown,
                 tool_output=HandlerImplementation._with_tool_output_ingress(
                     self,
                     session=session,

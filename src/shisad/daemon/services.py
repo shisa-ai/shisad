@@ -104,6 +104,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 def _wipe_dir_contents(directory: Path) -> None:
     """Remove all files and subdirectories inside *directory* without removing it."""
     import shutil
@@ -631,9 +632,7 @@ class DaemonServices:
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
-    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(
-        default_factory=dict
-    )
+    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(default_factory=dict)
     active_rpc_calls: int = field(default=0)
     rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reset_in_progress: bool = field(default=False)
@@ -656,9 +655,7 @@ class DaemonServices:
             raise
 
     @classmethod
-    async def _build_locked(
-        cls, config: DaemonConfig, data_lock: BaseFileLock
-    ) -> DaemonServices:
+    async def _build_locked(cls, config: DaemonConfig, data_lock: BaseFileLock) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
         audit_log = AuditLog(config.data_dir / "audit.jsonl")
         event_bus = EventBus(persister=audit_log)
@@ -869,7 +866,11 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            delivery = ChannelDeliveryService(channels)
+            delivery = ChannelDeliveryService(
+                channels,
+                state_root=config.data_dir / "channels" / "delivery",
+                transcript_store=transcript_store,
+            )
 
             local_fallback = LocalPlannerProvider()
             provider: LocalPlannerProvider | RoutedOpenAIProvider = local_fallback
@@ -1289,6 +1290,7 @@ class DaemonServices:
         # Retain the established summary keys for reset-result compatibility.
         cleared["channel_state_channels"] = channel_state_reset["providers"]
         cleared["channel_state_files"] = channel_state_reset["files"]
+        cleared["channel_delivery_records"] = self.delivery.reset()
 
         # -- Transcripts --
         cleared["transcripts"] = _count_files_recursive(
@@ -1523,6 +1525,10 @@ class DaemonServices:
                     "mcp_manager",
                     exc_info=(type(result), result, result.__traceback__),
                 )
+        delivery = getattr(self, "delivery", None)
+        if delivery is not None:
+            with contextlib.suppress(Exception):
+                delivery.close()
 
 
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
