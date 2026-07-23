@@ -391,6 +391,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
         bind_execution_identity: bool = False,
         retain_target_on_error: bool = False,
+        canonicalize_recovery_event_identity: bool = False,
     ) -> bool:
         bind_execution_identity = bind_execution_identity or operation is not None
         guard = PendingActionTransitionGuard.for_record(
@@ -419,6 +420,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         guard=guard,
                         mutation=PendingActionMutation(kind=kind, values=values),
                         retain_target_on_error=retain_target_on_error,
+                        canonicalize_recovery_event_identity=(canonicalize_recovery_event_identity),
                     ),
                     persist=self._persist_pending_actions,
                 )

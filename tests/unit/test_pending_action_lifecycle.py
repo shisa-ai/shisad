@@ -806,6 +806,68 @@ def test_f10c_exact_terminal_repeat_binds_operation_patch_and_guard(
     assert persist.calls == 1
 
 
+def test_f10c_loaded_exact_terminal_repeat_uses_durable_operation_posture(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    original.store.add(record)
+    mutation = PendingActionMutation(
+        kind=PendingActionMutationKind.EXECUTION,
+        values={"provider_operation_id": "provider-1"},
+    )
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=mutation,
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+
+    repeated = adopted.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+
+    assert repeated.changed is False
+    assert persist.calls == 0
+
+
+def test_f10c_fixed_reason_cannot_create_cross_operation_replay(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    service.store.add(record)
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionTransitionError, match="fixed_reason_reserved"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.FAIL,
+                reason="approval_expired",
+                guard=_guard(record, execution=True),
+            ),
+            persist=persist,
+        )
+
+    assert record.status == "executing"
+    assert persist.calls == 0
+
+
 def test_f10b_transition_rejects_noncanonical_source_and_reason_without_write(
     tmp_path: Path,
 ) -> None:
@@ -1685,6 +1747,91 @@ def test_f10c_recovery_authority_fields_only_allow_canonical_invalidation(
 
     assert (record.status, record.approval_evidence_hash) == ("executing", "")
     assert persist.calls == 0
+
+
+def test_f10c_recovery_invalidation_rejects_caller_selected_trust_markers(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    service.store.add(record)
+    marker_at = datetime.now(UTC)
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionTransitionError, match="mutation_value_invalid"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                reason="uncertain_effect_requires_fresh_approval",
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={
+                        "recovery_event_identity_untrusted": True,
+                        "recovery_event_identity_untrusted_at": marker_at,
+                        "recovery_anonymous_accounting_id": "caller-selected",
+                        "recovery_event_identity_trusted_at": marker_at,
+                        "recovery_anonymous_accounting_id_trusted": "caller-selected",
+                    },
+                ),
+            ),
+            persist=persist,
+        )
+
+    assert record.status == "executing"
+    assert persist.calls == 0
+
+
+def test_f10c_recovery_invalidation_generates_canonical_trust_marker(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    service.store.add(record)
+    persist = _PersistRecorder()
+    request = PendingActionTransitionRequest(
+        record=record,
+        operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+        reason="uncertain_effect_requires_fresh_approval",
+        guard=_guard(record, execution=True),
+        mutation=PendingActionMutation(
+            kind=PendingActionMutationKind.RECOVERY,
+            values={"execution_authorization_kind": ""},
+        ),
+        canonicalize_recovery_event_identity=True,
+    )
+
+    committed = service.transition(request, persist=persist)
+    repeated = service.transition(request, persist=persist)
+
+    assert committed.changed is True
+    assert repeated.changed is False
+    assert record.recovery_event_identity_untrusted is True
+    assert record.recovery_event_identity_untrusted_at is not None
+    assert record.recovery_event_identity_untrusted_at == record.recovery_event_identity_trusted_at
+    assert record.recovery_anonymous_accounting_id
+    assert (
+        record.recovery_anonymous_accounting_id == record.recovery_anonymous_accounting_id_trusted
+    )
+    assert persist.calls == 1
+    adopted = PendingActionLifecycleService(PendingActionStore(service.store.path))
+    adopted.adopt_loaded((record,))
+    assert adopted.transition(request, persist=_PersistRecorder()).changed is False
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        adopted.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.OUTCOME_UNKNOWN,
+                reason=request.reason,
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={},
+                ),
+            ),
+            persist=_PersistRecorder(),
+        )
 
 
 @pytest.mark.parametrize(

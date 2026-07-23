@@ -6223,7 +6223,12 @@ class HandlerImplementation(
             )
             self._mutate_pending_action(
                 pending,
-                operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                operation=(
+                    None
+                    if pending.status == "outcome_unknown"
+                    and pending.status_reason == "uncertain_effect_requires_fresh_approval"
+                    else PendingActionTransitionKind.INVALIDATE_RECOVERY
+                ),
                 reason="uncertain_effect_requires_fresh_approval",
                 kind=PendingActionMutationKind.SCHEDULER,
                 values={
@@ -6498,8 +6503,6 @@ class HandlerImplementation(
             recovery_result={},
             recovery_effect_invoked=authenticated_effect_invoked,
         )
-        if not preserve_authenticated_effect_posture:
-            _ensure_trusted_recovery_event_identity_marker(invalidated)
         _neutralize_untrusted_recovery_event_identity(invalidated)
         _neutralize_untrusted_scheduler_accounting_intent(invalidated)
         self._mutate_pending_action(
@@ -6512,6 +6515,7 @@ class HandlerImplementation(
                 for item in fields(invalidated)
                 if getattr(pending, item.name) != getattr(invalidated, item.name)
             },
+            canonicalize_recovery_event_identity=not preserve_authenticated_effect_posture,
         )
 
     def _recovery_control_plane_action(
