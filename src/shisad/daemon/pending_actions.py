@@ -842,12 +842,9 @@ class PendingActionLifecycleService:
             )
         ):
             raise _transition_error("recovery_marker_intent_invalid", operation)
-        repeat = (
-            source_status == rule.target_status
-            and str(record.status_reason) == reason
-            and not mutation_values
-        )
-        if source_status not in rule.allowed_sources and not repeat:
+        terminal_shape = source_status == rule.target_status and str(record.status_reason) == reason
+        repeat = terminal_shape and not mutation_values
+        if source_status not in rule.allowed_sources and not terminal_shape:
             raise _transition_error(
                 "illegal_transition", operation, f"{source_status}->{rule.target_status}"
             )
@@ -872,6 +869,8 @@ class PendingActionLifecycleService:
             PendingActionTransitionKind.INVALIDATE_RECOVERY,
         }:
             raise _transition_error("retain_target_invalid", operation)
+        if terminal_shape and mutation_values:
+            raise _transition_error("terminal_repeat_mismatch", operation)
         terminal_key = (
             "terminal",
             operation,

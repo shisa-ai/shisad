@@ -81,6 +81,7 @@ from shisad.daemon.pending_actions import (
     PendingActionTransitionGuard,
     PendingActionTransitionRequest,
     PendingActionUpdateRequest,
+    PendingSchedulerAccountingMode,
 )
 from shisad.daemon.pending_actions import (
     PendingActionMutationSnapshot as _PendingAttemptSnapshot,
@@ -120,6 +121,21 @@ _STALE_PENDING_APPROVAL_REASONS = frozenset(
         "action_identity_mismatch",
     }
 )
+
+
+def _terminal_scheduler_accounting_mode(
+    mutation: PendingActionMutation | None,
+    *,
+    record_scheduler_failure: bool,
+) -> PendingSchedulerAccountingMode:
+    explicit_mode = (
+        mutation.values.get("scheduler_accounting_mode") if mutation is not None else None
+    )
+    if explicit_mode in ("failure", "shadow_only", "ambiguous"):
+        return cast(PendingSchedulerAccountingMode, explicit_mode)
+    return "failure" if record_scheduler_failure else "shadow_only"
+
+
 _PURGED_STALE_PENDING_ACTION_REASON = "purged_stale_pending_action"
 _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
     {
@@ -847,8 +863,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 reason=reason,
                 guard=guard,
                 rollback_snapshot=snapshot,
-                scheduler_accounting_mode=(
-                    "failure" if record_scheduler_failure else "shadow_only"
+                scheduler_accounting_mode=_terminal_scheduler_accounting_mode(
+                    mutation,
+                    record_scheduler_failure=record_scheduler_failure,
                 ),
                 mutation=mutation,
                 retain_target_on_error=retain_target_on_error,

@@ -94,6 +94,8 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.daemon.pending_actions import (
+    PendingActionMutation,
+    PendingActionMutationKind,
     PendingActionTransitionError,
     PendingActionTransitionGuard,
     capture_pending_action_mutation,
@@ -800,6 +802,32 @@ def test_f10b_terminal_guard_failure_restores_caller_staged_mutation(tmp_path: P
         )
 
     assert capture_pending_action_mutation(pending) == snapshot
+
+
+def test_f10d_terminal_builder_uses_explicit_mutation_scheduler_mode(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="nonce-1")
+    pending.task_id = "task-1"
+    requests = []
+    harness._pending_action_lifecycle = SimpleNamespace(
+        degradation=None,
+        transition_many=lambda items, **_: requests.extend(items),
+    )
+
+    harness._commit_pending_terminal_state(
+        pending,
+        status="outcome_unknown",
+        reason="uncertain_effect_requires_fresh_approval",
+        mutation=PendingActionMutation(
+            kind=PendingActionMutationKind.EXECUTION,
+            values={"scheduler_accounting_mode": "ambiguous"},
+        ),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].scheduler_accounting_mode == "ambiguous"
 
 
 @pytest.mark.asyncio

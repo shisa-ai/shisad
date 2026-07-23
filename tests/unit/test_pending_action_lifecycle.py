@@ -889,6 +889,50 @@ def test_f10d_loaded_repeat_accepts_equivalent_noop_patch_shape(
     assert persist.calls == 0
 
 
+def test_f10d_loaded_repeat_classifies_different_patch_as_terminal_mismatch(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    original.store.add(record)
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.EXECUTION,
+                values={"provider_operation_id": "provider-1"},
+            ),
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+    source = capture_pending_action_mutation(record)
+
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        adopted.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={"provider_operation_id": "provider-2"},
+                ),
+            ),
+            persist=persist,
+        )
+
+    assert capture_pending_action_mutation(record) == source
+    adopted.store.assert_index_parity()
+    assert persist.calls == 0
+
+
 def test_f10d_loaded_repeat_rejects_unsatisfied_scheduled_mode_without_write(
     tmp_path: Path,
 ) -> None:
