@@ -1185,6 +1185,82 @@ def test_f1_pending_action_identity_survives_restart(tmp_path: Path) -> None:
     assert after["lifecycle_state"] == "pending"
 
 
+def test_f10a_load_migrates_legacy_record_schema_after_safe_hydration(tmp_path: Path) -> None:
+    pending = _pending_action(nonce="legacy-schema-nonce")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("record_schema_version", None)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "pending"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["record_schema_version"] == 1
+
+
+def test_f10a_unhydrated_legacy_record_is_not_rewritten_as_healthy_empty(
+    tmp_path: Path,
+) -> None:
+    pending_actions_file = tmp_path / "pending_actions.json"
+    raw = json.dumps([{"confirmation_id": "", "status": "pending"}]).encode()
+    pending_actions_file.write_bytes(raw)
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    harness._load_pending_actions()
+
+    assert harness._pending_actions == {}
+    assert harness._pending_by_session == {}
+    assert pending_actions_file.read_bytes() == raw
+
+
+def test_f10a_unusable_store_is_quarantined_and_blocks_new_pending_mutation(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    raw = json.dumps(
+        [
+            {
+                "record_schema_version": 2,
+                "confirmation_id": "c-future",
+                "session_id": "session-1",
+                "identity": {
+                    "confirmation_id": "c-future",
+                    "session_id": "session-1",
+                },
+            }
+        ]
+    ).encode()
+    harness._pending_actions_file.write_bytes(raw)
+
+    harness._load_pending_actions()
+
+    assert harness._pending_actions == {}
+    assert harness._pending_by_session == {}
+    assert harness._pending_state_degradation == {
+        "transition": "load",
+        "stage": "unsupported_schema",
+        "reason": "pending_state_unsupported_schema",
+    }
+    quarantined = list(tmp_path.glob("pending_actions.json.corrupt.*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == raw
+    assert not harness._pending_actions_file.exists()
+
+    with pytest.raises(StatePersistenceDegradedError, match="pending_actions persistence"):
+        harness._queue_pending_action(
+            session_id=SessionId("session-1"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("workspace-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "must stay blocked"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
+
+
 def test_f2_queue_applies_default_and_caps_explicit_approval_lifetime(
     tmp_path: Path,
 ) -> None:
@@ -3433,6 +3509,15 @@ def test_f2_parent_contract_malformed_text_fails_closed(
 
     harness._load_pending_actions()
 
+    if malformed_surface == "arguments_non_finite":
+        assert harness._pending_actions == {}
+        assert harness._pending_state_degradation == {
+            "transition": "load",
+            "stage": "corrupt",
+            "reason": "pending_state_corrupt",
+        }
+        assert len(list(tmp_path.glob("pending_actions.json.corrupt.*"))) == 1
+        return
     loaded = harness._pending_actions[pending.confirmation_id]
     assert loaded.status == "failed"
     assert loaded.status_reason == "approval_contract_mismatch"
@@ -3491,6 +3576,15 @@ def test_f2_pending_erased_recovery_authority_recovers_as_outcome_unknown(
 
     harness._load_pending_actions()
 
+    if field == "retry_generation" and value == float("inf"):
+        assert harness._pending_actions == {}
+        assert harness._pending_state_degradation == {
+            "transition": "load",
+            "stage": "corrupt",
+            "reason": "pending_state_corrupt",
+        }
+        assert len(list(tmp_path.glob("pending_actions.json.corrupt.*"))) == 1
+        return
     loaded = harness._pending_actions[pending.confirmation_id]
     assert loaded.status == "outcome_unknown"
     assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
@@ -3533,6 +3627,7 @@ def test_f1_legacy_confirmation_alias_migrates_to_distinct_action_identity(
 ) -> None:
     pending = _pending_action(nonce="expected")
     payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("record_schema_version")
     payload["action_id"] = pending.confirmation_id
     for key in (
         "identity",

@@ -210,6 +210,32 @@ async def test_f9_daemon_services_owns_handler_graph_when_a2a_disabled(
 
 
 @pytest.mark.asyncio
+async def test_f10a_daemon_services_owns_handler_pending_action_store(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = services.control_handlers._impl
+        store = services.pending_action_store
+
+        assert impl._pending_action_store is store
+        assert impl._pending_actions is store.actions
+        assert impl._pending_by_session is store.by_session
+        assert store.path == config.data_dir / "pending_actions.json"
+        store.assert_index_parity()
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_f9_second_facade_construction_reuses_service_owner(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1169,6 +1195,10 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         impl._pending_actions[pending.confirmation_id] = pending
         impl._pending_by_session[session.id] = [pending.confirmation_id]
         impl._persist_pending_actions()
+        pending_quarantine = impl._pending_actions_file.with_name(
+            f"{impl._pending_actions_file.name}.corrupt.reset-test"
+        )
+        pending_quarantine.write_bytes(b"quarantined pending state")
         impl._monitor_reject_counts[session.id] = 2
         impl._plan_violation_counts[session.id] = 3
         impl._confirmation_alerted_at[pending.confirmation_id] = datetime.now(UTC)
@@ -1206,6 +1236,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert result["cleared"]["scheduler_pending_confirmations"] == 1
         assert result["cleared"]["pending_actions"] == 1
         assert result["cleared"]["pending_action_sessions"] == 1
+        assert result["cleared"]["pending_action_quarantine_artifacts"] == 1
         assert result["cleared"]["pending_two_factor_enrollments"] == 1
         assert result["cleared"]["monitor_reject_counts"] == 1
         assert result["cleared"]["plan_violation_counts"] == 1
@@ -1223,6 +1254,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert impl._confirmation_failure_tracker._state == {}
         assert impl._identity_map.list_pairing_requests() == []
         assert not impl._pending_actions_file.exists()
+        assert not pending_quarantine.exists()
         assert not impl._pairing_requests_file.exists()
     finally:
         await services.shutdown()

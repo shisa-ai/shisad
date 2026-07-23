@@ -33,8 +33,6 @@ from shisad.channels.delivery import DeliveryIntent, DeliveryResult
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
-    derive_action_followup_id,
-    derive_legacy_action_id,
     mint_action_operation_identity,
     parse_reminder_relative_duration,
     reminder_status_view_for_task,
@@ -101,6 +99,7 @@ from shisad.core.events import (
     ToolExecuted,
     ToolRejected,
 )
+from shisad.core.pending_action import PendingActionRecord as PendingAction
 from shisad.core.plan_steps import PlanStepStore
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.session import Session
@@ -163,6 +162,7 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
+from shisad.daemon.pending_actions import PendingActionStore, PendingActionStoreLoadStatus
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -1740,132 +1740,6 @@ def _pending_channel_capability_payload(
     }
 
 
-@dataclass(slots=True)
-class PendingAction:
-    confirmation_id: str
-    decision_nonce: str
-    session_id: SessionId
-    user_id: UserId
-    workspace_id: WorkspaceId
-    tool_name: ToolName
-    arguments: dict[str, Any]
-    reason: str
-    capabilities: set[Capability]
-    created_at: datetime
-    public_arguments: dict[str, Any] | None = None
-    sensitive_public_payload: bool = False
-    delivery_target: DeliveryTarget | None = None
-    task_id: str = ""
-    preflight_action: ControlPlaneAction | None = None
-    execute_after: datetime | None = None
-    safe_preview: str = ""
-    warnings: list[str] = field(default_factory=list)
-    leak_check: dict[str, Any] = field(default_factory=dict)
-    merged_policy: ToolExecutionPolicy | None = None
-    approval_task_envelope_id: str = ""
-    pep_context: PendingPepContextSnapshot | None = None
-    pep_elevation: PendingPepElevationRequest | None = None
-    required_level: ConfirmationLevel = ConfirmationLevel.SOFTWARE
-    required_methods: list[str] = field(default_factory=list)
-    allowed_principals: list[str] = field(default_factory=list)
-    allowed_channel_principals: list[str] = field(default_factory=list)
-    allowed_credentials: list[str] = field(default_factory=list)
-    required_capabilities: ConfirmationCapabilities = field(
-        default_factory=ConfirmationCapabilities
-    )
-    approval_envelope: ApprovalEnvelope | None = None
-    approval_envelope_hash: str = ""
-    intent_envelope: IntentEnvelope | None = None
-    confirmation_evidence: ConfirmationEvidence | None = None
-    fallback: ConfirmationFallbackPolicy = field(default_factory=ConfirmationFallbackPolicy)
-    expires_at: datetime | None = None
-    selected_backend_id: str = ""
-    selected_backend_method: str = ""
-    fallback_used: bool = False
-    strip_direct_tool_execute_envelope_keys: bool = False
-    continuation_user_goal: str = ""
-    continuation_mode: str = ""
-    status: str = "pending"
-    status_reason: str = ""
-    action_id: str = ""
-    origin_turn_id: str = ""
-    action_digest: str = ""
-    approval_evidence_hash: str = ""
-    execution_authorization_kind: str = ""
-    retry_descriptor: ToolRetryDescriptor | None = None
-    retry_generation: int = 0
-    recovery_started_at: datetime | None = None
-    recovery_result: dict[str, Any] = field(default_factory=dict)
-    recovery_accounting_pending: bool = False
-    recovery_effect_invoked: bool = False
-    recovery_scheduler_accounted: bool = False
-    recovery_scheduler_posture_captured: bool = False
-    recovery_scheduler_restore_enabled: bool = False
-    scheduler_accounting_pending: bool = False
-    scheduler_accounting_mode: str = ""
-    stage2_correlation_id: str = ""
-    stage2_previous_plan_hash: str = ""
-    stage2_plan_hash: str = ""
-    stable_idempotency_key: str = ""
-    provider_operation_id: str = ""
-    execution_attempt_id: str = ""
-    result_id: str = ""
-    followup_id: str = ""
-    recovery_authority_mac: str = ""
-    recovery_event_identity_untrusted: bool = False
-    recovery_event_identity_untrusted_at: datetime | None = None
-    recovery_anonymous_accounting_id: str = ""
-    recovery_event_identity_trusted_at: datetime | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    recovery_anonymous_accounting_id_trusted: str = field(
-        default="",
-        repr=False,
-        compare=False,
-    )
-
-    def __post_init__(self) -> None:
-        if not self.action_id.strip():
-            self.action_id = derive_legacy_action_id(
-                confirmation_id=self.confirmation_id,
-                session_id=str(self.session_id),
-                created_at=self.created_at,
-            )
-        if not self.followup_id.strip():
-            self.followup_id = derive_action_followup_id(self.action_id)
-
-    @staticmethod
-    def _is_legacy_direct_mcp_tool_execute_shape(
-        *,
-        tool_name: ToolName | str,
-        arguments: Mapping[str, Any],
-        preflight_action: ControlPlaneAction | Mapping[str, Any] | None,
-    ) -> bool:
-        if not str(tool_name).strip().startswith("mcp."):
-            return False
-        if not all(key in arguments for key in ("session_id", "tool_name", "command")):
-            return False
-        if isinstance(preflight_action, Mapping):
-            origin = preflight_action.get("origin")
-            if isinstance(origin, Mapping):
-                return str(origin.get("actor", "")).strip() == "control_api"
-            return False
-        return str(getattr(getattr(preflight_action, "origin", None), "actor", "")).strip() == (
-            "control_api"
-        )
-
-    def should_strip_direct_tool_execute_envelope_keys(self) -> bool:
-        return bool(self.strip_direct_tool_execute_envelope_keys) or (
-            PendingAction._is_legacy_direct_mcp_tool_execute_shape(
-                tool_name=self.tool_name,
-                arguments=self.arguments,
-                preflight_action=self.preflight_action,
-            )
-        )
-
-
 def _pending_action_has_started_execution_authority(pending: PendingAction) -> bool:
     """Return whether a stored pending row carries post-decision authority."""
 
@@ -2269,9 +2143,14 @@ class HandlerImplementation(
         self._pairing_requests_root = self._config.data_dir / "channels" / "pairing_requests"
         # Retained only to reject and reset pre-F7C unscoped evidence.
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
-        self._pending_actions_file = self._config.data_dir / "pending_actions.json"
-        self._pending_actions: dict[str, PendingAction] = {}
-        self._pending_by_session: dict[SessionId, list[str]] = {}
+        self._pending_action_store = getattr(services, "pending_action_store", None)
+        if self._pending_action_store is None:
+            self._pending_action_store = PendingActionStore(
+                self._config.data_dir / "pending_actions.json"
+            )
+        self._pending_actions_file = self._pending_action_store.path
+        self._pending_actions = self._pending_action_store.actions
+        self._pending_by_session = self._pending_action_store.by_session
         self._recovery_accounting_tasks: set[asyncio.Task[None]] = set()
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
@@ -2510,6 +2389,9 @@ class HandlerImplementation(
                 self._services.reset_in_progress = False
 
     def _clear_handler_test_state(self) -> dict[str, int]:
+        pending_action_quarantine_artifacts = list(
+            self._pending_actions_file.parent.glob(f"{self._pending_actions_file.name}.corrupt.*")
+        )
         pairing_request_artifacts = int(self._pairing_requests_file.exists())
         if self._pairing_requests_root.is_symlink():
             pairing_request_artifacts += 1
@@ -2520,6 +2402,7 @@ class HandlerImplementation(
         cleared = {
             "pending_actions": len(self._pending_actions),
             "pending_action_sessions": len(self._pending_by_session),
+            "pending_action_quarantine_artifacts": len(pending_action_quarantine_artifacts),
             "monitor_reject_counts": len(self._monitor_reject_counts),
             "plan_violation_counts": len(self._plan_violation_counts),
             "confirmation_alerts": len(self._confirmation_alerted_at),
@@ -2535,6 +2418,8 @@ class HandlerImplementation(
         self._pending_two_factor_enrollments.clear()
         self._confirmation_failure_tracker._state.clear()
         self._pending_actions_file.unlink(missing_ok=True)
+        for artifact in pending_action_quarantine_artifacts:
+            artifact.unlink(missing_ok=True)
         self._pairing_requests_file.unlink(missing_ok=True)
         if self._pairing_requests_root.is_symlink():
             self._pairing_requests_root.unlink(missing_ok=True)
@@ -2631,6 +2516,11 @@ class HandlerImplementation(
                 or self._confirmation_failure_tracker._state
             )
             and not self._pending_actions_file.exists()
+            and not any(
+                self._pending_actions_file.parent.glob(
+                    f"{self._pending_actions_file.name}.corrupt.*"
+                )
+            )
             and not self._pairing_requests_file.exists()
             and not self._pairing_requests_root.exists()
             and (
@@ -4119,6 +4009,8 @@ class HandlerImplementation(
             "lifecycle_state": state_view.lifecycle_state,
             "status_reason": state_view.status_reason,
         }
+        if not public:
+            payload["record_schema_version"] = pending.record_schema_version
         if pending.sensitive_public_payload:
             payload["sensitive_public_payload"] = True
         if pending.preflight_action is not None:
@@ -4704,6 +4596,14 @@ class HandlerImplementation(
         return pending
 
     def _persist_pending_actions(self) -> None:
+        owned_store = getattr(self, "_pending_action_store", None)
+        if owned_store is not None:
+            if (
+                self._pending_actions is not owned_store.actions
+                or self._pending_by_session is not owned_store.by_session
+            ):
+                raise ValueError("pending action handler/store ownership mismatch")
+            owned_store.assert_index_parity()
         for pending in self._pending_actions.values():
             prior_local_marker_present = bool(
                 pending.recovery_event_identity_trusted_at is not None
@@ -4752,9 +4652,11 @@ class HandlerImplementation(
             else:
                 pending.recovery_authority_mac = ""
         payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
-        atomic_write_bytes(
-            self._pending_actions_file,
-            json.dumps(payload, indent=2).encode("utf-8"),
+        store = owned_store
+        if store is None or store.path != self._pending_actions_file:
+            store = PendingActionStore(self._pending_actions_file)
+        store.write_payloads(
+            payload,
             fault_injector=getattr(self, "_pending_state_fault_injector", None),
         )
 
@@ -4990,14 +4892,25 @@ class HandlerImplementation(
         return normalized, binding_invalid
 
     def _load_pending_actions(self) -> None:
-        if not self._pending_actions_file.exists():
+        store = getattr(self, "_pending_action_store", None)
+        if store is None or store.path != self._pending_actions_file:
+            store = PendingActionStore(self._pending_actions_file)
+        load_result = store.load_payloads()
+        if load_result.status is PendingActionStoreLoadStatus.MISSING:
             return
-        try:
-            raw = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        if load_result.status in {
+            PendingActionStoreLoadStatus.CORRUPT,
+            PendingActionStoreLoadStatus.UNSUPPORTED_SCHEMA,
+        }:
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": load_result.status.value,
+                "reason": f"pending_state_{load_result.status.value}",
+            }
             return
-        if not isinstance(raw, list):
-            return
+        raw = list(load_result.payloads)
+        legacy_record_schema_count = sum("record_schema_version" not in item for item in raw)
+        hydrated_legacy_record_schema_count = 0
         sensitive_pending_groups: set[tuple[str, str]] = set()
         sensitive_values_by_session: dict[str, list[str]] = {}
         for item in raw:
@@ -5038,6 +4951,7 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            item_has_legacy_record_schema = "record_schema_version" not in item
             raw_started_authority_present = _loaded_pending_payload_has_started_execution_authority(
                 item
             )
@@ -5766,6 +5680,8 @@ class HandlerImplementation(
                 pending.session_id,
                 [],
             ).append(pending.confirmation_id)
+            if item_has_legacy_record_schema:
+                hydrated_legacy_record_schema_count += 1
             parent_contract_verified = False
             if (
                 not pending.decision_nonce
@@ -5813,8 +5729,14 @@ class HandlerImplementation(
                 )
                 loaded_terminal_side_effects.append(pending)
                 pruned_stale = True
+        migrated_legacy_record_schema = (
+            load_result.status is PendingActionStoreLoadStatus.LEGACY
+            and legacy_record_schema_count > 0
+            and hydrated_legacy_record_schema_count == legacy_record_schema_count
+        )
         if (
-            pruned_stale
+            migrated_legacy_record_schema
+            or pruned_stale
             or migrated_legacy_strip_intent
             or migrated_legacy_channel_principal
             or migrated_legacy_action_identity
@@ -5823,6 +5745,9 @@ class HandlerImplementation(
             or migrated_attempt_metadata
         ):
             self._persist_pending_actions()
+        owned_store = getattr(self, "_pending_action_store", None)
+        if owned_store is not None:
+            owned_store.assert_index_parity()
         for pending in loaded_terminal_side_effects:
             self._complete_committed_terminal_scheduler_accounting(pending)
         self._recover_loaded_pending_attempts()

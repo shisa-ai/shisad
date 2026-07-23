@@ -12,13 +12,13 @@ import os
 import secrets
 import stat
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
@@ -557,9 +557,7 @@ class ConfirmationEvidenceAuthenticator:
             canonical_json_dumps(self._payload(evidence)).encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        return evidence.model_copy(
-            update={"authenticator_mac": f"{self._MAC_PREFIX}{digest}"}
-        )
+        return evidence.model_copy(update={"authenticator_mac": f"{self._MAC_PREFIX}{digest}"})
 
     def verify(self, evidence: ConfirmationEvidence) -> bool:
         stored = _decode_prefixed_sha256(
@@ -588,9 +586,9 @@ class ConfirmationEvidenceAuthenticator:
     def authenticate_recovery_snapshot(self, snapshot: Mapping[str, Any]) -> str:
         """Authenticate daemon-owned post-decision recovery state."""
         try:
-            payload = canonical_json_dumps(
-                self._recovery_snapshot_payload(snapshot)
-            ).encode("utf-8")
+            payload = canonical_json_dumps(self._recovery_snapshot_payload(snapshot)).encode(
+                "utf-8"
+            )
         except (TypeError, UnicodeEncodeError, ValueError):
             return ""
         digest = hmac.new(self._key, payload, hashlib.sha256).hexdigest()
@@ -611,9 +609,7 @@ class ConfirmationEvidenceAuthenticator:
         try:
             expected = hmac.new(
                 self._key,
-                canonical_json_dumps(
-                    self._recovery_snapshot_payload(snapshot)
-                ).encode("utf-8"),
+                canonical_json_dumps(self._recovery_snapshot_payload(snapshot)).encode("utf-8"),
                 hashlib.sha256,
             ).digest()
         except (TypeError, ValueError):
@@ -621,9 +617,11 @@ class ConfirmationEvidenceAuthenticator:
         return hmac.compare_digest(stored, expected)
 
 
-def _quarantine_state_file(path: Path, *, label: str) -> None:
+def quarantine_state_file(path: Path, *, label: str) -> Path | None:
+    """Move one unusable state file aside without altering its bytes."""
+
     if not path.exists():
-        return
+        return None
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = path.with_name(f"{path.name}.corrupt.{stamp}")
     counter = 1
@@ -636,6 +634,8 @@ def _quarantine_state_file(path: Path, *, label: str) -> None:
             os.chmod(target, 0o600)
     except OSError:
         logger.warning("Failed to quarantine corrupt %s state file %s", label, path, exc_info=True)
+        return None
+    return target
 
 
 def new_approval_nonce() -> str:
@@ -931,14 +931,61 @@ class ConfirmationBackend(Protocol):
     ) -> ConfirmationEvidence: ...
 
 
-@dataclass(slots=True)
-class _PendingConstraintProbe:
-    allowed_principals: list[str]
-    allowed_credentials: list[str]
-
-
 def _normalized_constraint_values(values: Any) -> list[str]:
-    return [str(value).strip() for value in values if str(value).strip()]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value).strip()
+        if item and item not in seen:
+            normalized.append(item)
+            seen.add(item)
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationProofCandidate:
+    """One backend-valid correlated principal and credential proof route."""
+
+    principal_id: str = ""
+    credential_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationConstraints:
+    """Normalized constraints applied to a single correlated proof candidate."""
+
+    allowed_principals: tuple[str, ...] = ()
+    allowed_credentials: tuple[str, ...] = ()
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        allowed_principals: Any = (),
+        allowed_credentials: Any = (),
+    ) -> ConfirmationConstraints:
+        return cls(
+            allowed_principals=tuple(_normalized_constraint_values(allowed_principals)),
+            allowed_credentials=tuple(_normalized_constraint_values(allowed_credentials)),
+        )
+
+    def accepts(self, *, principal_id: str, credential_id: str) -> bool:
+        principal = principal_id.strip()
+        credential = credential_id.strip()
+        return (not self.allowed_principals or principal in self.allowed_principals) and (
+            not self.allowed_credentials or credential in self.allowed_credentials
+        )
+
+
+@runtime_checkable
+class ConfirmationCandidateProvider(Protocol):
+    """Public protocol for enumerating backend-valid correlated proof routes."""
+
+    def confirmation_candidates_for_user(
+        self,
+        *,
+        user_id: str,
+    ) -> Sequence[ConfirmationProofCandidate]: ...
 
 
 def confirmation_backend_satisfies_constraints(
@@ -949,62 +996,41 @@ def confirmation_backend_satisfies_constraints(
     allowed_principals: Any = (),
     allowed_credentials: Any = (),
 ) -> bool:
-    if not backend.is_available_for(user_id=user_id):
-        return False
-    if not backend.capabilities.covers(required_capabilities):
-        return False
-    principals = _normalized_constraint_values(allowed_principals)
-    credentials = _normalized_constraint_values(allowed_credentials)
-    if not principals and not credentials:
-        return True
-    if principals and not backend.capabilities.principal_binding:
-        return False
-
-    probe = _PendingConstraintProbe(
-        allowed_principals=principals,
-        allowed_credentials=credentials,
-    )
-    matching_factors = getattr(backend, "_matching_factors", None)
-    if callable(matching_factors):
-        try:
-            return bool(
-                matching_factors(
-                    user_id=user_id,
-                    pending_action=probe,
-                    requested_credential_id="",
-                )
-            )
-        except Exception:
+    try:
+        constraints = ConfirmationConstraints.from_values(
+            allowed_principals=allowed_principals,
+            allowed_credentials=allowed_credentials,
+        )
+        if not backend.is_available_for(user_id=user_id):
             return False
-    matching_signer_keys = getattr(backend, "_matching_signer_keys", None)
-    if callable(matching_signer_keys):
-        try:
-            return bool(
-                matching_signer_keys(
-                    user_id=user_id,
-                    pending_action=probe,
-                    requested_credential_id="",
-                )
-            )
-        except Exception:
+        if not backend.capabilities.covers(required_capabilities):
             return False
-    matching_signer_key = getattr(backend, "_matching_signer_key", None)
-    if callable(matching_signer_key):
-        try:
-            matching_signer_key(
-                user_id=user_id,
-                pending_action=probe,
-                requested_credential_id="",
-            )
+        if not constraints.allowed_principals and not constraints.allowed_credentials:
             return True
-        except Exception:
+        if constraints.allowed_principals and not backend.capabilities.principal_binding:
             return False
 
-    if principals and credentials:
+        if isinstance(backend, ConfirmationCandidateProvider):
+            return any(
+                constraints.accepts(
+                    principal_id=str(getattr(candidate, "principal_id", "")),
+                    credential_id=str(getattr(candidate, "credential_id", "")),
+                )
+                for candidate in backend.confirmation_candidates_for_user(user_id=user_id)
+            )
+
+        # Coarse public sets cannot prove correlation across two constrained axes.
+        if constraints.allowed_principals and constraints.allowed_credentials:
+            return False
+        if constraints.allowed_principals:
+            return bool(
+                set(constraints.allowed_principals) & backend.principals_for_user(user_id=user_id)
+            )
+        return bool(
+            set(constraints.allowed_credentials) & backend.credentials_for_user(user_id=user_id)
+        )
+    except Exception:
         return False
-    if principals and not (set(principals) & backend.principals_for_user(user_id=user_id)):
-        return False
-    return not credentials or bool(set(credentials) & backend.credentials_for_user(user_id=user_id))
 
 
 class SignerKeyInfo(BaseModel):
@@ -1587,6 +1613,20 @@ class SignerConfirmationAdapter:
             if not item.revoked
         }
 
+    def confirmation_candidates_for_user(
+        self,
+        *,
+        user_id: str,
+    ) -> tuple[ConfirmationProofCandidate, ...]:
+        return tuple(
+            ConfirmationProofCandidate(
+                principal_id=item.principal_id,
+                credential_id=item.key_id,
+            )
+            for item in self._signer_backend.list_registered_keys(user_id=user_id)
+            if not item.revoked
+        )
+
     def verify(
         self,
         *,
@@ -1738,26 +1778,25 @@ class SignerConfirmationAdapter:
         pending_action: Any,
         requested_credential_id: str,
     ) -> list[SignerKeyInfo]:
-        candidates = list(self._signer_backend.list_registered_keys(user_id=user_id))
-        allowed_credentials = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_credentials", ())
-            if str(item).strip()
+        candidates = [
+            item
+            for item in self._signer_backend.list_registered_keys(user_id=user_id)
+            if not item.revoked
         ]
         if requested_credential_id:
             candidates = [item for item in candidates if item.key_id == requested_credential_id]
-        if allowed_credentials:
-            allowed = set(allowed_credentials)
-            candidates = [item for item in candidates if item.key_id in allowed]
-        allowed_principals = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_principals", ())
-            if str(item).strip()
+        constraints = ConfirmationConstraints.from_values(
+            allowed_principals=getattr(pending_action, "allowed_principals", ()),
+            allowed_credentials=getattr(pending_action, "allowed_credentials", ()),
+        )
+        return [
+            item
+            for item in candidates
+            if constraints.accepts(
+                principal_id=item.principal_id,
+                credential_id=item.key_id,
+            )
         ]
-        if allowed_principals:
-            allowed = set(allowed_principals)
-            candidates = [item for item in candidates if item.principal_id in allowed]
-        return candidates
 
 
 class SoftwareConfirmationBackend:
@@ -1783,6 +1822,14 @@ class SoftwareConfirmationBackend:
     def credentials_for_user(self, *, user_id: str) -> set[str]:
         _ = user_id
         return set()
+
+    def confirmation_candidates_for_user(
+        self,
+        *,
+        user_id: str,
+    ) -> tuple[ConfirmationProofCandidate, ...]:
+        _ = user_id
+        return ()
 
     def verify(
         self,
@@ -1873,6 +1920,19 @@ class TOTPBackend:
 
     def credentials_for_user(self, *, user_id: str) -> set[str]:
         return {factor.credential_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def confirmation_candidates_for_user(
+        self,
+        *,
+        user_id: str,
+    ) -> tuple[ConfirmationProofCandidate, ...]:
+        return tuple(
+            ConfirmationProofCandidate(
+                principal_id=factor.principal_id,
+                credential_id=factor.credential_id,
+            )
+            for factor in self._candidate_factors(user_id=user_id)
+        )
 
     def enrollment_uri(
         self,
@@ -2006,27 +2066,22 @@ class TOTPBackend:
         requested_credential_id: str,
     ) -> list[ApprovalFactorRecord]:
         candidates = self._candidate_factors(user_id=user_id)
-        allowed_credentials = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_credentials", ())
-            if str(item).strip()
-        ]
         if requested_credential_id:
             candidates = [
                 factor for factor in candidates if factor.credential_id == requested_credential_id
             ]
-        if allowed_credentials:
-            allowed = set(allowed_credentials)
-            candidates = [factor for factor in candidates if factor.credential_id in allowed]
-        allowed_principals = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_principals", ())
-            if str(item).strip()
+        constraints = ConfirmationConstraints.from_values(
+            allowed_principals=getattr(pending_action, "allowed_principals", ()),
+            allowed_credentials=getattr(pending_action, "allowed_credentials", ()),
+        )
+        return [
+            factor
+            for factor in candidates
+            if constraints.accepts(
+                principal_id=factor.principal_id,
+                credential_id=factor.credential_id,
+            )
         ]
-        if allowed_principals:
-            allowed = set(allowed_principals)
-            candidates = [factor for factor in candidates if factor.principal_id in allowed]
-        return candidates
 
     def _verify_totp_code(
         self,
@@ -2144,6 +2199,19 @@ class WebAuthnBackend:
 
     def credentials_for_user(self, *, user_id: str) -> set[str]:
         return {factor.credential_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def confirmation_candidates_for_user(
+        self,
+        *,
+        user_id: str,
+    ) -> tuple[ConfirmationProofCandidate, ...]:
+        return tuple(
+            ConfirmationProofCandidate(
+                principal_id=factor.principal_id,
+                credential_id=factor.credential_id,
+            )
+            for factor in self._candidate_factors(user_id=user_id)
+        )
 
     def registration_begin(
         self,
@@ -2380,27 +2448,22 @@ class WebAuthnBackend:
         requested_credential_id: str,
     ) -> list[ApprovalFactorRecord]:
         candidates = self._candidate_factors(user_id=user_id)
-        allowed_credentials = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_credentials", ())
-            if str(item).strip()
-        ]
         if requested_credential_id:
             candidates = [
                 factor for factor in candidates if factor.credential_id == requested_credential_id
             ]
-        if allowed_credentials:
-            allowed = set(allowed_credentials)
-            candidates = [factor for factor in candidates if factor.credential_id in allowed]
-        allowed_principals = [
-            item.strip()
-            for item in getattr(pending_action, "allowed_principals", ())
-            if str(item).strip()
+        constraints = ConfirmationConstraints.from_values(
+            allowed_principals=getattr(pending_action, "allowed_principals", ()),
+            allowed_credentials=getattr(pending_action, "allowed_credentials", ()),
+        )
+        return [
+            factor
+            for factor in candidates
+            if constraints.accepts(
+                principal_id=factor.principal_id,
+                credential_id=factor.credential_id,
+            )
         ]
-        if allowed_principals:
-            allowed = set(allowed_principals)
-            candidates = [factor for factor in candidates if factor.principal_id in allowed]
-        return candidates
 
     @staticmethod
     def _attested_credential_data(
@@ -2944,7 +3007,7 @@ class ConfirmationMethodLockoutTracker:
                 path,
                 exc_info=True,
             )
-            _quarantine_state_file(path, label="confirmation_lockout")
+            quarantine_state_file(path, label="confirmation_lockout")
             self._state = defaultdict(_FailureState)
 
     def _persist(self) -> None:

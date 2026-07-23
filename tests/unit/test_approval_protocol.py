@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -232,10 +233,7 @@ def test_confirmation_evidence_authenticator_is_durable_and_tamper_evident(
     assert authenticator.verify(stamped) is True
     assert key_path.stat().st_mode & 0o777 == 0o600
     assert ConfirmationEvidenceAuthenticator.from_path(key_path).verify(stamped) is True
-    assert (
-        authenticator.verify(stamped.model_copy(update={"backend_id": "fabricated"}))
-        is False
-    )
+    assert authenticator.verify(stamped.model_copy(update={"backend_id": "fabricated"})) is False
 
 
 def test_recovery_snapshot_authenticator_is_domain_separated_and_tamper_evident(
@@ -647,6 +645,109 @@ def test_combined_constraints_fail_closed_without_candidate_level_matching() -> 
         required_capabilities=ConfirmationCapabilities(principal_binding=True),
         allowed_principals=["finance-owner"],
         allowed_credentials=["cred-1"],
+    )
+
+
+def test_f10a_explicit_candidates_correlate_principal_and_credential() -> None:
+    class CandidateBackend:
+        backend_id = "custom.candidate"
+        method = "custom"
+        level = ConfirmationLevel.BOUND_APPROVAL
+        binding_scope = BindingScope.FULL_INTENT
+        review_surface = ReviewSurface.HOST_RENDERED
+        capabilities = ConfirmationCapabilities(principal_binding=True)
+        third_party_verifiable = False
+        available_principals: ClassVar[set[str]] = set()
+        available_credentials: ClassVar[set[str]] = set()
+
+        def is_available_for(self, *, user_id: str) -> bool:
+            return user_id == "alice"
+
+        def principals_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"finance-owner", "backup-owner"}
+
+        def credentials_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"cred-finance", "cred-backup"}
+
+        def confirmation_candidates_for_user(self, *, user_id: str) -> list[SimpleNamespace]:
+            assert user_id == "alice"
+            return [
+                SimpleNamespace(
+                    principal_id="finance-owner",
+                    credential_id="cred-finance",
+                ),
+                SimpleNamespace(
+                    principal_id="backup-owner",
+                    credential_id="cred-backup",
+                ),
+            ]
+
+        def _matching_factors(self, **_kwargs: object) -> list[object]:
+            raise AssertionError("eligibility must not probe a private matcher")
+
+    backend = CandidateBackend()
+
+    assert confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_principals=[" finance-owner ", "finance-owner"],
+        allowed_credentials=["cred-finance"],
+    )
+    assert not confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_principals=["finance-owner"],
+        allowed_credentials=["cred-backup"],
+    )
+
+
+def test_f10a_private_matcher_without_candidate_protocol_fails_combined_constraints() -> None:
+    class PrivateOnlyBackend:
+        backend_id = "custom.private-only"
+        method = "custom"
+        level = ConfirmationLevel.BOUND_APPROVAL
+        binding_scope = BindingScope.FULL_INTENT
+        review_surface = ReviewSurface.HOST_RENDERED
+        capabilities = ConfirmationCapabilities(principal_binding=True)
+        third_party_verifiable = False
+        available_principals: ClassVar[set[str]] = set()
+        available_credentials: ClassVar[set[str]] = set()
+
+        def is_available_for(self, *, user_id: str) -> bool:
+            return user_id == "alice"
+
+        def principals_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"finance-owner"}
+
+        def credentials_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"cred-finance"}
+
+        def _matching_factors(self, **_kwargs: object) -> list[object]:
+            return [object()]
+
+    assert not confirmation_backend_satisfies_constraints(
+        PrivateOnlyBackend(),
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_principals=["finance-owner"],
+        allowed_credentials=["cred-finance"],
+    )
+
+
+def test_f10a_constraint_normalization_errors_fail_closed() -> None:
+    backend = SoftwareConfirmationBackend()
+
+    assert not confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(),
+        allowed_credentials=None,
     )
 
 
