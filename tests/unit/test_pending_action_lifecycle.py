@@ -1,4 +1,4 @@
-"""F10B/F10C contracts for the finite pending-action lifecycle authority."""
+"""F10B/F10C/F10D contracts for the finite pending-action lifecycle authority."""
 
 from __future__ import annotations
 
@@ -842,6 +842,145 @@ def test_f10c_loaded_exact_terminal_repeat_uses_durable_operation_posture(
     )
 
     assert repeated.changed is False
+    assert persist.calls == 0
+
+
+def test_f10d_loaded_repeat_accepts_equivalent_noop_patch_shape(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    original.store.add(record)
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.EXECUTION,
+                values={"provider_operation_id": "provider-1"},
+            ),
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+
+    repeated = adopted.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.EXECUTION,
+                values={
+                    "provider_operation_id": "provider-1",
+                    "recovery_effect_invoked": False,
+                },
+            ),
+        ),
+        persist=persist,
+    )
+
+    assert repeated.changed is False
+    assert persist.calls == 0
+
+
+def test_f10d_loaded_repeat_rejects_unsatisfied_scheduled_mode_without_write(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    record.task_id = "task-1"
+    original.store.add(record)
+    mutation = PendingActionMutation(
+        kind=PendingActionMutationKind.EXECUTION,
+        values={"provider_operation_id": "provider-1"},
+    )
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="failure",
+            mutation=mutation,
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+    source = capture_pending_action_mutation(record)
+
+    matched = adopted.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="failure",
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+
+    assert matched.changed is False
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        adopted.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True),
+                scheduler_accounting_mode="ambiguous",
+                mutation=mutation,
+            ),
+            persist=persist,
+        )
+
+    assert record.scheduler_accounting_mode == "failure"
+    assert capture_pending_action_mutation(record) == source
+    adopted.store.assert_index_parity()
+    assert persist.calls == 0
+
+
+def test_f10d_loaded_repeat_treats_unscheduled_mode_as_inert(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    original.store.add(record)
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="failure",
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+
+    repeated = adopted.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="ambiguous",
+        ),
+        persist=persist,
+    )
+
+    assert repeated.changed is False
+    assert record.scheduler_accounting_mode == ""
     assert persist.calls == 0
 
 
@@ -1832,6 +1971,54 @@ def test_f10c_recovery_invalidation_generates_canonical_trust_marker(
             ),
             persist=_PersistRecorder(),
         )
+
+
+def test_f10d_loaded_repeat_requires_requested_canonical_marker_without_write(
+    tmp_path: Path,
+) -> None:
+    original = _service(tmp_path)
+    record = _record(status="executing")
+    original.store.add(record)
+    mutation = PendingActionMutation(
+        kind=PendingActionMutationKind.RECOVERY,
+        values={"execution_authorization_kind": ""},
+    )
+    original.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+            reason="uncertain_effect_requires_fresh_approval",
+            guard=_guard(record, execution=True),
+            mutation=mutation,
+        ),
+        persist=_PersistRecorder(),
+    )
+    adopted = PendingActionLifecycleService(PendingActionStore(original.store.path))
+    adopted.adopt_loaded((record,))
+    persist = _PersistRecorder()
+    source = capture_pending_action_mutation(record)
+
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        adopted.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                reason="uncertain_effect_requires_fresh_approval",
+                guard=_guard(record, execution=True),
+                mutation=mutation,
+                canonicalize_recovery_event_identity=True,
+            ),
+            persist=persist,
+        )
+
+    assert record.recovery_event_identity_untrusted is False
+    assert record.recovery_event_identity_untrusted_at is None
+    assert record.recovery_anonymous_accounting_id == ""
+    assert record.recovery_event_identity_trusted_at is None
+    assert record.recovery_anonymous_accounting_id_trusted == ""
+    assert capture_pending_action_mutation(record) == source
+    adopted.store.assert_index_parity()
+    assert persist.calls == 0
 
 
 @pytest.mark.parametrize(

@@ -882,7 +882,13 @@ class PendingActionLifecycleService:
         stored_key = self._queue_keys.get(record.confirmation_id)
         loaded_repeat = (
             stored_key is None or stored_key == self._queue_key(record)
-        ) and self._durable_terminal_repeat_matches(record, operation, mutation_kind)
+        ) and self._durable_terminal_repeat_matches(
+            record,
+            operation,
+            mutation_kind,
+            scheduler_accounting_mode=request.scheduler_accounting_mode,
+            canonicalize_recovery_event_identity=marker_intent,
+        )
         if repeat and stored_key != terminal_key and not loaded_repeat:
             raise _transition_error("terminal_repeat_mismatch", operation)
         return _PreparedPendingTransition(
@@ -1193,7 +1199,27 @@ class PendingActionLifecycleService:
         record: PendingActionRecord,
         operation: PendingActionTransitionKind,
         kind: PendingActionMutationKind | None,
+        *,
+        scheduler_accounting_mode: PendingSchedulerAccountingMode | None,
+        canonicalize_recovery_event_identity: bool,
     ) -> bool:
+        if (
+            scheduler_accounting_mode is not None
+            and str(record.task_id).strip()
+            and record.scheduler_accounting_mode != scheduler_accounting_mode
+        ):
+            return False
+        marker_at = record.recovery_event_identity_untrusted_at
+        marker_id = record.recovery_anonymous_accounting_id
+        if canonicalize_recovery_event_identity and not (
+            record.recovery_event_identity_untrusted is True
+            and isinstance(marker_at, datetime)
+            and marker_at == record.recovery_event_identity_trusted_at
+            and isinstance(marker_id, str)
+            and bool(marker_id.strip())
+            and marker_id == record.recovery_anonymous_accounting_id_trusted
+        ):
+            return False
         recovered = record.retry_generation > 0 and record.recovery_started_at is not None
         authority = any(getattr(record, field) for field in _RECOVERY_AUTHORITY_MUTATION_FIELDS)
         if operation in {
