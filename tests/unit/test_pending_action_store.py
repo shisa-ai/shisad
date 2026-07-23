@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
 
+import shisad.core.pending_action as pending_action_module
 from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.pending_action import (
     PENDING_ACTION_RECORD_SCHEMA_VERSION,
@@ -45,6 +47,10 @@ def test_f10a_record_schema_preserves_former_optional_positional_slots() -> None
     assert alias_record.public_arguments == {"query": "public-alias"}
     assert record.record_schema_version == PENDING_ACTION_RECORD_SCHEMA_VERSION
     assert alias_record.record_schema_version == PENDING_ACTION_RECORD_SCHEMA_VERSION
+
+
+def test_f10c_core_record_has_no_daemon_type_dependency() -> None:
+    assert "shisad.daemon" not in inspect.getsource(pending_action_module)
 
 
 def test_f10a_current_record_round_trips_with_index_parity(tmp_path) -> None:

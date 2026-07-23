@@ -15,8 +15,8 @@ import re
 import shutil
 import stat
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +32,7 @@ from shisad.channels.base import DeliveryTarget
 from shisad.channels.delivery import DeliveryIntent, DeliveryResult
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
+    PendingActionTransitionKind,
     ReminderStatusView,
     mint_action_operation_identity,
     parse_reminder_relative_duration,
@@ -163,9 +164,12 @@ from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
 from shisad.daemon.pending_actions import (
+    PendingActionMutation,
+    PendingActionMutationKind,
     PendingActionPayloadError,
     PendingActionStore,
     PendingActionStoreLoadStatus,
+    PendingActionTransitionError,
 )
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
@@ -2168,6 +2172,9 @@ class HandlerImplementation(
         self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator.from_path(
             self._config.data_dir / "confirmation_evidence.key"
         )
+        self._pending_action_lifecycle.bind_persistence_preparer(
+            self._pending_action_persistence_mutations
+        )
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
         self._confirmation_backend_registry.register(
@@ -2416,7 +2423,7 @@ class HandlerImplementation(
             "confirmation_lockouts": len(self._confirmation_failure_tracker._state),
             "pairing_request_artifacts": pairing_request_artifacts,
         }
-        self._pending_action_lifecycle_authority().reset_for_tests()
+        self._pending_action_lifecycle_authority().reset()
         if hasattr(self, "_pending_state_degradation"):
             delattr(self, "_pending_state_degradation")
         self._monitor_reject_counts.clear()
@@ -4029,9 +4036,13 @@ class HandlerImplementation(
         if pending.merged_policy is not None:
             payload["merged_policy"] = pending.merged_policy.model_dump(mode="json")
         if pending.pep_context is not None:
-            payload["pep_context"] = pending_pep_context_to_payload(pending.pep_context)
+            payload["pep_context"] = pending_pep_context_to_payload(
+                cast(PendingPepContextSnapshot, pending.pep_context)
+            )
         if pending.pep_elevation is not None:
-            payload["pep_elevation"] = pending_pep_elevation_to_payload(pending.pep_elevation)
+            payload["pep_elevation"] = pending_pep_elevation_to_payload(
+                cast(PendingPepElevationRequest, pending.pep_elevation)
+            )
         if pending.approval_envelope is not None:
             if sensitive_pending:
                 payload["approval_envelope_redacted"] = True
@@ -4582,6 +4593,80 @@ class HandlerImplementation(
             raise
         return pending
 
+    def _pending_for_persistence(self, pending: PendingAction) -> PendingAction:
+        persisted = replace(pending)
+        prior_local_marker_present = bool(
+            persisted.recovery_event_identity_trusted_at is not None
+            and persisted.recovery_anonymous_accounting_id_trusted
+        )
+        if persisted.recovery_event_identity_untrusted:
+            marker_is_locally_trusted = bool(
+                persisted.recovery_event_identity_untrusted_at is not None
+                and persisted.recovery_event_identity_untrusted_at
+                == persisted.recovery_event_identity_trusted_at
+                and persisted.recovery_anonymous_accounting_id.strip()
+                and persisted.recovery_anonymous_accounting_id
+                == persisted.recovery_anonymous_accounting_id_trusted
+            )
+            if not marker_is_locally_trusted:
+                if prior_local_marker_present:
+                    _ensure_trusted_recovery_event_identity_marker(persisted)
+                else:
+                    _clear_recovery_event_identity_marker(persisted)
+        elif prior_local_marker_present:
+            _ensure_trusted_recovery_event_identity_marker(persisted)
+        elif (
+            persisted.recovery_event_identity_untrusted_at is not None
+            or persisted.recovery_anonymous_accounting_id
+            or persisted.recovery_event_identity_trusted_at is not None
+            or persisted.recovery_anonymous_accounting_id_trusted
+        ):
+            _clear_recovery_event_identity_marker(persisted)
+        canonical_identity = pending_action_state_view(persisted).identity
+        stored_status = str(persisted.status).strip().lower()
+        if (
+            stored_status in _PENDING_ACTION_STORED_STATUSES - {"pending", "executing"}
+            and canonical_identity.result_id
+            and not persisted.result_id.strip()
+        ):
+            persisted.result_id = canonical_identity.result_id
+        if _pending_action_has_started_execution_authority(persisted):
+            recovery_authority_mac = (
+                self._confirmation_evidence_authenticator.authenticate_recovery_snapshot(
+                    _pending_recovery_authority_snapshot(persisted)
+                )
+            )
+            if not recovery_authority_mac:
+                raise ValueError("pending recovery snapshot is not canonical")
+            persisted.recovery_authority_mac = recovery_authority_mac
+        else:
+            persisted.recovery_authority_mac = ""
+        return persisted
+
+    def _pending_action_persistence_mutations(
+        self,
+        records: Sequence[PendingAction],
+    ) -> tuple[tuple[PendingAction, PendingActionMutation], ...]:
+        prepared: list[tuple[PendingAction, PendingActionMutation]] = []
+        for pending in records:
+            persisted = HandlerImplementation._pending_for_persistence(self, pending)
+            values = {
+                item.name: getattr(persisted, item.name)
+                for item in fields(persisted)
+                if getattr(pending, item.name) != getattr(persisted, item.name)
+            }
+            if values:
+                prepared.append(
+                    (
+                        pending,
+                        PendingActionMutation(
+                            kind=PendingActionMutationKind.PERSISTENCE,
+                            values=values,
+                        ),
+                    )
+                )
+        return tuple(prepared)
+
     def _persist_pending_actions(self) -> None:
         degradation = getattr(self, "_pending_state_degradation", None)
         if isinstance(degradation, Mapping) and degradation.get("transition") == "load":
@@ -4599,54 +4684,10 @@ class HandlerImplementation(
             ):
                 raise ValueError("pending action handler/store ownership mismatch")
             owned_store.assert_index_parity()
-        for pending in self._pending_actions.values():
-            prior_local_marker_present = bool(
-                pending.recovery_event_identity_trusted_at is not None
-                and pending.recovery_anonymous_accounting_id_trusted
-            )
-            if pending.recovery_event_identity_untrusted:
-                marker_is_locally_trusted = bool(
-                    pending.recovery_event_identity_untrusted_at is not None
-                    and pending.recovery_event_identity_untrusted_at
-                    == pending.recovery_event_identity_trusted_at
-                    and pending.recovery_anonymous_accounting_id.strip()
-                    and pending.recovery_anonymous_accounting_id
-                    == pending.recovery_anonymous_accounting_id_trusted
-                )
-                if not marker_is_locally_trusted:
-                    if prior_local_marker_present:
-                        _ensure_trusted_recovery_event_identity_marker(pending)
-                    else:
-                        _clear_recovery_event_identity_marker(pending)
-            elif prior_local_marker_present:
-                _ensure_trusted_recovery_event_identity_marker(pending)
-            elif (
-                pending.recovery_event_identity_untrusted_at is not None
-                or pending.recovery_anonymous_accounting_id
-                or pending.recovery_event_identity_trusted_at is not None
-                or pending.recovery_anonymous_accounting_id_trusted
-            ):
-                _clear_recovery_event_identity_marker(pending)
-            canonical_identity = pending_action_state_view(pending).identity
-            stored_status = str(pending.status).strip().lower()
-            if (
-                stored_status in _PENDING_ACTION_STORED_STATUSES - {"pending", "executing"}
-                and canonical_identity.result_id
-                and not pending.result_id.strip()
-            ):
-                pending.result_id = canonical_identity.result_id
-            if _pending_action_has_started_execution_authority(pending):
-                recovery_authority_mac = (
-                    self._confirmation_evidence_authenticator.authenticate_recovery_snapshot(
-                        _pending_recovery_authority_snapshot(pending)
-                    )
-                )
-                if not recovery_authority_mac:
-                    raise ValueError("pending recovery snapshot is not canonical")
-                pending.recovery_authority_mac = recovery_authority_mac
-            else:
-                pending.recovery_authority_mac = ""
-        payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
+        payload = [
+            self._pending_to_dict(HandlerImplementation._pending_for_persistence(self, item))
+            for item in self._pending_actions.values()
+        ]
         store = owned_store
         if store is None or store.path != self._pending_actions_file:
             store = PendingActionStore(self._pending_actions_file)
@@ -4943,6 +4984,7 @@ class HandlerImplementation(
         migrated_expired_approval = False
         migrated_attempt_metadata = False
         loaded_terminal_side_effects: list[PendingAction] = []
+        loaded_actions: list[PendingAction] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -5670,11 +5712,6 @@ class HandlerImplementation(
                     pending.status = "failed"
                     pending.status_reason = "sensitive_confirmation_secret_unavailable"
                 pruned_stale = True
-            self._pending_actions[pending.confirmation_id] = pending
-            self._pending_by_session.setdefault(
-                pending.session_id,
-                [],
-            ).append(pending.confirmation_id)
             if item_has_legacy_record_schema:
                 hydrated_legacy_record_schema_count += 1
             parent_contract_verified = False
@@ -5716,6 +5753,7 @@ class HandlerImplementation(
                 )
                 loaded_terminal_side_effects.append(pending)
                 pruned_stale = True
+            loaded_actions.append(pending)
             if not pending.decision_nonce and pending_action_state_view(pending).is_live_pending:
                 self._mark_stale_pending_action(
                     pending,
@@ -5738,6 +5776,21 @@ class HandlerImplementation(
             if owned_store is not None:
                 owned_store.assert_index_parity()
             return
+        lifecycle = self._pending_action_lifecycle_authority()
+        try:
+            lifecycle.adopt_loaded(loaded_actions)
+        except PendingActionTransitionError as exc:
+            store.quarantine_unusable(
+                PendingActionStoreLoadStatus.CORRUPT,
+                str(exc),
+            )
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": PendingActionStoreLoadStatus.CORRUPT.value,
+                "reason": "pending_state_corrupt",
+            }
+            lifecycle.adopt_degradation(self._pending_state_degradation)
+            return
         migrated_legacy_record_schema = (
             load_result.status is PendingActionStoreLoadStatus.LEGACY
             and legacy_record_schema_count > 0
@@ -5754,14 +5807,13 @@ class HandlerImplementation(
             or migrated_attempt_metadata
         ):
             try:
-                self._persist_pending_actions()
+                lifecycle.persist_adopted(persist=self._persist_pending_actions)
             except PendingActionPayloadError as exc:
                 store.quarantine_unusable(
                     PendingActionStoreLoadStatus.CORRUPT,
                     exc.reason,
                 )
-                self._pending_actions.clear()
-                self._pending_by_session.clear()
+                lifecycle.reset()
                 self._pending_state_degradation = {
                     "transition": "load",
                     "stage": PendingActionStoreLoadStatus.CORRUPT.value,
@@ -5928,8 +5980,11 @@ class HandlerImplementation(
                 pending_session_id=pending.session_id,
                 pending_workspace_id=pending.workspace_id,
                 pending_user_id=pending.user_id,
-                snapshot=snapshot,
-                elevation=pending.pep_elevation,
+                snapshot=cast(PendingPepContextSnapshot, snapshot),
+                elevation=cast(
+                    PendingPepElevationRequest | None,
+                    pending.pep_elevation,
+                ),
             )
             context.capabilities.intersection_update(session.capabilities)
         else:
@@ -6055,25 +6110,33 @@ class HandlerImplementation(
             return pending.confirmation_evidence.verified_at
         return pending.created_at
 
-    def _capture_pending_scheduler_posture(self, pending: PendingAction) -> bool:
+    def _capture_pending_scheduler_posture(
+        self,
+        pending: PendingAction,
+    ) -> dict[str, object]:
         task_id = pending.task_id.strip()
         if not task_id:
-            return False
+            return {}
         task = self._scheduler.get_task(task_id)
         if task is None:
-            return False
+            return {}
         if not pending.recovery_scheduler_posture_captured:
-            pending.recovery_scheduler_posture_captured = True
-            pending.recovery_scheduler_restore_enabled = bool(getattr(task, "enabled", False))
-            return True
-        return False
+            return {
+                "recovery_scheduler_posture_captured": True,
+                "recovery_scheduler_restore_enabled": bool(getattr(task, "enabled", False)),
+            }
+        return {}
 
     def _precontain_pending_scheduler_task(self, pending: PendingAction) -> None:
-        posture_changed = self._capture_pending_scheduler_posture(pending)
+        posture_values = self._capture_pending_scheduler_posture(pending)
+        if posture_values:
+            self._mutate_pending_action(
+                pending,
+                kind=PendingActionMutationKind.SCHEDULER,
+                values=posture_values,
+            )
         if not pending.recovery_scheduler_posture_captured:
             return
-        if posture_changed:
-            self._persist_pending_actions()
         task_id = pending.task_id.strip()
         task = self._scheduler.get_task(task_id)
         if task is None:
@@ -6082,8 +6145,11 @@ class HandlerImplementation(
         if not bool(getattr(task, "enabled", False)):
             existing_token = str(getattr(task, "recovery_containment_token", "")).strip()
             if existing_token != containment_token:
-                pending.recovery_scheduler_restore_enabled = False
-                self._persist_pending_actions()
+                self._mutate_pending_action(
+                    pending,
+                    kind=PendingActionMutationKind.SCHEDULER,
+                    values={"recovery_scheduler_restore_enabled": False},
+                )
             return
         contain_task = getattr(self._scheduler, "contain_task_for_recovery", None)
         if not callable(contain_task) or not contain_task(
@@ -6099,9 +6165,16 @@ class HandlerImplementation(
                 pending.recovery_scheduler_posture_captured
                 or pending.recovery_scheduler_restore_enabled
             )
-            pending.recovery_scheduler_accounted = True
-            pending.recovery_scheduler_posture_captured = False
-            pending.recovery_scheduler_restore_enabled = False
+            if changed:
+                self._mutate_pending_action(
+                    pending,
+                    kind=PendingActionMutationKind.SCHEDULER,
+                    values={
+                        "recovery_scheduler_accounted": True,
+                        "recovery_scheduler_posture_captured": False,
+                        "recovery_scheduler_restore_enabled": False,
+                    },
+                )
             return changed
 
         scheduler = self._scheduler
@@ -6126,7 +6199,11 @@ class HandlerImplementation(
                     confirmation_id,
                 )
             self._sync_task_confirmation_status(pending)
-            pending.recovery_scheduler_accounted = True
+            self._mutate_pending_action(
+                pending,
+                kind=PendingActionMutationKind.SCHEDULER,
+                values={"recovery_scheduler_accounted": True},
+            )
             return changed
         outcome_reader = getattr(scheduler, "confirmation_outcome", None)
         recorded_outcome = (
@@ -6135,10 +6212,6 @@ class HandlerImplementation(
             else None
         )
         if recorded_outcome is not None and recorded_outcome != success:
-            pending.status = "outcome_unknown"
-            pending.status_reason = "uncertain_effect_requires_fresh_approval"
-            pending.decision_nonce = ""
-            self._sync_task_confirmation_status(pending)
             task = scheduler.get_task(task_id)
             if task is not None and not scheduler.disable_task(task_id):
                 raise RuntimeError("recovery_scheduler_containment_failed")
@@ -6146,9 +6219,18 @@ class HandlerImplementation(
                 "Recovery scheduler outcome conflicts with pending state for %s; task disabled",
                 confirmation_id,
             )
-            pending.recovery_scheduler_accounted = True
-            pending.recovery_scheduler_posture_captured = False
-            pending.recovery_scheduler_restore_enabled = False
+            self._mutate_pending_action(
+                pending,
+                operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                reason="uncertain_effect_requires_fresh_approval",
+                kind=PendingActionMutationKind.SCHEDULER,
+                values={
+                    "recovery_scheduler_accounted": True,
+                    "recovery_scheduler_posture_captured": False,
+                    "recovery_scheduler_restore_enabled": False,
+                },
+            )
+            self._sync_task_confirmation_status(pending)
             return True
         changed = not pending.recovery_scheduler_accounted
         if recorded_outcome is None:
@@ -6172,9 +6254,15 @@ class HandlerImplementation(
                     "Recovery scheduler shadow missing for confirmation %s; task disabled",
                     confirmation_id,
                 )
-                pending.recovery_scheduler_accounted = True
-                pending.recovery_scheduler_posture_captured = False
-                pending.recovery_scheduler_restore_enabled = False
+                self._mutate_pending_action(
+                    pending,
+                    kind=PendingActionMutationKind.SCHEDULER,
+                    values={
+                        "recovery_scheduler_accounted": True,
+                        "recovery_scheduler_posture_captured": False,
+                        "recovery_scheduler_restore_enabled": False,
+                    },
+                )
                 return True
             changed = True
 
@@ -6209,32 +6297,35 @@ class HandlerImplementation(
             or pending.recovery_scheduler_restore_enabled
         ):
             changed = True
-        pending.recovery_scheduler_posture_captured = False
-        pending.recovery_scheduler_restore_enabled = False
-        pending.recovery_scheduler_accounted = True
+        if changed:
+            self._mutate_pending_action(
+                pending,
+                kind=PendingActionMutationKind.SCHEDULER,
+                values={
+                    "recovery_scheduler_posture_captured": False,
+                    "recovery_scheduler_restore_enabled": False,
+                    "recovery_scheduler_accounted": True,
+                },
+            )
         return changed
 
     def _complete_pending_scheduler_accounting(self, pending: PendingAction) -> str:
         if not pending.scheduler_accounting_pending:
             return self._recovery_task_cancel_reason(pending)
-        scheduler_state_changed = self._record_pending_scheduler_state(pending)
+        self._record_pending_scheduler_state(pending)
         cancel_reason = self._recovery_task_cancel_reason(pending)
-        if cancel_reason:
-            if scheduler_state_changed:
-                self._persist_pending_actions()
-        else:
+        if not cancel_reason:
             self._finalize_pending_scheduler_accounting(pending)
         return cancel_reason
 
     def _finalize_pending_scheduler_accounting(self, pending: PendingAction) -> None:
         if not pending.scheduler_accounting_pending:
             return
-        pending.scheduler_accounting_pending = False
-        try:
-            self._persist_pending_actions()
-        except AtomicWriteError:
-            pending.scheduler_accounting_pending = True
-            raise
+        self._mutate_pending_action(
+            pending,
+            kind=PendingActionMutationKind.SCHEDULER,
+            values={"scheduler_accounting_pending": False},
+        )
 
     def _recovery_task_cancel_reason(self, pending: PendingAction) -> str:
         task_id = pending.task_id.strip()
@@ -6391,24 +6482,35 @@ class HandlerImplementation(
         authenticated_effect_invoked = bool(
             preserve_authenticated_effect_posture and pending.recovery_effect_invoked
         )
-        pending.status = "outcome_unknown"
-        pending.status_reason = "uncertain_effect_requires_fresh_approval"
-        pending.decision_nonce = ""
-        pending.approval_evidence_hash = ""
-        pending.execution_authorization_kind = ""
-        pending.confirmation_evidence = None
-        pending.preflight_action = None
+        invalidated = replace(
+            pending,
+            approval_evidence_hash="",
+            execution_authorization_kind="",
+            confirmation_evidence=None,
+            preflight_action=None,
+            merged_policy=None,
+            pep_context=None,
+            pep_elevation=None,
+            retry_descriptor=None,
+            provider_operation_id="",
+            recovery_result={},
+            recovery_effect_invoked=authenticated_effect_invoked,
+        )
         if not preserve_authenticated_effect_posture:
-            _ensure_trusted_recovery_event_identity_marker(pending)
-        _neutralize_untrusted_recovery_event_identity(pending)
-        pending.merged_policy = None
-        pending.pep_context = None
-        pending.pep_elevation = None
-        pending.retry_descriptor = None
-        pending.provider_operation_id = ""
-        pending.recovery_result = {}
-        pending.recovery_effect_invoked = authenticated_effect_invoked
-        _neutralize_untrusted_scheduler_accounting_intent(pending)
+            _ensure_trusted_recovery_event_identity_marker(invalidated)
+        _neutralize_untrusted_recovery_event_identity(invalidated)
+        _neutralize_untrusted_scheduler_accounting_intent(invalidated)
+        self._mutate_pending_action(
+            pending,
+            operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+            reason="uncertain_effect_requires_fresh_approval",
+            kind=PendingActionMutationKind.RECOVERY,
+            values={
+                item.name: getattr(invalidated, item.name)
+                for item in fields(invalidated)
+                if getattr(pending, item.name) != getattr(invalidated, item.name)
+            },
+        )
 
     def _recovery_control_plane_action(
         self,
@@ -6488,10 +6590,13 @@ class HandlerImplementation(
                 and recovered_status != durable_status
                 and recovered_status != "outcome_unknown"
             ):
-                pending.status = "outcome_unknown"
-                pending.status_reason = "idempotent_adapter_outcome_conflict"
-                pending.decision_nonce = ""
-                self._persist_pending_actions()
+                self._mutate_pending_action(
+                    pending,
+                    operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                    reason="idempotent_adapter_outcome_conflict",
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={},
+                )
                 self._sync_task_confirmation_status(pending)
             if durable_status in {"success", "failed", "outcome_unknown"}:
                 accounting_status = durable_status
@@ -6596,16 +6701,15 @@ class HandlerImplementation(
                 created_at=pending.created_at,
             )
 
-        pending.recovery_accounting_pending = False
-        try:
-            self._persist_pending_actions()
-        except AtomicWriteError:
-            pending.recovery_accounting_pending = True
-            raise
+        self._mutate_pending_action(
+            pending,
+            kind=PendingActionMutationKind.RECOVERY,
+            values={"recovery_accounting_pending": False},
+            bind_execution_identity=True,
+        )
         self._sync_task_confirmation_status(pending)
 
     def _recover_loaded_pending_attempts(self) -> None:
-        legacy_scheduler_accounting_marked = False
         scheduler = getattr(self, "_scheduler", None)
         outcome_reader = getattr(scheduler, "confirmation_outcome", None)
         for pending in self._pending_actions.values():
@@ -6626,22 +6730,28 @@ class HandlerImplementation(
                 else None
             )
             if recorded_outcome is None:
+                status_reason = pending.status_reason
                 if terminal_status == "cancelled":
-                    pending.scheduler_accounting_mode = (
+                    accounting_mode = (
                         "shadow_only"
                         if pending.status_reason
                         in {"max_runs_reached", "outcome_unknown", "task_cancelled"}
                         else "ambiguous"
                     )
-                    if pending.scheduler_accounting_mode == "ambiguous":
-                        pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
+                    if accounting_mode == "ambiguous":
+                        status_reason = "legacy_scheduler_accounting_intent_unknown"
                 else:
-                    pending.scheduler_accounting_mode = "failure"
-                pending.recovery_scheduler_accounted = False
-                pending.scheduler_accounting_pending = True
-                legacy_scheduler_accounting_marked = True
-        if legacy_scheduler_accounting_marked:
-            self._persist_pending_actions()
+                    accounting_mode = "failure"
+                self._mutate_pending_action(
+                    pending,
+                    kind=PendingActionMutationKind.SCHEDULER,
+                    values={
+                        "scheduler_accounting_mode": accounting_mode,
+                        "status_reason": status_reason,
+                        "recovery_scheduler_accounted": False,
+                        "scheduler_accounting_pending": True,
+                    },
+                )
 
         recovery_not_before = _monotonic() + _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS
         recovery_backoff_applied = False
@@ -6654,23 +6764,33 @@ class HandlerImplementation(
             structural_read_recovery = self._time_now_recovery_descriptor_is_current(pending)
             stable_key_adapter = self._stable_key_recovery_adapter(pending)
             if not structural_read_recovery and stable_key_adapter is None:
-                pending.status = "outcome_unknown"
-                pending.status_reason = "uncertain_effect_requires_fresh_approval"
-                pending.decision_nonce = ""
-                pending.recovery_effect_invoked = True
-                pending.recovery_accounting_pending = True
-                self._persist_pending_actions()
+                self._mutate_pending_action(
+                    pending,
+                    operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                    reason="uncertain_effect_requires_fresh_approval",
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={
+                        "recovery_effect_invoked": True,
+                        "recovery_accounting_pending": True,
+                    },
+                )
                 self._sync_task_confirmation_status(pending)
                 continue
 
-            pending.retry_generation += 1
-            pending.recovery_started_at = datetime.now(UTC)
-            pending.status_reason = (
-                "structural_retry_started"
-                if structural_read_recovery
-                else "stable_idempotency_key_retry_started"
+            self._mutate_pending_action(
+                pending,
+                kind=PendingActionMutationKind.RECOVERY,
+                values={
+                    "retry_generation": pending.retry_generation + 1,
+                    "recovery_started_at": datetime.now(UTC),
+                    "status_reason": (
+                        "structural_retry_started"
+                        if structural_read_recovery
+                        else "stable_idempotency_key_retry_started"
+                    ),
+                },
+                bind_execution_identity=True,
             )
-            self._persist_pending_actions()
             if not recovery_backoff_applied:
                 remaining_backoff = recovery_not_before - _monotonic()
                 if remaining_backoff > 0:
@@ -6706,26 +6826,33 @@ class HandlerImplementation(
                     adapter_outcome_unknown = True
                 recovered_reason = "recovered_stable_idempotency_key"
                 failure_reason = "stable_idempotency_key_retry_failed"
-            pending.recovery_result = dict(result)
-            pending.provider_operation_id = str(
+            provider_operation_id = str(
                 result.get("provider_operation_id", pending.provider_operation_id)
             ).strip()
-            pending.decision_nonce = ""
             if result.get("ok") is True:
-                pending.status = "approved"
-                pending.status_reason = recovered_reason
+                operation = PendingActionTransitionKind.RECOVER_APPROVE
+                terminal_reason = recovered_reason
             elif not structural_read_recovery and adapter_outcome_unknown:
-                pending.status = "outcome_unknown"
-                pending.status_reason = "idempotent_adapter_outcome_unknown"
+                operation = PendingActionTransitionKind.INVALIDATE_RECOVERY
+                terminal_reason = "idempotent_adapter_outcome_unknown"
             else:
-                pending.status = "failed"
+                operation = PendingActionTransitionKind.RECOVER_FAIL
                 error = str(result.get("error", failure_reason)).strip()
-                pending.status_reason = f"{failure_reason}:{error}"
-            pending.recovery_effect_invoked = True
-            pending.recovery_accounting_pending = True
-            self._persist_pending_actions()
+                terminal_reason = f"{failure_reason}:{error}"
+            self._mutate_pending_action(
+                pending,
+                operation=operation,
+                reason=terminal_reason,
+                kind=PendingActionMutationKind.RECOVERY,
+                values={
+                    "recovery_result": dict(result),
+                    "provider_operation_id": provider_operation_id,
+                    "recovery_effect_invoked": True,
+                    "recovery_accounting_pending": True,
+                },
+                retain_target_on_error=True,
+            )
             self._sync_task_confirmation_status(pending)
-        scheduler_state_changed = False
         for pending in self._pending_actions.values():
             if pending.scheduler_accounting_pending:
                 cancel_reason = self._complete_pending_scheduler_accounting(pending)
@@ -6745,11 +6872,7 @@ class HandlerImplementation(
                 self._precontain_pending_scheduler_task(pending)
                 continue
             if pending.recovery_accounting_pending or pending.status == "outcome_unknown":
-                scheduler_state_changed = (
-                    self._record_pending_scheduler_state(pending) or scheduler_state_changed
-                )
-        if scheduler_state_changed:
-            self._persist_pending_actions()
+                self._record_pending_scheduler_state(pending)
         for pending in self._pending_actions.values():
             self._schedule_recovery_accounting(pending)
 
@@ -6987,23 +7110,29 @@ class HandlerImplementation(
                 await self._contain_confirmed_execution_exception(pending)
                 raise
 
-            pending.provider_operation_id = str(execution.provider_operation_id).strip()
-            pending.recovery_effect_invoked = True
             if execution.success:
-                pending.status = "approved"
-                pending.status_reason = "allowed_execution_succeeded"
+                terminal_status = "approved"
+                terminal_reason = "allowed_execution_succeeded"
             elif execution.outcome_unknown:
-                pending.status = "outcome_unknown"
-                pending.status_reason = execution.error or "allowed_execution_outcome_unknown"
+                terminal_status = "outcome_unknown"
+                terminal_reason = execution.error or "allowed_execution_outcome_unknown"
             else:
-                pending.status = "failed"
-                pending.status_reason = execution.error or "allowed_execution_failed"
-            try:
-                self._persist_pending_actions()
-                self._sync_task_confirmation_status(pending)
-            except (Exception, asyncio.CancelledError):
-                await self._contain_confirmed_execution_exception(pending)
-                raise
+                terminal_status = "failed"
+                terminal_reason = execution.error or "allowed_execution_failed"
+            self._commit_pending_terminal_state(
+                pending,
+                status=terminal_status,
+                reason=terminal_reason,
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={
+                        "provider_operation_id": str(execution.provider_operation_id).strip(),
+                        "recovery_effect_invoked": True,
+                    },
+                ),
+                retain_target_on_error=True,
+            )
+            self._sync_task_confirmation_status(pending)
             return execution
 
         tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))

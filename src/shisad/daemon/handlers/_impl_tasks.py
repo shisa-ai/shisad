@@ -44,6 +44,7 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
+from shisad.daemon.pending_actions import PendingActionMutation, PendingActionMutationKind
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier
@@ -686,13 +687,21 @@ class TasksImplMixin(HandlerMixinBase):
             # that boundary as uncertain immediately so it cannot redeliver
             # while waiting for a process restart to reconcile the attempt.
             try:
-                pending.status = "outcome_unknown"
-                pending.status_reason = "uncertain_effect_requires_fresh_approval"
-                pending.decision_nonce = ""
-                pending.recovery_accounting_pending = True
-                pending.recovery_effect_invoked = True
-                pending.scheduler_accounting_pending = True
-                self._persist_pending_actions()
+                self._commit_pending_terminal_state(
+                    pending,
+                    status="outcome_unknown",
+                    reason="uncertain_effect_requires_fresh_approval",
+                    mutation=PendingActionMutation(
+                        kind=PendingActionMutationKind.EXECUTION,
+                        values={
+                            "recovery_accounting_pending": True,
+                            "recovery_effect_invoked": True,
+                            "scheduler_accounting_pending": True,
+                            "scheduler_accounting_mode": "failure",
+                        },
+                    ),
+                    retain_target_on_error=True,
+                )
                 self._sync_task_confirmation_status(pending)
                 cancel_reason = self._complete_pending_scheduler_accounting(pending)
                 if cancel_reason:
@@ -706,20 +715,35 @@ class TasksImplMixin(HandlerMixinBase):
                 self._contain_unresolved_task_attempt(str(task.id))
                 raise
             raise
-        pending.provider_operation_id = str(execution.provider_operation_id).strip()
-        pending.recovery_effect_invoked = True
+        terminal_status = (
+            "approved"
+            if execution.success
+            else "outcome_unknown"
+            if execution.outcome_unknown
+            else "failed"
+        )
         if execution.success:
-            pending.status = "approved"
-            pending.status_reason = "scheduler_execution_succeeded"
+            terminal_reason = "scheduler_execution_succeeded"
         elif execution.outcome_unknown:
-            pending.status = "outcome_unknown"
-            pending.status_reason = execution.error or "scheduler_execution_outcome_unknown"
+            terminal_reason = execution.error or "scheduler_execution_outcome_unknown"
         else:
-            pending.status = "failed"
-            pending.status_reason = execution.error or "scheduler_execution_failed"
-        pending.scheduler_accounting_pending = True
+            terminal_reason = execution.error or "scheduler_execution_failed"
         try:
-            self._persist_pending_actions()
+            self._commit_pending_terminal_state(
+                pending,
+                status=terminal_status,
+                reason=terminal_reason,
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={
+                        "provider_operation_id": str(execution.provider_operation_id).strip(),
+                        "recovery_effect_invoked": True,
+                        "scheduler_accounting_pending": True,
+                        "scheduler_accounting_mode": "failure",
+                    },
+                ),
+                retain_target_on_error=True,
+            )
             self._sync_task_confirmation_status(pending)
             cancel_reason = self._complete_pending_scheduler_accounting(pending)
             if cancel_reason:

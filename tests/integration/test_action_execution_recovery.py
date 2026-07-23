@@ -337,11 +337,9 @@ async def test_initial_stable_key_invocation_guard_rejects_post_queue_adapter_dr
         def _queue_then_replace(**kwargs: object) -> object:
             pending = queue_pending_action(**kwargs)
             queued.append(pending)
-            services.idempotent_recovery_adapters[str(tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.keyed-invocation-drift/provider-v2",
-                    operation=_replacement_adapter,
-                )
+            services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+                guarantee_id="test.keyed-invocation-drift/provider-v2",
+                operation=_replacement_adapter,
             )
             return pending
 
@@ -433,10 +431,8 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
                 )
             else:
                 if surface == "evidence":
-                    recovered.confirmation_evidence = (
-                        recovered.confirmation_evidence.model_copy(
-                            update={"approver_principal_id": "mallory"}
-                        )
+                    recovered.confirmation_evidence = recovered.confirmation_evidence.model_copy(
+                        update={"approver_principal_id": "mallory"}
                     )
                 elif surface == "delivery-target":
                     recovered.delivery_target = DeliveryTarget(
@@ -498,11 +494,7 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         finally:
             await replayed.shutdown()
 
-    recovery_events = [
-        row
-        for row in _audit_rows(config)
-        if row.get("actor") == "recovery"
-    ]
+    recovery_events = [row for row in _audit_rows(config) if row.get("actor") == "recovery"]
     assert [row.get("event_type") for row in recovery_events] == ["ToolRejected"]
     assert all(
         row.get("data", {}).get("approval_approver_principal_id") != "mallory"
@@ -586,8 +578,7 @@ async def test_invalid_recovery_identity_cannot_select_existing_audit_event_id(
         recovery_rejections = [
             row
             for row in _audit_rows(config)
-            if row.get("event_type") == "ToolRejected"
-            and row.get("actor") == "recovery"
+            if row.get("event_type") == "ToolRejected" and row.get("actor") == "recovery"
         ]
         assert len(recovery_rejections) == 2
         assert len({row.get("event_id") for row in recovery_rejections}) == 2
@@ -596,18 +587,15 @@ async def test_invalid_recovery_identity_cannot_select_existing_audit_event_id(
             "2001-01-01T00:00:00+00:00"
         )
         terminal.recovery_anonymous_accounting_id = "forged-after-anonymous-accounting"
-        impl._persist_pending_actions()
+        lifecycle = impl._pending_action_lifecycle_authority()
+        lifecycle.persist_adopted(persist=impl._persist_pending_actions)
         assert terminal.recovery_event_identity_untrusted is True
-        assert (
-            terminal.recovery_event_identity_untrusted_at
-            != datetime.fromisoformat("2001-01-01T00:00:00+00:00")
+        assert terminal.recovery_event_identity_untrusted_at != datetime.fromisoformat(
+            "2001-01-01T00:00:00+00:00"
         )
-        assert (
-            terminal.recovery_anonymous_accounting_id
-            != "forged-after-anonymous-accounting"
-        )
+        assert terminal.recovery_anonymous_accounting_id != "forged-after-anonymous-accounting"
         terminal.recovery_event_identity_untrusted = False
-        impl._persist_pending_actions()
+        lifecycle.persist_adopted(persist=impl._persist_pending_actions)
         assert terminal.recovery_event_identity_untrusted is True
     finally:
         await restarted.shutdown()
@@ -634,9 +622,7 @@ async def test_terminal_purge_waits_for_recovery_accounting_convergence(
         recovered = impl._pending_actions[confirmation_id]
         assert recovered.recovery_accounting_pending is True
 
-        blocked_purge = await impl.do_action_purge(
-            {"status": "terminal", "limit": 20}
-        )
+        blocked_purge = await impl.do_action_purge({"status": "terminal", "limit": 20})
 
         assert blocked_purge["purged"] == 0
         assert blocked_purge["confirmation_ids"] == []
@@ -649,9 +635,7 @@ async def test_terminal_purge_waits_for_recovery_accounting_convergence(
 
         await impl._account_recovered_attempt(confirmation_id)
         assert recovered.recovery_accounting_pending is False
-        completed_purge = await impl.do_action_purge(
-            {"status": "terminal", "limit": 20}
-        )
+        completed_purge = await impl.do_action_purge({"status": "terminal", "limit": 20})
         assert completed_purge["purged"] == 1
         assert completed_purge["confirmation_ids"] == [confirmation_id]
         assert confirmation_id not in impl._pending_actions
@@ -729,17 +713,10 @@ async def test_unsigned_predecision_recovery_marker_cannot_be_trust_laundered(
     try:
         replayed_handlers = DaemonControlHandlers(services=replayed)
         await _wait_for_recovery_accounting(replayed_handlers._impl)
-        recovery_events = [
-            row
-            for row in _audit_rows(config)
-            if row.get("actor") == "recovery"
-        ]
+        recovery_events = [row for row in _audit_rows(config) if row.get("actor") == "recovery"]
         assert [row.get("event_type") for row in recovery_events] == ["ToolExecuted"]
         assert recovery_events[0].get("timestamp") != "2000-01-01T00:00:00+00:00"
-        assert (
-            recovery_events[0].get("data", {}).get("approval_confirmation_id")
-            == confirmation_id
-        )
+        assert recovery_events[0].get("data", {}).get("approval_confirmation_id") == confirmation_id
     finally:
         await replayed.shutdown()
 
@@ -784,11 +761,9 @@ async def test_terminal_recovery_accounting_preserves_authenticated_result_acros
         seeded = await DaemonServices.build(config)
         try:
             seeded.registry.register(stable_tool_definition)
-            seeded.idempotent_recovery_adapters[str(stable_tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.terminal-accounting-stable/provider-v1",
-                    operation=_stable_adapter,
-                )
+            seeded.idempotent_recovery_adapters[str(stable_tool_name)] = StableIdempotencyAdapter(
+                guarantee_id="test.terminal-accounting-stable/provider-v1",
+                operation=_stable_adapter,
             )
             session_id, raw_impl = await _session_and_impl(seeded)
             impl = raw_impl
@@ -872,17 +847,13 @@ async def test_terminal_recovery_accounting_preserves_authenticated_result_acros
             )
         elif live_drift == "policy-stable-adapter":
             replayed.registry.register(stable_tool_definition)
-            replayed.idempotent_recovery_adapters[str(stable_tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.terminal-accounting-stable/provider-v2",
-                    operation=_stable_adapter,
-                )
+            replayed.idempotent_recovery_adapters[str(stable_tool_name)] = StableIdempotencyAdapter(
+                guarantee_id="test.terminal-accounting-stable/provider-v2",
+                operation=_stable_adapter,
             )
         replayed_handlers = DaemonControlHandlers(services=replayed)
         if live_drift == "human-backend":
-            replayed_handlers._impl._confirmation_backend_registry._backends.pop(
-                "software.default"
-            )
+            replayed_handlers._impl._confirmation_backend_registry._backends.pop("software.default")
         await _wait_for_recovery_accounting(replayed_handlers._impl)
         terminal = replayed_handlers._impl._pending_actions[confirmation_id]
         assert terminal.status == "approved"
@@ -1007,9 +978,7 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
         ]
         assert len(execution_rows) == 1
         plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )
         assert plans[str(execution_rows[0]["session_id"])]["executed_actions"] == 1
         recovery_audits = [
@@ -1017,13 +986,10 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == live_pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == live_pending.confirmation_id
         ]
         assert len(recovery_audits) == 1
-        assert recovery_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
     finally:
         await services.shutdown()
 
@@ -1081,9 +1047,7 @@ async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_
 
     class _EffectDelivery:
         async def send(self, **_kwargs: object) -> object:
-            durable_before_effect.extend(
-                json.loads(pending_path.read_text(encoding="utf-8"))
-            )
+            durable_before_effect.extend(json.loads(pending_path.read_text(encoding="utf-8")))
             effect_started.set()
             if cancel_execution:
                 await asyncio.Future()
@@ -1459,16 +1423,12 @@ async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
         await _wait_for_recovery_accounting(impl)
         assert pending.recovery_accounting_pending is False
         execution_rows = [
-            row
-            for row in _control_plane_history_rows(config)
-            if row.get("tool_name") == "time.now"
+            row for row in _control_plane_history_rows(config) if row.get("tool_name") == "time.now"
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
         plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
@@ -1476,13 +1436,10 @@ async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         assert len(recovery_audits) == 1
-        assert recovery_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
     finally:
         await services.shutdown()
 
@@ -1559,9 +1516,7 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
             )
             if row["task_id"] == task.id
         )
-        assert durable["status"] == (
-            "executing" if crash_publication == 2 else "approved"
-        )
+        assert durable["status"] == ("executing" if crash_publication == 2 else "approved")
         assert durable["scheduler_accounting_pending"] is (crash_publication == 3)
         contained_task = services.scheduler.get_task(task.id)
         assert contained_task is not None
@@ -2284,8 +2239,7 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker
         recovery_rejections = [
             row
             for row in _audit_rows(config)
-            if row.get("event_type") == "ToolRejected"
-            and row.get("actor") == "recovery"
+            if row.get("event_type") == "ToolRejected" and row.get("actor") == "recovery"
         ]
         assert len(recovery_rejections) == 1
         durable = next(
@@ -2309,8 +2263,7 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker
         recovery_rejections = [
             row
             for row in _audit_rows(config)
-            if row.get("event_type") == "ToolRejected"
-            and row.get("actor") == "recovery"
+            if row.get("event_type") == "ToolRejected" and row.get("actor") == "recovery"
         ]
         assert len(recovery_rejections) == 1
         assert recovery_rejections[0].get("timestamp") == trusted_marker_timestamp
@@ -2815,9 +2768,7 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
         plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
@@ -2825,13 +2776,10 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         assert len(recovery_audits) == 1
-        assert recovery_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
         if scenario == "mutating_get":
             fresh = restarted_handlers._impl._queue_pending_action(
                 session_id=recovered.session_id,
@@ -2952,11 +2900,9 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
             drifted_definition if recovery_drift == "schema-hash" else tool_definition
         )
         if recovery_drift == "schema-hash":
-            restarted.idempotent_recovery_adapters[str(tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.stable-retry-drift/provider-v1",
-                    operation=_unexpected_adapter,
-                )
+            restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+                guarantee_id="test.stable-retry-drift/provider-v1",
+                operation=_unexpected_adapter,
             )
         restarted_handlers = DaemonControlHandlers(services=restarted)
         await _wait_for_recovery_accounting(restarted_handlers._impl)
@@ -2975,9 +2921,7 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
         plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
@@ -2985,13 +2929,10 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         assert len(recovery_audits) == 1
-        assert recovery_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
     finally:
         await restarted.shutdown()
 
@@ -3540,27 +3481,19 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert recovered_task is not None
         assert recovered_task.success_count == (1 if recovery_case == "exact-key" else 0)
         assert recovered_task.failure_count == (
-            0
-            if recovery_case
-            in {"exact-key", "changed-key", "fabricated-evidence"}
-            else 1
+            0 if recovery_case in {"exact-key", "changed-key", "fabricated-evidence"} else 1
         )
         if recovery_case in {"changed-key", "fabricated-evidence"}:
             assert recovered.scheduler_accounting_mode == "ambiguous"
         assert recovered_task.enabled is expected_task_enabled
-        all_recovery_events = [
-            row
-            for row in _audit_rows(config)
-            if row.get("actor") == "recovery"
-        ]
+        all_recovery_events = [row for row in _audit_rows(config) if row.get("actor") == "recovery"]
         recovery_events = (
             all_recovery_events
             if recovery_case in {"changed-key", "fabricated-evidence"}
             else [
                 row
                 for row in all_recovery_events
-                if row.get("data", {}).get("approval_confirmation_id")
-                == pending.confirmation_id
+                if row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
             ]
         )
         executed_events = [
@@ -3627,11 +3560,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         second_restart = await DaemonServices.build(config)
         try:
             second_restart.registry.register(tool_definition)
-            second_restart.idempotent_recovery_adapters[str(tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.keyed-effect/provider-v1",
-                    operation=_deduplicating_adapter,
-                )
+            second_restart.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+                guarantee_id="test.keyed-effect/provider-v1",
+                operation=_deduplicating_adapter,
             )
             second_handlers = DaemonControlHandlers(services=second_restart)
             await _wait_for_recovery_accounting(second_handlers._impl)
@@ -3776,9 +3707,7 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
             and row.get("data", {}).get("tool_name") == str(tool_name)
         ]
         assert len(executed_audits) == 1
-        assert executed_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert executed_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
     finally:
         await services.shutdown()
 
@@ -3915,13 +3844,10 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         assert len(recovery_audits) == 1
-        assert recovery_audits[0].get("data", {}).get("details", {}).get(
-            "outcome_unknown"
-        ) is True
+        assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
         recovered_task = restarted.scheduler.get_task(task.id)
         assert recovered_task is not None
         assert recovered_task.success_count == 0
@@ -3941,13 +3867,16 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
         )
         second_handlers = DaemonControlHandlers(services=second_restart)
         await _wait_for_recovery_accounting(second_handlers._impl)
-        assert len(
-            [
-                row
-                for row in _control_plane_history_rows(config)
-                if row.get("tool_name") == str(tool_name)
-            ]
-        ) == 1
+        assert (
+            len(
+                [
+                    row
+                    for row in _control_plane_history_rows(config)
+                    if row.get("tool_name") == str(tool_name)
+                ]
+            )
+            == 1
+        )
         plans = json.loads(
             (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )

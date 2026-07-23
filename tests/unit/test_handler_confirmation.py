@@ -1289,7 +1289,7 @@ def test_f10a_mixed_unhydrated_legacy_store_blocks_later_mutation_without_byte_l
 
     harness._load_pending_actions()
 
-    assert set(harness._pending_actions) == {"c-1"}
+    assert harness._pending_actions == {}
     assert harness._pending_state_degradation == {
         "transition": "load",
         "stage": "legacy_hydration",
@@ -2352,9 +2352,10 @@ def test_f2_invalid_recovery_mac_neutralizes_valid_scheduler_mode_substitution(
     original_mac = durable_rows[0]["recovery_authority_mac"]
     durable_rows[0]["scheduler_accounting_mode"] = tampered_mode
     pending_actions_file.write_text(json.dumps(durable_rows), encoding="utf-8")
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    harness._scheduler = scheduler
     harness._load_pending_actions()
 
     recovered = harness._pending_actions[pending.confirmation_id]
@@ -2396,6 +2397,8 @@ def test_f2_runtime_authority_invalidation_neutralizes_scheduler_intent(
     harness = _load_pending_actions_harness(
         pending_actions_file=tmp_path / "pending_actions.json",
     )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
 
     harness._invalidate_recovered_authority(pending)
 
@@ -3461,9 +3464,9 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
     assert persisted["result_id"]
     assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
     harness._load_pending_actions()
 
     loaded = harness._pending_actions[pending.confirmation_id]
@@ -3549,9 +3552,9 @@ def test_f2_sanitized_raw_recovery_marker_cannot_restore_live_pending(
     assert loaded.recovery_accounting_pending is False
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
     assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
     harness._load_pending_actions()
 
     replayed = harness._pending_actions[pending.confirmation_id]
@@ -5388,7 +5391,7 @@ def test_a1_load_pending_actions_backfills_legacy_channel_principal(tmp_path) ->
     assert persisted[0]["allowed_channel_principals"] == ["alice"]
 
 
-def test_a1_load_pending_actions_fails_legacy_channel_pending_without_principal(
+def test_f10c_load_quarantines_channel_pending_without_principal_identity(
     tmp_path,
 ) -> None:
     pending = _pending_action(nonce="expected")
@@ -5403,19 +5406,15 @@ def test_a1_load_pending_actions_fails_legacy_channel_pending_without_principal(
 
     HandlerImplementation._load_pending_actions(harness)
 
-    loaded = harness._pending_actions["c-1"]
-    assert loaded.allowed_channel_principals == []
-    assert loaded.status == "failed"
-    assert loaded.status_reason == "channel_principal_unavailable"
-    public = HandlerImplementation._pending_to_dict(loaded, public=True)
-    capability = public["channel_capability"]
-    assert capability["can_approve"] is False
-    assert capability["can_collect_selected_method"] is False
-    assert capability["can_carry"] is False
-    assert capability["can_carry_required_proof_tier"] is False
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
-    assert persisted[0]["status"] == "failed"
-    assert persisted[0]["status_reason"] == "channel_principal_unavailable"
+    assert harness._pending_actions == {}
+    assert harness._pending_by_session == {}
+    assert harness._pending_state_degradation == {
+        "transition": "load",
+        "stage": "corrupt",
+        "reason": "pending_state_corrupt",
+    }
+    quarantined = list(pending_actions_file.parent.glob("pending_actions.json.corrupt.*"))
+    assert len(quarantined) == 1
 
 
 def _pep_context_snapshot(
@@ -5790,6 +5789,9 @@ async def test_f1_confirmation_resolution_carries_complete_audit_and_task_identi
     )
     rejected_pending.allowed_channel_principals = ["alice"]
     harness._pending_actions[rejected_pending.confirmation_id] = rejected_pending
+    harness._pending_by_session.setdefault(rejected_pending.session_id, []).append(
+        rejected_pending.confirmation_id
+    )
     await harness.do_action_reject(
         {
             "confirmation_id": rejected_pending.confirmation_id,
@@ -7005,6 +7007,13 @@ async def test_trace_only_capability_elevation_fails_closed_when_pep_requires_st
     assert result["confirmed"] is False
     assert result["status"] == "rejected"
     assert result["status_reason"] == "confirmation_requirement_unsatisfied_after_confirmation"
+    assert pending.confirmation_evidence is not None
+    rejected = next(
+        event for event in reversed(harness.published_events) if isinstance(event, ToolRejected)
+    )
+    assert rejected.approval_level == ConfirmationLevel.SOFTWARE.value
+    assert rejected.approval_method == "software"
+    assert rejected.approval_evidence_hash == pending.confirmation_evidence.evidence_hash
     assert harness.execution_kwargs == []
 
 

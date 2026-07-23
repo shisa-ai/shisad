@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -74,10 +74,13 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.pending_actions import (
     PendingActionLifecycleService,
+    PendingActionMutation,
+    PendingActionMutationKind,
     PendingActionStore,
     PendingActionTransitionError,
     PendingActionTransitionGuard,
     PendingActionTransitionRequest,
+    PendingActionUpdateRequest,
 )
 from shisad.daemon.pending_actions import (
     PendingActionMutationSnapshot as _PendingAttemptSnapshot,
@@ -376,6 +379,60 @@ class ConfirmationImplMixin(HandlerMixinBase):
         lifecycle = self._pending_action_lifecycle_authority()
         if lifecycle.degradation is not None:
             self._pending_state_degradation = dict(lifecycle.degradation)
+
+    def _mutate_pending_action(
+        self,
+        pending: PendingActionRecord,
+        *,
+        kind: PendingActionMutationKind,
+        values: Mapping[str, object],
+        operation: PendingActionTransitionKind | None = None,
+        reason: str = "",
+        rollback_snapshot: _PendingAttemptSnapshot | None = None,
+        bind_execution_identity: bool = False,
+        retain_target_on_error: bool = False,
+    ) -> bool:
+        bind_execution_identity = bind_execution_identity or operation is not None
+        guard = PendingActionTransitionGuard.for_record(
+            pending,
+            execution_attempt_id=(
+                str(pending.execution_attempt_id).strip() or None
+                if bind_execution_identity
+                else None
+            ),
+            result_id=(str(pending.result_id).strip() or None if bind_execution_identity else None),
+        )
+        lifecycle = self._pending_action_lifecycle_authority()
+        try:
+            if operation is not None:
+                lifecycle.transition(
+                    PendingActionTransitionRequest(
+                        record=pending,
+                        operation=operation,
+                        reason=reason,
+                        guard=guard,
+                        mutation=PendingActionMutation(kind=kind, values=values),
+                        retain_target_on_error=retain_target_on_error,
+                    ),
+                    persist=self._persist_pending_actions,
+                )
+                return True
+            return lifecycle.update(
+                PendingActionUpdateRequest(
+                    record=pending,
+                    mutation=PendingActionMutation(kind=kind, values=values),
+                    guard=guard,
+                    rollback_snapshot=rollback_snapshot,
+                ),
+                persist=self._persist_pending_actions,
+            )
+        except (
+            AtomicWriteError,
+            PendingActionTransitionError,
+            StatePersistenceDegradedError,
+        ):
+            self._mirror_pending_action_lifecycle_degradation()
+            raise
 
     @staticmethod
     def _pending_terminal_transition_kind(
@@ -739,7 +796,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
         *,
         rollback_snapshots: list[_PendingAttemptSnapshot] | None = None,
         transition_guards: list[PendingActionTransitionGuard] | None = None,
+        mutations: list[PendingActionMutation | None] | None = None,
         record_scheduler_failure: bool = True,
+        retain_target_on_error: bool = False,
     ) -> None:
         if not transitions:
             return
@@ -758,11 +817,18 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     if status.strip().lower() == "rejected"
                     else None
                 ),
+                execution_attempt_id=(
+                    str(getattr(pending, "execution_attempt_id", "")).strip() or None
+                ),
+                result_id=str(getattr(pending, "result_id", "")).strip() or None,
             )
             for pending, status, _reason in transitions
         ]
         if len(guards) != len(transitions):
             raise ValueError("terminal transition guard count mismatch")
+        prepared_mutations = mutations or [None] * len(transitions)
+        if len(prepared_mutations) != len(transitions):
+            raise ValueError("terminal transition mutation count mismatch")
         requests = tuple(
             PendingActionTransitionRequest(
                 record=cast(PendingActionRecord, pending),
@@ -776,11 +842,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 scheduler_accounting_mode=(
                     "failure" if record_scheduler_failure else "shadow_only"
                 ),
+                mutation=mutation,
+                retain_target_on_error=retain_target_on_error,
             )
-            for (pending, status, reason), snapshot, guard in zip(
+            for (pending, status, reason), snapshot, guard, mutation in zip(
                 transitions,
                 snapshots,
                 guards,
+                prepared_mutations,
                 strict=True,
             )
         )
@@ -809,11 +878,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         reason: str,
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
         transition_guard: PendingActionTransitionGuard | None = None,
+        mutation: PendingActionMutation | None = None,
+        retain_target_on_error: bool = False,
     ) -> None:
         self._commit_pending_terminal_states(
             [(pending, status, reason)],
             rollback_snapshots=[rollback_snapshot] if rollback_snapshot is not None else None,
             transition_guards=[transition_guard] if transition_guard is not None else None,
+            mutations=[mutation] if mutation is not None else None,
+            retain_target_on_error=retain_target_on_error,
         )
 
     def _complete_committed_terminal_scheduler_accounting(self, pending: Any) -> None:
@@ -840,12 +913,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             task_id = str(getattr(pending, "task_id", "")).strip()
             if callable(disable_task) and task_id and not bool(disable_task(task_id)):
                 raise RuntimeError("scheduler_accounting_ambiguity_containment_failed")
-        pending.scheduler_accounting_pending = False
-        try:
-            self._persist_pending_actions()
-        except AtomicWriteError:
-            pending.scheduler_accounting_pending = True
-            raise
+        self._mutate_pending_action(
+            pending,
+            kind=PendingActionMutationKind.SCHEDULER,
+            values={"scheduler_accounting_pending": False},
+        )
 
     async def _complete_purge_candidate_scheduler_accounting(
         self,
@@ -894,17 +966,35 @@ class ConfirmationImplMixin(HandlerMixinBase):
         emit_hygiene_alert: bool = True,
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
         transition_guard: PendingActionTransitionGuard | None = None,
+        confirmation_evidence: ConfirmationEvidence | None = None,
     ) -> None:
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_nonce = str(getattr(pending, "decision_nonce", ""))
-        evidence_fields = approval_audit_fields(getattr(pending, "confirmation_evidence", None))
+        mutation = None
+        if confirmation_evidence is not None:
+            evidence_hash = confirmation_evidence.evidence_hash
+            mutation = PendingActionMutation(
+                kind=PendingActionMutationKind.DECISION,
+                values={
+                    "approval_evidence_hash": evidence_hash,
+                    "confirmation_evidence": confirmation_evidence,
+                },
+            )
+            transition_guard = PendingActionTransitionGuard.for_record(
+                cast(PendingActionRecord, pending),
+                decision_nonce=decision_nonce,
+                evidence_hash=evidence_hash,
+                approver_principal_id=confirmation_evidence.approver_principal_id or None,
+            )
         self._commit_pending_terminal_state(
             pending,
             status=status,
             reason=status_reason,
             rollback_snapshot=rollback_snapshot,
             transition_guard=transition_guard,
+            mutation=mutation,
         )
+        evidence_fields = approval_audit_fields(getattr(pending, "confirmation_evidence", None))
         event_fields = self._pending_approval_event_fields(
             pending,
             decision_timestamp=decision_timestamp,
@@ -938,6 +1028,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending: Any,
         *,
         reason: str,
+        expected_plan_hash: str | None = None,
     ) -> bool:
         correlation_id = str(getattr(pending, "stage2_correlation_id", "")).strip()
         if not correlation_id:
@@ -949,7 +1040,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "cancel_stage2",
                     session_id=str(pending.session_id),
                     correlation_id=correlation_id,
-                    expected_plan_hash=str(getattr(pending, "stage2_plan_hash", "")).strip(),
+                    expected_plan_hash=(
+                        str(expected_plan_hash).strip()
+                        if expected_plan_hash is not None
+                        else str(getattr(pending, "stage2_plan_hash", "")).strip()
+                    ),
                     reason=reason,
                     actor="human_confirmation",
                 )
@@ -1168,12 +1263,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             disable_task = getattr(self._scheduler, "disable_task", None)
             if callable(disable_task):
                 task_uncertainty_disabled = bool(disable_task(task_id))
-        pending.scheduler_accounting_pending = False
-        try:
-            self._persist_pending_actions()
-        except AtomicWriteError:
-            pending.scheduler_accounting_pending = True
-            raise
+        self._mutate_pending_action(
+            pending,
+            kind=PendingActionMutationKind.SCHEDULER,
+            values={"scheduler_accounting_pending": False},
+        )
         if task_auto_disabled:
             return "max_runs_reached"
         if task_uncertainty_disabled:
@@ -1198,18 +1292,25 @@ class ConfirmationImplMixin(HandlerMixinBase):
         """Persist post-effect uncertainty and revoke adjacent execution authority."""
 
         task_id = str(getattr(pending, "task_id", "")).strip()
-        pending.status = "outcome_unknown"
-        pending.status_reason = "uncertain_effect_requires_fresh_approval"
-        pending.decision_nonce = ""
-        pending.recovery_accounting_pending = True
-        pending.recovery_effect_invoked = True
-        pending.scheduler_accounting_pending = bool(task_id)
-        pending.scheduler_accounting_mode = "ambiguous" if task_id else ""
-        pending.recovery_scheduler_accounted = False
-        pending.recovery_scheduler_posture_captured = False
-        pending.recovery_scheduler_restore_enabled = False
         try:
-            self._persist_pending_actions()
+            self._commit_pending_terminal_state(
+                pending,
+                status="outcome_unknown",
+                reason="uncertain_effect_requires_fresh_approval",
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={
+                        "recovery_accounting_pending": True,
+                        "recovery_effect_invoked": True,
+                        "scheduler_accounting_pending": bool(task_id),
+                        "scheduler_accounting_mode": "ambiguous" if task_id else "",
+                        "recovery_scheduler_accounted": False,
+                        "recovery_scheduler_posture_captured": False,
+                        "recovery_scheduler_restore_enabled": False,
+                    },
+                ),
+                retain_target_on_error=True,
+            )
             self._sync_task_confirmation_status(pending)
             cancel_reason = (
                 await self._complete_confirmation_scheduler_accounting(
@@ -2150,80 +2251,18 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             already_locked_confirmation_ids=already_locked_confirmation_ids,
                         )
 
-                    previous_actions = dict(self._pending_actions)
-                    pending_by_session = getattr(self, "_pending_by_session", {})
-                    previous_by_session = (
-                        {
-                            session_id: list(confirmation_ids)
-                            for session_id, confirmation_ids in pending_by_session.items()
-                        }
-                        if isinstance(pending_by_session, dict)
-                        else {}
-                    )
-                    previous_item_states = [
-                        _capture_pending_attempt_snapshot(item) for item in purge_items
-                    ]
-                    purge_id_set = set(purge_ids)
-                    for confirmation_id in purge_ids:
-                        self._pending_actions.pop(confirmation_id, None)
-                    if isinstance(pending_by_session, dict):
-                        for session_id, confirmation_ids in list(pending_by_session.items()):
-                            remaining = [
-                                confirmation_id
-                                for confirmation_id in confirmation_ids
-                                if confirmation_id not in purge_id_set
-                            ]
-                            if remaining:
-                                pending_by_session[session_id] = remaining
-                            else:
-                                pending_by_session.pop(session_id, None)
-                    purged_actions = dict(self._pending_actions)
-                    purged_by_session = (
-                        {
-                            session_id: list(confirmation_ids)
-                            for session_id, confirmation_ids in pending_by_session.items()
-                        }
-                        if isinstance(pending_by_session, dict)
-                        else {}
-                    )
-                    purged_item_states = [
-                        _capture_pending_attempt_snapshot(item) for item in purge_items
-                    ]
+                    lifecycle = self._pending_action_lifecycle_authority()
                     try:
-                        self._persist_pending_actions()
-                    except AtomicWriteError as write_error:
-                        self._pending_actions.clear()
-                        self._pending_actions.update(previous_actions)
-                        if isinstance(pending_by_session, dict):
-                            pending_by_session.clear()
-                            pending_by_session.update(previous_by_session)
-                        for item, snapshot in zip(
-                            purge_items,
-                            previous_item_states,
-                            strict=True,
-                        ):
-                            _restore_pending_attempt_snapshot(item, snapshot)
-                        if write_error.publication_may_have_committed:
-                            try:
-                                self._persist_pending_actions()
-                            except AtomicWriteError as rollback_error:
-                                for item, snapshot in zip(
-                                    purge_items,
-                                    purged_item_states,
-                                    strict=True,
-                                ):
-                                    _restore_pending_attempt_snapshot(item, snapshot)
-                                self._pending_actions.clear()
-                                self._pending_actions.update(purged_actions)
-                                if isinstance(pending_by_session, dict):
-                                    pending_by_session.clear()
-                                    pending_by_session.update(purged_by_session)
-                                self._pending_state_degradation = {
-                                    "transition": "purge",
-                                    "stage": rollback_error.stage.value,
-                                    "reason": "pending_state_rollback_uncommitted",
-                                }
-                                raise rollback_error from write_error
+                        lifecycle.purge(
+                            tuple(cast(PendingActionRecord, item) for item in purge_items),
+                            persist=self._persist_pending_actions,
+                        )
+                    except (
+                        AtomicWriteError,
+                        PendingActionTransitionError,
+                        StatePersistenceDegradedError,
+                    ):
+                        self._mirror_pending_action_lifecycle_degradation()
                         raise
             finally:
                 for confirmation_id, lock in reversed(locks):
@@ -2698,7 +2737,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
             evidence=validated_evidence,
             backend=backend,
         ):
-            pending.confirmation_evidence = None
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -2717,7 +2755,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
             evidence=validated_evidence,
             backend=backend,
         ):
-            pending.confirmation_evidence = None
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -2728,13 +2765,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "approval_contract_mismatch",
             }
         validated_evidence = self._confirmation_evidence_authenticator.stamp(validated_evidence)
-        pending.confirmation_evidence = validated_evidence
         evidence_binding_reason = self._pending_approval_contract_invalid_reason(
-            pending,
+            replace(pending, confirmation_evidence=validated_evidence),
             require_evidence=True,
         )
         if evidence_binding_reason:
-            pending.confirmation_evidence = None
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -2748,7 +2783,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
             user_id=str(pending.user_id),
             method=confirmation_method,
         )
-
         pending_preflight_action = pending.preflight_action
         stage2_reason = "stage2_upgrade_required" in pending.reason
         stage2_action: Any | None = None
@@ -2760,6 +2794,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     status="rejected",
                     status_reason="plan_amendment_disabled",
                     rollback_snapshot=pre_decision_attempt,
+                    confirmation_evidence=validated_evidence,
                 )
                 return {
                     "confirmed": False,
@@ -2802,6 +2837,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     status="failed",
                     status_reason="pep_elevation_context_missing",
                     rollback_snapshot=pre_decision_attempt,
+                    confirmation_evidence=validated_evidence,
                 )
                 return {
                     "confirmed": False,
@@ -2832,6 +2868,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     status_reason=status_reason,
                     event_reason=pep_decision.reason or status_reason,
                     rollback_snapshot=pre_decision_attempt,
+                    confirmation_evidence=validated_evidence,
                 )
                 return {
                     "confirmed": False,
@@ -2854,14 +2891,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         str(getattr(pending, "selected_backend_id", "")).strip()
                         or "software.default"
                     )
-                    if (
-                        pending.confirmation_evidence is None
-                        or backend is None
-                        or not confirmation_evidence_satisfies_requirement(
-                            requirement=requirement,
-                            evidence=pending.confirmation_evidence,
-                            backend=backend,
-                        )
+                    if backend is None or not confirmation_evidence_satisfies_requirement(
+                        requirement=requirement,
+                        evidence=validated_evidence,
+                        backend=backend,
                     ):
                         terminal_status = "rejected"
                         terminal_reason = "confirmation_requirement_unsatisfied_after_confirmation"
@@ -2872,6 +2905,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         status_reason=terminal_reason,
                         event_reason=pep_decision.reason or terminal_reason,
                         rollback_snapshot=pre_decision_attempt,
+                        confirmation_evidence=validated_evidence,
                     )
                     return {
                         "confirmed": False,
@@ -2892,22 +2926,33 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)
-        if not str(getattr(pending, "action_digest", "")).strip():
-            approval_envelope = getattr(pending, "approval_envelope", None)
-            pending.action_digest = str(getattr(approval_envelope, "action_digest", "")).strip()
-        pending.approval_evidence_hash = str(
-            getattr(pending.confirmation_evidence, "evidence_hash", "")
-        ).strip()
-        if not str(getattr(pending, "execution_attempt_id", "")).strip():
-            pending.execution_attempt_id = f"attempt-{uuid.uuid4().hex}"
-        if not str(getattr(pending, "result_id", "")).strip():
-            pending.result_id = f"result-{uuid.uuid4().hex}"
+        approval_envelope = pending.approval_envelope
+        assert approval_envelope is not None
+        action_digest = (
+            str(getattr(pending, "action_digest", "")).strip()
+            or str(getattr(approval_envelope, "action_digest", "")).strip()
+        )
+        approval_evidence_hash = validated_evidence.evidence_hash.strip()
+        execution_attempt_id = (
+            str(getattr(pending, "execution_attempt_id", "")).strip()
+            or f"attempt-{uuid.uuid4().hex}"
+        )
+        result_id = str(getattr(pending, "result_id", "")).strip() or f"result-{uuid.uuid4().hex}"
+        start_values: dict[str, object] = {
+            "action_digest": action_digest,
+            "approval_evidence_hash": approval_evidence_hash,
+            "confirmation_evidence": validated_evidence,
+            "execution_attempt_id": execution_attempt_id,
+            "result_id": result_id,
+        }
         if stage2_action is not None:
-            pending.stage2_correlation_id = (
-                f"{pending.confirmation_id}:{pending.execution_attempt_id}"
+            start_values.update(
+                {
+                    "stage2_correlation_id": (f"{pending.confirmation_id}:{execution_attempt_id}"),
+                    "stage2_previous_plan_hash": stage2_previous_hash,
+                    "stage2_plan_hash": "",
+                }
             )
-            pending.stage2_previous_plan_hash = stage2_previous_hash
-            pending.stage2_plan_hash = ""
         capture_scheduler_posture = getattr(
             self,
             "_capture_pending_scheduler_posture",
@@ -2915,7 +2960,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         if str(getattr(pending, "task_id", "")).strip() and not callable(capture_scheduler_posture):
             raise RuntimeError("scheduler_posture_capture_unavailable")
-        action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         executing_reason = (
             "stage2_amendment_pending"
@@ -2923,11 +2967,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             else "confirmation_execution_started"
         )
         if callable(capture_scheduler_posture):
-            capture_scheduler_posture(pending)
-        approval_envelope = pending.approval_envelope
-        assert approval_envelope is not None
-        evidence = pending.confirmation_evidence
-        assert evidence is not None
+            start_values.update(capture_scheduler_posture(replace(pending, **start_values)))
         transition_guard = PendingActionTransitionGuard(
             expected_record_schema_version=pending.record_schema_version,
             expected_confirmation_id=confirmation_id,
@@ -2936,8 +2976,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             expected_workspace_id=str(approval_envelope.workspace_id),
             expected_action_id=str(approval_envelope.pending_action_id),
             expected_decision_nonce=provided_nonce,
-            expected_evidence_hash=pending.approval_evidence_hash,
-            expected_approver_principal_id=(evidence.approver_principal_id.strip() or None),
+            expected_evidence_hash=approval_evidence_hash,
+            expected_approver_principal_id=(
+                validated_evidence.approver_principal_id.strip() or None
+            ),
+            expected_execution_attempt_id=execution_attempt_id,
+            expected_result_id=result_id,
         )
         lifecycle = self._pending_action_lifecycle_authority()
         try:
@@ -2948,6 +2992,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     reason=executing_reason,
                     guard=transition_guard,
                     rollback_snapshot=pre_decision_attempt,
+                    mutation=PendingActionMutation(
+                        kind=PendingActionMutationKind.START,
+                        values=start_values,
+                    ),
                 ),
                 persist=self._persist_pending_actions,
             )
@@ -2958,6 +3006,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         except AtomicWriteError:
             self._mirror_pending_action_lifecycle_degradation()
             raise
+        action_identity = pending_action_state_view(pending).identity
         self._sync_task_confirmation_status(pending)
         if stage2_action is not None:
             try:
@@ -3004,7 +3053,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "status": pending.status,
                     "status_reason": pending.status_reason,
                 }
-            pending.stage2_plan_hash = plan_hash
             try:
                 await self._event_bus.publish(
                     PlanAmended(
@@ -3015,29 +3063,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         stage="stage2_postevidence",
                     )
                 )
-                stage2_pending_attempt = _capture_pending_attempt_snapshot(pending)
-                pending.status_reason = "confirmation_execution_started"
-                stage2_ready_attempt = _capture_pending_attempt_snapshot(pending)
-                try:
-                    self._persist_pending_actions()
-                except AtomicWriteError as write_error:
-                    _restore_pending_attempt_snapshot(pending, stage2_pending_attempt)
-                    if write_error.publication_may_have_committed:
-                        try:
-                            self._persist_pending_actions()
-                        except AtomicWriteError as rollback_error:
-                            _restore_pending_attempt_snapshot(pending, stage2_ready_attempt)
-                            self._pending_state_degradation = {
-                                "transition": "stage2_ready",
-                                "stage": rollback_error.stage.value,
-                                "reason": "pending_state_rollback_uncommitted",
-                            }
-                            raise rollback_error from write_error
-                    raise
+                self._mutate_pending_action(
+                    pending,
+                    kind=PendingActionMutationKind.STAGE2,
+                    values={
+                        "stage2_plan_hash": plan_hash,
+                        "status_reason": "confirmation_execution_started",
+                    },
+                )
             except (Exception, asyncio.CancelledError):
                 revoked = await self._cancel_stage2_authority(
                     pending,
                     reason="stage2_ready_transition_failed",
+                    expected_plan_hash=plan_hash,
                 )
                 if str(getattr(pending, "task_id", "")).strip() and not revoked:
                     self._contain_confirmation_scheduler_attempt(pending)
@@ -3081,9 +3119,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         except (Exception, asyncio.CancelledError):
             await self._contain_confirmed_execution_exception(pending)
             raise
-        pending.provider_operation_id = str(
-            getattr(execution_result, "provider_operation_id", "")
-        ).strip()
+        provider_operation_id = str(getattr(execution_result, "provider_operation_id", "")).strip()
         success = execution_result.success
         outcome_unknown = bool(getattr(execution_result, "outcome_unknown", False))
         checkpoint_id = execution_result.checkpoint_id
@@ -3187,12 +3223,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         ),
                     )
                 )
-        if success:
-            pending.status = "approved"
-        elif outcome_unknown:
-            pending.status = "outcome_unknown"
-        else:
-            pending.status = "failed"
+        terminal_status = (
+            "approved" if success else "outcome_unknown" if outcome_unknown else "failed"
+        )
         execution_failure_reason = (
             ""
             if success
@@ -3201,20 +3234,37 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 or str(getattr(execution_result, "error", "")).strip()
             )
         )
-        pending.status_reason = (
+        terminal_reason = (
             "idempotent_adapter_outcome_unknown"
             if outcome_unknown
             else promote_followup_reason
             or execution_failure_reason
             or str(params.get("reason", "")).strip()
-            or pending.status
+            or terminal_status
         )
-        if outcome_unknown:
-            pending.decision_nonce = ""
         pending_task_id = str(getattr(pending, "task_id", "")).strip()
-        pending.scheduler_accounting_pending = bool(pending_task_id)
+        self._commit_pending_terminal_state(
+            pending,
+            status=terminal_status,
+            reason=terminal_reason,
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.EXECUTION,
+                values={
+                    "provider_operation_id": provider_operation_id,
+                    "recovery_effect_invoked": True,
+                    "scheduler_accounting_pending": bool(pending_task_id),
+                    "scheduler_accounting_mode": (
+                        "ambiguous"
+                        if outcome_unknown and pending_task_id
+                        else "failure"
+                        if pending_task_id
+                        else ""
+                    ),
+                },
+            ),
+            retain_target_on_error=True,
+        )
         try:
-            self._persist_pending_actions()
             self._sync_task_confirmation_status(pending)
             task_cancel_reason = (
                 await self._complete_confirmation_scheduler_accounting(

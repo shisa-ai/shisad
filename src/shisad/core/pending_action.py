@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from shisad.core.action_state import derive_action_followup_id, derive_legacy_action_id
 from shisad.core.approval import (
@@ -16,19 +16,43 @@ from shisad.core.approval import (
     ConfirmationLevel,
     IntentEnvelope,
 )
-from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    CredentialRef,
+    SessionId,
+    TaintLabel,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 
 if TYPE_CHECKING:
     from shisad.channels.base import DeliveryTarget
     from shisad.core.tools.schema import ToolRetryDescriptor
-    from shisad.daemon.handlers._pending_approval import (
-        PendingPepContextSnapshot,
-        PendingPepElevationRequest,
-    )
     from shisad.governance.merge import ToolExecutionPolicy
     from shisad.security.control_plane.schema import ControlPlaneAction
 
 PENDING_ACTION_RECORD_SCHEMA_VERSION = 1
+
+
+class PendingPepContext(Protocol):
+    capabilities: set[Capability]
+    taint_labels: set[TaintLabel]
+    user_goal_host_patterns: set[str]
+    same_session_user_goal_host_patterns: set[str]
+    context_confirmation_host_patterns: set[str]
+    untrusted_host_patterns: set[str]
+    tool_allowlist: set[ToolName] | None
+    trust_level: str
+    credential_refs: set[CredentialRef]
+    enforce_explicit_credential_refs: bool
+    filesystem_roots: tuple[str, ...]
+
+
+class PendingPepElevation(Protocol):
+    kind: str
+    reason_code: str
+    capability_grants: set[Capability]
 
 
 @dataclass(slots=True)
@@ -60,8 +84,8 @@ class PendingActionRecord:
     leak_check: dict[str, Any] = field(default_factory=dict)
     merged_policy: ToolExecutionPolicy | None = None
     approval_task_envelope_id: str = ""
-    pep_context: PendingPepContextSnapshot | None = None
-    pep_elevation: PendingPepElevationRequest | None = None
+    pep_context: PendingPepContext | None = None
+    pep_elevation: PendingPepElevation | None = None
     required_level: ConfirmationLevel = ConfirmationLevel.SOFTWARE
     required_methods: list[str] = field(default_factory=list)
     allowed_principals: list[str] = field(default_factory=list)

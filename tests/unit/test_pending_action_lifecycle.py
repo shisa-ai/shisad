@@ -1,4 +1,4 @@
-"""F10B contracts for the finite pending-action transition authority."""
+"""F10B/F10C contracts for the finite pending-action lifecycle authority."""
 
 from __future__ import annotations
 
@@ -27,10 +27,14 @@ from shisad.core.atomic_state import (
 from shisad.core.pending_action import PENDING_ACTION_RECORD_SCHEMA_VERSION
 from shisad.daemon.pending_actions import (
     PendingActionLifecycleService,
+    PendingActionMutation,
+    PendingActionMutationKind,
+    PendingActionPayloadError,
     PendingActionStore,
     PendingActionTransitionError,
     PendingActionTransitionGuard,
     PendingActionTransitionRequest,
+    PendingActionUpdateRequest,
 )
 from tests.helpers.approval import make_pending_action
 
@@ -77,6 +81,24 @@ _EXPECTED_RULES = {
     ),
     PendingActionTransitionKind.OUTCOME_UNKNOWN: (
         frozenset({"pending", "executing"}),
+        "outcome_unknown",
+        True,
+        "",
+    ),
+    PendingActionTransitionKind.RECOVER_APPROVE: (
+        frozenset({"executing", "outcome_unknown"}),
+        "approved",
+        True,
+        "",
+    ),
+    PendingActionTransitionKind.RECOVER_FAIL: (
+        frozenset({"executing", "outcome_unknown"}),
+        "failed",
+        True,
+        "",
+    ),
+    PendingActionTransitionKind.INVALIDATE_RECOVERY: (
+        frozenset({"pending", "executing", "approved", "failed", "outcome_unknown"}),
         "outcome_unknown",
         True,
         "",
@@ -188,6 +210,7 @@ def _guard(
     *,
     proof: bool = False,
     decision: bool = False,
+    execution: bool = False,
 ) -> PendingActionTransitionGuard:
     evidence = getattr(record, "confirmation_evidence", None)
     return PendingActionTransitionGuard.for_record(
@@ -197,6 +220,8 @@ def _guard(
         approver_principal_id=(
             str(getattr(evidence, "approver_principal_id", "")) if proof else None
         ),
+        execution_attempt_id=(str(record.execution_attempt_id) if execution or proof else None),
+        result_id=(str(record.result_id) if execution or proof else None),
     )
 
 
@@ -243,7 +268,7 @@ def _atomic_error(
     )
 
 
-def test_f10b_transition_table_is_complete_and_exact() -> None:
+def test_f10_transition_table_is_complete_and_exact() -> None:
     assert set(PendingActionTransitionKind) == set(_EXPECTED_RULES)
     for operation, expected in _EXPECTED_RULES.items():
         rule = pending_action_transition_rule(operation)
@@ -256,7 +281,7 @@ def test_f10b_transition_table_is_complete_and_exact() -> None:
 
 
 @pytest.mark.parametrize(("operation", "source"), _LEGAL_EDGES)
-def test_f10b_every_legal_transition_commits_once(
+def test_f10_every_legal_transition_commits_once(
     tmp_path: Path,
     operation: PendingActionTransitionKind,
     source: str,
@@ -280,6 +305,14 @@ def test_f10b_every_legal_transition_commits_once(
                 record,
                 proof=operation is PendingActionTransitionKind.START,
                 decision=operation is PendingActionTransitionKind.REJECT,
+                execution=operation
+                in {
+                    PendingActionTransitionKind.APPROVE,
+                    PendingActionTransitionKind.RECOVER_APPROVE,
+                    PendingActionTransitionKind.RECOVER_FAIL,
+                    PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                }
+                and bool(record.execution_attempt_id),
             ),
         ),
         persist=persist,
@@ -297,7 +330,7 @@ def test_f10b_every_legal_transition_commits_once(
 
 
 @pytest.mark.parametrize(("operation", "source"), _ILLEGAL_EDGES)
-def test_f10b_every_illegal_transition_fails_before_mutation(
+def test_f10_every_illegal_transition_fails_before_mutation(
     tmp_path: Path,
     operation: PendingActionTransitionKind,
     source: str,
@@ -1177,4 +1210,543 @@ def test_f10b_batch_write_failure_restores_all_or_retains_all_as_degraded(
     assert sibling.status == "pending"
     assert {_serializer_fields(record) for record in (first, second, sibling)} == {
         expected_serializer_fields
+    }
+
+
+def test_f10c_update_rejects_unowned_stale_or_forbidden_fields_before_write(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    unowned = _record(confirmation_id="c-unowned", status="executing")
+    service.store.add(record)
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionTransitionError, match="unowned_record"):
+        service.update(
+            PendingActionUpdateRequest(
+                record=unowned,
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={"provider_operation_id": "provider-1"},
+                ),
+                guard=_guard(unowned, execution=True),
+            ),
+            persist=persist,
+        )
+
+    stale_guard = replace(
+        _guard(record, execution=True),
+        expected_execution_attempt_id="attempt-stale",
+    )
+    with pytest.raises(PendingActionTransitionError, match="guard_mismatch"):
+        service.update(
+            PendingActionUpdateRequest(
+                record=record,
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={"provider_operation_id": "provider-1"},
+                ),
+                guard=stale_guard,
+            ),
+            persist=persist,
+        )
+
+    for forbidden in ("status", "user_id", "record_schema_version"):
+        with pytest.raises(PendingActionTransitionError, match="mutation_field_forbidden"):
+            service.update(
+                PendingActionUpdateRequest(
+                    record=record,
+                    mutation=PendingActionMutation(
+                        kind=PendingActionMutationKind.EXECUTION,
+                        values={forbidden: "forbidden"},
+                    ),
+                    guard=_guard(record, execution=True),
+                ),
+                persist=persist,
+            )
+
+    for transition_only in (
+        PendingActionMutationKind.START,
+        PendingActionMutationKind.DECISION,
+        PendingActionMutationKind.PERSISTENCE,
+    ):
+        with pytest.raises(PendingActionTransitionError, match="mutation_kind_invalid"):
+            service.update(
+                PendingActionUpdateRequest(
+                    record=record,
+                    mutation=PendingActionMutation(kind=transition_only, values={}),
+                    guard=_guard(record, execution=True),
+                ),
+                persist=persist,
+            )
+
+    assert persist.calls == 0
+    assert record.provider_operation_id == ""
+    assert record.status == "executing"
+
+
+def test_f10c_completion_applies_metadata_and_transition_in_one_write(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    record.task_id = "task-1"
+    service.store.add(record)
+    persist = _PersistRecorder()
+
+    result = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="allowed_execution_succeeded",
+            guard=_guard(record, execution=True),
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.EXECUTION,
+                values={
+                    "provider_operation_id": "provider-1",
+                    "recovery_effect_invoked": True,
+                    "scheduler_accounting_pending": True,
+                },
+            ),
+        ),
+        persist=persist,
+    )
+
+    assert result.changed is True
+    assert persist.calls == 1
+    assert (
+        record.status,
+        record.status_reason,
+        record.provider_operation_id,
+        record.recovery_effect_invoked,
+        record.scheduler_accounting_pending,
+    ) == (
+        "approved",
+        "allowed_execution_succeeded",
+        "provider-1",
+        True,
+        True,
+    )
+
+
+def test_f10c_terminal_decision_patch_requires_exact_proof_guard(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record()
+    _bind_evidence(record)
+    evidence = record.confirmation_evidence
+    record.confirmation_evidence = None
+    record.approval_evidence_hash = ""
+    service.store.add(record)
+    mutation = PendingActionMutation(
+        kind=PendingActionMutationKind.DECISION,
+        values={
+            "confirmation_evidence": evidence,
+            "approval_evidence_hash": evidence.evidence_hash,
+        },
+    )
+
+    with pytest.raises(PendingActionTransitionError, match="proof_binding_mismatch"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.REJECT,
+                reason="proof_rejected",
+                guard=_guard(record, decision=True),
+                mutation=mutation,
+            ),
+            persist=_PersistRecorder(),
+        )
+
+    executing = _record(confirmation_id="c-executing", status="executing")
+    service.store.add(executing)
+    with pytest.raises(PendingActionTransitionError, match="mutation_kind_invalid"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=executing,
+                operation=PendingActionTransitionKind.FAIL,
+                reason="late_decision_forbidden",
+                guard=_guard(executing, execution=True),
+                mutation=mutation,
+            ),
+            persist=_PersistRecorder(),
+        )
+
+    persist = _PersistRecorder()
+    result = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.REJECT,
+            reason="proof_rejected",
+            guard=replace(
+                _guard(record, decision=True),
+                expected_evidence_hash=evidence.evidence_hash,
+                expected_approver_principal_id=evidence.approver_principal_id,
+            ),
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+
+    assert result.changed is True
+    assert record.confirmation_evidence is evidence
+    assert record.approval_evidence_hash == evidence.evidence_hash
+    assert persist.calls == 1
+
+
+def test_f10c_transition_rejects_status_reason_override_before_write(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    service.store.add(record)
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionTransitionError, match="transition_reason_mutation_forbidden"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.OUTCOME_UNKNOWN,
+                reason="canonical_transition_reason",
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={"status_reason": "overriding_mutation_reason"},
+                ),
+            ),
+            persist=persist,
+        )
+
+    assert (record.status, record.status_reason) == ("executing", "")
+    assert persist.calls == 0
+
+
+def test_f10c_preparer_rejection_rolls_back_transition_and_sibling_patch(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record()
+    sibling = _record(confirmation_id="c-sibling")
+    service.store.add(record)
+    service.store.add(sibling)
+    service.bind_persistence_preparer(
+        lambda _records: (
+            (
+                sibling,
+                PendingActionMutation(
+                    kind=PendingActionMutationKind.PERSISTENCE,
+                    values={"result_id": "serializer-derived"},
+                ),
+            ),
+            (
+                record,
+                PendingActionMutation(
+                    kind=PendingActionMutationKind.PERSISTENCE,
+                    values={"status": "forbidden"},
+                ),
+            ),
+        )
+    )
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionPayloadError):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.REJECT,
+                reason="operator_rejected",
+                guard=_guard(record, decision=True),
+            ),
+            persist=persist,
+        )
+
+    assert (record.status, record.status_reason, record.decision_nonce) == (
+        "pending",
+        "",
+        "decision-nonce",
+    )
+    assert sibling.result_id == ""
+    assert persist.calls == 0
+
+
+def test_f10c_update_uncommitted_failure_restores_exact_record_and_sibling(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    sibling = _record(confirmation_id="c-sibling", status="executing")
+    for item in (record, sibling):
+        _set_serializer_fields(item, "source")
+        service.store.add(item)
+    source = {
+        item.confirmation_id: (
+            item.provider_operation_id,
+            item.recovery_effect_invoked,
+            _serializer_fields(item),
+        )
+        for item in (record, sibling)
+    }
+
+    def _mutate_serializer(_call: int) -> None:
+        for item in (record, sibling):
+            _set_serializer_fields(item, "target")
+
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.WRITE,
+                committed=False,
+            )
+        ],
+        before_call=_mutate_serializer,
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.update(
+            PendingActionUpdateRequest(
+                record=record,
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={
+                        "provider_operation_id": "provider-recovered",
+                        "recovery_effect_invoked": True,
+                    },
+                ),
+                guard=_guard(record, execution=True),
+            ),
+            persist=persist,
+        )
+
+    assert {
+        item.confirmation_id: (
+            item.provider_operation_id,
+            item.recovery_effect_invoked,
+            _serializer_fields(item),
+        )
+        for item in (record, sibling)
+    } == source
+    assert service.degradation is None
+
+
+def test_f10c_transition_patch_failed_uncertain_rollback_retains_target(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    _set_serializer_fields(record, "source")
+    service.store.add(record)
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.PARENT_FSYNC,
+                committed=True,
+            ),
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.REPLACE,
+                committed=True,
+            ),
+        ],
+        before_call=lambda call: _set_serializer_fields(
+            record,
+            "target" if call == 1 else "source",
+        ),
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.OUTCOME_UNKNOWN,
+                reason="uncertain_effect_requires_fresh_approval",
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={
+                        "provider_operation_id": "provider-uncertain",
+                        "recovery_effect_invoked": True,
+                        "recovery_accounting_pending": True,
+                    },
+                ),
+            ),
+            persist=persist,
+        )
+
+    assert record.status == "outcome_unknown"
+    assert record.provider_operation_id == "provider-uncertain"
+    assert record.recovery_effect_invoked is True
+    assert record.recovery_accounting_pending is True
+    target = _record(status="executing")
+    _set_serializer_fields(target, "target")
+    assert _serializer_fields(record) == _serializer_fields(target)
+    assert service.degradation == {
+        "transition": "terminal",
+        "stage": "replace",
+        "reason": "pending_state_rollback_uncommitted",
+    }
+
+
+def test_f10c_recovery_invalidation_binds_only_existing_partial_identity(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="approved")
+    record.execution_attempt_id = ""
+    service.store.add(record)
+    mutation = PendingActionMutation(kind=PendingActionMutationKind.RECOVERY, values={})
+
+    stale_guard = PendingActionTransitionGuard.for_record(
+        record,
+        result_id="result-stale",
+    )
+    with pytest.raises(PendingActionTransitionError, match="guard_mismatch"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                reason="corrupt_partial_identity",
+                guard=stale_guard,
+                mutation=mutation,
+            ),
+            persist=_PersistRecorder(),
+        )
+
+    persist = _PersistRecorder()
+    result = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+            reason="corrupt_partial_identity",
+            guard=PendingActionTransitionGuard.for_record(
+                record,
+                result_id=record.result_id,
+            ),
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+
+    assert result.target_status == "outcome_unknown"
+    assert record.status == "outcome_unknown"
+    assert persist.calls == 1
+    service.update(
+        PendingActionUpdateRequest(
+            record=record,
+            mutation=PendingActionMutation(
+                kind=PendingActionMutationKind.RECOVERY,
+                values={"recovery_accounting_pending": True},
+            ),
+            guard=PendingActionTransitionGuard.for_record(
+                record,
+                result_id=record.result_id,
+            ),
+        ),
+        persist=persist,
+    )
+    assert record.recovery_accounting_pending is True
+    assert persist.calls == 2
+
+
+def test_f10c_loaded_adoption_is_all_or_nothing_and_builds_one_index(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    first = _record(confirmation_id="c-first")
+    second = _record(confirmation_id="c-second", status="approved")
+
+    adopted = service.adopt_loaded((first, second))
+
+    assert adopted == (first, second)
+    assert service.store.actions == {"c-first": first, "c-second": second}
+    assert service.store.by_session == {
+        first.session_id: ["c-first", "c-second"],
+    }
+    service.store.assert_index_parity()
+
+    duplicate = _record(confirmation_id="c-first")
+    before_actions = dict(service.store.actions)
+    before_index = {
+        session_id: list(confirmation_ids)
+        for session_id, confirmation_ids in service.store.by_session.items()
+    }
+    with pytest.raises(PendingActionTransitionError, match="duplicate_loaded_identity"):
+        service.adopt_loaded((duplicate,))
+    assert service.store.actions == before_actions
+    assert service.store.by_session == before_index
+
+
+def test_f10c_purge_owns_index_and_restores_exactly_on_uncommitted_failure(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    first = _record(confirmation_id="c-first", status="approved")
+    second = _record(confirmation_id="c-second", status="failed")
+    for item in (first, second):
+        _set_serializer_fields(item, "source")
+        service.store.add(item)
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.WRITE,
+                committed=False,
+            )
+        ],
+        before_call=lambda _call: _set_serializer_fields(second, "target"),
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.purge((first,), persist=persist)
+
+    assert service.store.actions == {"c-first": first, "c-second": second}
+    assert service.store.by_session == {
+        first.session_id: ["c-first", "c-second"],
+    }
+    source = _record(status="failed")
+    _set_serializer_fields(source, "source")
+    assert _serializer_fields(second) == _serializer_fields(source)
+    assert service.degradation is None
+
+    removed = service.purge((first,), persist=_PersistRecorder())
+    assert removed == (first,)
+    assert service.store.actions == {"c-second": second}
+    assert service.store.by_session == {second.session_id: ["c-second"]}
+
+
+def test_f10c_purge_failed_uncertain_rollback_retains_deletion_and_degrades(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    first = _record(confirmation_id="c-first", status="approved")
+    second = _record(confirmation_id="c-second", status="failed")
+    service.store.add(first)
+    service.store.add(second)
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.PARENT_FSYNC,
+                committed=True,
+            ),
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.REPLACE,
+                committed=True,
+            ),
+        ]
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.purge((first,), persist=persist)
+
+    assert service.store.actions == {"c-second": second}
+    assert service.store.by_session == {second.session_id: ["c-second"]}
+    assert service.degradation == {
+        "transition": "purge",
+        "stage": "replace",
+        "reason": "pending_state_rollback_uncommitted",
     }

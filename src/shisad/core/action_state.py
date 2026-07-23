@@ -50,6 +50,9 @@ class PendingActionTransitionKind(StrEnum):
     CANCEL = "cancel"
     SUPERSEDE = "supersede"
     OUTCOME_UNKNOWN = "outcome_unknown"
+    RECOVER_APPROVE = "recover_approve"
+    RECOVER_FAIL = "recover_fail"
+    INVALIDATE_RECOVERY = "invalidate_recovery"
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +117,23 @@ _PENDING_ACTION_TRANSITION_RULES: dict[
     ),
     PendingActionTransitionKind.OUTCOME_UNKNOWN: PendingActionTransitionRule(
         allowed_sources=frozenset({"pending", "executing"}),
+        target_status="outcome_unknown",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.RECOVER_APPROVE: PendingActionTransitionRule(
+        allowed_sources=frozenset({"executing", "outcome_unknown"}),
+        target_status="approved",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.RECOVER_FAIL: PendingActionTransitionRule(
+        allowed_sources=frozenset({"executing", "outcome_unknown"}),
+        target_status="failed",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.INVALIDATE_RECOVERY: PendingActionTransitionRule(
+        allowed_sources=frozenset(
+            {"pending", "executing", "approved", "failed", "outcome_unknown"}
+        ),
         target_status="outcome_unknown",
         clear_decision_nonce=True,
     ),
