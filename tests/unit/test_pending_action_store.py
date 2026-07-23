@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.pending_action import (
     PENDING_ACTION_RECORD_SCHEMA_VERSION,
     PendingActionRecord,
@@ -20,6 +21,30 @@ from tests.helpers.approval import make_pending_action
 
 def _durable_payload(record: PendingActionRecord) -> dict[str, object]:
     return HandlerImplementation._pending_to_dict(record)
+
+
+def test_f10a_record_schema_preserves_former_optional_positional_slots() -> None:
+    template = make_pending_action(confirmation_id="c-positional")
+    required = (
+        template.confirmation_id,
+        template.decision_nonce,
+        template.session_id,
+        template.user_id,
+        template.workspace_id,
+        template.tool_name,
+        template.arguments,
+        template.reason,
+        template.capabilities,
+        template.created_at,
+    )
+
+    record = PendingActionRecord(*required, {"query": "public-record"})
+    alias_record = PendingAction(*required, {"query": "public-alias"})
+
+    assert record.public_arguments == {"query": "public-record"}
+    assert alias_record.public_arguments == {"query": "public-alias"}
+    assert record.record_schema_version == PENDING_ACTION_RECORD_SCHEMA_VERSION
+    assert alias_record.record_schema_version == PENDING_ACTION_RECORD_SCHEMA_VERSION
 
 
 def test_f10a_current_record_round_trips_with_index_parity(tmp_path) -> None:
@@ -73,6 +98,23 @@ def test_f10a_schema_less_record_is_classified_for_legacy_migration(tmp_path) ->
     assert loaded.quarantined_path is None
     assert loaded.payloads == (payload,)
     assert path.exists()
+
+
+def test_f10a_nonfinite_current_payload_is_typed_as_uncommitted_write_failure(
+    tmp_path,
+) -> None:
+    path = tmp_path / "pending_actions.json"
+    store = PendingActionStore(path)
+    payload = _durable_payload(make_pending_action(confirmation_id="c-nonfinite"))
+    payload["arguments"] = {"query": float("nan")}
+
+    with pytest.raises(AtomicWriteError) as caught:
+        store.write_payloads([payload])
+
+    assert caught.value.path == path
+    assert caught.value.stage is AtomicWriteStage.WRITE
+    assert caught.value.publication_may_have_committed is False
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(

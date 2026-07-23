@@ -1213,7 +1213,86 @@ def test_f10a_unhydrated_legacy_record_is_not_rewritten_as_healthy_empty(
 
     assert harness._pending_actions == {}
     assert harness._pending_by_session == {}
+    assert harness._pending_state_degradation == {
+        "transition": "load",
+        "stage": "legacy_hydration",
+        "reason": "pending_state_legacy_hydration_incomplete",
+    }
     assert pending_actions_file.read_bytes() == raw
+
+    with pytest.raises(StatePersistenceDegradedError, match="pending_actions persistence"):
+        harness._persist_pending_actions()
+    assert pending_actions_file.read_bytes() == raw
+
+
+def test_f10a_mixed_unhydrated_legacy_store_blocks_later_mutation_without_byte_loss(
+    tmp_path: Path,
+) -> None:
+    valid = HandlerImplementation._pending_to_dict(_pending_action(nonce="mixed-legacy-nonce"))
+    valid.pop("record_schema_version", None)
+    raw = json.dumps([valid, {"confirmation_id": "", "status": "pending"}]).encode()
+    harness = _QueuePendingHarness(tmp_path)
+    harness._pending_actions_file.write_bytes(raw)
+
+    harness._load_pending_actions()
+
+    assert set(harness._pending_actions) == {"c-1"}
+    assert harness._pending_state_degradation == {
+        "transition": "load",
+        "stage": "legacy_hydration",
+        "reason": "pending_state_legacy_hydration_incomplete",
+    }
+    with pytest.raises(StatePersistenceDegradedError, match="pending_actions persistence"):
+        harness._queue_pending_action(
+            session_id=SessionId("s-next"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "must not replace legacy bytes"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
+    assert harness._pending_actions_file.read_bytes() == raw
+
+
+def test_f10a_invalid_hydrated_legacy_identity_quarantines_without_startup_crash(
+    tmp_path: Path,
+) -> None:
+    payload = HandlerImplementation._pending_to_dict(
+        _pending_action(nonce="invalid-legacy-identity")
+    )
+    payload.pop("record_schema_version", None)
+    payload["session_id"] = ""
+    identity = payload["identity"]
+    assert isinstance(identity, dict)
+    identity["session_id"] = ""
+    raw = json.dumps([payload]).encode()
+    harness = _QueuePendingHarness(tmp_path)
+    harness._pending_actions_file.write_bytes(raw)
+
+    harness._load_pending_actions()
+
+    assert harness._pending_actions == {}
+    assert harness._pending_by_session == {}
+    assert harness._pending_state_degradation == {
+        "transition": "load",
+        "stage": "corrupt",
+        "reason": "pending_state_corrupt",
+    }
+    quarantined = list(tmp_path.glob("pending_actions.json.corrupt.*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == raw
+    assert not harness._pending_actions_file.exists()
+    with pytest.raises(StatePersistenceDegradedError, match="pending_actions persistence"):
+        harness._queue_pending_action(
+            session_id=SessionId("s-next"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "must stay blocked"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
 
 
 def test_f10a_unusable_store_is_quarantined_and_blocks_new_pending_mutation(

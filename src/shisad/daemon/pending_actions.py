@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from shisad.core.approval import quarantine_state_file
-from shisad.core.atomic_state import AtomicWriteFaultInjector, atomic_write_bytes
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    AtomicWriteStage,
+    atomic_write_bytes,
+)
 from shisad.core.pending_action import (
     PENDING_ACTION_RECORD_SCHEMA_VERSION,
     PendingActionRecord,
@@ -32,6 +37,18 @@ class PendingActionStoreLoadResult:
     payloads: tuple[dict[str, Any], ...] = ()
     reason: str = ""
     quarantined_path: Path | None = None
+
+
+class PendingActionPayloadError(AtomicWriteError):
+    """A current payload was rejected before atomic publication began."""
+
+    def __init__(self, *, path: Path, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            path=path,
+            stage=AtomicWriteStage.WRITE,
+            publication_may_have_committed=False,
+        )
 
 
 class _RejectedPendingJSON(ValueError):
@@ -106,13 +123,23 @@ class PendingActionStore:
         *,
         fault_injector: AtomicWriteFaultInjector | None = None,
     ) -> None:
-        rows = [dict(payload) for payload in payloads]
+        try:
+            rows = [dict(payload) for payload in payloads]
+        except (TypeError, ValueError) as exc:
+            raise PendingActionPayloadError(path=self.path, reason=str(exc)) from exc
         status, reason = self._classify_rows(rows, allow_legacy=False)
         if status is not PendingActionStoreLoadStatus.CURRENT:
-            raise ValueError(reason or "pending action payload is not current")
+            raise PendingActionPayloadError(
+                path=self.path,
+                reason=reason or "pending action payload is not current",
+            )
+        try:
+            encoded = json.dumps(rows, indent=2, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise PendingActionPayloadError(path=self.path, reason=str(exc)) from exc
         atomic_write_bytes(
             self.path,
-            json.dumps(rows, indent=2, allow_nan=False).encode("utf-8"),
+            encoded,
             fault_injector=fault_injector,
         )
 
@@ -122,7 +149,7 @@ class PendingActionStore:
         except FileNotFoundError:
             return PendingActionStoreLoadResult(status=PendingActionStoreLoadStatus.MISSING)
         except OSError as exc:
-            return self._quarantine(
+            return self.quarantine_unusable(
                 PendingActionStoreLoadStatus.CORRUPT,
                 f"pending state read failed: {exc}",
             )
@@ -133,9 +160,9 @@ class PendingActionStore:
                 parse_constant=_reject_nonfinite,
             )
         except (UnicodeDecodeError, json.JSONDecodeError, _RejectedPendingJSON) as exc:
-            return self._quarantine(PendingActionStoreLoadStatus.CORRUPT, str(exc))
+            return self.quarantine_unusable(PendingActionStoreLoadStatus.CORRUPT, str(exc))
         if not isinstance(decoded, list) or not all(isinstance(row, dict) for row in decoded):
-            return self._quarantine(
+            return self.quarantine_unusable(
                 PendingActionStoreLoadStatus.CORRUPT,
                 "pending state must be a list of records",
             )
@@ -145,14 +172,19 @@ class PendingActionStore:
             PendingActionStoreLoadStatus.CORRUPT,
             PendingActionStoreLoadStatus.UNSUPPORTED_SCHEMA,
         }:
-            return self._quarantine(status, reason)
+            return self.quarantine_unusable(status, reason)
         return PendingActionStoreLoadResult(status=status, payloads=tuple(rows))
 
-    def _quarantine(
+    def quarantine_unusable(
         self,
         status: PendingActionStoreLoadStatus,
         reason: str,
     ) -> PendingActionStoreLoadResult:
+        if status not in {
+            PendingActionStoreLoadStatus.CORRUPT,
+            PendingActionStoreLoadStatus.UNSUPPORTED_SCHEMA,
+        }:
+            raise ValueError("only unusable pending state may be quarantined")
         quarantined = quarantine_state_file(self.path, label="pending_action")
         return PendingActionStoreLoadResult(
             status=status,

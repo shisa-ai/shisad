@@ -45,7 +45,10 @@ class PendingActionRecord:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
-    record_schema_version: int = PENDING_ACTION_RECORD_SCHEMA_VERSION
+    record_schema_version: int = field(
+        default=PENDING_ACTION_RECORD_SCHEMA_VERSION,
+        kw_only=True,
+    )
     public_arguments: dict[str, Any] | None = None
     sensitive_public_payload: bool = False
     delivery_target: DeliveryTarget | None = None

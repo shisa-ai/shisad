@@ -162,7 +162,11 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
-from shisad.daemon.pending_actions import PendingActionStore, PendingActionStoreLoadStatus
+from shisad.daemon.pending_actions import (
+    PendingActionPayloadError,
+    PendingActionStore,
+    PendingActionStoreLoadStatus,
+)
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -2403,6 +2407,9 @@ class HandlerImplementation(
             "pending_actions": len(self._pending_actions),
             "pending_action_sessions": len(self._pending_by_session),
             "pending_action_quarantine_artifacts": len(pending_action_quarantine_artifacts),
+            "pending_state_degradation": int(
+                isinstance(getattr(self, "_pending_state_degradation", None), Mapping)
+            ),
             "monitor_reject_counts": len(self._monitor_reject_counts),
             "plan_violation_counts": len(self._plan_violation_counts),
             "confirmation_alerts": len(self._confirmation_alerted_at),
@@ -2412,6 +2419,8 @@ class HandlerImplementation(
         }
         self._pending_actions.clear()
         self._pending_by_session.clear()
+        if hasattr(self, "_pending_state_degradation"):
+            delattr(self, "_pending_state_degradation")
         self._monitor_reject_counts.clear()
         self._plan_violation_counts.clear()
         self._confirmation_alerted_at.clear()
@@ -2515,6 +2524,7 @@ class HandlerImplementation(
                 or self._confirmation_alerted_at
                 or self._confirmation_failure_tracker._state
             )
+            and not isinstance(getattr(self, "_pending_state_degradation", None), Mapping)
             and not self._pending_actions_file.exists()
             and not any(
                 self._pending_actions_file.parent.glob(
@@ -4596,6 +4606,14 @@ class HandlerImplementation(
         return pending
 
     def _persist_pending_actions(self) -> None:
+        degradation = getattr(self, "_pending_state_degradation", None)
+        if isinstance(degradation, Mapping) and degradation.get("transition") == "load":
+            raise StatePersistenceDegradedError(
+                authority="pending_actions",
+                transition=str(degradation.get("transition", "")),
+                stage=str(degradation.get("stage", "")),
+                reason=str(degradation.get("reason", "pending_state_persistence_degraded")),
+            )
         owned_store = getattr(self, "_pending_action_store", None)
         if owned_store is not None:
             if (
@@ -5729,6 +5747,20 @@ class HandlerImplementation(
                 )
                 loaded_terminal_side_effects.append(pending)
                 pruned_stale = True
+        incomplete_legacy_hydration = (
+            load_result.status is PendingActionStoreLoadStatus.LEGACY
+            and hydrated_legacy_record_schema_count < legacy_record_schema_count
+        )
+        if incomplete_legacy_hydration:
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": "legacy_hydration",
+                "reason": "pending_state_legacy_hydration_incomplete",
+            }
+            owned_store = getattr(self, "_pending_action_store", None)
+            if owned_store is not None:
+                owned_store.assert_index_parity()
+            return
         migrated_legacy_record_schema = (
             load_result.status is PendingActionStoreLoadStatus.LEGACY
             and legacy_record_schema_count > 0
@@ -5744,7 +5776,21 @@ class HandlerImplementation(
             or migrated_expired_approval
             or migrated_attempt_metadata
         ):
-            self._persist_pending_actions()
+            try:
+                self._persist_pending_actions()
+            except PendingActionPayloadError as exc:
+                store.quarantine_unusable(
+                    PendingActionStoreLoadStatus.CORRUPT,
+                    exc.reason,
+                )
+                self._pending_actions.clear()
+                self._pending_by_session.clear()
+                self._pending_state_degradation = {
+                    "transition": "load",
+                    "stage": PendingActionStoreLoadStatus.CORRUPT.value,
+                    "reason": "pending_state_corrupt",
+                }
+                return
         owned_store = getattr(self, "_pending_action_store", None)
         if owned_store is not None:
             owned_store.assert_index_parity()

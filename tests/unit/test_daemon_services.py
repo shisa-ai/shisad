@@ -1195,6 +1195,11 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         impl._pending_actions[pending.confirmation_id] = pending
         impl._pending_by_session[session.id] = [pending.confirmation_id]
         impl._persist_pending_actions()
+        impl._pending_state_degradation = {
+            "transition": "load",
+            "stage": "corrupt",
+            "reason": "pending_state_corrupt",
+        }
         pending_quarantine = impl._pending_actions_file.with_name(
             f"{impl._pending_actions_file.name}.corrupt.reset-test"
         )
@@ -1237,6 +1242,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert result["cleared"]["pending_actions"] == 1
         assert result["cleared"]["pending_action_sessions"] == 1
         assert result["cleared"]["pending_action_quarantine_artifacts"] == 1
+        assert result["cleared"]["pending_state_degradation"] == 1
         assert result["cleared"]["pending_two_factor_enrollments"] == 1
         assert result["cleared"]["monitor_reject_counts"] == 1
         assert result["cleared"]["plan_violation_counts"] == 1
@@ -1247,6 +1253,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
 
         assert impl._pending_actions == {}
         assert impl._pending_by_session == {}
+        assert getattr(impl, "_pending_state_degradation", None) is None
         assert impl._pending_two_factor_enrollments == {}
         assert impl._monitor_reject_counts == {}
         assert impl._plan_violation_counts == {}
