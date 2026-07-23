@@ -108,12 +108,20 @@ _ILLEGAL_EDGES = tuple(
 
 
 class _PersistRecorder:
-    def __init__(self, failures: list[AtomicWriteError] | None = None) -> None:
+    def __init__(
+        self,
+        failures: list[AtomicWriteError] | None = None,
+        *,
+        before_call: Callable[[int], None] | None = None,
+    ) -> None:
         self.calls = 0
         self._failures = list(failures or [])
+        self._before_call = before_call
 
     def __call__(self) -> None:
         self.calls += 1
+        if self._before_call is not None:
+            self._before_call(self.calls)
         if self._failures:
             raise self._failures.pop(0)
 
@@ -199,6 +207,27 @@ def _reason(operation: PendingActionTransitionKind) -> str:
 
 def _service(tmp_path: Path) -> PendingActionLifecycleService:
     return PendingActionLifecycleService(PendingActionStore(tmp_path / "pending_actions.json"))
+
+
+def _serializer_fields(record: Any) -> tuple[object, ...]:
+    return (
+        record.recovery_authority_mac,
+        record.recovery_event_identity_untrusted,
+        record.recovery_event_identity_untrusted_at,
+        record.recovery_anonymous_accounting_id,
+        record.recovery_event_identity_trusted_at,
+        record.recovery_anonymous_accounting_id_trusted,
+    )
+
+
+def _set_serializer_fields(record: Any, tag: str) -> None:
+    marker_at = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=sum(tag.encode()))
+    record.recovery_authority_mac = f"mac-{tag}"
+    record.recovery_event_identity_untrusted = tag != "source"
+    record.recovery_event_identity_untrusted_at = marker_at
+    record.recovery_anonymous_accounting_id = f"accounting-{tag}"
+    record.recovery_event_identity_trusted_at = marker_at
+    record.recovery_anonymous_accounting_id_trusted = f"trusted-{tag}"
 
 
 def _atomic_error(
@@ -305,10 +334,14 @@ def test_f10b_queue_pending_and_executing_own_store_index_and_idempotency(
     queued_pending = service.queue(pending, persist=persist)
     queued_executing = service.queue(executing, persist=persist)
     repeated = service.queue(pending, persist=persist)
+    reconstructed = _record(confirmation_id="c-pending")
+    reconstructed_repeat = service.queue(reconstructed, persist=persist)
 
     assert queued_pending.changed is True
     assert queued_executing.changed is True
     assert repeated.changed is False
+    assert reconstructed_repeat.changed is False
+    assert reconstructed_repeat.record is pending
     assert persist.calls == 2
     assert service.store.actions == {
         "c-pending": pending,
@@ -320,8 +353,12 @@ def test_f10b_queue_pending_and_executing_own_store_index_and_idempotency(
     service.store.assert_index_parity()
 
     conflicting = _record(confirmation_id="c-pending")
+    conflicting.reason = "different-policy-reason"
     with pytest.raises(PendingActionTransitionError, match="duplicate_queue_identity"):
         service.queue(conflicting, persist=persist)
+    pending.reason = "mutated-after-queue"
+    with pytest.raises(PendingActionTransitionError, match="duplicate_queue_identity"):
+        service.queue(pending, persist=persist)
     assert persist.calls == 2
 
 
@@ -750,11 +787,36 @@ def test_f10b_transition_rejects_invalid_reason_or_accounting_mode(
     assert record.status == "pending"
 
 
+def test_f10b_unscheduled_terminal_preserves_existing_accounting_mode(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record()
+    record.scheduler_accounting_mode = "legacy-shadow"
+    service.store.add(record)
+
+    service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.CANCEL,
+            reason="cancelled",
+            guard=_guard(record),
+            scheduler_accounting_mode="failure",
+        ),
+        persist=_PersistRecorder(),
+    )
+
+    assert record.scheduler_accounting_pending is False
+    assert record.scheduler_accounting_mode == "legacy-shadow"
+
+
 def test_f10b_transition_uncommitted_failure_restores_exact_source(
     tmp_path: Path,
 ) -> None:
     service = _service(tmp_path)
     record = _record()
+    _set_serializer_fields(record, "source")
+    source_serializer_fields = _serializer_fields(record)
     service.store.add(record)
     persist = _PersistRecorder(
         [
@@ -763,7 +825,8 @@ def test_f10b_transition_uncommitted_failure_restores_exact_source(
                 stage=AtomicWriteStage.WRITE,
                 committed=False,
             )
-        ]
+        ],
+        before_call=lambda _call: _set_serializer_fields(record, "target"),
     )
 
     with pytest.raises(AtomicWriteError):
@@ -782,6 +845,7 @@ def test_f10b_transition_uncommitted_failure_restores_exact_source(
         "",
         "decision-nonce",
     )
+    assert _serializer_fields(record) == source_serializer_fields
     assert service.degradation is None
     assert persist.calls == 1
 
@@ -791,6 +855,7 @@ def test_f10b_uncertain_transition_failed_rollback_retains_target_and_degrades(
 ) -> None:
     service = _service(tmp_path)
     record = _record()
+    _set_serializer_fields(record, "source")
     service.store.add(record)
     persist = _PersistRecorder(
         [
@@ -804,7 +869,11 @@ def test_f10b_uncertain_transition_failed_rollback_retains_target_and_degrades(
                 stage=AtomicWriteStage.REPLACE,
                 committed=True,
             ),
-        ]
+        ],
+        before_call=lambda call: _set_serializer_fields(
+            record,
+            "target" if call == 1 else "source",
+        ),
     )
 
     with pytest.raises(AtomicWriteError) as caught:
@@ -824,6 +893,9 @@ def test_f10b_uncertain_transition_failed_rollback_retains_target_and_degrades(
         "operator_rejected",
         "",
     )
+    target = _record()
+    _set_serializer_fields(target, "target")
+    assert _serializer_fields(record) == _serializer_fields(target)
     assert service.degradation == {
         "transition": "terminal",
         "stage": "replace",
@@ -841,6 +913,7 @@ def test_f10b_uncertain_start_failed_rollback_retains_executing_and_degrades(
     record.execution_attempt_id = "attempt-c-1"
     record.result_id = "result-c-1"
     _bind_evidence(record)
+    _set_serializer_fields(record, "source")
     service.store.add(record)
     persist = _PersistRecorder(
         [
@@ -854,7 +927,11 @@ def test_f10b_uncertain_start_failed_rollback_retains_executing_and_degrades(
                 stage=AtomicWriteStage.REPLACE,
                 committed=True,
             ),
-        ]
+        ],
+        before_call=lambda call: _set_serializer_fields(
+            record,
+            "target" if call == 1 else "source",
+        ),
     )
 
     with pytest.raises(AtomicWriteError):
@@ -869,6 +946,9 @@ def test_f10b_uncertain_start_failed_rollback_retains_executing_and_degrades(
         )
 
     assert record.status == "executing"
+    target = _record()
+    _set_serializer_fields(target, "target")
+    assert _serializer_fields(record) == _serializer_fields(target)
     assert service.degradation == {
         "transition": "executing",
         "stage": "replace",
@@ -881,6 +961,7 @@ def test_f10b_queue_uncertain_failure_restores_index_or_degrades(
 ) -> None:
     service = _service(tmp_path)
     record = _record()
+    _set_serializer_fields(record, "source")
     persist = _PersistRecorder(
         [
             _atomic_error(
@@ -893,7 +974,11 @@ def test_f10b_queue_uncertain_failure_restores_index_or_degrades(
                 stage=AtomicWriteStage.REPLACE,
                 committed=True,
             ),
-        ]
+        ],
+        before_call=lambda call: _set_serializer_fields(
+            record,
+            "target" if call == 1 else "source",
+        ),
     )
 
     with pytest.raises(AtomicWriteError):
@@ -901,11 +986,51 @@ def test_f10b_queue_uncertain_failure_restores_index_or_degrades(
 
     assert service.store.actions == {"c-1": record}
     assert service.store.by_session == {record.session_id: ["c-1"]}
+    target = _record()
+    _set_serializer_fields(target, "target")
+    assert _serializer_fields(record) == _serializer_fields(target)
     assert service.degradation == {
         "transition": "queue",
         "stage": "replace",
         "reason": "pending_state_rollback_uncommitted",
     }
+
+
+def test_f10b_queue_uncommitted_failure_restores_record_and_untouched_sibling(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    sibling = _record(confirmation_id="c-sibling")
+    queued = _record()
+    for record in (sibling, queued):
+        _set_serializer_fields(record, "source")
+    source_fields = {
+        record.confirmation_id: _serializer_fields(record) for record in (sibling, queued)
+    }
+    service.store.add(sibling)
+
+    def _mutate_all(_call: int) -> None:
+        for record in (sibling, queued):
+            _set_serializer_fields(record, "target")
+
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.WRITE,
+                committed=False,
+            )
+        ],
+        before_call=_mutate_all,
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.queue(queued, persist=persist)
+
+    assert service.store.actions == {"c-sibling": sibling}
+    assert service.store.by_session == {sibling.session_id: ["c-sibling"]}
+    assert _serializer_fields(sibling) == source_fields["c-sibling"]
+    assert _serializer_fields(queued) == source_fields["c-1"]
 
 
 def test_f10b_batch_validates_all_edges_before_mutating_any_record(
@@ -992,8 +1117,10 @@ def test_f10b_batch_write_failure_restores_all_or_retains_all_as_degraded(
     service = _service(tmp_path)
     first = _record(confirmation_id="c-first")
     second = _record(confirmation_id="c-second")
-    service.store.add(first)
-    service.store.add(second)
+    sibling = _record(confirmation_id="c-sibling")
+    for record in (first, second, sibling):
+        _set_serializer_fields(record, "source")
+        service.store.add(record)
     failures = [
         _atomic_error(
             service.store.path,
@@ -1009,7 +1136,15 @@ def test_f10b_batch_write_failure_restores_all_or_retains_all_as_degraded(
                 committed=True,
             )
         )
-    persist = _PersistRecorder(failures)
+
+    def _mutate_all(call: int) -> None:
+        for record in (first, second, sibling):
+            _set_serializer_fields(record, "target" if call == 1 else "source")
+
+    persist = _PersistRecorder(
+        failures,
+        before_call=_mutate_all,
+    )
     requests = tuple(
         PendingActionTransitionRequest(
             record=record,
@@ -1025,6 +1160,9 @@ def test_f10b_batch_write_failure_restores_all_or_retains_all_as_degraded(
 
     if rollback_commits:
         assert [first.status, second.status] == ["cancelled", "cancelled"]
+        target = _record()
+        _set_serializer_fields(target, "target")
+        expected_serializer_fields = _serializer_fields(target)
         assert service.degradation == {
             "transition": "terminal",
             "stage": "replace",
@@ -1032,4 +1170,11 @@ def test_f10b_batch_write_failure_restores_all_or_retains_all_as_degraded(
         }
     else:
         assert [first.status, second.status] == ["pending", "pending"]
+        source = _record()
+        _set_serializer_fields(source, "source")
+        expected_serializer_fields = _serializer_fields(source)
         assert service.degradation is None
+    assert sibling.status == "pending"
+    assert {_serializer_fields(record) for record in (first, second, sibling)} == {
+        expected_serializer_fields
+    }

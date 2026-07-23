@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -15,7 +15,6 @@ from shisad.core.action_state import (
     pending_action_transition_rule,
 )
 from shisad.core.approval import (
-    ConfirmationEvidence,
     quarantine_state_file,
     safe_compare_text,
 )
@@ -324,63 +323,17 @@ class PendingActionTransitionGuard:
 
 @dataclass(frozen=True, slots=True)
 class PendingActionMutationSnapshot:
-    """Fields mutated across decision, execution-start, and terminal commits."""
+    """Exact shallow record state before a lifecycle persistence boundary."""
 
-    status: str
-    status_reason: str
-    decision_nonce: str
-    action_digest: str
-    approval_evidence_hash: str
-    execution_attempt_id: str
-    result_id: str
-    stage2_correlation_id: str
-    stage2_previous_plan_hash: str
-    stage2_plan_hash: str
-    recovery_scheduler_posture_captured: bool
-    recovery_scheduler_restore_enabled: bool
-    recovery_scheduler_accounted: bool
-    scheduler_accounting_pending: bool
-    scheduler_accounting_mode: str
-    confirmation_evidence: ConfirmationEvidence | None
+    values: tuple[object, ...]
 
     @classmethod
     def capture(cls, record: PendingActionRecord) -> PendingActionMutationSnapshot:
-        return cls(
-            status=str(record.status),
-            status_reason=str(record.status_reason),
-            decision_nonce=str(record.decision_nonce),
-            action_digest=str(record.action_digest),
-            approval_evidence_hash=str(record.approval_evidence_hash),
-            execution_attempt_id=str(record.execution_attempt_id),
-            result_id=str(record.result_id),
-            stage2_correlation_id=str(record.stage2_correlation_id),
-            stage2_previous_plan_hash=str(record.stage2_previous_plan_hash),
-            stage2_plan_hash=str(record.stage2_plan_hash),
-            recovery_scheduler_posture_captured=bool(record.recovery_scheduler_posture_captured),
-            recovery_scheduler_restore_enabled=bool(record.recovery_scheduler_restore_enabled),
-            recovery_scheduler_accounted=bool(record.recovery_scheduler_accounted),
-            scheduler_accounting_pending=bool(record.scheduler_accounting_pending),
-            scheduler_accounting_mode=str(record.scheduler_accounting_mode),
-            confirmation_evidence=record.confirmation_evidence,
-        )
+        return cls(tuple(getattr(record, item.name) for item in fields(record)))
 
     def restore(self, record: PendingActionRecord) -> None:
-        record.status = self.status
-        record.status_reason = self.status_reason
-        record.decision_nonce = self.decision_nonce
-        record.action_digest = self.action_digest
-        record.approval_evidence_hash = self.approval_evidence_hash
-        record.execution_attempt_id = self.execution_attempt_id
-        record.result_id = self.result_id
-        record.stage2_correlation_id = self.stage2_correlation_id
-        record.stage2_previous_plan_hash = self.stage2_previous_plan_hash
-        record.stage2_plan_hash = self.stage2_plan_hash
-        record.recovery_scheduler_posture_captured = self.recovery_scheduler_posture_captured
-        record.recovery_scheduler_restore_enabled = self.recovery_scheduler_restore_enabled
-        record.recovery_scheduler_accounted = self.recovery_scheduler_accounted
-        record.scheduler_accounting_pending = self.scheduler_accounting_pending
-        record.scheduler_accounting_mode = self.scheduler_accounting_mode
-        record.confirmation_evidence = self.confirmation_evidence
+        for item, value in zip(fields(record), self.values, strict=True):
+            setattr(record, item.name, value)
 
 
 def capture_pending_action_mutation(
@@ -435,6 +388,10 @@ class PendingActionLifecycleService:
     def __init__(self, store: PendingActionStore) -> None:
         self.store = store
         self.degradation: dict[str, str] | None = None
+        self._queue_keys = {
+            confirmation_id: self._queue_key(record)
+            for confirmation_id, record in store.actions.items()
+        }
 
     def adopt_degradation(self, degradation: Mapping[str, Any] | None) -> None:
         if degradation is None:
@@ -451,6 +408,7 @@ class PendingActionLifecycleService:
     def reset_for_tests(self) -> None:
         self.store.actions.clear()
         self.store.by_session.clear()
+        self._queue_keys.clear()
         self.clear_degradation()
 
     def queue(
@@ -462,36 +420,49 @@ class PendingActionLifecycleService:
         self._raise_if_degraded()
         operation = self._validate_queue_record(record)
         self._assert_store_index_parity(operation)
+        queue_key = self._queue_key(record)
         existing = self.store.actions.get(record.confirmation_id)
-        if existing is record:
-            return PendingActionTransitionResult(
-                record=record,
-                operation=operation,
-                source_status="",
-                target_status=record.status,
-                changed=False,
-            )
         if existing is not None:
+            stored_key = self._queue_keys.setdefault(
+                existing.confirmation_id,
+                self._queue_key(existing),
+            )
+            if queue_key == stored_key == self._queue_key(existing):
+                return PendingActionTransitionResult(
+                    record=existing,
+                    operation=operation,
+                    source_status="",
+                    target_status=existing.status,
+                    changed=False,
+                )
             raise PendingActionTransitionError(
                 "duplicate_queue_identity",
                 operation=operation,
                 detail=record.confirmation_id,
             )
+        source_snapshots = self._capture_store_mutations()
+        record_snapshot = capture_pending_action_mutation(record)
         self.store.add(record)
         try:
             persist()
         except AtomicWriteError as write_error:
+            target_snapshots = self._capture_store_mutations()
             removed = self.store.remove(record.confirmation_id)
             if removed is not record:
                 raise RuntimeError("pending queue rollback lost record identity") from write_error
+            self._restore_store_mutations(source_snapshots)
+            restore_pending_action_mutation(record, record_snapshot)
             if write_error.publication_may_have_committed:
                 try:
                     persist()
                 except AtomicWriteError as rollback_error:
                     self.store.add(record)
+                    self._restore_store_mutations(target_snapshots)
+                    self._queue_keys[record.confirmation_id] = queue_key
                     self._degrade("queue", rollback_error)
                     raise rollback_error from write_error
             raise
+        self._queue_keys[record.confirmation_id] = queue_key
         return PendingActionTransitionResult(
             record=record,
             operation=operation,
@@ -529,26 +500,24 @@ class PendingActionLifecycleService:
         if not changed:
             return tuple(self._result(item) for item in prepared)
 
-        source_snapshots = tuple(
-            item.request.rollback_snapshot or capture_pending_action_mutation(item.request.record)
-            for item in changed
-        )
+        source_snapshots = self._capture_store_mutations()
+        for item in changed:
+            if item.request.rollback_snapshot is not None:
+                source_snapshots[item.request.record.confirmation_id] = (
+                    item.request.rollback_snapshot
+                )
         for item in changed:
             self._apply_transition(item)
-        target_snapshots = tuple(
-            capture_pending_action_mutation(item.request.record) for item in changed
-        )
         try:
             persist()
         except AtomicWriteError as write_error:
-            for item, snapshot in zip(changed, source_snapshots, strict=True):
-                restore_pending_action_mutation(item.request.record, snapshot)
+            target_snapshots = self._capture_store_mutations()
+            self._restore_store_mutations(source_snapshots)
             if write_error.publication_may_have_committed:
                 try:
                     persist()
                 except AtomicWriteError as rollback_error:
-                    for item, snapshot in zip(changed, target_snapshots, strict=True):
-                        restore_pending_action_mutation(item.request.record, snapshot)
+                    self._restore_store_mutations(target_snapshots)
                     transition = (
                         self._degradation_label(changed[0].request.operation)
                         if len(changed) == 1
@@ -772,8 +741,8 @@ class PendingActionLifecycleService:
         if accounting_mode is not None:
             scheduled = bool(str(record.task_id).strip())
             record.scheduler_accounting_pending = scheduled
-            record.scheduler_accounting_mode = accounting_mode if scheduled else ""
             if scheduled:
+                record.scheduler_accounting_mode = accounting_mode
                 record.recovery_scheduler_accounted = False
 
     @staticmethod
@@ -856,6 +825,36 @@ class PendingActionLifecycleService:
                 detail=stored_status,
             )
         return operation
+
+    @staticmethod
+    def _queue_key(record: PendingActionRecord) -> tuple[object, ...]:
+        return (
+            record.record_schema_version,
+            record.confirmation_id,
+            str(record.session_id),
+            str(record.user_id),
+            str(record.workspace_id),
+            record.action_id,
+            record.status,
+            record.reason,
+            record.status_reason,
+        )
+
+    def _capture_store_mutations(self) -> dict[str, PendingActionMutationSnapshot]:
+        return {
+            confirmation_id: capture_pending_action_mutation(record)
+            for confirmation_id, record in self.store.actions.items()
+        }
+
+    def _restore_store_mutations(
+        self,
+        snapshots: Mapping[str, PendingActionMutationSnapshot],
+    ) -> None:
+        for confirmation_id, snapshot in snapshots.items():
+            record = self.store.actions.get(confirmation_id)
+            if record is None:
+                raise RuntimeError("pending mutation rollback lost record identity")
+            restore_pending_action_mutation(record, snapshot)
 
     def _assert_store_index_parity(
         self,

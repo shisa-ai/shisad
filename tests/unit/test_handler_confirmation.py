@@ -1588,6 +1588,7 @@ async def test_f2_pre_effect_attempt_fault_invokes_nothing_and_restores_pending(
     assert pending.execution_attempt_id == ""
     assert pending.result_id == ""
     assert pending.confirmation_evidence is None
+    assert pending.recovery_authority_mac == ""
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
     assert durable["status"] == "pending"
     assert durable["execution_attempt_id"] == ""
