@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,6 +93,11 @@ from shisad.daemon.handlers._pending_approval import (
     pep_arguments_for_policy_evaluation,
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
+from shisad.daemon.pending_actions import (
+    PendingActionTransitionError,
+    PendingActionTransitionGuard,
+    capture_pending_action_mutation,
+)
 from shisad.memory.timeline import TimelineIndex
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
@@ -769,6 +775,53 @@ def _bind_pending_action_identity(pending: PendingAction) -> None:
         }
     )
     pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+
+
+def test_f10b_terminal_guard_failure_restores_caller_staged_mutation(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="nonce-1")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    snapshot = capture_pending_action_mutation(pending)
+    pending.approval_evidence_hash = f"sha256:{'7' * 64}"
+    pending.execution_attempt_id = "attempt-staged"
+    guard = replace(
+        PendingActionTransitionGuard.for_record(pending),
+        expected_action_id="act-other",
+    )
+
+    with pytest.raises(PendingActionTransitionError, match="guard_mismatch"):
+        harness._commit_pending_terminal_state(
+            pending,
+            status="cancelled",
+            reason="cancelled",
+            rollback_snapshot=snapshot,
+            transition_guard=guard,
+        )
+
+    assert capture_pending_action_mutation(pending) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_f10b_start_guard_failure_restores_predecision_state(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._pending_action_lifecycle_authority()
+    snapshot = capture_pending_action_mutation(pending)
+    harness._pending_by_session.clear()
+
+    with pytest.raises(PendingActionTransitionError, match="store_index_mismatch"):
+        await harness.do_action_confirm(
+            {
+                "confirmation_id": pending.confirmation_id,
+                "decision_nonce": "expected",
+            }
+        )
+
+    assert harness.execution_kwargs == []
+    assert capture_pending_action_mutation(pending) == snapshot
 
 
 @pytest.mark.asyncio

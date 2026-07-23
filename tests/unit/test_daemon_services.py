@@ -210,7 +210,7 @@ async def test_f9_daemon_services_owns_handler_graph_when_a2a_disabled(
 
 
 @pytest.mark.asyncio
-async def test_f10a_daemon_services_owns_handler_pending_action_store(
+async def test_f10b_daemon_services_owns_handler_pending_action_lifecycle(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,7 +225,10 @@ async def test_f10a_daemon_services_owns_handler_pending_action_store(
     try:
         impl = services.control_handlers._impl
         store = services.pending_action_store
+        lifecycle = services.pending_action_lifecycle
 
+        assert lifecycle.store is store
+        assert impl._pending_action_lifecycle is lifecycle
         assert impl._pending_action_store is store
         assert impl._pending_actions is store.actions
         assert impl._pending_by_session is store.by_session

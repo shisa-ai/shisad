@@ -11,13 +11,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.delivery import CapabilityDeliveryIntent, CapabilityPayload
+from shisad.core.action_state import PendingActionTransitionKind
 from shisad.core.approval import (
     ConfirmationEvidence,
     ConfirmationLevel,
@@ -53,6 +54,7 @@ from shisad.core.events import (
     TwoFactorRevoked,
 )
 from shisad.core.evidence import ArtifactEndorsementState
+from shisad.core.pending_action import PendingActionRecord
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.schema import ToolRetryClass
 from shisad.core.types import TaintLabel
@@ -69,6 +71,22 @@ from shisad.daemon.handlers._pending_approval import (
     pending_action_state_view,
     pending_approval_contract_hash,
     pep_arguments_for_policy_evaluation,
+)
+from shisad.daemon.pending_actions import (
+    PendingActionLifecycleService,
+    PendingActionStore,
+    PendingActionTransitionError,
+    PendingActionTransitionGuard,
+    PendingActionTransitionRequest,
+)
+from shisad.daemon.pending_actions import (
+    PendingActionMutationSnapshot as _PendingAttemptSnapshot,
+)
+from shisad.daemon.pending_actions import (
+    capture_pending_action_mutation as _capture_pending_attempt_snapshot,
+)
+from shisad.daemon.pending_actions import (
+    restore_pending_action_mutation as _restore_pending_attempt_snapshot,
 )
 from shisad.security.control_plane.schema import (
     RiskTier,
@@ -110,73 +128,6 @@ _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
         "web.fetch",
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class _PendingAttemptSnapshot:
-    status: str
-    status_reason: str
-    decision_nonce: str
-    action_digest: str
-    approval_evidence_hash: str
-    execution_attempt_id: str
-    result_id: str
-    stage2_correlation_id: str
-    stage2_previous_plan_hash: str
-    stage2_plan_hash: str
-    recovery_scheduler_posture_captured: bool
-    recovery_scheduler_restore_enabled: bool
-    recovery_scheduler_accounted: bool
-    scheduler_accounting_pending: bool
-    scheduler_accounting_mode: str
-    confirmation_evidence: ConfirmationEvidence | None
-
-
-def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
-    return _PendingAttemptSnapshot(
-        status=str(getattr(pending, "status", "pending")),
-        status_reason=str(getattr(pending, "status_reason", "")),
-        decision_nonce=str(getattr(pending, "decision_nonce", "")),
-        action_digest=str(getattr(pending, "action_digest", "")),
-        approval_evidence_hash=str(getattr(pending, "approval_evidence_hash", "")),
-        execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")),
-        result_id=str(getattr(pending, "result_id", "")),
-        stage2_correlation_id=str(getattr(pending, "stage2_correlation_id", "")),
-        stage2_previous_plan_hash=str(getattr(pending, "stage2_previous_plan_hash", "")),
-        stage2_plan_hash=str(getattr(pending, "stage2_plan_hash", "")),
-        recovery_scheduler_posture_captured=bool(
-            getattr(pending, "recovery_scheduler_posture_captured", False)
-        ),
-        recovery_scheduler_restore_enabled=bool(
-            getattr(pending, "recovery_scheduler_restore_enabled", False)
-        ),
-        recovery_scheduler_accounted=bool(getattr(pending, "recovery_scheduler_accounted", False)),
-        scheduler_accounting_pending=bool(getattr(pending, "scheduler_accounting_pending", False)),
-        scheduler_accounting_mode=str(getattr(pending, "scheduler_accounting_mode", "")),
-        confirmation_evidence=getattr(pending, "confirmation_evidence", None),
-    )
-
-
-def _restore_pending_attempt_snapshot(
-    pending: Any,
-    snapshot: _PendingAttemptSnapshot,
-) -> None:
-    pending.status = snapshot.status
-    pending.status_reason = snapshot.status_reason
-    pending.decision_nonce = snapshot.decision_nonce
-    pending.action_digest = snapshot.action_digest
-    pending.approval_evidence_hash = snapshot.approval_evidence_hash
-    pending.execution_attempt_id = snapshot.execution_attempt_id
-    pending.result_id = snapshot.result_id
-    pending.stage2_correlation_id = snapshot.stage2_correlation_id
-    pending.stage2_previous_plan_hash = snapshot.stage2_previous_plan_hash
-    pending.stage2_plan_hash = snapshot.stage2_plan_hash
-    pending.recovery_scheduler_posture_captured = snapshot.recovery_scheduler_posture_captured
-    pending.recovery_scheduler_restore_enabled = snapshot.recovery_scheduler_restore_enabled
-    pending.recovery_scheduler_accounted = snapshot.recovery_scheduler_accounted
-    pending.scheduler_accounting_pending = snapshot.scheduler_accounting_pending
-    pending.scheduler_accounting_mode = snapshot.scheduler_accounting_mode
-    pending.confirmation_evidence = snapshot.confirmation_evidence
 
 
 def _channel_principal_rejection_reason(
@@ -388,6 +339,69 @@ class PendingTwoFactorEnrollment:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    def _pending_action_lifecycle_authority(self) -> PendingActionLifecycleService:
+        lifecycle = getattr(self, "_pending_action_lifecycle", None)
+        if lifecycle is None:
+            store = getattr(self, "_pending_action_store", None)
+            if store is None:
+                store = PendingActionStore(
+                    Path(
+                        getattr(
+                            self,
+                            "_pending_actions_file",
+                            Path("pending_actions.json"),
+                        )
+                    )
+                )
+                store.actions = getattr(self, "_pending_actions", {})
+                existing_index = getattr(self, "_pending_by_session", {})
+                if store.actions and not existing_index:
+                    rebuilt_index: dict[Any, list[str]] = {}
+                    for confirmation_id, record in store.actions.items():
+                        rebuilt_index.setdefault(record.session_id, []).append(confirmation_id)
+                    store.by_session = rebuilt_index
+                    self._pending_by_session = store.by_session
+                else:
+                    store.by_session = existing_index
+                    store.assert_index_parity()
+                self._pending_action_store = store
+            lifecycle = PendingActionLifecycleService(store)
+            self._pending_action_lifecycle = lifecycle
+        degradation = getattr(self, "_pending_state_degradation", None)
+        if lifecycle.degradation is None and isinstance(degradation, Mapping):
+            lifecycle.adopt_degradation(degradation)
+        return lifecycle
+
+    def _mirror_pending_action_lifecycle_degradation(self) -> None:
+        lifecycle = self._pending_action_lifecycle_authority()
+        if lifecycle.degradation is not None:
+            self._pending_state_degradation = dict(lifecycle.degradation)
+
+    @staticmethod
+    def _pending_terminal_transition_kind(
+        *,
+        status: str,
+        reason: str,
+    ) -> PendingActionTransitionKind:
+        normalized_status = status.strip().lower()
+        if normalized_status == "rejected":
+            return PendingActionTransitionKind.REJECT
+        if normalized_status == "failed":
+            return (
+                PendingActionTransitionKind.EXPIRE
+                if reason.strip() == "approval_expired"
+                else PendingActionTransitionKind.FAIL
+            )
+        if normalized_status == "cancelled":
+            return PendingActionTransitionKind.CANCEL
+        if normalized_status == "superseded":
+            return PendingActionTransitionKind.SUPERSEDE
+        if normalized_status == "outcome_unknown":
+            return PendingActionTransitionKind.OUTCOME_UNKNOWN
+        if normalized_status == "approved":
+            return PendingActionTransitionKind.APPROVE
+        raise ValueError(f"unsupported pending terminal status: {status}")
+
     def _append_confirmed_tool_output_transcript(
         self,
         *,
@@ -724,55 +738,67 @@ class ConfirmationImplMixin(HandlerMixinBase):
         transitions: list[tuple[Any, str, str]],
         *,
         rollback_snapshots: list[_PendingAttemptSnapshot] | None = None,
+        transition_guards: list[PendingActionTransitionGuard] | None = None,
         record_scheduler_failure: bool = True,
     ) -> None:
         if not transitions:
             return
-        previous = rollback_snapshots or [
-            _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
-        ]
-        if len(previous) != len(transitions):
+        snapshots: list[_PendingAttemptSnapshot | None] = (
+            list(rollback_snapshots)
+            if rollback_snapshots is not None
+            else [None] * len(transitions)
+        )
+        if len(snapshots) != len(transitions):
             raise ValueError("terminal rollback snapshot count mismatch")
-        for pending, status, reason in transitions:
-            pending.status = status
-            pending.status_reason = reason
-            pending.decision_nonce = ""
-            pending.scheduler_accounting_pending = bool(
-                str(getattr(pending, "task_id", "")).strip()
+        guards = transition_guards or [
+            PendingActionTransitionGuard.for_record(
+                cast(PendingActionRecord, pending),
+                decision_nonce=(
+                    str(getattr(pending, "decision_nonce", ""))
+                    if status.strip().lower() == "rejected"
+                    else None
+                ),
             )
-            if pending.scheduler_accounting_pending:
-                pending.scheduler_accounting_mode = (
-                    "failure" if record_scheduler_failure else "shadow_only"
-                )
-                pending.recovery_scheduler_accounted = False
-        terminal = [
-            _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
+            for pending, status, _reason in transitions
         ]
+        if len(guards) != len(transitions):
+            raise ValueError("terminal transition guard count mismatch")
+        requests = tuple(
+            PendingActionTransitionRequest(
+                record=cast(PendingActionRecord, pending),
+                operation=self._pending_terminal_transition_kind(
+                    status=status,
+                    reason=reason,
+                ),
+                reason=reason,
+                guard=guard,
+                rollback_snapshot=snapshot,
+                scheduler_accounting_mode=(
+                    "failure" if record_scheduler_failure else "shadow_only"
+                ),
+            )
+            for (pending, status, reason), snapshot, guard in zip(
+                transitions,
+                snapshots,
+                guards,
+                strict=True,
+            )
+        )
+        lifecycle = self._pending_action_lifecycle_authority()
         try:
-            self._persist_pending_actions()
-        except AtomicWriteError as write_error:
+            lifecycle.transition_many(requests, persist=self._persist_pending_actions)
+        except (PendingActionTransitionError, StatePersistenceDegradedError):
             for (pending, _status, _reason), snapshot in zip(
                 transitions,
-                previous,
+                snapshots,
                 strict=True,
             ):
-                _restore_pending_attempt_snapshot(pending, snapshot)
-            if write_error.publication_may_have_committed:
-                try:
-                    self._persist_pending_actions()
-                except AtomicWriteError as rollback_error:
-                    for (pending, _status, _reason), snapshot in zip(
-                        transitions,
-                        terminal,
-                        strict=True,
-                    ):
-                        _restore_pending_attempt_snapshot(pending, snapshot)
-                    self._pending_state_degradation = {
-                        "transition": "terminal",
-                        "stage": rollback_error.stage.value,
-                        "reason": "pending_state_rollback_uncommitted",
-                    }
-                    raise rollback_error from write_error
+                if snapshot is not None:
+                    _restore_pending_attempt_snapshot(pending, snapshot)
+            self._mirror_pending_action_lifecycle_degradation()
+            raise
+        except AtomicWriteError:
+            self._mirror_pending_action_lifecycle_degradation()
             raise
 
     def _commit_pending_terminal_state(
@@ -782,10 +808,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         status: str,
         reason: str,
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
+        transition_guard: PendingActionTransitionGuard | None = None,
     ) -> None:
         self._commit_pending_terminal_states(
             [(pending, status, reason)],
             rollback_snapshots=[rollback_snapshot] if rollback_snapshot is not None else None,
+            transition_guards=[transition_guard] if transition_guard is not None else None,
         )
 
     def _complete_committed_terminal_scheduler_accounting(self, pending: Any) -> None:
@@ -865,6 +893,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         record_analytics: bool = True,
         emit_hygiene_alert: bool = True,
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
+        transition_guard: PendingActionTransitionGuard | None = None,
     ) -> None:
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_nonce = str(getattr(pending, "decision_nonce", ""))
@@ -874,6 +903,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             status=status,
             reason=status_reason,
             rollback_snapshot=rollback_snapshot,
+            transition_guard=transition_guard,
         )
         event_fields = self._pending_approval_event_fields(
             pending,
@@ -2887,30 +2917,46 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise RuntimeError("scheduler_posture_capture_unavailable")
         action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
-        pending.status = "executing"
-        pending.status_reason = (
+        executing_reason = (
             "stage2_amendment_pending"
             if stage2_action is not None
             else "confirmation_execution_started"
         )
         if callable(capture_scheduler_posture):
             capture_scheduler_posture(pending)
-        executing_attempt = _capture_pending_attempt_snapshot(pending)
+        approval_envelope = pending.approval_envelope
+        assert approval_envelope is not None
+        evidence = pending.confirmation_evidence
+        assert evidence is not None
+        transition_guard = PendingActionTransitionGuard(
+            expected_record_schema_version=pending.record_schema_version,
+            expected_confirmation_id=confirmation_id,
+            expected_session_id=str(approval_envelope.session_id),
+            expected_user_id=str(pending.user_id),
+            expected_workspace_id=str(approval_envelope.workspace_id),
+            expected_action_id=str(approval_envelope.pending_action_id),
+            expected_decision_nonce=provided_nonce,
+            expected_evidence_hash=pending.approval_evidence_hash,
+            expected_approver_principal_id=(evidence.approver_principal_id.strip() or None),
+        )
+        lifecycle = self._pending_action_lifecycle_authority()
         try:
-            self._persist_pending_actions()
-        except AtomicWriteError as write_error:
+            lifecycle.transition(
+                PendingActionTransitionRequest(
+                    record=cast(PendingActionRecord, pending),
+                    operation=PendingActionTransitionKind.START,
+                    reason=executing_reason,
+                    guard=transition_guard,
+                    rollback_snapshot=pre_decision_attempt,
+                ),
+                persist=self._persist_pending_actions,
+            )
+        except (PendingActionTransitionError, StatePersistenceDegradedError):
             _restore_pending_attempt_snapshot(pending, pre_decision_attempt)
-            if write_error.publication_may_have_committed:
-                try:
-                    self._persist_pending_actions()
-                except AtomicWriteError as rollback_error:
-                    _restore_pending_attempt_snapshot(pending, executing_attempt)
-                    self._pending_state_degradation = {
-                        "transition": "executing",
-                        "stage": rollback_error.stage.value,
-                        "reason": "pending_state_rollback_uncommitted",
-                    }
-                    raise rollback_error from write_error
+            self._mirror_pending_action_lifecycle_degradation()
+            raise
+        except AtomicWriteError:
+            self._mirror_pending_action_lifecycle_degradation()
             raise
         self._sync_task_confirmation_status(pending)
         if stage2_action is not None:
@@ -3315,6 +3361,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending,
             status="rejected",
             status_reason=reason,
+            transition_guard=PendingActionTransitionGuard.for_record(
+                cast(PendingActionRecord, pending),
+                decision_nonce=provided_nonce,
+                approver_principal_id=(
+                    str(params.get("principal_id", "")).strip() or str(pending.user_id)
+                ),
+            ),
         )
         return {
             "rejected": True,

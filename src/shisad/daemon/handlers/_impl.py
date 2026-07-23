@@ -2147,11 +2147,10 @@ class HandlerImplementation(
         self._pairing_requests_root = self._config.data_dir / "channels" / "pairing_requests"
         # Retained only to reject and reset pre-F7C unscoped evidence.
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
-        self._pending_action_store = getattr(services, "pending_action_store", None)
-        if self._pending_action_store is None:
-            self._pending_action_store = PendingActionStore(
-                self._config.data_dir / "pending_actions.json"
-            )
+        self._pending_action_store = services.pending_action_store
+        self._pending_action_lifecycle = services.pending_action_lifecycle
+        if self._pending_action_lifecycle.store is not self._pending_action_store:
+            raise ValueError("pending action lifecycle/store ownership mismatch")
         self._pending_actions_file = self._pending_action_store.path
         self._pending_actions = self._pending_action_store.actions
         self._pending_by_session = self._pending_action_store.by_session
@@ -2417,8 +2416,7 @@ class HandlerImplementation(
             "confirmation_lockouts": len(self._confirmation_failure_tracker._state),
             "pairing_request_artifacts": pairing_request_artifacts,
         }
-        self._pending_actions.clear()
-        self._pending_by_session.clear()
+        self._pending_action_lifecycle_authority().reset_for_tests()
         if hasattr(self, "_pending_state_degradation"):
             delattr(self, "_pending_state_degradation")
         self._monitor_reject_counts.clear()
@@ -4576,32 +4574,11 @@ class HandlerImplementation(
         )
         pending.approval_envelope = approval_envelope
         pending.approval_envelope_hash = approval_envelope_hash(approval_envelope)
-        self._pending_actions[confirmation_id] = pending
-        self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
+        lifecycle = self._pending_action_lifecycle_authority()
         try:
-            self._persist_pending_actions()
-        except AtomicWriteError as write_error:
-            self._pending_actions.pop(confirmation_id, None)
-            session_pending_ids = self._pending_by_session.get(session_id, [])
-            remaining_ids = [
-                pending_id for pending_id in session_pending_ids if pending_id != confirmation_id
-            ]
-            if remaining_ids:
-                self._pending_by_session[session_id] = remaining_ids
-            else:
-                self._pending_by_session.pop(session_id, None)
-            if write_error.publication_may_have_committed:
-                try:
-                    self._persist_pending_actions()
-                except AtomicWriteError as rollback_error:
-                    self._pending_actions[confirmation_id] = pending
-                    self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
-                    self._pending_state_degradation = {
-                        "transition": "queue",
-                        "stage": rollback_error.stage.value,
-                        "reason": "pending_state_rollback_uncommitted",
-                    }
-                    raise rollback_error from write_error
+            lifecycle.queue(pending, persist=self._persist_pending_actions)
+        except AtomicWriteError:
+            self._mirror_pending_action_lifecycle_degradation()
             raise
         return pending
 

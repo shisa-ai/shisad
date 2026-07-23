@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
@@ -23,6 +24,113 @@ ActionLifecycleState = Literal[
     "superseded",
     "outcome_unknown",
 ]
+
+PendingActionStoredStatus = Literal[
+    "pending",
+    "executing",
+    "approved",
+    "failed",
+    "rejected",
+    "cancelled",
+    "superseded",
+    "outcome_unknown",
+]
+
+
+class PendingActionTransitionKind(StrEnum):
+    """Finite mutations accepted by the pending-action lifecycle authority."""
+
+    QUEUE_PENDING = "queue_pending"
+    QUEUE_EXECUTING = "queue_executing"
+    START = "start"
+    APPROVE = "approve"
+    REJECT = "reject"
+    EXPIRE = "expire"
+    FAIL = "fail"
+    CANCEL = "cancel"
+    SUPERSEDE = "supersede"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class PendingActionTransitionRule:
+    """One legal stored-state edge and its compatibility side effects."""
+
+    allowed_sources: frozenset[PendingActionStoredStatus]
+    target_status: PendingActionStoredStatus
+    clear_decision_nonce: bool
+    fixed_reason: str = ""
+
+
+_PENDING_ACTION_TRANSITION_RULES: dict[
+    PendingActionTransitionKind,
+    PendingActionTransitionRule,
+] = {
+    PendingActionTransitionKind.QUEUE_PENDING: PendingActionTransitionRule(
+        allowed_sources=frozenset(),
+        target_status="pending",
+        clear_decision_nonce=False,
+    ),
+    PendingActionTransitionKind.QUEUE_EXECUTING: PendingActionTransitionRule(
+        allowed_sources=frozenset(),
+        target_status="executing",
+        clear_decision_nonce=False,
+    ),
+    PendingActionTransitionKind.START: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending"}),
+        target_status="executing",
+        clear_decision_nonce=False,
+    ),
+    PendingActionTransitionKind.APPROVE: PendingActionTransitionRule(
+        allowed_sources=frozenset({"executing"}),
+        target_status="approved",
+        clear_decision_nonce=False,
+    ),
+    PendingActionTransitionKind.REJECT: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending"}),
+        target_status="rejected",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.EXPIRE: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending"}),
+        target_status="failed",
+        clear_decision_nonce=True,
+        fixed_reason="approval_expired",
+    ),
+    PendingActionTransitionKind.FAIL: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending", "executing"}),
+        target_status="failed",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.CANCEL: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending", "executing"}),
+        target_status="cancelled",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.SUPERSEDE: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending"}),
+        target_status="superseded",
+        clear_decision_nonce=True,
+    ),
+    PendingActionTransitionKind.OUTCOME_UNKNOWN: PendingActionTransitionRule(
+        allowed_sources=frozenset({"pending", "executing"}),
+        target_status="outcome_unknown",
+        clear_decision_nonce=True,
+    ),
+}
+
+
+def pending_action_transition_rule(
+    operation: PendingActionTransitionKind | str,
+) -> PendingActionTransitionRule:
+    """Return the sole rule for a finite pending-action operation."""
+
+    try:
+        normalized = PendingActionTransitionKind(operation)
+    except ValueError as exc:
+        raise ValueError(f"unknown pending-action transition: {operation}") from exc
+    return _PENDING_ACTION_TRANSITION_RULES[normalized]
+
 
 _ACTION_STATUS_TO_LIFECYCLE: dict[str, ActionLifecycleState] = {
     "pending": "pending",

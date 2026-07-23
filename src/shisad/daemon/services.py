@@ -59,7 +59,10 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
 from shisad.daemon.approval_web import ApprovalWebService
 from shisad.daemon.event_wiring import DaemonEventWiring
-from shisad.daemon.pending_actions import PendingActionStore
+from shisad.daemon.pending_actions import (
+    PendingActionLifecycleService,
+    PendingActionStore,
+)
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
@@ -585,6 +588,7 @@ class DaemonServices:
     delivery: ChannelDeliveryService
     approval_web: ApprovalWebService
     pending_action_store: PendingActionStore
+    pending_action_lifecycle: PendingActionLifecycleService
     channel_state_store: ChannelStateStore
     matrix_channel: MatrixChannel | None
     discord_channel: DiscordChannel | None
@@ -1101,6 +1105,7 @@ class DaemonServices:
                 channel: frozenset(values) for channel, values in identity_map._allowlists.items()
             }
             pending_action_store = PendingActionStore(config.data_dir / "pending_actions.json")
+            pending_action_lifecycle = PendingActionLifecycleService(pending_action_store)
             services = cls(
                 config=config,
                 data_lock=data_lock,
@@ -1127,6 +1132,7 @@ class DaemonServices:
                 delivery=delivery,
                 approval_web=approval_web,
                 pending_action_store=pending_action_store,
+                pending_action_lifecycle=pending_action_lifecycle,
                 channel_state_store=channel_state_store,
                 matrix_channel=matrix_channel,
                 discord_channel=discord_channel,
