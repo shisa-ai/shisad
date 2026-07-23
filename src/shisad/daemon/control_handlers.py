@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from shisad.core.api.rpc_registry import RpcHandlerGroup, RpcMethodDescriptor
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionDecisionParams,
@@ -218,6 +219,7 @@ from shisad.core.api.schema import (
     WebSearchParams,
     WebSearchResult,
 )
+from shisad.core.interfaces import TypedHandler
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers import (
     AdminHandlers,
@@ -296,6 +298,30 @@ class DaemonControlHandlers:
             impl,
             internal_ingress_marker=internal_ingress_marker,
         )
+
+    def bind_rpc_handler(self, descriptor: RpcMethodDescriptor) -> TypedHandler:
+        """Bind one explicit descriptor to this facade's owned handler graph."""
+
+        groups: dict[RpcHandlerGroup, object] = {
+            RpcHandlerGroup.ADMIN: self._admin,
+            RpcHandlerGroup.ASSISTANT: self._assistant,
+            RpcHandlerGroup.CONFIRMATION: self._confirmation,
+            RpcHandlerGroup.DASHBOARD: self._dashboard,
+            RpcHandlerGroup.MEMORY: self._memory,
+            RpcHandlerGroup.PLAN_STEPS: self._plan_steps,
+            RpcHandlerGroup.SESSION: self._session,
+            RpcHandlerGroup.SKILLS: self._skills,
+            RpcHandlerGroup.TASKS: self._tasks,
+            RpcHandlerGroup.TOOL_EXECUTION: self._tool_execution,
+        }
+        owner = groups[descriptor.handler_group]
+        handler = getattr(owner, descriptor.handler_method, None)
+        if not callable(handler):
+            raise RuntimeError(
+                f"control RPC handler does not resolve: {descriptor.name} "
+                f"({descriptor.handler_group.value}.{descriptor.handler_method})"
+            )
+        return cast(TypedHandler, handler)
 
     async def handle_session_create(
         self, params: SessionCreateParams, ctx: RequestContext

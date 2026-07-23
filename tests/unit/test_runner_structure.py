@@ -80,6 +80,21 @@ def test_f9_single_live_handler_constructor_is_services_owned() -> None:
     assert "handlers = services.control_handlers" in runner_source
 
 
+def test_f11a_runner_method_registration_is_registry_derived() -> None:
+    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(runner_source)
+    method_specs = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_method_specs"
+    )
+    method_source = ast.get_source_segment(runner_source, method_specs) or ""
+
+    assert "rpc_method_descriptors(" in method_source
+    assert '("session.create"' not in method_source
+    assert "SessionCreateParams" not in method_source
+
+
 def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods() -> None:
     class _HandlerStub:
         def __getattr__(self, _name: str):  # type: ignore[no-untyped-def]
@@ -87,6 +102,9 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
                 return {}
 
             return _handler
+
+        def bind_rpc_handler(self, descriptor):  # type: ignore[no-untyped-def]
+            return getattr(self, descriptor.handler_method)
 
     specs = _method_specs(_HandlerStub(), test_mode=False)
     mapping = {name: params_model for name, _handler, _admin_only, params_model in specs}
