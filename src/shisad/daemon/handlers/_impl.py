@@ -5867,6 +5867,8 @@ class HandlerImplementation(
             return False
         if str(getattr(pending, "stage2_correlation_id", "")).strip():
             return False
+        if not self._recovery_authority_snapshot_is_authenticated(pending):
+            return False
         policy_allow_authority = self._policy_allow_execution_authority_is_current(pending)
         if pending.execution_authorization_kind and not policy_allow_authority:
             return False

@@ -1874,7 +1874,7 @@ async def test_f2_cancelled_stage2_reconciliation_terminates_session(tmp_path: P
         AtomicWriteStage.PARENT_FSYNC,
     ],
 )
-async def test_f2_post_effect_terminal_fault_never_rolls_back_over_executing(
+async def test_f2_post_effect_terminal_fault_matches_publication_posture(
     tmp_path: Path,
     fault_stage: AtomicWriteStage,
 ) -> None:
@@ -1903,11 +1903,10 @@ async def test_f2_post_effect_terminal_fault_never_rolls_back_over_executing(
         )
 
     assert harness.effect_calls == 1
-    assert pending.status == "approved"
+    expected_status = "approved" if fault_stage == AtomicWriteStage.PARENT_FSYNC else "executing"
+    assert pending.status == expected_status
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
-    assert durable["status"] == (
-        "approved" if fault_stage == AtomicWriteStage.PARENT_FSYNC else "executing"
-    )
+    assert durable["status"] == expected_status
     assert durable["execution_attempt_id"] == pending.execution_attempt_id
 
 

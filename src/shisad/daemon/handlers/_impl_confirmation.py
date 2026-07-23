@@ -401,6 +401,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 else None
             ),
             result_id=(str(pending.result_id).strip() or None if bind_execution_identity else None),
+            recovery_authority_mac=(
+                str(pending.recovery_authority_mac).strip() or None
+                if kind is PendingActionMutationKind.RECOVERY
+                and operation is not PendingActionTransitionKind.INVALIDATE_RECOVERY
+                else None
+            ),
         )
         lifecycle = self._pending_action_lifecycle_authority()
         try:

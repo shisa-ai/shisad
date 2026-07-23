@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
@@ -285,6 +286,14 @@ class PendingActionTransitionError(ValueError):
         super().__init__(f"{reason} ({self.operation}){suffix}")
 
 
+def _transition_error(
+    reason: str,
+    operation: PendingActionTransitionKind | str,
+    detail: str = "",
+) -> PendingActionTransitionError:
+    return PendingActionTransitionError(reason, operation=operation, detail=detail)
+
+
 @dataclass(frozen=True, slots=True)
 class PendingActionTransitionGuard:
     """Expected immutable and one-shot bindings for one transition."""
@@ -300,6 +309,7 @@ class PendingActionTransitionGuard:
     expected_approver_principal_id: str | None = None
     expected_execution_attempt_id: str | None = None
     expected_result_id: str | None = None
+    expected_recovery_authority_mac: str | None = None
 
     @classmethod
     def for_record(
@@ -311,6 +321,7 @@ class PendingActionTransitionGuard:
         approver_principal_id: str | None = None,
         execution_attempt_id: str | None = None,
         result_id: str | None = None,
+        recovery_authority_mac: str | None = None,
     ) -> PendingActionTransitionGuard:
         return cls(
             expected_record_schema_version=PENDING_ACTION_RECORD_SCHEMA_VERSION,
@@ -324,6 +335,7 @@ class PendingActionTransitionGuard:
             expected_approver_principal_id=approver_principal_id,
             expected_execution_attempt_id=execution_attempt_id,
             expected_result_id=result_id,
+            expected_recovery_authority_mac=recovery_authority_mac,
         )
 
 
@@ -419,6 +431,7 @@ class _PreparedPendingTransition:
     reason: str
     changed: bool
     mutation_values: tuple[tuple[str, object], ...] = ()
+    terminal_key: tuple[object, ...] = ()
 
 
 def _mutation_fields(specification: str) -> frozenset[str]:
@@ -435,6 +448,11 @@ _RECOVERY_EVENT_MUTATION_FIELDS = _mutation_fields(
     "recovery_anonymous_accounting_id recovery_event_identity_trusted_at "
     "recovery_anonymous_accounting_id_trusted"
 )
+_RECOVERY_AUTHORITY_MUTATION_FIELDS = _mutation_fields(
+    "approval_evidence_hash approval_task_envelope_id delivery_target "
+    "execution_authorization_kind confirmation_evidence preflight_action merged_policy "
+    "pep_context pep_elevation retry_descriptor"
+)
 _PENDING_ACTION_MUTATION_FIELDS: dict[PendingActionMutationKind, frozenset[str]] = {
     PendingActionMutationKind.START: _mutation_fields(
         "action_digest approval_evidence_hash confirmation_evidence execution_attempt_id "
@@ -449,11 +467,9 @@ _PENDING_ACTION_MUTATION_FIELDS: dict[PendingActionMutationKind, frozenset[str]]
     | {"provider_operation_id"},
     PendingActionMutationKind.RECOVERY: _SCHEDULER_MUTATION_FIELDS
     | _RECOVERY_EVENT_MUTATION_FIELDS
+    | _RECOVERY_AUTHORITY_MUTATION_FIELDS
     | _mutation_fields(
-        "approval_evidence_hash approval_task_envelope_id delivery_target "
-        "execution_authorization_kind confirmation_evidence preflight_action merged_policy "
-        "pep_context pep_elevation retry_descriptor retry_generation recovery_started_at "
-        "recovery_result provider_operation_id"
+        "retry_generation recovery_started_at recovery_result provider_operation_id"
     ),
     PendingActionMutationKind.SCHEDULER: _SCHEDULER_MUTATION_FIELDS,
     PendingActionMutationKind.PERSISTENCE: _RECOVERY_EVENT_MUTATION_FIELDS
@@ -478,6 +494,14 @@ _PENDING_ACTION_TRANSITION_MUTATION_KINDS = {
     PendingActionTransitionKind.INVALIDATE_RECOVERY: {
         PendingActionMutationKind.RECOVERY,
         PendingActionMutationKind.SCHEDULER,
+    },
+}
+_PENDING_ACTION_STATUS_REASONS = {
+    PendingActionMutationKind.STAGE2: {"confirmation_execution_started"},
+    PendingActionMutationKind.SCHEDULER: {"legacy_scheduler_accounting_intent_unknown"},
+    PendingActionMutationKind.RECOVERY: {
+        "structural_retry_started",
+        "stable_idempotency_key_retry_started",
     },
 }
 
@@ -531,18 +555,11 @@ class PendingActionLifecycleService:
         for record in adopted:
             confirmation_id = str(record.confirmation_id)
             if confirmation_id in staged.actions or confirmation_id in self.store.actions:
-                raise PendingActionTransitionError(
-                    "duplicate_loaded_identity",
-                    operation="load",
-                    detail=confirmation_id,
-                )
+                raise _transition_error("duplicate_loaded_identity", "load", confirmation_id)
             self._validate_loaded_record(record)
             staged.add(record)
         if self.store.actions:
-            raise PendingActionTransitionError(
-                "loaded_store_not_empty",
-                operation="load",
-            )
+            raise _transition_error("loaded_store_not_empty", "load")
         staged.assert_index_parity()
         keys = {cid: self._queue_key(item) for cid, item in staged.actions.items()}
         self._restore_store_topology(staged.actions, staged.by_session, keys)
@@ -568,11 +585,7 @@ class PendingActionLifecycleService:
         record = request.record
         owned = self.store.actions.get(record.confirmation_id)
         if owned is not record:
-            raise PendingActionTransitionError(
-                "unowned_record",
-                operation="update",
-                detail=record.confirmation_id,
-            )
+            raise _transition_error("unowned_record", "update", record.confirmation_id)
         self._validate_guard_identity(record, request.guard, "update")
         kind, values = self._prepare_mutation(
             record,
@@ -601,17 +614,10 @@ class PendingActionLifecycleService:
         self._assert_store_index_parity("purge")
         selected = tuple(records)
         if len({id(record) for record in selected}) != len(selected):
-            raise PendingActionTransitionError(
-                "duplicate_purge_record",
-                operation="purge",
-            )
+            raise _transition_error("duplicate_purge_record", "purge")
         for record in selected:
             if self.store.actions.get(record.confirmation_id) is not record:
-                raise PendingActionTransitionError(
-                    "unowned_record",
-                    operation="purge",
-                    detail=record.confirmation_id,
-                )
+                raise _transition_error("unowned_record", "purge", record.confirmation_id)
         if not selected:
             return ()
 
@@ -677,11 +683,7 @@ class PendingActionLifecycleService:
                     target_status=existing.status,
                     changed=False,
                 )
-            raise PendingActionTransitionError(
-                "duplicate_queue_identity",
-                operation=operation,
-                detail=record.confirmation_id,
-            )
+            raise _transition_error("duplicate_queue_identity", operation, record.confirmation_id)
         source_snapshots = self._capture_store_mutations()
         record_snapshot = capture_pending_action_mutation(record)
         self.store.add(record)
@@ -734,10 +736,7 @@ class PendingActionLifecycleService:
         self._assert_store_index_parity("batch")
         record_ids = [id(request.record) for request in requests]
         if len(record_ids) != len(set(record_ids)):
-            raise PendingActionTransitionError(
-                "duplicate_batch_record",
-                operation="batch",
-            )
+            raise _transition_error("duplicate_batch_record", "batch")
         prepared = tuple(self._prepare_transition(request) for request in requests)
         changed = tuple(item for item in prepared if item.changed)
         if not changed:
@@ -766,6 +765,7 @@ class PendingActionLifecycleService:
                         target_error,
                     )
                     raise target_error from write_error
+                self._remember_terminal_operations(changed)
                 raise
             self._restore_store_mutations(source_snapshots)
             if write_error.publication_may_have_committed:
@@ -781,9 +781,8 @@ class PendingActionLifecycleService:
                     self._degrade(transition, rollback_error)
                     raise rollback_error from write_error
                 self._restore_store_mutations(source_snapshots)
-            for item in retained:
-                target_snapshots[item.request.record.confirmation_id].restore(item.request.record)
             raise
+        self._remember_terminal_operations(changed)
         return tuple(self._result(item) for item in prepared)
 
     def _prepare_transition(
@@ -795,25 +794,24 @@ class PendingActionLifecycleService:
             PendingActionTransitionKind.QUEUE_PENDING,
             PendingActionTransitionKind.QUEUE_EXECUTING,
         }:
-            raise PendingActionTransitionError(
-                "queue_operation_requires_queue",
-                operation=operation,
-            )
+            raise _transition_error("queue_operation_requires_queue", operation)
         record = request.record
         owned = self.store.actions.get(record.confirmation_id)
         if owned is not record:
-            raise PendingActionTransitionError(
-                "unowned_record",
-                operation=operation,
-                detail=record.confirmation_id,
-            )
+            raise _transition_error("unowned_record", operation, record.confirmation_id)
         self._validate_guard_identity(record, request.guard, operation)
         rule = pending_action_transition_rule(operation)
         reason = self._resolved_reason(request, rule)
         source_status = str(record.status)
+        mutation_kind = None
+        mutation_key: PendingActionMutation | None = None
         mutation_values: tuple[tuple[str, object], ...] = ()
         guard_record = record
         if request.mutation is not None:
+            try:
+                mutation_key = deepcopy(request.mutation)
+            except Exception as exc:
+                raise _transition_error("mutation_values_invalid", operation) from exc
             mutation_kind, prepared_values = self._prepare_mutation(
                 record,
                 request.mutation,
@@ -824,64 +822,36 @@ class PendingActionLifecycleService:
                 set(),
             )
             if mutation_kind not in allowed_kinds:
-                raise PendingActionTransitionError(
-                    "mutation_kind_invalid",
-                    operation=operation,
-                    detail=mutation_kind.value,
-                )
+                raise _transition_error("mutation_kind_invalid", operation, mutation_kind.value)
             if mutation_kind.value == "decision" and source_status != "pending":
                 raise PendingActionTransitionError("mutation_kind_invalid", operation=operation)
             if "status_reason" in prepared_values:
-                raise PendingActionTransitionError(
-                    "transition_reason_mutation_forbidden",
-                    operation=operation,
-                )
+                raise _transition_error("transition_reason_mutation_forbidden", operation)
             if prepared_values:
                 guard_record = replace(record)
                 self._apply_mutation(guard_record, prepared_values)
-            if mutation_kind is PendingActionMutationKind.EXECUTION or (
-                mutation_kind is PendingActionMutationKind.RECOVERY
-                and (
-                    operation is not PendingActionTransitionKind.INVALIDATE_RECOVERY
-                    or guard_record.execution_attempt_id
-                    or guard_record.result_id
-                )
-            ):
-                self._validate_guard_execution_identity(
-                    guard_record,
-                    request.guard,
-                    operation,
-                    required=operation is not PendingActionTransitionKind.INVALIDATE_RECOVERY,
-                )
             mutation_values = tuple(prepared_values.items())
-        if (
+        repeat = (
             source_status == rule.target_status
             and str(record.status_reason) == reason
             and not mutation_values
-        ):
-            return _PreparedPendingTransition(
-                request=request,
-                rule=rule,
-                source_status=source_status,
-                reason=reason,
-                changed=False,
-                mutation_values=(),
+        )
+        if source_status not in rule.allowed_sources and not repeat:
+            raise _transition_error(
+                "illegal_transition", operation, f"{source_status}->{rule.target_status}"
             )
-        if source_status not in rule.allowed_sources:
-            raise PendingActionTransitionError(
-                "illegal_transition",
-                operation=operation,
-                detail=f"{source_status}->{rule.target_status}",
-            )
-        self._validate_guard_authority(guard_record, request.guard, operation)
+        self._validate_guard_authority(
+            guard_record,
+            request.guard,
+            operation,
+            recovery=mutation_kind is PendingActionMutationKind.RECOVERY
+            and operation is not PendingActionTransitionKind.INVALIDATE_RECOVERY,
+        )
         if (
             request.scheduler_accounting_mode is not None
             and request.scheduler_accounting_mode not in {"failure", "shadow_only", "ambiguous"}
         ):
-            raise PendingActionTransitionError(
-                "invalid_scheduler_accounting_mode",
-                operation=operation,
-            )
+            raise _transition_error("invalid_scheduler_accounting_mode", operation)
         if request.retain_target_on_error and operation not in {
             PendingActionTransitionKind.APPROVE,
             PendingActionTransitionKind.FAIL,
@@ -890,17 +860,27 @@ class PendingActionLifecycleService:
             PendingActionTransitionKind.RECOVER_FAIL,
             PendingActionTransitionKind.INVALIDATE_RECOVERY,
         }:
-            raise PendingActionTransitionError(
-                "retain_target_invalid",
-                operation=operation,
-            )
+            raise _transition_error("retain_target_invalid", operation)
+        terminal_key = (
+            "terminal",
+            operation,
+            request.scheduler_accounting_mode,
+            mutation_key,
+        )
+        if (
+            repeat
+            and self._queue_keys.get(record.confirmation_id) != terminal_key
+            and not (rule.fixed_reason and mutation_kind is None)
+        ):
+            raise _transition_error("terminal_repeat_mismatch", operation)
         return _PreparedPendingTransition(
             request=request,
             rule=rule,
             source_status=source_status,
             reason=reason,
-            changed=True,
+            changed=not repeat,
             mutation_values=mutation_values,
+            terminal_key=terminal_key,
         )
 
     @staticmethod
@@ -921,23 +901,13 @@ class PendingActionLifecycleService:
         raw_reason = str(request.reason)
         supplied = raw_reason.strip()
         if raw_reason != supplied:
-            raise PendingActionTransitionError(
-                "transition_reason_noncanonical",
-                operation=request.operation,
-            )
+            raise _transition_error("transition_reason_noncanonical", request.operation)
         if rule.fixed_reason:
             if supplied and supplied != rule.fixed_reason:
-                raise PendingActionTransitionError(
-                    "fixed_reason_mismatch",
-                    operation=request.operation,
-                    detail=supplied,
-                )
+                raise _transition_error("fixed_reason_mismatch", request.operation, supplied)
             return rule.fixed_reason
         if not supplied:
-            raise PendingActionTransitionError(
-                "transition_reason_required",
-                operation=request.operation,
-            )
+            raise _transition_error("transition_reason_required", request.operation)
         return supplied
 
     @staticmethod
@@ -968,11 +938,7 @@ class PendingActionLifecycleService:
             or guard.expected_record_schema_version != PENDING_ACTION_RECORD_SCHEMA_VERSION
             or actual != expected
         ):
-            raise PendingActionTransitionError(
-                "guard_mismatch",
-                operation=operation,
-                detail="record_identity",
-            )
+            raise _transition_error("guard_mismatch", operation, "record_identity")
 
     @staticmethod
     def _validate_guard_execution_identity(
@@ -981,6 +947,7 @@ class PendingActionLifecycleService:
         operation: PendingActionTransitionKind | str,
         *,
         required: bool,
+        recovery: bool = False,
     ) -> None:
         expected_attempt = guard.expected_execution_attempt_id
         expected_result = guard.expected_result_id
@@ -993,33 +960,31 @@ class PendingActionLifecycleService:
             ("result_id", expected_result, str(record.result_id)),
         ):
             if (required or actual) and not expected:
-                raise PendingActionTransitionError(
-                    "guard_mismatch",
-                    operation=operation,
-                    detail="execution_identity_required",
-                )
+                raise _transition_error("guard_mismatch", operation, "execution_identity_required")
             if expected is not None and not safe_compare_text(expected, actual):
-                raise PendingActionTransitionError(
-                    "guard_mismatch",
-                    operation=operation,
-                    detail=detail,
-                )
+                raise _transition_error("guard_mismatch", operation, detail)
+        if recovery and (
+            not guard.expected_recovery_authority_mac
+            or not safe_compare_text(
+                guard.expected_recovery_authority_mac,
+                record.recovery_authority_mac,
+            )
+        ):
+            raise _transition_error("recovery_authority_mismatch", operation)
 
     @staticmethod
     def _validate_guard_authority(
         record: PendingActionRecord,
         guard: PendingActionTransitionGuard,
         operation: PendingActionTransitionKind,
+        *,
+        recovery: bool = False,
     ) -> None:
         expected_nonce = guard.expected_decision_nonce
         if expected_nonce is not None and (
             not expected_nonce or not safe_compare_text(expected_nonce, record.decision_nonce)
         ):
-            raise PendingActionTransitionError(
-                "guard_mismatch",
-                operation=operation,
-                detail="decision_nonce",
-            )
+            raise _transition_error("guard_mismatch", operation, "decision_nonce")
         if (
             operation
             in {
@@ -1028,11 +993,7 @@ class PendingActionLifecycleService:
             }
             and expected_nonce is None
         ):
-            raise PendingActionTransitionError(
-                "guard_mismatch",
-                operation=operation,
-                detail="decision_nonce_required",
-            )
+            raise _transition_error("guard_mismatch", operation, "decision_nonce_required")
 
         expected_evidence_hash = guard.expected_evidence_hash
         evidence = record.confirmation_evidence
@@ -1044,11 +1005,7 @@ class PendingActionLifecycleService:
                 and operation.value in {"reject", "fail"}
             )
         ):
-            raise PendingActionTransitionError(
-                "proof_binding_mismatch",
-                operation=operation,
-                detail="evidence_hash_required",
-            )
+            raise _transition_error("proof_binding_mismatch", operation, "evidence_hash_required")
         if expected_evidence_hash is not None and (
             evidence is None
             or not expected_evidence_hash
@@ -1062,10 +1019,7 @@ class PendingActionLifecycleService:
             or not safe_compare_text(evidence.decision_nonce, record.decision_nonce)
             or not safe_compare_text(evidence.action_digest, record.action_digest)
         ):
-            raise PendingActionTransitionError(
-                "proof_binding_mismatch",
-                operation=operation,
-            )
+            raise _transition_error("proof_binding_mismatch", operation)
 
         expected_principal = guard.expected_approver_principal_id
         if expected_principal is not None:
@@ -1081,17 +1035,19 @@ class PendingActionLifecycleService:
                 }
                 principal_matches = expected_principal in allowed_principals
             if not principal_matches:
-                raise PendingActionTransitionError(
-                    "guard_mismatch",
-                    operation=operation,
-                    detail="approver_principal",
-                )
+                raise _transition_error("guard_mismatch", operation, "approver_principal")
         if operation in {
             PendingActionTransitionKind.START,
+            PendingActionTransitionKind.APPROVE,
             PendingActionTransitionKind.RECOVER_APPROVE,
             PendingActionTransitionKind.RECOVER_FAIL,
         } or (
-            operation is PendingActionTransitionKind.INVALIDATE_RECOVERY
+            operation
+            in {
+                PendingActionTransitionKind.FAIL,
+                PendingActionTransitionKind.OUTCOME_UNKNOWN,
+                PendingActionTransitionKind.INVALIDATE_RECOVERY,
+            }
             and (record.execution_attempt_id or record.result_id)
         ):
             PendingActionLifecycleService._validate_guard_execution_identity(
@@ -1099,6 +1055,12 @@ class PendingActionLifecycleService:
                 guard,
                 operation,
                 required=operation is not PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                recovery=recovery
+                or operation
+                in {
+                    PendingActionTransitionKind.RECOVER_APPROVE,
+                    PendingActionTransitionKind.RECOVER_FAIL,
+                },
             )
 
     @staticmethod
@@ -1130,46 +1092,42 @@ class PendingActionLifecycleService:
         try:
             kind = PendingActionMutationKind(mutation.kind)
         except ValueError as exc:
-            raise PendingActionTransitionError(
-                "mutation_kind_invalid",
-                operation=operation,
-                detail=str(mutation.kind),
-            ) from exc
+            raise _transition_error("mutation_kind_invalid", operation, str(mutation.kind)) from exc
         allowed_fields = _PENDING_ACTION_MUTATION_FIELDS[kind]
         try:
             supplied = dict(mutation.values)
         except (TypeError, ValueError) as exc:
-            raise PendingActionTransitionError(
-                "mutation_values_invalid",
-                operation=operation,
-            ) from exc
+            raise _transition_error("mutation_values_invalid", operation) from exc
+        authority_fields = supplied.keys() & _RECOVERY_AUTHORITY_MUTATION_FIELDS
+        event_fields = supplied.keys() & _RECOVERY_EVENT_MUTATION_FIELDS
+        if kind is PendingActionMutationKind.RECOVERY and (
+            (
+                operation != PendingActionTransitionKind.INVALIDATE_RECOVERY
+                and (authority_fields or event_fields)
+            )
+            or any(supplied[field] not in ("", None, {}) for field in authority_fields)
+        ):
+            raise _transition_error("mutation_value_invalid", operation, "recovery_authority")
         prepared: dict[str, object] = {}
         for raw_field, value in supplied.items():
             if not isinstance(raw_field, str) or raw_field not in allowed_fields:
-                raise PendingActionTransitionError(
-                    "mutation_field_forbidden",
-                    operation=operation,
-                    detail=str(raw_field),
-                )
+                raise _transition_error("mutation_field_forbidden", operation, str(raw_field))
             if raw_field == "status_reason" and (
-                not isinstance(value, str) or value != value.strip()
-            ):
-                raise PendingActionTransitionError(
-                    "mutation_value_invalid",
-                    operation=operation,
-                    detail=raw_field,
+                not isinstance(value, str)
+                or value != value.strip()
+                or (
+                    value != record.status_reason
+                    and value not in _PENDING_ACTION_STATUS_REASONS.get(kind, set())
                 )
+            ):
+                raise _transition_error("mutation_value_invalid", operation, raw_field)
             if raw_field == "scheduler_accounting_mode" and value not in {
                 "",
                 "failure",
                 "shadow_only",
                 "ambiguous",
             }:
-                raise PendingActionTransitionError(
-                    "mutation_value_invalid",
-                    operation=operation,
-                    detail=raw_field,
-                )
+                raise _transition_error("mutation_value_invalid", operation, raw_field)
             if getattr(record, raw_field) != value:
                 prepared[raw_field] = value
         return kind, prepared
@@ -1191,13 +1149,25 @@ class PendingActionLifecycleService:
         if kind in {
             PendingActionMutationKind.EXECUTION,
             PendingActionMutationKind.RECOVERY,
-        } and (record.execution_attempt_id or record.result_id):
+        } and (
+            record.execution_attempt_id
+            or record.result_id
+            or kind is PendingActionMutationKind.RECOVERY
+        ):
             PendingActionLifecycleService._validate_guard_execution_identity(
                 record,
                 guard,
                 "update",
                 required=kind is PendingActionMutationKind.EXECUTION,
+                recovery=kind is PendingActionMutationKind.RECOVERY,
             )
+
+    def _remember_terminal_operations(
+        self,
+        items: Sequence[_PreparedPendingTransition],
+    ) -> None:
+        for item in items:
+            self._queue_keys[item.request.record.confirmation_id] = item.terminal_key
 
     @staticmethod
     def _validate_loaded_record(record: PendingActionRecord) -> None:

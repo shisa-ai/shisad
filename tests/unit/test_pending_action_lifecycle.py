@@ -35,6 +35,7 @@ from shisad.daemon.pending_actions import (
     PendingActionTransitionGuard,
     PendingActionTransitionRequest,
     PendingActionUpdateRequest,
+    capture_pending_action_mutation,
 )
 from tests.helpers.approval import make_pending_action
 
@@ -211,9 +212,10 @@ def _guard(
     proof: bool = False,
     decision: bool = False,
     execution: bool = False,
+    recovery: bool = False,
 ) -> PendingActionTransitionGuard:
     evidence = getattr(record, "confirmation_evidence", None)
-    return PendingActionTransitionGuard.for_record(
+    guard = PendingActionTransitionGuard.for_record(
         record,
         decision_nonce=str(record.decision_nonce) if proof or decision else None,
         evidence_hash=str(getattr(evidence, "evidence_hash", "")) if proof else None,
@@ -222,6 +224,14 @@ def _guard(
         ),
         execution_attempt_id=(str(record.execution_attempt_id) if execution or proof else None),
         result_id=(str(record.result_id) if execution or proof else None),
+    )
+    return (
+        replace(
+            guard,
+            expected_recovery_authority_mac=str(record.recovery_authority_mac),
+        )
+        if recovery
+        else guard
     )
 
 
@@ -293,6 +303,11 @@ def test_f10_every_legal_transition_commits_once(
         record.execution_attempt_id = "attempt-c-1"
         record.result_id = "result-c-1"
         _bind_evidence(record)
+    if operation in {
+        PendingActionTransitionKind.RECOVER_APPROVE,
+        PendingActionTransitionKind.RECOVER_FAIL,
+    }:
+        record.recovery_authority_mac = "mac-authenticated-source"
     service.store.add(record)
     persist = _PersistRecorder()
 
@@ -308,11 +323,18 @@ def test_f10_every_legal_transition_commits_once(
                 execution=operation
                 in {
                     PendingActionTransitionKind.APPROVE,
+                    PendingActionTransitionKind.FAIL,
+                    PendingActionTransitionKind.OUTCOME_UNKNOWN,
                     PendingActionTransitionKind.RECOVER_APPROVE,
                     PendingActionTransitionKind.RECOVER_FAIL,
                     PendingActionTransitionKind.INVALIDATE_RECOVERY,
                 }
                 and bool(record.execution_attempt_id),
+                recovery=operation
+                in {
+                    PendingActionTransitionKind.RECOVER_APPROVE,
+                    PendingActionTransitionKind.RECOVER_FAIL,
+                },
             ),
         ),
         persist=persist,
@@ -662,6 +684,8 @@ def test_f10b_start_requires_explicit_nonce_and_proof_preconditions(
 def test_f10b_exact_terminal_repeat_is_no_write_idempotent(tmp_path: Path) -> None:
     service = _service(tmp_path)
     record = _record(status="failed", status_reason="approval_expired")
+    record.execution_attempt_id = ""
+    record.result_id = ""
     service.store.add(record)
     persist = _PersistRecorder()
 
@@ -679,6 +703,107 @@ def test_f10b_exact_terminal_repeat_is_no_write_idempotent(tmp_path: Path) -> No
     assert result.source_status == "failed"
     assert result.target_status == "failed"
     assert persist.calls == 0
+
+
+def test_f10c_exact_terminal_repeat_binds_operation_patch_and_guard(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    record.task_id = "task-1"
+    record.recovery_authority_mac = "mac-authenticated-source"
+    service.store.add(record)
+    persist = _PersistRecorder()
+    mutation = PendingActionMutation(
+        kind=PendingActionMutationKind.EXECUTION,
+        values={"provider_operation_id": "provider-1"},
+    )
+
+    committed = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="failure",
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+    repeated = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=PendingActionTransitionKind.APPROVE,
+            reason="execution_succeeded",
+            guard=_guard(record, execution=True),
+            scheduler_accounting_mode="failure",
+            mutation=mutation,
+        ),
+        persist=persist,
+    )
+
+    assert committed.changed is True
+    assert repeated.changed is False
+    assert persist.calls == 1
+    with pytest.raises(PendingActionTransitionError):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.RECOVER_APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True, recovery=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.RECOVERY,
+                    values={},
+                ),
+            ),
+            persist=persist,
+        )
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True),
+                scheduler_accounting_mode="failure",
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={
+                        "provider_operation_id": "provider-1",
+                        "recovery_effect_invoked": False,
+                    },
+                ),
+            ),
+            persist=persist,
+        )
+    with pytest.raises(PendingActionTransitionError, match="terminal_repeat_mismatch"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True),
+                scheduler_accounting_mode="ambiguous",
+                mutation=mutation,
+            ),
+            persist=persist,
+        )
+    with pytest.raises(PendingActionTransitionError):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=replace(
+                    _guard(record),
+                    expected_execution_attempt_id="attempt-stale",
+                    expected_result_id="result-stale",
+                ),
+            ),
+            persist=persist,
+        )
+    assert persist.calls == 1
 
 
 def test_f10b_transition_rejects_noncanonical_source_and_reason_without_write(
@@ -879,6 +1004,46 @@ def test_f10b_transition_uncommitted_failure_restores_exact_source(
         "decision-nonce",
     )
     assert _serializer_fields(record) == source_serializer_fields
+    assert service.degradation is None
+    assert persist.calls == 1
+
+
+def test_f10c_retained_terminal_uncommitted_failure_restores_exact_source(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    _set_serializer_fields(record, "source")
+    source = capture_pending_action_mutation(record)
+    service.store.add(record)
+    persist = _PersistRecorder(
+        [
+            _atomic_error(
+                service.store.path,
+                stage=AtomicWriteStage.WRITE,
+                committed=False,
+            )
+        ],
+        before_call=lambda _call: _set_serializer_fields(record, "target"),
+    )
+
+    with pytest.raises(AtomicWriteError):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=PendingActionTransitionKind.APPROVE,
+                reason="execution_succeeded",
+                guard=_guard(record, execution=True),
+                mutation=PendingActionMutation(
+                    kind=PendingActionMutationKind.EXECUTION,
+                    values={"provider_operation_id": "provider-1"},
+                ),
+                retain_target_on_error=True,
+            ),
+            persist=persist,
+        )
+
+    assert capture_pending_action_mutation(record) == source
     assert service.degradation is None
     assert persist.calls == 1
 
@@ -1404,7 +1569,7 @@ def test_f10c_transition_rejects_status_reason_override_before_write(
     service.store.add(record)
     persist = _PersistRecorder()
 
-    with pytest.raises(PendingActionTransitionError, match="transition_reason_mutation_forbidden"):
+    with pytest.raises(PendingActionTransitionError, match="mutation_value_invalid"):
         service.transition(
             PendingActionTransitionRequest(
                 record=record,
@@ -1421,6 +1586,168 @@ def test_f10c_transition_rejects_status_reason_override_before_write(
 
     assert (record.status, record.status_reason) == ("executing", "")
     assert persist.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "valid_reason"),
+    [
+        (PendingActionMutationKind.STAGE2, "confirmation_execution_started"),
+        (PendingActionMutationKind.SCHEDULER, "legacy_scheduler_accounting_intent_unknown"),
+        (PendingActionMutationKind.RECOVERY, "structural_retry_started"),
+        (PendingActionMutationKind.RECOVERY, "stable_idempotency_key_retry_started"),
+    ],
+)
+def test_f10c_metadata_status_reason_has_finite_values(
+    tmp_path: Path,
+    kind: PendingActionMutationKind,
+    valid_reason: str,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    record.recovery_authority_mac = "mac-authenticated-source"
+    service.store.add(record)
+    persist = _PersistRecorder()
+
+    with pytest.raises(PendingActionTransitionError, match="mutation_value_invalid"):
+        service.update(
+            PendingActionUpdateRequest(
+                record=record,
+                mutation=PendingActionMutation(
+                    kind=kind,
+                    values={"status_reason": "caller_selected_reason"},
+                ),
+                guard=_guard(
+                    record,
+                    execution=kind is PendingActionMutationKind.RECOVERY,
+                    recovery=kind is PendingActionMutationKind.RECOVERY,
+                ),
+            ),
+            persist=persist,
+        )
+    assert record.status_reason == ""
+    assert persist.calls == 0
+
+    assert service.update(
+        PendingActionUpdateRequest(
+            record=record,
+            mutation=PendingActionMutation(
+                kind=kind,
+                values={"status_reason": valid_reason},
+            ),
+            guard=_guard(
+                record,
+                execution=kind is PendingActionMutationKind.RECOVERY,
+                recovery=kind is PendingActionMutationKind.RECOVERY,
+            ),
+        ),
+        persist=persist,
+    )
+    assert record.status_reason == valid_reason
+    assert persist.calls == 1
+
+
+@pytest.mark.parametrize("as_transition", [False, True])
+def test_f10c_recovery_authority_fields_only_allow_canonical_invalidation(
+    tmp_path: Path,
+    as_transition: bool,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    record.recovery_authority_mac = "mac-authenticated-source"
+    service.store.add(record)
+    persist = _PersistRecorder()
+    request = PendingActionMutation(
+        kind=PendingActionMutationKind.RECOVERY,
+        values={"approval_evidence_hash": "minted-authority"},
+    )
+
+    with pytest.raises(PendingActionTransitionError, match="mutation_value_invalid"):
+        if as_transition:
+            service.transition(
+                PendingActionTransitionRequest(
+                    record=record,
+                    operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
+                    reason="uncertain_effect_requires_fresh_approval",
+                    guard=_guard(record, execution=True),
+                    mutation=request,
+                ),
+                persist=persist,
+            )
+        else:
+            service.update(
+                PendingActionUpdateRequest(
+                    record=record,
+                    mutation=request,
+                    guard=_guard(record, execution=True, recovery=True),
+                ),
+                persist=persist,
+            )
+
+    assert (record.status, record.approval_evidence_hash) == ("executing", "")
+    assert persist.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_status"),
+    [
+        (PendingActionTransitionKind.RECOVER_APPROVE, "approved"),
+        (PendingActionTransitionKind.RECOVER_FAIL, "failed"),
+        (PendingActionTransitionKind.OUTCOME_UNKNOWN, "outcome_unknown"),
+    ],
+)
+def test_f10c_recovery_completion_binds_verified_source_mac(
+    tmp_path: Path,
+    operation: PendingActionTransitionKind,
+    expected_status: str,
+) -> None:
+    service = _service(tmp_path)
+    record = _record(status="executing")
+    record.recovery_authority_mac = "mac-authenticated-source"
+    service.store.add(record)
+    persist = _PersistRecorder()
+    request = PendingActionMutation(
+        kind=PendingActionMutationKind.RECOVERY,
+        values={"recovery_result": {"ok": True}},
+    )
+
+    with pytest.raises(PendingActionTransitionError, match="recovery_authority"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=operation,
+                reason="recovered_structural_read",
+                guard=_guard(record, execution=True),
+                mutation=request,
+            ),
+            persist=persist,
+        )
+    stale_guard = _guard(record, execution=True, recovery=True)
+    record.recovery_authority_mac = "mac-replaced"
+    with pytest.raises(PendingActionTransitionError, match="recovery_authority"):
+        service.transition(
+            PendingActionTransitionRequest(
+                record=record,
+                operation=operation,
+                reason="recovered_structural_read",
+                guard=stale_guard,
+                mutation=request,
+            ),
+            persist=persist,
+        )
+    record.recovery_authority_mac = "mac-authenticated-source"
+    result = service.transition(
+        PendingActionTransitionRequest(
+            record=record,
+            operation=operation,
+            reason="recovered_structural_read",
+            guard=_guard(record, execution=True, recovery=True),
+            mutation=request,
+        ),
+        persist=persist,
+    )
+    assert result.changed is True
+    assert record.status == expected_status
+    assert persist.calls == 1
 
 
 def test_f10c_preparer_rejection_rolls_back_transition_and_sibling_patch(
@@ -1515,7 +1842,7 @@ def test_f10c_update_uncommitted_failure_restores_exact_record_and_sibling(
                         "recovery_effect_invoked": True,
                     },
                 ),
-                guard=_guard(record, execution=True),
+                guard=_guard(record, execution=True, recovery=True),
             ),
             persist=persist,
         )
@@ -1596,6 +1923,7 @@ def test_f10c_recovery_invalidation_binds_only_existing_partial_identity(
     service = _service(tmp_path)
     record = _record(status="approved")
     record.execution_attempt_id = ""
+    record.recovery_authority_mac = "mac-authenticated-source"
     service.store.add(record)
     mutation = PendingActionMutation(kind=PendingActionMutationKind.RECOVERY, values={})
 
@@ -1643,6 +1971,7 @@ def test_f10c_recovery_invalidation_binds_only_existing_partial_identity(
             guard=PendingActionTransitionGuard.for_record(
                 record,
                 result_id=record.result_id,
+                recovery_authority_mac=record.recovery_authority_mac,
             ),
         ),
         persist=persist,
