@@ -222,7 +222,11 @@ class DirectExecutionMixin(HandlerMixinBase):
                 Path(item) for item in getattr(self._config, "assistant_fs_roots", [])
             ),
         )
-        pep_decision = self._pep.evaluate(tool_name, arguments, context)
+        pep_decision = self._pep.for_policy(self._policy_loader.policy).evaluate(
+            tool_name,
+            arguments,
+            context,
+        )
         tool_definition = self._registry.get_tool(tool_name)
         if pep_decision.kind is not PEPDecisionKind.ALLOW:
             await self._publish_direct_rejection(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,11 @@ import pytest
 from shisad.assistant import web as web_module
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.core.api.rpc_registry import RpcHandlerGroup, rpc_method_descriptors
+from shisad.daemon.handlers import _direct_execution as direct_execution_module
+from shisad.security.control_plane.consensus import ConsensusDecision
+from shisad.security.control_plane.engine import ControlPlaneEvaluation
+from shisad.security.control_plane.schema import ControlDecision, RiskTier, build_action
+from shisad.security.control_plane.trace import PlanVerificationResult
 from tests.helpers.daemon import clear_remote_provider_env, daemon_harness
 
 _AWS_KEY = "AKIAABCDEFGHIJKLMNOP"
@@ -76,6 +82,15 @@ async def _audit_tool_names(client: Any, event_type: str) -> set[str]:
         str(event.get("data", {}).get("tool_name", ""))
         for event in result["events"]
         if str(event.get("data", {}).get("tool_name", ""))
+    }
+
+
+async def _direct_audit_session_ids(client: Any, event_type: str) -> set[str]:
+    result = await client.call("audit.query", {"event_type": event_type, "limit": 200})
+    return {
+        str(event.get("session_id", ""))
+        for event in result["events"]
+        if event.get("actor") == "direct_rpc" and str(event.get("session_id", ""))
     }
 
 
@@ -244,6 +259,11 @@ safe_output_domains:
         consensus = await _audit_tool_names(client, "ConsensusEvaluated")
         assert {"fs.read", "fs.write", "web.fetch"} <= consensus
 
+        created_session_ids = await _direct_audit_session_ids(client, "SessionCreated")
+        terminated_session_ids = await _direct_audit_session_ids(client, "SessionTerminated")
+        assert created_session_ids == terminated_session_ids
+        assert len(created_session_ids) == 16
+
         sessions = await client.call("session.list")
         assert [row for row in sessions["sessions"] if row.get("channel") == "direct_rpc"] == []
 
@@ -298,6 +318,208 @@ session_tool_allowlist:
         assert disallowed_tool["ok"] is False
         assert disallowed_tool["error"] == "pep:tool_not_permitted"
         assert "must not bypass policy" not in str(disallowed_tool)
+
+
+@pytest.mark.asyncio
+async def test_f12_direct_route_uses_policy_loaded_after_supported_reload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "README.md"
+    target.write_text("reload-sensitive content\n", encoding="utf-8")
+    initial_policy = """\
+version: "1"
+default_deny: false
+default_require_confirmation: false
+default_capabilities:
+  - file.read
+session_tool_allowlist:
+  - fs.read
+"""
+    tightened_policy = """\
+version: "1"
+default_deny: false
+default_require_confirmation: false
+default_capabilities:
+  - file.read
+session_tool_allowlist:
+  - web.search
+"""
+    async with daemon_harness(
+        tmp_path,
+        policy_text=initial_policy,
+        config_kwargs={"assistant_fs_roots": [workspace]},
+    ) as harness:
+        before_reload = await harness.call("fs.read", {"path": str(target)})
+        assert before_reload["ok"] is True
+        assert before_reload["content"] == "reload-sensitive content\n"
+
+        harness.config.policy_path.write_text(tightened_policy, encoding="utf-8")
+        reload_handler = signal.getsignal(signal.SIGHUP)
+        assert callable(reload_handler)
+        reload_handler(signal.SIGHUP, None)
+
+        after_reload = await harness.call("fs.read", {"path": str(target)})
+        assert after_reload["ok"] is False
+        assert after_reload["error"] == "pep:tool_not_permitted"
+        assert "reload-sensitive content" not in str(after_reload)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [ControlDecision.BLOCK, ControlDecision.REQUIRE_CONFIRMATION],
+    ids=["block", "require-confirmation"],
+)
+@pytest.mark.asyncio
+async def test_f12_direct_write_obeys_control_plane_no_effect_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: ControlDecision,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "control-denied.txt"
+    raw_reason = f"control:denied:{_AWS_KEY}:TOOL_OUTPUT_BEGIN"
+
+    async def _forced_control_plane(
+        _handler: Any,
+        method_name: str,
+        /,
+        *_args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if method_name == "begin_precontent_plan":
+            return "forced-direct-plan"
+        if method_name != "evaluate_action":
+            raise AssertionError(f"unexpected control-plane call: {method_name}")
+        trace_allowed = decision is not ControlDecision.BLOCK
+        trace_reason = "trace:ok" if trace_allowed else "trace:forced_block"
+        action = build_action(
+            tool_name=str(kwargs["tool_name"]),
+            arguments=dict(kwargs["arguments"]),
+            origin=kwargs["origin"],
+            risk_tier=kwargs["risk_tier"],
+            workspace_roots=[workspace],
+        )
+        return ControlPlaneEvaluation(
+            action=action,
+            trace_result=PlanVerificationResult(
+                allowed=trace_allowed,
+                reason_code=trace_reason,
+                risk_tier=RiskTier.LOW,
+            ),
+            consensus=ConsensusDecision(
+                decision=decision,
+                risk_tier=RiskTier.LOW,
+                reason_codes=[raw_reason],
+                votes=[],
+            ),
+            decision=decision,
+            reason_codes=[raw_reason],
+        )
+
+    monkeypatch.setattr(
+        direct_execution_module,
+        "_call_control_plane",
+        _forced_control_plane,
+    )
+    policy = """\
+version: "1"
+default_deny: false
+default_require_confirmation: false
+default_capabilities:
+  - file.write
+session_tool_allowlist:
+  - fs.write
+"""
+    async with daemon_harness(
+        tmp_path,
+        policy_text=policy,
+        config_kwargs={"assistant_fs_roots": [workspace]},
+    ) as harness:
+        result = await harness.call(
+            "fs.write",
+            {"path": str(target), "content": "must not write", "confirm": True},
+        )
+        assert result["ok"] is False
+        assert result["written"] is False
+        assert result["confirmation_required"] is (decision is ControlDecision.REQUIRE_CONFIRMATION)
+        assert _AWS_KEY not in result["error"]
+        assert "[REDACTED:aws_access_key]" in result["error"]
+        assert "TOOL_OUTPUT_BEGIN" not in result["error"]
+        assert "TOOL_OUTPUT_MARKER" in result["error"]
+        assert target.exists() is False
+
+        assert "fs.write" in await _audit_tool_names(harness.client, "ToolRejected")
+        assert "fs.write" not in await _audit_tool_names(harness.client, "ToolApproved")
+        assert "fs.write" not in await _audit_tool_names(harness.client, "ToolExecuted")
+
+
+@pytest.mark.asyncio
+async def test_f12_configured_direct_web_search_returns_useful_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    response_body = json.dumps(
+        {
+            "results": [
+                {
+                    "title": "F12 shared authority",
+                    "url": "https://docs.example.com/f12",
+                    "content": "A useful configured search result.",
+                    "engine": "fixture",
+                }
+            ]
+        }
+    ).encode()
+
+    def _fake_search_open(request: Any, *, timeout: float) -> _FakeHttpResponse:
+        _ = timeout
+        return _FakeHttpResponse(body=response_body, url=str(request.full_url))
+
+    monkeypatch.setattr(web_module, "_open_no_redirect", _fake_search_open)
+    policy = """\
+version: "1"
+default_deny: false
+default_require_confirmation: false
+default_capabilities:
+  - http.request
+session_tool_allowlist:
+  - web.search
+"""
+    async with daemon_harness(
+        tmp_path,
+        policy_text=policy,
+        config_kwargs={
+            "web_search_enabled": True,
+            "web_search_backend_url": "https://search.example.com",
+            "web_allowed_domains": ["search.example.com", "docs.example.com"],
+        },
+    ) as harness:
+        result = await harness.call(
+            "web.search",
+            {"query": "shared authority", "limit": 1},
+        )
+        assert result["ok"] is True
+        assert result["query"] == "shared authority"
+        assert result["results"] == [
+            {
+                "title": "F12 shared authority",
+                "url": "https://docs.example.com/f12",
+                "snippet": "A useful configured search result.",
+                "host": "docs.example.com",
+                "allowlisted_host": True,
+                "engine": "fixture",
+            }
+        ]
+        assert result["taint_labels"] == ["untrusted"]
+        assert "web.search" in await _audit_tool_names(harness.client, "ToolApproved")
+        assert "web.search" in await _audit_tool_names(harness.client, "ToolExecuted")
 
 
 @pytest.mark.asyncio
@@ -422,3 +644,14 @@ session_tool_allowlist:
         assert "[REDACTED:aws_access_key]" in result["error"]
         assert "TOOL_OUTPUT_BEGIN" not in result["error"]
         assert "TOOL_OUTPUT_MARKER" in result["error"]
+
+        created_session_ids = await _direct_audit_session_ids(
+            harness.client,
+            "SessionCreated",
+        )
+        terminated_session_ids = await _direct_audit_session_ids(
+            harness.client,
+            "SessionTerminated",
+        )
+        assert len(created_session_ids) == 1
+        assert created_session_ids == terminated_session_ids

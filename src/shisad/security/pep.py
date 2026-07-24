@@ -177,6 +177,23 @@ class PEP:
         self.egress_attempts: list[EgressAttempt] = []
         self.credential_attempts: list[CredentialUseAttempt] = []
 
+    def for_policy(self, policy: PolicyBundle) -> PEP:
+        """Return an equivalent evaluator bound to the supplied live policy."""
+
+        if policy is self._policy:
+            return self
+        evaluator = PEP(
+            policy,
+            self._tool_registry,
+            evidence_store=self._evidence_store,
+            credential_store=self._credential_store,
+            credential_audit_hook=self._credential_audit_hook,
+            mcp_trusted_servers=self._mcp_trusted_servers,
+        )
+        evaluator.egress_attempts = self.egress_attempts
+        evaluator.credential_attempts = self.credential_attempts
+        return evaluator
+
     def evaluate(
         self,
         tool_name: ToolName,
