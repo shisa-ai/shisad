@@ -59,12 +59,12 @@ async def test_m1_h0_internal_channel_ingress_stays_untrusted_even_with_trusted_
     try:
         handlers = DaemonControlHandlers(services=services)
         internal_ctx = RequestContext(is_internal_ingress=True, trust_level_override="trusted")
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="discord", user_id="alice", workspace_id="ws1"),
             internal_ctx,
         )
         sid = SessionId(created.session_id)
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="discord",
@@ -74,7 +74,7 @@ async def test_m1_h0_internal_channel_ingress_stays_untrusted_even_with_trusted_
             ),
             internal_ctx,
         )
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="discord",
@@ -147,7 +147,7 @@ async def test_m3_frontmatter_escapes_identity_newline_injection(
     try:
         handlers = DaemonControlHandlers(services=services)
         normal_ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(
                 channel="cli",
                 user_id="alice\nINJECTED_FRONTMATTER=1",
@@ -156,7 +156,7 @@ async def test_m3_frontmatter_escapes_identity_newline_injection(
             normal_ctx,
         )
         sid = SessionId(created.session_id)
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",

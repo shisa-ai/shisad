@@ -59,7 +59,7 @@ async def _session_and_impl(
     services: DaemonServices,
 ) -> tuple[SessionId, object]:
     handlers = DaemonControlHandlers(services=services)
-    created = await handlers.handle_session_create(
+    created = await handlers.session.handle_session_create(
         SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
         RequestContext(),
     )

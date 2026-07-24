@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import pytest
 
@@ -46,16 +47,16 @@ _GROUP_TYPES = {
     RpcHandlerGroup.TOOL_EXECUTION: ToolExecutionHandlers,
 }
 _GROUP_ATTRIBUTES = {
-    RpcHandlerGroup.ADMIN: "_admin",
-    RpcHandlerGroup.ASSISTANT: "_assistant",
-    RpcHandlerGroup.CONFIRMATION: "_confirmation",
-    RpcHandlerGroup.DASHBOARD: "_dashboard",
-    RpcHandlerGroup.MEMORY: "_memory",
-    RpcHandlerGroup.PLAN_STEPS: "_plan_steps",
-    RpcHandlerGroup.SESSION: "_session",
-    RpcHandlerGroup.SKILLS: "_skills",
-    RpcHandlerGroup.TASKS: "_tasks",
-    RpcHandlerGroup.TOOL_EXECUTION: "_tool_execution",
+    RpcHandlerGroup.ADMIN: "admin",
+    RpcHandlerGroup.ASSISTANT: "assistant",
+    RpcHandlerGroup.CONFIRMATION: "confirmation",
+    RpcHandlerGroup.DASHBOARD: "dashboard",
+    RpcHandlerGroup.MEMORY: "memory",
+    RpcHandlerGroup.PLAN_STEPS: "plan_steps",
+    RpcHandlerGroup.SESSION: "session",
+    RpcHandlerGroup.SKILLS: "skills",
+    RpcHandlerGroup.TASKS: "tasks",
+    RpcHandlerGroup.TOOL_EXECUTION: "tool_execution",
 }
 
 
@@ -114,8 +115,24 @@ def test_f11a_descriptor_routes_match_every_typed_group_signature() -> None:
         assert _annotation_name(signature.return_annotation) == descriptor.result_model.name
 
 
-def test_f11a_control_facade_binds_only_explicit_owned_groups() -> None:
-    facade = object.__new__(DaemonControlHandlers)
+def test_f11b_control_graph_exposes_every_typed_group() -> None:
+    annotations = get_type_hints(DaemonControlHandlers)
+
+    assert {attribute: annotations.get(attribute) for attribute in _GROUP_ATTRIBUTES.values()} == {
+        _GROUP_ATTRIBUTES[group]: owner_type for group, owner_type in _GROUP_TYPES.items()
+    }
+
+
+def test_f11b_control_graph_has_no_rpc_forwarding_methods() -> None:
+    assert [
+        name
+        for name, member in vars(DaemonControlHandlers).items()
+        if name.startswith("handle_") and callable(member)
+    ] == []
+
+
+def test_f11_control_graph_binds_only_explicit_owned_groups() -> None:
+    graph = object.__new__(DaemonControlHandlers)
     expected = {}
     for group, attribute in _GROUP_ATTRIBUTES.items():
         methods = {}
@@ -128,24 +145,23 @@ def test_f11a_control_facade_binds_only_explicit_owned_groups() -> None:
 
             methods[descriptor.handler_method] = _handler
             expected[descriptor.name] = _handler
-        setattr(facade, attribute, SimpleNamespace(**methods))
+        setattr(graph, attribute, SimpleNamespace(**methods))
 
     for descriptor in rpc_method_descriptors(test_mode=True):
-        assert facade.bind_rpc_handler(descriptor) is expected[descriptor.name]
+        assert graph.bind_rpc_handler(descriptor) is expected[descriptor.name]
 
 
-def test_f11a_control_facade_rejects_missing_explicit_route() -> None:
-    facade = object.__new__(DaemonControlHandlers)
+def test_f11_control_graph_rejects_missing_explicit_route() -> None:
+    graph = object.__new__(DaemonControlHandlers)
     descriptor = replace(
         rpc_method_descriptors(test_mode=False)[0],
         handler_method="handle_missing",
     )
     for attribute in _GROUP_ATTRIBUTES.values():
-        setattr(facade, attribute, SimpleNamespace())
-    facade._session = SimpleNamespace()
+        setattr(graph, attribute, SimpleNamespace())
 
     with pytest.raises(RuntimeError, match="control RPC handler does not resolve"):
-        facade.bind_rpc_handler(descriptor)
+        graph.bind_rpc_handler(descriptor)
 
 
 def test_f11a_manifest_is_the_same_immutable_descriptor_projection() -> None:

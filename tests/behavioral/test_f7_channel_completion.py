@@ -183,7 +183,7 @@ async def _ingest(
     recipient: str | None = None,
     external_user_id: str | None = None,
 ) -> Any:
-    return await handlers.handle_channel_ingest(
+    return await handlers.admin.handle_channel_ingest(
         ChannelIngestParams(
             message={
                 "channel": channel,
@@ -247,7 +247,7 @@ async def test_f7c_supported_channel_approval_completion(
 
         for channel in _CHANNELS:
             user_id = _channel_user(channel)
-            started = await handlers.handle_two_factor_register_begin(
+            started = await handlers.confirmation.handle_two_factor_register_begin(
                 TwoFactorRegisterBeginParams(
                     method="totp",
                     user_id=user_id,
@@ -255,7 +255,7 @@ async def test_f7c_supported_channel_approval_completion(
                 ),
                 ctx,
             )
-            enrolled = await handlers.handle_two_factor_register_confirm(
+            enrolled = await handlers.confirmation.handle_two_factor_register_confirm(
                 TwoFactorRegisterConfirmParams(
                     enrollment_id=started.enrollment_id,
                     verify_code=generate_totp_code(str(started.secret)),
@@ -302,7 +302,7 @@ async def test_f7c_supported_channel_approval_completion(
                 confirmed,
                 channel=channel,
             )
-            software_terminal = await handlers.handle_action_pending(
+            software_terminal = await handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=software_id),
                 ctx,
             )
@@ -373,7 +373,7 @@ async def test_f7c_supported_channel_approval_completion(
                 rejected,
                 channel=channel,
             )
-            rejection_terminal = await handlers.handle_action_pending(
+            rejection_terminal = await handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=rejection_id),
                 ctx,
             )
@@ -416,7 +416,7 @@ async def test_f7c_supported_channel_restart_and_binding(
                 channel=channel,
             )
             live_row = (
-                await first_handlers.handle_action_pending(
+                await first_handlers.confirmation.handle_action_pending(
                     ActionPendingParams(confirmation_id=live_id),
                     ctx,
                 )
@@ -461,7 +461,7 @@ async def test_f7c_supported_channel_restart_and_binding(
             expected = live_by_channel[channel]
             confirmation_id = expected["confirmation_id"]
             loaded = (
-                await restarted_handlers.handle_action_pending(
+                await restarted_handlers.confirmation.handle_action_pending(
                     ActionPendingParams(confirmation_id=confirmation_id),
                     ctx,
                 )
@@ -514,7 +514,7 @@ async def test_f7c_supported_channel_restart_and_binding(
                 channel=channel,
                 recipient=wrong_recipient,
             )
-            still_pending = await restarted_handlers.handle_action_pending(
+            still_pending = await restarted_handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=confirmation_id),
                 ctx,
             )
@@ -547,7 +547,7 @@ async def test_f7c_supported_channel_restart_and_binding(
             )
             assert duplicate.executed_actions == 0
             assert duplicate.delivery["reason"] == "inbound_replay_blocked"
-            terminal = await restarted_handlers.handle_action_pending(
+            terminal = await restarted_handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=confirmation_id),
                 ctx,
             )
@@ -571,13 +571,13 @@ async def test_f7c_supported_channel_restart_and_binding(
                 expired,
                 channel=channel,
             )
-            expired_row = await restarted_handlers.handle_action_pending(
+            expired_row = await restarted_handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=expired_id),
                 ctx,
             )
             assert expired_row.actions[0].lifecycle_state == "expired"
 
-            executed_events = await restarted_handlers.handle_audit_query(
+            executed_events = await restarted_handlers.dashboard.handle_audit_query(
                 AuditQueryParams(
                     event_type="ToolExecuted",
                     session_id=expected["session_id"],
@@ -601,13 +601,13 @@ async def test_f7c_supported_channel_restart_and_binding(
         final_handlers = DaemonControlHandlers(services=final)
         for channel in _CHANNELS:
             expected = live_by_channel[channel]
-            terminal = await final_handlers.handle_action_pending(
+            terminal = await final_handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=expected["confirmation_id"]),
                 ctx,
             )
             assert terminal.actions[0].lifecycle_state == "executed"
             assert terminal.actions[0].result_id == expected["result_id"]
-            expired = await final_handlers.handle_action_pending(
+            expired = await final_handlers.confirmation.handle_action_pending(
                 ActionPendingParams(confirmation_id=expired_by_channel[channel]),
                 ctx,
             )

@@ -1,9 +1,8 @@
 # Runtime Authority Map
 
-This document records the live authority and ownership boundaries at public
-development ref `d4d2f465d96ed93ac51a9cfbe2569d043b17747f` (2026-07-22).
-It describes the code as it exists at that ref; it is not a claim that every
-route already has one ideal owner.
+This document records selected live authority and ownership boundaries in the
+v0.8.1 development tree after the handler-graph and typed-RPC-registry
+consolidations. It is not a claim that every route already has one ideal owner.
 
 ## Reading the map
 
@@ -22,18 +21,18 @@ not claim the shared PEP/control-plane/audit pipeline.
 
 | Concern | Current owner | Important consumers / boundary |
 |---|---|---|
-| Runtime service graph | [`DaemonServices.build`](../src/shisad/daemon/services.py) | Builds stores, policy/PEP/control-plane clients, adapters, executors, scheduler, channel registry, and one handler instance used by A2A session ingress |
-| Live daemon surface | [`_serve_daemon`](../src/shisad/daemon/runner.py) | Builds another `DaemonControlHandlers`, registers local RPC methods, starts approval-web callbacks, channel receive pumps, scheduler delivery, and recovery |
-| Handler facade | [`DaemonControlHandlers`](../src/shisad/daemon/control_handlers.py) | Delegates RPC-facing methods to the implementation mixins |
+| Runtime service graph | [`DaemonServices.build`](../src/shisad/daemon/services.py) | Builds stores, policy/PEP/control-plane clients, adapters, executors, scheduler, channel registry, and one service-owned control-handler graph |
+| Live daemon surface | [`_serve_daemon`](../src/shisad/daemon/runner.py) | Consumes the service-owned graph, registers local RPC descriptors, and starts approval-web callbacks, channel receive pumps, scheduler delivery, and recovery |
+| Typed handler graph | [`DaemonControlHandlers`](../src/shisad/daemon/control_handlers.py) | Owns the single mutable implementation plus ten explicit typed domain-handler groups used by RPC binding and live ingress |
 | Mutable handler implementation | [`HandlerImplementation`](../src/shisad/daemon/handlers/_impl.py) | Loads pending actions, binds approval-web callbacks, and composes confirmation, session, tool, channel, scheduler, and assistant behavior |
 | Typed control API models | [`core/api/schema.py`](../src/shisad/core/api/schema.py) | Request/response validation for the local RPC surface |
-| Local method registry | [`_method_specs`](../src/shisad/daemon/runner.py) | Method name, handler, admin requirement, and params model; test mode adds the reset method |
+| Control RPC descriptors | [`core/api/rpc_registry.py`](../src/shisad/core/api/rpc_registry.py) | Immutable method name, params/result models, admin posture, grouped route, readiness, and production/test availability projected into runner registration and machine introspection |
 
-There are currently two live `DaemonControlHandlers` constructions: one during
-service assembly for signed A2A session ingress and one during daemon serving
-for local RPCs, channels, scheduler delivery, and approval-web callbacks. This
-is a documented duplicated mutable-owner boundary, not two intentionally
-independent pending-action stores.
+`DaemonServices.build()` constructs one `DaemonControlHandlers`. Local RPC
+registration binds descriptors against its grouped owners; signed A2A ingress
+binds the `session` group; channel receive pumps bind the `admin` group.
+Scheduler, recovery, delivery, and approval-web callbacks retain the same
+underlying `HandlerImplementation`.
 
 ## Route and enforcement map
 
@@ -68,13 +67,14 @@ preserves reconciliation evidence; it does not upgrade a provider's contract.
 
 ## RPC descriptor boundary
 
-The runner owns a literal method-spec table while the handler facade owns the
-matching `handle_*` methods and `core/api/schema.py` owns params/result models.
-At this ref the production table contains 122 base method specs, with one
-test-only reset method added in test mode, while the facade exposes the
-corresponding handler surface. These parallel declarations are the current
-registration authority and a known drift risk until one typed descriptor
-source generates the projections.
+[`core/api/rpc_registry.py`](../src/shisad/core/api/rpc_registry.py) owns one
+explicit immutable descriptor for each of 122 production methods plus the
+test-only reset method. Runner registration and machine introspection consume
+that same projection. Each descriptor binds through a closed group map to one
+of the ten typed owners held by `DaemonControlHandlers`; there is no parallel
+RPC-shaped forwarding facade. `core/api/schema.py` remains the typed
+request/result-model authority, and the planner tool registry remains a
+separate consumer with a different contract.
 
 ## Intent, secret, and URL boundaries
 
@@ -89,12 +89,16 @@ source generates the projections.
 
 ## Bounded consolidation sequence
 
-The next implementation batches are intentionally sequential so each can
-preserve a characterized user journey:
+The consolidation sequence is intentionally sequential so each step preserves
+a characterized user journey:
 
-1. Establish one live handler/composition owner.
-2. Establish one pending-action lifecycle owner.
-3. Generate RPC registration/facade/schema projections from typed descriptors.
+1. Establish one live handler/composition owner. *(Implemented in the current
+   tree.)*
+2. Establish one pending-action lifecycle owner. *(Implemented in the current
+   tree.)*
+3. Generate RPC registration and introspection from typed descriptors, then
+   remove the redundant forwarding facade. *(Implemented in the current
+   tree.)*
 4. Give direct operator RPCs one explicit enforcement and audit contract while
    preserving their authenticated functionality.
 5. Replace daemon prose intent interpretation with structured planner-produced

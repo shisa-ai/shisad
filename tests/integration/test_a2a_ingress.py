@@ -345,8 +345,8 @@ async def test_f9_a2a_pending_action_is_shared_with_control_confirmation(
         assert {key: terminal_action[key] for key in proof_requirement} == proof_requirement
 
         ingress = services.a2a_runtime._ingress
-        assert ingress._session_create.__self__ is services.control_handlers
-        assert ingress._session_message.__self__ is services.control_handlers
+        assert ingress._session_create.__self__ is services.control_handlers.session
+        assert ingress._session_message.__self__ is services.control_handlers.session
         assert services.approval_web._approval_complete_cb.__self__ is (
             services.control_handlers._impl
         )

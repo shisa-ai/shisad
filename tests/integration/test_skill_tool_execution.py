@@ -177,7 +177,7 @@ async def test_f4b_registered_skill_identity_authorizes_at_effect_boundary(
             tool=registered,
             arguments={"skill_name": "COMMAND-FIXTURE"},
         ) == ("command-fixture", "")
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )
@@ -228,7 +228,7 @@ async def test_f4b_skill_authorization_uses_sandbox_network_target_surface(
     try:
         services.skill_manager.activate_bundle(skill_path)
         handlers = DaemonControlHandlers(services=services)
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )
@@ -271,7 +271,7 @@ async def test_u42r_skill_authorization_covers_implicit_sandbox_filesystem_surfa
     try:
         services.skill_manager.activate_bundle(skill_path)
         handlers = DaemonControlHandlers(services=services)
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )
@@ -316,7 +316,7 @@ async def test_u42r_persisted_expert_policy_cannot_outlive_current_supported_pro
     )
     try:
         handlers = DaemonControlHandlers(services=services)
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )
@@ -436,7 +436,7 @@ async def test_dynamic_skill_operation_defaults_unknown_and_never_auto_retries(
         assert registered.retry_class == ToolRetryClass.UNKNOWN
 
         handlers = DaemonControlHandlers(services=services)
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )

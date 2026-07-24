@@ -82,12 +82,12 @@ async def test_m1_adversarial_command_to_task_handoff_stays_untrusted_and_zero_c
     try:
         handlers = DaemonControlHandlers(services=services)
         ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             ctx,
         )
         sid = SessionId(created.session_id)
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -97,7 +97,7 @@ async def test_m1_adversarial_command_to_task_handoff_stays_untrusted_and_zero_c
             ),
             ctx,
         )
-        result = await handlers.handle_session_message(
+        result = await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -207,12 +207,12 @@ async def test_m1_adversarial_task_output_returns_to_command_with_untrusted_tain
     try:
         handlers = DaemonControlHandlers(services=services)
         ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             ctx,
         )
         sid = SessionId(created.session_id)
-        delegated = await handlers.handle_session_message(
+        delegated = await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -241,7 +241,7 @@ async def test_m1_adversarial_task_output_returns_to_command_with_untrusted_tain
             TaintLabel.UNTRUSTED.value
         ]
 
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",

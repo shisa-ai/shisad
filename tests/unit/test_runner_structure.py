@@ -95,6 +95,15 @@ def test_f11a_runner_method_registration_is_registry_derived() -> None:
     assert "SessionCreateParams" not in method_source
 
 
+def test_f11b_live_internal_consumers_bind_typed_groups() -> None:
+    services_source = Path("src/shisad/daemon/services.py").read_text(encoding="utf-8")
+    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
+
+    assert "session_create=handlers.session.handle_session_create" in services_source
+    assert "session_message=handlers.session.handle_session_message" in services_source
+    assert "handlers=handlers.admin" in runner_source
+
+
 def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods() -> None:
     class _HandlerStub:
         def __getattr__(self, _name: str):  # type: ignore[no-untyped-def]

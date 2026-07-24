@@ -69,12 +69,12 @@ async def test_m5_cs7_context_scaffold_failure_sets_structured_degraded_marker(
     try:
         handlers = DaemonControlHandlers(services=services)
         ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             ctx,
         )
         sid = SessionId(created.session_id)
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -84,7 +84,7 @@ async def test_m5_cs7_context_scaffold_failure_sets_structured_degraded_marker(
             ),
             ctx,
         )
-        result = await handlers.handle_session_message(
+        result = await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -163,7 +163,7 @@ async def test_m5_cs8_episode_gap_compression_and_memory_retrieval_scaffold_path
     try:
         handlers = DaemonControlHandlers(services=services)
         ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             ctx,
         )
@@ -207,7 +207,7 @@ async def test_m5_cs8_episode_gap_compression_and_memory_retrieval_scaffold_path
             content="Project asteroid milestones include alpha launch and beta rollout.",
         )
 
-        result = await handlers.handle_session_message(
+        result = await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",
@@ -268,12 +268,12 @@ async def test_m5_rr2_context_scaffold_render_failure_sets_reason_code(
     try:
         handlers = DaemonControlHandlers(services=services)
         ctx = RequestContext()
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             ctx,
         )
         sid = SessionId(created.session_id)
-        await handlers.handle_session_message(
+        await handlers.session.handle_session_message(
             SessionMessageParams(
                 session_id=str(sid),
                 channel="cli",

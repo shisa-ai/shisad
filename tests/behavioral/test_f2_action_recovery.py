@@ -23,15 +23,9 @@ from shisad.daemon.services import DaemonServices
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv(
-        "SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1"
-    )
-    monkeypatch.setenv(
-        "SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1"
-    )
-    monkeypatch.setenv(
-        "SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1"
-    )
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
 
 def _config(tmp_path: Path) -> DaemonConfig:
@@ -59,7 +53,7 @@ async def test_f2_user_can_inspect_automatically_recovered_action_after_restart(
     services = await DaemonServices.build(config)
     try:
         handlers = DaemonControlHandlers(services=services)
-        created = await handlers.handle_session_create(
+        created = await handlers.session.handle_session_create(
             SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
             RequestContext(),
         )
@@ -88,7 +82,7 @@ async def test_f2_user_can_inspect_automatically_recovered_action_after_restart(
 
         handlers._impl._pending_state_fault_injector = _fail_terminal_write
         with pytest.raises(AtomicWriteError):
-            await handlers.handle_action_confirm(
+            await handlers.confirmation.handle_action_confirm(
                 ActionDecisionParams(
                     confirmation_id=pending.confirmation_id,
                     decision_nonce=pending.decision_nonce,
@@ -104,7 +98,7 @@ async def test_f2_user_can_inspect_automatically_recovered_action_after_restart(
         accounting_tasks = list(handlers._impl._recovery_accounting_tasks)
         if accounting_tasks:
             await asyncio.gather(*accounting_tasks)
-        listed = await handlers.handle_action_pending(
+        listed = await handlers.confirmation.handle_action_pending(
             ActionPendingParams(
                 confirmation_id=pending.confirmation_id,
                 status="all",
