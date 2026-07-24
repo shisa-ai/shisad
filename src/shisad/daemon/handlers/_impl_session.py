@@ -28,6 +28,7 @@ from shisad.core.action_state import (
     ActionIdentity,
     ActionOperationIdentity,
     ReminderStatusView,
+    current_turn_value_is_structurally_anchored,
     mint_action_operation_identity,
     reminder_create_arguments_are_current_turn_anchored,
     reminder_status_view_for_task,
@@ -76,6 +77,7 @@ from shisad.core.evidence import (
     format_evidence_stub,
 )
 from shisad.core.planner import (
+    PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE,
     ActionProposal,
     EvaluatedProposal,
     PlannerOutput,
@@ -2449,6 +2451,38 @@ def _is_clean_direct_trusted_cli_turn(validated: SessionMessageValidationResult)
     )
 
 
+def _proposal_has_current_turn_memory_write_authority(
+    *,
+    proposal: ActionProposal,
+    validated: SessionMessageValidationResult,
+) -> bool:
+    if "user_text:explicit_memory_intent" in proposal.data_sources:
+        return True
+    required_field = {
+        "note.create": "content",
+        "todo.create": "title",
+    }.get(canonical_tool_name(str(proposal.tool_name), warn_on_alias=False))
+    if (
+        required_field is None
+        or PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE not in proposal.data_sources
+        or validated.is_internal_ingress
+        or not validated.trusted_input
+        or not _is_trusted_command_chat_session(
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+            trust_level=validated.trust_level,
+        )
+        or not _is_clean_direct_trusted_cli_turn(validated)
+    ):
+        return False
+    return current_turn_value_is_structurally_anchored(
+        proposal.arguments.get(required_field),
+        normalized_current_turn=" ".join(
+            validated.firewall_result.sanitized_text.split()
+        ).casefold(),
+    )
+
+
 def _has_clean_trusted_turn_privileges(validated: SessionMessageValidationResult) -> bool:
     if validated.operator_owned_cli_input:
         return _is_clean_direct_trusted_cli_turn(validated)
@@ -4068,19 +4102,18 @@ def _rewrite_explicit_memory_intent_planner_result(
     ):
         return planner_result
 
-    if (
-        len(planner_result.evaluated) == len(explicit_proposals)
-        and all(
-            evaluated.proposal.tool_name == explicit_proposal.tool_name
-            and evaluated.proposal.arguments == explicit_proposal.arguments
-            and set(explicit_proposal.data_sources).issubset(evaluated.proposal.data_sources)
-            for evaluated, explicit_proposal in zip(
-                planner_result.evaluated,
-                explicit_proposals,
-                strict=True,
-            )
+    if len(planner_result.evaluated) == len(explicit_proposals) and all(
+        evaluated.proposal.tool_name == explicit_proposal.tool_name
+        and evaluated.proposal.arguments == explicit_proposal.arguments
+        and (
+            set(explicit_proposal.data_sources).issubset(evaluated.proposal.data_sources)
+            or PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE in evaluated.proposal.data_sources
         )
-        and planner_result.output.assistant_response == ""
+        for evaluated, explicit_proposal in zip(
+            planner_result.evaluated,
+            explicit_proposals,
+            strict=True,
+        )
     ):
         return planner_result
 
@@ -4096,7 +4129,17 @@ def _rewrite_explicit_memory_intent_planner_result(
         for explicit_proposal in explicit_proposals
     ]
     return PlannerResult(
-        output=PlannerOutput(assistant_response="", actions=explicit_proposals),
+        output=PlannerOutput(
+            assistant_response=(
+                planner_result.output.assistant_response
+                if (
+                    planner_result.provider_response is not None
+                    and planner_result.provider_response.trusted_origin == "local-fallback"
+                )
+                else ""
+            ),
+            actions=explicit_proposals,
+        ),
         evaluated=evaluated,
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
@@ -13679,6 +13722,10 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 continue
 
+            current_turn_memory_write_authority = _proposal_has_current_turn_memory_write_authority(
+                proposal=proposal,
+                validated=validated,
+            )
             execution_result = await self._execute_approved_action(
                 sid=sid,
                 user_id=validated.user_id,
@@ -13692,12 +13739,12 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities=planner_context.effective_caps,
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
-                user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
+                user_confirmed=current_turn_memory_write_authority,
                 persist_attempt_before_effect=True,
                 memory_ingress_context=(
                     _explicit_memory_ingress_context()
                     if (
-                        "user_text:explicit_memory_intent" in proposal.data_sources
+                        current_turn_memory_write_authority
                         and proposal_tool_name in {"note.create", "todo.create"}
                     )
                     else None

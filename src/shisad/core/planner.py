@@ -20,6 +20,7 @@ from shisad.security.pep import PEP, PolicyContext
 logger = logging.getLogger(__name__)
 
 PersonaTone = Literal["strict", "neutral", "friendly"]
+PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE = "planner:current_turn_tool_call"
 
 BASE_SYSTEM_PROMPT = (
     "You are the SHISAD assistant planner. "
@@ -66,6 +67,11 @@ BASE_SYSTEM_PROMPT = (
     "If the request clearly requires multiple independent read-only tools, emit "
     "all required tool calls in the same turn rather than stopping after the "
     "first tool. "
+    "Use the typed runtime tools for thread, note and memory, todo, reminder, "
+    "filesystem, web, browser, and evidence requests when they are available. "
+    "For requests with multiple independent actions, emit all corresponding "
+    "tool calls in the same turn; each remains subject to runtime policy and "
+    "confirmation. "
     "When answering without a tool call, format readable responses in Markdown "
     "and put list items on separate lines rather than inline numbered sentences. "
     "When using a tool, emit the tool call directly; do not narrate the intended "
@@ -597,7 +603,7 @@ class Planner:
                 "tool_name": canonical_name,
                 "arguments": dict(parsed_arguments),
                 "reasoning": "Content tool call extracted by planner fallback",
-                "data_sources": [],
+                "data_sources": [PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE],
             }
             try:
                 actions.append(ActionProposal.model_validate(payload))
@@ -791,7 +797,7 @@ class Planner:
                 "tool_name": canonical_name,
                 "arguments": parsed_arguments,
                 "reasoning": "Native tool call proposed by planner",
-                "data_sources": [],
+                "data_sources": [PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE],
             }
             try:
                 actions.append(ActionProposal.model_validate(payload))
