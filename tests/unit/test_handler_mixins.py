@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from shisad.core.api.schema import (
+    EmailReadParams,
+    EmailSearchParams,
     FsListParams,
     FsReadParams,
     FsWriteParams,
@@ -27,63 +30,44 @@ from shisad.core.api.schema import (
 )
 from shisad.core.events import SkillInstalled, SkillProfiled, SkillReviewRequested, SkillRevoked
 from shisad.daemon.context import RequestContext
+from shisad.daemon.handlers._direct_execution import (
+    _declared_domains,
+    _risk_tier_from_score,
+)
 from shisad.daemon.handlers._impl_assistant import AssistantImplMixin
 from shisad.daemon.handlers._impl_dashboard import DashboardImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers.assistant import AssistantHandlers
+from shisad.security.control_plane.schema import RiskTier
 
 
 @pytest.mark.asyncio
 async def test_assistant_impl_mixin_smoke() -> None:
-    class DummyWebToolkit:
-        def search(self, *, query: str, limit: int) -> dict[str, Any]:
-            return {"ok": True, "query": query, "limit": limit}
-
-        def fetch(self, *, url: str, snapshot: bool, max_bytes: int | None) -> dict[str, Any]:
-            return {"ok": True, "url": url, "snapshot": snapshot, "max_bytes": max_bytes}
-
-    class DummyRealitycheckToolkit:
-        def search(self, *, query: str, limit: int, mode: str) -> dict[str, Any]:
-            return {"ok": True, "query": query, "limit": limit, "mode": mode}
-
-        def read_source(self, *, path: str, max_bytes: int | None) -> dict[str, Any]:
-            return {"ok": True, "path": path, "max_bytes": max_bytes}
-
-    class DummyFsGitToolkit:
-        def list_dir(self, *, path: str, recursive: bool, limit: int) -> dict[str, Any]:
-            return {"ok": True, "path": path, "recursive": recursive, "limit": limit}
-
-        def read_file(self, *, path: str, max_bytes: int | None) -> dict[str, Any]:
-            return {"ok": True, "path": path, "max_bytes": max_bytes}
-
-        def write_file(self, *, path: str, content: str, confirm: bool) -> dict[str, Any]:
-            return {"ok": True, "path": path, "content": content, "confirm": confirm}
-
-        def git_status(self, *, repo_path: str) -> dict[str, Any]:
-            return {"ok": True, "repo_path": repo_path}
-
-        def git_diff(self, *, repo_path: str, ref: str, max_lines: int) -> dict[str, Any]:
-            return {"ok": True, "repo_path": repo_path, "ref": ref, "max_lines": max_lines}
-
-        def git_log(self, *, repo_path: str, limit: int) -> dict[str, Any]:
-            return {"ok": True, "repo_path": repo_path, "limit": limit}
-
     class DummyAssistant(AssistantImplMixin):
         def __init__(self) -> None:
-            self._web_toolkit = DummyWebToolkit()
-            self._realitycheck_toolkit = DummyRealitycheckToolkit()
-            self._fs_git_toolkit = DummyFsGitToolkit()
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def _execute_direct_tool_rpc(
+            self,
+            tool_name: str,
+            params: dict[str, Any],
+        ) -> dict[str, Any]:
+            payload = dict(params)
+            self.calls.append((tool_name, payload))
+            return {"ok": True, **payload}
 
     impl = DummyAssistant()
 
     assert (await impl.do_web_search({"query": "q", "limit": 2}))["limit"] == 2
-    assert (await impl.do_web_fetch({"url": "https://x", "snapshot": True, "max_bytes": "7"}))[
+    assert (await impl.do_web_fetch({"url": "https://x", "snapshot": True, "max_bytes": 7}))[
         "max_bytes"
     ] == 7
     assert (await impl.do_realitycheck_search({"query": "q", "limit": 1, "mode": "auto"}))[
         "mode"
     ] == "auto"
     assert (await impl.do_realitycheck_read({"path": "p", "max_bytes": 9}))["max_bytes"] == 9
+    assert (await impl.do_email_search({"query": "q", "limit": 2}))["query"] == "q"
+    assert (await impl.do_email_read({"message_id": "m1"}))["message_id"] == "m1"
     assert (await impl.do_fs_list({"path": ".", "recursive": False, "limit": 1}))["ok"] is True
     assert (await impl.do_fs_read({"path": "README.md"}))["path"] == "README.md"
     assert (await impl.do_fs_write({"path": "x", "content": "y", "confirm": True}))[
@@ -94,6 +78,103 @@ async def test_assistant_impl_mixin_smoke() -> None:
         "max_lines"
     ] == 10
     assert (await impl.do_git_log({"repo_path": ".", "limit": 3}))["limit"] == 3
+    assert [tool_name for tool_name, _payload in impl.calls] == [
+        "web.search",
+        "web.fetch",
+        "realitycheck.search",
+        "realitycheck.read",
+        "email.search",
+        "email.read",
+        "fs.list",
+        "fs.read",
+        "fs.write",
+        "git.status",
+        "git.diff",
+        "git.log",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_f12_direct_executor_rejects_missing_peer_and_admin_mismatch() -> None:
+    executor = getattr(AssistantImplMixin, "_execute_direct_tool_rpc", None)
+    assert callable(executor)
+
+    class AuthHarness(AssistantImplMixin):
+        pass
+
+    harness = AuthHarness()
+    unsupported = await executor(harness, "session.create", {})
+    assert unsupported == {
+        "ok": False,
+        "error": "direct_rpc_route_not_permitted",
+    }
+
+    missing_peer = await executor(harness, "fs.read", {"path": "README.md"})
+    assert missing_peer == {
+        "ok": False,
+        "error": "direct_rpc_authenticated_peer_required",
+    }
+    for malformed_uid in (True, -1, "1000"):
+        malformed_peer = await executor(
+            harness,
+            "fs.read",
+            {"path": "README.md", "_rpc_peer": {"uid": malformed_uid}},
+        )
+        assert malformed_peer == {
+            "ok": False,
+            "error": "direct_rpc_authenticated_peer_required",
+        }
+
+    invalid_params = await executor(
+        harness,
+        "fs.read",
+        {"_rpc_peer": {"uid": 1000}},
+    )
+    assert invalid_params == {
+        "ok": False,
+        "error": "direct_rpc_invalid_parameters",
+    }
+
+    denied_admin = await executor(
+        harness,
+        "fs.write",
+        {
+            "path": "README.md",
+            "content": "no effect",
+            "confirm": True,
+            "_rpc_peer": {"uid": 2**30},
+        },
+    )
+    assert denied_admin == {
+        "ok": False,
+        "written": False,
+        "confirmation_required": False,
+        "error": "direct_rpc_admin_peer_required",
+    }
+
+
+def test_f12_direct_risk_and_domain_inputs_are_finite_and_structural() -> None:
+    assert [_risk_tier_from_score(score) for score in (0.0, 0.45, 0.75, 0.9)] == [
+        RiskTier.LOW,
+        RiskTier.MEDIUM,
+        RiskTier.HIGH,
+        RiskTier.CRITICAL,
+    ]
+    tool = SimpleNamespace(
+        destinations=[
+            "https://API.Example.com/search",
+            "backend.example.net:443",
+            "*.wildcard.invalid",
+        ]
+    )
+    assert _declared_domains(
+        tool,
+        {"url": "https://User.Example.org/path"},
+    ) == [
+        "api.example.com",
+        "backend.example.net",
+        "user.example.org",
+    ]
 
 
 @pytest.mark.asyncio
@@ -123,6 +204,14 @@ async def test_assistant_handlers_smoke() -> None:
 
         async def do_realitycheck_read(self, payload: dict[str, Any]) -> dict[str, Any]:
             assert payload["path"] == "x"
+            return {"ok": True}
+
+        async def do_email_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+            assert payload["query"] == "mail"
+            return {"ok": True}
+
+        async def do_email_read(self, payload: dict[str, Any]) -> dict[str, Any]:
+            assert payload["message_id"] == "m1"
             return {"ok": True}
 
         async def do_fs_list(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +252,8 @@ async def test_assistant_handlers_smoke() -> None:
     assert (
         await handlers.handle_realitycheck_read(RealityCheckReadParams(path="x"), ctx)
     ).ok is True
+    assert (await handlers.handle_email_search(EmailSearchParams(query="mail"), ctx)).ok is True
+    assert (await handlers.handle_email_read(EmailReadParams(message_id="m1"), ctx)).ok is True
     assert (await handlers.handle_fs_list(FsListParams(path="."), ctx)).ok is True
     assert (await handlers.handle_fs_read(FsReadParams(path="README.md"), ctx)).ok is True
     assert (

@@ -17,11 +17,12 @@ Since LLMs won't separate instructions from data, the surrounding architecture m
 **On the shared planner path, the LLM is a planner, not an executor.** It can
 only *propose* actions. A separate control plane decides what executes from
 structured metadata (action types, resource identifiers, timing, and sequence
-patterns), rather than accepting model text as enforcement authority. The
-daemon also exposes authenticated local operator convenience RPCs; those are
-not planner proposals and do not claim the same shared PEP/control-plane path.
-Their exact route boundaries are documented below and in
-[AUTHORITY-MAP.md](AUTHORITY-MAP.md).
+patterns), rather than accepting model text as enforcement authority.
+Authenticated local operator convenience RPCs are already typed rather than
+planner proposals; their arguments enter the same PEP, control-plane, durable
+execution, audit, taint, and output-sanitization authorities through a
+short-lived internal session. Their exact route boundaries are documented
+below and in [AUTHORITY-MAP.md](AUTHORITY-MAP.md).
 
 ```
                        ┌─────────────────┐
@@ -297,24 +298,23 @@ These hold regardless of LLM behavior:
 
 ### Runtime route boundary
 
-The PEP list above applies to actions executed through the shared planner and
-administrative `tool.execute` path. It is not a universal claim about every
-callable daemon method.
+The PEP list above applies to actions executed through the shared planner,
+administrative `tool.execute`, and typed operator convenience effect paths. It
+is not a universal claim about every callable daemon method.
 
 | Route family | Authority and enforcement | Audit / observability |
 |---|---|---|
 | `session.message` from the local control socket or a trusted command channel | Authenticated ingress builds a session turn; planner-proposed actions enter shared policy, PEP, confirmation, control-plane, and tool-execution handling | Session, policy, confirmation, action, and execution events on the shared path |
 | Signed A2A `session.message` ingress | Fingerprint verification, replay protection, intent grants, and rate limits precede the same session/planner path; the remote principal's grants remain authoritative | A2A ingress evaluation plus shared-path events |
 | Administrative `tool.execute` | Local administrator RPC; invokes the shared PEP/control-plane/confirmation execution handler directly | Shared-path action and execution events |
-| Convenience `web.*`, `realitycheck.*`, `email.*`, `fs.*`, and `git.*` RPCs | Authenticated local operator routes with typed RPC schemas and toolkit-local safety checks; they currently bypass the shared planner PEP/control-plane path | Explicit `operator_bypass_rpc` process logging; no claim of shared-path audit equivalence |
+| Convenience `web.*`, `realitycheck.*`, `email.*`, `fs.*`, and `git.*` RPCs | Authenticated local operator routes resolve descriptor/admin posture, create a short-lived direct session, and enter PEP, control-plane, durable approved-action execution, then toolkit-local checks; explicit higher-assurance policy still binds and `fs.write` retains its `confirm` gate | Shared session, plan, action, execution, taint, and sanitized-output evidence; stable typed readiness and boundary results |
 | `action.confirm` / `action.reject` | Exact pending-action identity, decision nonce, actor/surface binding, required proof, and durable lifecycle checks | Durable decision and execution correlation on the pending-action path |
 | Scheduler and command-channel delivery | Background work and channel ingress use shared handler execution and scoped delivery bindings; ambiguous external outcomes are contained rather than silently replayed | Scheduler, delivery-attempt, and pending-action state plus shared-path events |
 
-This distinction is a current implementation boundary, not an assertion that
-operator routes are model-controllable. The convenience methods require the
-local authenticated control surface and retain their own input, filesystem,
-Git, URL, and configuration checks. Authority consolidation work must preserve
-their documented functionality while removing duplicated ownership.
+The convenience methods remain distinct typed operator ingress rather than
+model-controllable planner proposals. They require the local authenticated
+control surface and retain their input, filesystem, Git, URL, readiness, and
+configuration checks while sharing downstream decision and effect authority.
 
 ### Consensus Voting (5 independent voters)
 
@@ -551,11 +551,12 @@ subject to the explicit route boundary above.
 
 **Current boundaries and follow-up work**:
 
-- Authenticated operator convenience RPCs retain route-local safeguards and
-  logging but do not yet share one PEP/control-plane execution authority.
-- Live handler/composition ownership, pending-action lifecycle ownership, and
-  RPC method/schema descriptors still have duplicated authorities that are
-  being consolidated in bounded follow-up batches.
+- Authenticated operator convenience RPCs now share PEP/control-plane,
+  durable-action, audit, taint, and output authorities while retaining typed
+  ingress, descriptor/admin posture, and component-local readiness diagnostics.
+- Live handler/composition ownership, pending-action lifecycle ownership, RPC
+  descriptors, and direct effect execution each have one current runtime
+  authority; later refactors must preserve those boundaries.
 - Some explicit memory-intent routing still has daemon-side prose
   interpretation; the target is planner-produced structured intent without
   reducing user functionality.

@@ -24,6 +24,12 @@ filesystem root was the source checkout. The direct-RPC probe is deliberately
 fast; later safe tools can therefore appear as `GATED` when the behavioral
 sequence control sees the synthetic burst.
 
+In the current v0.8.1 tree, typed `web.*`, `realitycheck.*`, `email.*`,
+`fs.*`, and `git.*` convenience probes enter the shared PEP, control-plane,
+durable approved-action, audit, taint, and output-sanitization path through a
+short-lived direct session. This note updates route semantics only; it does not
+regenerate or relabel the dated environment-specific rows below.
+
 This host had no available `nsjail` or container sandbox backend. Under the
 default `supported` profile, sandbox doctor correctly reported `blocked` and
 the three command-backed probe rows failed closed with

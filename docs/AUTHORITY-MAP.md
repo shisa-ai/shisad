@@ -13,9 +13,11 @@ consolidations. It is not a claim that every route already has one ideal owner.
 - **Effect authority** invokes the concrete toolkit, adapter, or executor.
 - **Delivery authority** binds a result to its intended surface and target.
 
-The shared planner / `tool.execute` path and authenticated operator convenience
-RPCs are distinct today. The latter are not model-callable planner tools and do
-not claim the shared PEP/control-plane/audit pipeline.
+Authenticated operator convenience RPCs are not model-callable planner tools,
+but their typed arguments now enter the same PEP, control-plane, durable
+approved-action, audit, taint, and output-sanitization authorities as equivalent
+planner tools. They use short-lived internal sessions rather than replanning
+already-structured operator input.
 
 ## Composition owners
 
@@ -42,9 +44,9 @@ underlying `HandlerImplementation`.
 | Discord, Slack, Telegram, Matrix message | Connector identity allowlist and concrete workspace/channel/thread binding | [`channel_receive_pump`](../src/shisad/daemon/event_wiring.py) → channel ingest → same session/planner path | Exact connector/workspace/target binding; durable delivery attempts and scoped fallback |
 | Signed A2A session message | Public-key fingerprint, signature/replay checks, allowed-intent grant, and per-peer limits | A2A listener → service-time handler → same session/planner path under the remote principal's grants | A2A ingress-evaluation event plus shared-path response/audit |
 | Administrative `tool.execute` | Authenticated local admin RPC with typed params | Shared tool-execution handler → policy/PEP/control plane → confirmation or executor | Shared action/execution audit path |
-| Convenience `web.*` / `realitycheck.*` | Authenticated local operator RPC and typed params | [`_impl_assistant.py`](../src/shisad/daemon/handlers/_impl_assistant.py) → toolkit-local URL/configuration/result checks | RPC result and `operator_bypass_rpc` process log; no shared PEP/audit equivalence claim |
-| Convenience `email.*` | Authenticated local operator RPC and typed params | Assistant handler → configured local MsgVault toolkit with account/id constraints | RPC result and bypass log; MsgVault remains provider-sync authority |
-| Convenience `fs.*` / `git.*` | Authenticated local operator RPC, configured roots, managed/control-file exclusions, and bounded Git environment | Assistant handler → filesystem/Git toolkit | RPC result and bypass log; route-local path/Git protections apply |
+| Convenience `web.*` / `realitycheck.*` | Authenticated local operator RPC, descriptor posture, and typed params | [`_impl_assistant.py`](../src/shisad/daemon/handlers/_impl_assistant.py) → direct adapter → PEP/control plane → durable approved-action executor → toolkit URL/configuration/result checks | Short-lived direct session plus shared plan/action/execution audit; stable typed result |
+| Convenience `email.*` | Authenticated local operator RPC, descriptor posture, and typed params | Direct adapter → PEP/control plane → durable approved-action executor → configured local MsgVault toolkit | Shared action/execution audit and taint/output handling; MsgVault remains provider-sync authority |
+| Convenience `fs.*` / `git.*` | Authenticated local operator RPC, descriptor posture, configured roots, and managed/control-file exclusions; `fs.write` remains admin-only | Direct adapter → PEP/control plane → durable approved-action executor → filesystem/Git toolkit | Shared plan/action/execution audit; stable root, confirmation, and bounded-Git results |
 | `action.confirm` / `action.reject` | Admin RPC, trusted channel control command, or method-specific approval surface | Exact confirmation/action/nonce, actor/surface, proof, policy, and durable attempt checks → shared effect execution or terminal rejection | Decision, attempt, result, and delivery correlation remain durable across restart |
 | Scheduler run | Persisted task, capability snapshot, scheduler accounting, and due-state checks | Scheduler → shared handler/tool path; a risky action may become pending | Delivery uses the stored channel binding; uncertain effect/delivery disables or contains work |
 | Approval web | Capability link plus WebAuthn ceremony and origin checks | Bound callback into the active handler's pending-action decision path | Browser is WebAuthn-only; it is not a TOTP entry surface |
@@ -83,7 +85,7 @@ separate consumer with a different contract.
 | Explicit memory intent | Planner/session orchestration plus bounded daemon-side proposal builders in [`_impl_session.py`](../src/shisad/daemon/handlers/_impl_session.py) | The daemon still performs some prose interpretation; it is not yet purely structured planner output |
 | Ingress secret detection | [`security/firewall/secrets.py`](../src/shisad/security/firewall/secrets.py) and ingress taint consumers | Pattern coverage is not yet one canonical registry across every consumer |
 | Output secret handling | [`security/firewall/output.py`](../src/shisad/security/firewall/output.py) | Output redaction rules are not asserted identical to ingress or PEP DLP rules |
-| PEP argument DLP | [`security/pep.py`](../src/shisad/security/pep.py) | PEP argument checks are route-scoped and do not describe operator convenience RPCs |
+| PEP argument DLP | [`security/pep.py`](../src/shisad/security/pep.py) | Applies to planner, administrative tool execution, and typed operator convenience effects; it is not a universal claim about every daemon method |
 | URL syntax parsing | [`core/url_parsing.py`](../src/shisad/core/url_parsing.py) | Syntax normalization alone is not a complete SSRF/network authorization decision |
 | URL/network policy consumers | Provider base URLs, executor proxy, browser, web/reality-check toolkits, PEP, output firewall, approval origin, and A2A transports | Private-address, allowlist, redirect, DNS, and connect-path semantics are not yet derived from one canonical primitive |
 
@@ -100,7 +102,8 @@ a characterized user journey:
    remove the redundant forwarding facade. *(Implemented in the current
    tree.)*
 4. Give direct operator RPCs one explicit enforcement and audit contract while
-   preserving their authenticated functionality.
+   preserving their authenticated functionality. *(Implemented in the current
+   tree.)*
 5. Replace daemon prose intent interpretation with structured planner-produced
    intent.
 6. Establish canonical secret-detection and URL-safety primitives for the

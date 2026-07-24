@@ -12,6 +12,7 @@ from typing import get_type_hints
 
 import pytest
 
+from shisad.core.api import rpc_registry
 from shisad.core.api.rpc_registry import (
     RpcAvailability,
     RpcHandlerGroup,
@@ -101,6 +102,37 @@ def test_f11a_descriptor_manifest_matches_frozen_transport_contract() -> None:
     assert test_names.index("daemon.reset") == test_names.index("daemon.shutdown") + 1
     reset = test_mode[test_names.index("daemon.reset")]
     assert reset.availability is RpcAvailability.TEST_MODE
+
+
+def test_f12_assistant_route_lookup_is_descriptor_derived() -> None:
+    lookup = getattr(rpc_registry, "rpc_method_descriptor", None)
+    assert callable(lookup)
+
+    assistant = tuple(
+        descriptor
+        for descriptor in rpc_method_descriptors(test_mode=False)
+        if descriptor.handler_group is RpcHandlerGroup.ASSISTANT
+    )
+    assert [descriptor.name for descriptor in assistant] == [
+        "web.search",
+        "web.fetch",
+        "realitycheck.search",
+        "realitycheck.read",
+        "email.search",
+        "email.read",
+        "fs.list",
+        "fs.read",
+        "fs.write",
+        "git.status",
+        "git.diff",
+        "git.log",
+    ]
+    assert [descriptor.name for descriptor in assistant if descriptor.admin_only] == ["fs.write"]
+    assert all(lookup(descriptor.name) is descriptor for descriptor in assistant)
+    assert lookup("session.create").handler_group is RpcHandlerGroup.SESSION
+    assert lookup("daemon.reset") is None
+    assert lookup("daemon.reset", test_mode=True).availability is RpcAvailability.TEST_MODE
+    assert lookup("missing.route") is None
 
 
 def test_f11a_descriptor_routes_match_every_typed_group_signature() -> None:

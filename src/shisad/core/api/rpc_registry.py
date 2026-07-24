@@ -1141,6 +1141,25 @@ _DESCRIPTOR_NAMES = tuple(descriptor.name for descriptor in _RPC_METHOD_DESCRIPT
 if len(_DESCRIPTOR_NAMES) != len(set(_DESCRIPTOR_NAMES)):
     raise RuntimeError("control RPC descriptor names must be unique")
 
+_RPC_METHOD_DESCRIPTOR_BY_NAME = {
+    descriptor.name: descriptor for descriptor in _RPC_METHOD_DESCRIPTORS
+}
+
+
+def rpc_method_descriptor(
+    name: str,
+    *,
+    test_mode: bool = False,
+) -> RpcMethodDescriptor | None:
+    """Resolve one descriptor when it is available in the requested posture."""
+
+    descriptor = _RPC_METHOD_DESCRIPTOR_BY_NAME.get(name)
+    if descriptor is None:
+        return None
+    if descriptor.availability is RpcAvailability.TEST_MODE and not test_mode:
+        return None
+    return descriptor
+
 
 def rpc_method_descriptors(*, test_mode: bool = False) -> tuple[RpcMethodDescriptor, ...]:
     """Return the immutable registration projection for the runtime posture."""
