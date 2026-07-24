@@ -1963,6 +1963,29 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
     return snapshot
 
 
+def _without_recovery_execution_authority(
+    pending: PendingAction,
+    *,
+    preserve_authenticated_effect_posture: bool = False,
+) -> PendingAction:
+    return replace(
+        pending,
+        approval_evidence_hash="",
+        execution_authorization_kind="",
+        confirmation_evidence=None,
+        preflight_action=None,
+        merged_policy=None,
+        pep_context=None,
+        pep_elevation=None,
+        retry_descriptor=None,
+        provider_operation_id="",
+        recovery_result={},
+        recovery_effect_invoked=bool(
+            preserve_authenticated_effect_posture and pending.recovery_effect_invoked
+        ),
+    )
+
+
 def _neutralize_untrusted_recovery_event_identity(pending: PendingAction) -> None:
     pending.delivery_target = None
     pending.approval_task_envelope_id = ""
@@ -5614,8 +5637,7 @@ class HandlerImplementation(
                 recovery_authority_invalid = True
             if recovery_authority_invalid:
                 pruned_stale = True
-                pending.retry_descriptor = None
-                pending.recovery_effect_invoked = False
+                pending = _without_recovery_execution_authority(pending)
                 pending.recovery_accounting_pending = recovery_rejection_accounting_required
                 if recovery_rejection_accounting_required:
                     _ensure_trusted_recovery_event_identity_marker(pending)
@@ -6486,22 +6508,9 @@ class HandlerImplementation(
         *,
         preserve_authenticated_effect_posture: bool = False,
     ) -> None:
-        authenticated_effect_invoked = bool(
-            preserve_authenticated_effect_posture and pending.recovery_effect_invoked
-        )
-        invalidated = replace(
+        invalidated = _without_recovery_execution_authority(
             pending,
-            approval_evidence_hash="",
-            execution_authorization_kind="",
-            confirmation_evidence=None,
-            preflight_action=None,
-            merged_policy=None,
-            pep_context=None,
-            pep_elevation=None,
-            retry_descriptor=None,
-            provider_operation_id="",
-            recovery_result={},
-            recovery_effect_invoked=authenticated_effect_invoked,
+            preserve_authenticated_effect_posture=preserve_authenticated_effect_posture,
         )
         _neutralize_untrusted_recovery_event_identity(invalidated)
         _neutralize_untrusted_scheduler_accounting_intent(invalidated)

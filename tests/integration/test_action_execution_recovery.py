@@ -494,6 +494,18 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         finally:
             await replayed.shutdown()
 
+    assert terminal.approval_evidence_hash == ""
+    assert terminal.execution_authorization_kind == ""
+    assert terminal.confirmation_evidence is None
+    assert terminal.preflight_action is None
+    assert terminal.merged_policy is None
+    assert terminal.pep_context is None
+    assert terminal.pep_elevation is None
+    assert terminal.retry_descriptor is None
+    assert terminal.provider_operation_id == ""
+    assert terminal.recovery_result == {}
+    assert terminal.recovery_effect_invoked is False
+
     recovery_events = [row for row in _audit_rows(config) if row.get("actor") == "recovery"]
     assert [row.get("event_type") for row in recovery_events] == ["ToolRejected"]
     assert all(
