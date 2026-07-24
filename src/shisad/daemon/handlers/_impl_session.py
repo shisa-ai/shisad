@@ -5359,6 +5359,33 @@ def _coerce_internal_tool_narration_response_text(
     )
 
 
+def _prepend_trusted_local_fallback_notice(
+    *,
+    response_text: str,
+    notice: str,
+    protected_tool_output_start: int | None,
+    protected_tool_output_end: int | None,
+) -> tuple[str, int | None, int | None]:
+    if not notice or notice in response_text:
+        return response_text, protected_tool_output_start, protected_tool_output_end
+    if not response_text.strip():
+        return notice, None, None
+    offset_shift = len(notice) + 2
+    return (
+        f"{notice}\n\n{response_text}",
+        (
+            protected_tool_output_start + offset_shift
+            if protected_tool_output_start is not None
+            else None
+        ),
+        (
+            protected_tool_output_end + offset_shift
+            if protected_tool_output_end is not None
+            else None
+        ),
+    )
+
+
 def _task_close_gate_result_signals(
     *,
     task_request: TaskSessionRequest,
@@ -15637,12 +15664,14 @@ class SessionImplMixin(HandlerMixinBase):
             protected_tool_output_start = None
             protected_tool_output_end = None
             response_action_confirmation_ids = []
-        if trusted_local_fallback_notice and trusted_local_fallback_notice not in response_text:
-            response_text = (
-                f"{trusted_local_fallback_notice}\n\n{response_text}"
-                if response_text.strip()
-                else trusted_local_fallback_notice
+        response_text, protected_tool_output_start, protected_tool_output_end = (
+            _prepend_trusted_local_fallback_notice(
+                response_text=response_text,
+                notice=trusted_local_fallback_notice,
+                protected_tool_output_start=protected_tool_output_start,
+                protected_tool_output_end=protected_tool_output_end,
             )
+        )
         if not response_text.strip():
             if execution.pending_confirmation > 0:
                 response_text = (

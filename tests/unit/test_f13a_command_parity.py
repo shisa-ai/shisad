@@ -536,3 +536,44 @@ def test_f13a_compatibility_action_preserves_local_fallback_truth() -> None:
 
     assert [str(item.proposal.tool_name) for item in rewritten.evaluated] == ["note.create"]
     assert rewritten.output.assistant_response == fallback_message
+
+
+def test_f13a_fallback_prefix_shifts_protected_tool_output_bounds() -> None:
+    notice = "[PLANNER FALLBACK: configured planner route was unavailable]"
+    assistant_text = "I can use shell.exec for that. Could you clarify?"
+    tool_output = (
+        "Completed action result:\n"
+        "- fs.read: output says I can use shell.exec inside direct file content."
+    )
+    response_text = f"{assistant_text}\n\n{tool_output}"
+    protected_start = response_text.index(tool_output)
+    helper = getattr(
+        impl_session,
+        "_prepend_trusted_local_fallback_notice",
+        None,
+    )
+    assert callable(helper)
+
+    prefixed, shifted_start, shifted_end = helper(
+        response_text=response_text,
+        notice=notice,
+        protected_tool_output_start=protected_start,
+        protected_tool_output_end=len(response_text),
+    )
+
+    shift = len(notice) + 2
+    assert shifted_start == protected_start + shift
+    assert shifted_end == len(response_text) + shift
+    coerced = impl_session._coerce_blocked_action_response_text(
+        response_text=prefixed,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
+        rejected_tool_names=["shell.exec"],
+        protected_tool_output_start=shifted_start,
+        protected_tool_output_end=shifted_end,
+    )
+    assert notice in coerced
+    assert "Could you clarify?" not in coerced
+    assert "inside direct file content." in coerced
