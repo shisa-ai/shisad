@@ -9,7 +9,7 @@ Accepted (2026-02-10)
 The daemon exposes two paths for tool execution:
 
 1. **Planner path** (`_execute_via_sandbox`): Policy is derived from `ToolDefinition` + `PolicyBundle`. The PEP has already approved the action.
-2. **External API path** (`handle_tool_execute`): Policy parameters (filesystem, network, environment, limits) are caller-declared via JSON-RPC params.
+2. **External API path** (`tool.execute`, routed by `ToolExecutionHandlers.handle_tool_execute`): Policy parameters (filesystem, network, environment, limits) are caller-declared via JSON-RPC params.
 
 The external API path has transport-layer auth (admin peer UID check), so only local processes running as the same user can call it. However, a compromised local process could silently widen policy — for example, `allow_network=True, allowed_domains=["*"]`, `degraded_mode=fail_open`, `security_critical=False` — bypassing everything declared in `policy.yaml`.
 
@@ -96,8 +96,8 @@ When an orchestrator legitimately needs wider access than global policy defaults
 
 ## Consequences
 
-- `handle_tool_execute` applies merge before constructing `SandboxConfig`
-- The merge function becomes shared infrastructure between `handle_tool_execute` (M4.7) and scope layering (M4.9)
+- `HandlerImplementation.do_tool_execute` applies merge before constructing `SandboxConfig`
+- The merge function becomes shared infrastructure between `HandlerImplementation.do_tool_execute` (M4.7) and scope layering (M4.9)
 - External API callers can request narrower policy but never wider
 - Caller-selected `sandbox_type` is treated as a request only; weaker-than-floor requests are rejected and audited
 - `policy.yaml` becomes authoritative — auditors can trust it
@@ -108,5 +108,6 @@ When an orchestrator legitimately needs wider access than global policy defaults
 
 - `src/shisad/security/policy.py` — `PolicyBundle`, `SandboxPolicy`
 - `src/shisad/core/tools/schema.py` — `ToolDefinition` (destinations, sandbox_type)
-- `src/shisad/daemon/control_handlers.py` — `handle_tool_execute` (caller-declared path)
+- `src/shisad/daemon/handlers/tool_execution.py` — `ToolExecutionHandlers.handle_tool_execute` (typed JSON-RPC entry point)
+- `src/shisad/daemon/handlers/_impl_tool_execution.py` — `HandlerImplementation.do_tool_execute` (caller-declared execution path)
 - Early implementation notes — M4.7 (policy merge foundation), M4.9 (policy compiler)
