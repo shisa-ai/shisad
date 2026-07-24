@@ -240,6 +240,22 @@ async def test_f13a_command_family_matrix_has_canonical_current_turn_source(
 
 
 @pytest.mark.asyncio
+async def test_f13a_native_call_rejects_registered_tool_omitted_from_manifest() -> None:
+    planner, provider, tools = _planner(
+        "native",
+        [_provider_message("native", [("note.create", {"content": "hidden"})])],
+    )
+    current_manifest = [
+        item for item in tools if item["function"]["name"] == openai_function_name("thread.list")
+    ]
+
+    with pytest.raises(PlannerOutputError, match="strict schema validation"):
+        await planner.propose("list threads", PolicyContext(), tools=current_manifest)
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("posture", _POSTURES)
 async def test_f13a_command_multi_call_preserves_order_source_and_pep(
     posture: str,

@@ -8277,6 +8277,30 @@ async def test_finalize_response_uses_totp_aware_cli_fallback_for_totp_pending_a
 
 
 @pytest.mark.asyncio
+async def test_f13a_finalize_preserves_local_fallback_after_memory_ack() -> None:
+    harness = _FinalizeEvidenceHarness()
+    notice = "[PLANNER FALLBACK: CONFIGURATION] No model. Configure a planner route."
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="note.create",
+                success=True,
+                content=json.dumps({"ok": True, "note_id": "note-1"}),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=notice,
+        content="remember that I like tea",
+        provider_response_model="local-fallback",
+        provider_response_trusted_origin="local-fallback",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert str(response["response"]).startswith(f"{notice}\n\nI've remembered that.")
+
+
+@pytest.mark.asyncio
 async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pending_actions() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {

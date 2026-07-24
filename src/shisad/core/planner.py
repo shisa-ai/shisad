@@ -373,7 +373,15 @@ class Planner:
         tools_payload: list[dict[str, Any]] | None = None,
     ) -> PlannerOutput:
         assistant_response = message.content.strip()
-        actions, native_invalid = self._extract_tool_calls(message.tool_calls)
+        allowed_native_tools = (
+            self._runtime_tool_names_from_payload(tools_payload)
+            if tools_payload is not None
+            else None
+        )
+        actions, native_invalid = self._extract_tool_calls(
+            message.tool_calls,
+            allowed_tool_names=allowed_native_tools,
+        )
         if self._schema_strict_mode and native_invalid > 0:
             raise PlannerOutputError(
                 "Planner output failed strict schema validation for native tool_calls"
@@ -749,6 +757,8 @@ class Planner:
     def _extract_tool_calls(
         self,
         raw_tool_calls: list[dict[str, Any]],
+        *,
+        allowed_tool_names: set[str] | None = None,
     ) -> tuple[list[ActionProposal], int]:
         actions: list[ActionProposal] = []
         invalid_count = 0
@@ -769,6 +779,13 @@ class Planner:
                 continue
             canonical_name = self._resolve_runtime_tool_name(name_raw)
             if not canonical_name:
+                invalid_count += 1
+                continue
+            if allowed_tool_names is not None and canonical_name not in allowed_tool_names:
+                logger.debug(
+                    "Dropping native tool call for non-runtime tool '%s'",
+                    canonical_name,
+                )
                 invalid_count += 1
                 continue
             parsed_arguments = self._parse_tool_arguments(function.get("arguments"))

@@ -15237,6 +15237,16 @@ class SessionImplMixin(HandlerMixinBase):
         )
         response_text = planner_dispatch.planner_result.output.assistant_response
         initial_planner_response_text = response_text.strip()
+        provider_response = planner_dispatch.planner_result.provider_response
+        trusted_local_fallback_notice = (
+            initial_planner_response_text
+            if (
+                provider_response is not None
+                and provider_response.trusted_origin == "local-fallback"
+                and initial_planner_response_text.startswith("[PLANNER FALLBACK:")
+            )
+            else ""
+        )
         tool_output_summary = ""
         protected_tool_output_start: int | None = None
         protected_tool_output_end: int | None = None
@@ -15285,14 +15295,7 @@ class SessionImplMixin(HandlerMixinBase):
         system_generated_pending_confirmation_response = False
         response_action_confirmation_ids: list[str] = []
         if execution.pending_confirmation_ids:
-            fallback_notice = ""
-            provider_response = planner_dispatch.planner_result.provider_response
-            if (
-                provider_response is not None
-                and provider_response.trusted_origin == "local-fallback"
-                and response_text.strip().startswith("[PLANNER FALLBACK:")
-            ):
-                fallback_notice = response_text.strip()
+            fallback_notice = trusted_local_fallback_notice
             pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
                 user_id=validated.user_id,
@@ -15634,6 +15637,12 @@ class SessionImplMixin(HandlerMixinBase):
             protected_tool_output_start = None
             protected_tool_output_end = None
             response_action_confirmation_ids = []
+        if trusted_local_fallback_notice and trusted_local_fallback_notice not in response_text:
+            response_text = (
+                f"{trusted_local_fallback_notice}\n\n{response_text}"
+                if response_text.strip()
+                else trusted_local_fallback_notice
+            )
         if not response_text.strip():
             if execution.pending_confirmation > 0:
                 response_text = (
