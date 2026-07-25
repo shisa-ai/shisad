@@ -13,6 +13,7 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import (
     Capability,
+    CredentialRef,
     PEPDecision,
     PEPDecisionKind,
     TaintLabel,
@@ -71,9 +72,13 @@ def dlp_pep() -> PEP:
 
 
 def _evaluate_payload(pep: PEP, value: str) -> PEPDecision:
+    return _evaluate_structured_payload(pep, {"credential": value})
+
+
+def _evaluate_structured_payload(pep: PEP, payload: dict[str, object]) -> PEPDecision:
     return pep.evaluate(
         ToolName("submit_data"),
-        {"payload": {"credential": value}},
+        {"payload": payload},
         PolicyContext(capabilities={Capability.FILE_READ}),
     )
 
@@ -177,8 +182,85 @@ def test_f14a_all_consumers_take_their_distinct_fail_closed_action(
     decision = _evaluate_payload(dlp_pep, case.value)
     assert decision.kind == PEPDecisionKind.REJECT
     assert decision.reason_code == "pep:argument_dlp"
-    assert "payload.credential" in decision.reason
+    assert "Argument 'payload'" in decision.reason
     assert case.value not in decision.reason
+
+
+def test_f14a_output_url_diagnostics_redact_canonical_matches() -> None:
+    github = SECRET_CASES[2]
+    alerts: list[dict[str, object]] = []
+    output = OutputFirewall(
+        safe_domains=["example.com"],
+        alert_hook=lambda payload: alerts.append(payload),
+    ).inspect(f"https://example.com/upload?token={github.value}")
+
+    assert output.url_findings
+    assert github.value not in json.dumps(output.model_dump(mode="json"), sort_keys=True)
+    assert f"[REDACTED:{github.kind}]" in output.url_findings[0].url
+    assert alerts
+    assert github.value not in json.dumps(alerts, sort_keys=True)
+
+    host_output = OutputFirewall(safe_domains=["example.com"]).inspect(
+        f"https://{github.value}.example.com/upload"
+    )
+    assert github.value not in json.dumps(host_output.model_dump(mode="json"), sort_keys=True)
+    assert f"[REDACTED:{github.kind}]" in host_output.url_findings[0].host
+
+
+@pytest.mark.parametrize("case", SECRET_CASES[-2:], ids=lambda case: case.kind)
+def test_f14a_pep_rejects_canonical_matches_in_deep_containers(
+    case: SecretCase,
+    dlp_pep: PEP,
+) -> None:
+    decision = _evaluate_structured_payload(
+        dlp_pep,
+        {"outer": [{"credential": case.value}]},
+    )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason_code == "pep:argument_dlp"
+    assert case.value not in decision.reason
+
+
+def test_f14a_pep_diagnostic_omits_untrusted_nested_keys(dlp_pep: PEP) -> None:
+    jwt = SECRET_CASES[-2].value
+    decision = _evaluate_structured_payload(dlp_pep, {jwt: jwt})
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason == (
+        "Blocked by DLP policy: Argument 'payload' appears to contain a raw secret"
+    )
+    assert jwt not in decision.reason
+
+
+def test_f14a_recursive_argument_walker_preserves_credential_ref_scope(
+    dlp_pep: PEP,
+) -> None:
+    baseline_shape = {"payload": {"credential_ref": "synthetic-ref"}}
+    deep_shape = {"payload": {"auth": {"credential_ref": "synthetic-ref"}}}
+    nested_list_shape = {"payload": {"credential_ref": ["synthetic-ref"]}}
+
+    assert dlp_pep._extract_credential_refs(baseline_shape) == [CredentialRef("synthetic-ref")]
+    assert dlp_pep._extract_credential_refs(deep_shape) == []
+    assert dlp_pep._extract_credential_refs(nested_list_shape) == []
+
+
+def test_f14a_recursive_argument_walker_bounds_container_cycles(dlp_pep: PEP) -> None:
+    jwt = SECRET_CASES[-2].value
+    dictionary_cycle: dict[str, object] = {}
+    dictionary_cycle["self"] = dictionary_cycle
+    dictionary_cycle["credential"] = jwt
+    list_cycle: list[object] = []
+    list_cycle.append(list_cycle)
+    list_cycle.append(jwt)
+
+    decision = _evaluate_structured_payload(
+        dlp_pep,
+        {"dictionary": dictionary_cycle, "sequence": list_cycle},
+    )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert jwt not in decision.reason
 
 
 def test_f14a_benign_lookalikes_remain_usable(

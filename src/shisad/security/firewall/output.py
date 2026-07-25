@@ -164,13 +164,7 @@ class OutputFirewall:
     def inspect(self, text: str, *, context: dict[str, Any] | None = None) -> OutputFirewallResult:
         normalized = normalize_text(text)
         reason_codes: list[str] = []
-        findings: list[str] = []
-        sanitized = normalized
-
-        for pattern in SECRET_PATTERNS:
-            if pattern.regex.search(sanitized):
-                findings.append(pattern.kind)
-                sanitized = pattern.regex.sub(f"[REDACTED:{pattern.kind}]", sanitized)
+        sanitized, findings = self._redact_canonical_secrets(normalized)
         if findings:
             reason_codes.append("secret_redaction")
 
@@ -243,14 +237,25 @@ class OutputFirewall:
             )
         return result
 
+    @staticmethod
+    def _redact_canonical_secrets(text: str) -> tuple[str, list[str]]:
+        redacted = text
+        findings: list[str] = []
+        for pattern in SECRET_PATTERNS:
+            if pattern.regex.search(redacted):
+                findings.append(pattern.kind)
+                redacted = pattern.regex.sub(f"[REDACTED:{pattern.kind}]", redacted)
+        return redacted, findings
+
     def _inspect_urls(self, text: str) -> list[UrlFinding]:
         findings: list[UrlFinding] = []
         for matched in _URL_RE.findall(text):
+            redacted_url, _secret_kinds = self._redact_canonical_secrets(matched)
             parsed = safe_urlparse(matched)
             if parsed is None:
                 findings.append(
                     UrlFinding(
-                        url=matched,
+                        url=redacted_url,
                         host="",
                         allowed=False,
                         suspicious=True,
@@ -259,23 +264,25 @@ class OutputFirewall:
                 )
                 continue
             host = safe_parsed_hostname(parsed)
+            redacted_host, _host_secret_kinds = self._redact_canonical_secrets(host)
             allowed = any(host_matches(host, domain) for domain in self.safe_domains)
             suspicious_reason = self._suspicious_reason(parsed, host=host, allowed=allowed)
             suspicious = bool(suspicious_reason)
             reason = suspicious_reason or ("not_allowlisted" if not allowed else "")
             findings.append(
                 UrlFinding(
-                    url=matched,
-                    host=host,
+                    url=redacted_url,
+                    host=redacted_host,
                     allowed=allowed,
                     suspicious=suspicious,
                     reason=reason,
                 )
             )
         for matched in _DATA_URI_RE.findall(text):
+            redacted_url, _secret_kinds = self._redact_canonical_secrets(matched)
             findings.append(
                 UrlFinding(
-                    url=matched,
+                    url=redacted_url,
                     host="data",
                     allowed=False,
                     suspicious=True,

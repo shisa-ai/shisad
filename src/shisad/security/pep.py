@@ -50,6 +50,7 @@ _READ_MOSTLY_BROWSER_TOOLS = frozenset(
         "browser.end_session",
     }
 )
+_ArgumentPath = tuple[str | int, ...]
 
 
 def _normalize_mcp_server_ids(values: Iterable[str] | None) -> set[str]:
@@ -780,10 +781,14 @@ class PEP:
 
     def _check_argument_dlp(self, arguments: dict[str, Any]) -> list[str]:
         issues: list[str] = []
-        for key, value in self._iter_string_arguments(arguments):
+        for path, value in self._iter_string_arguments(
+            arguments,
+            max_container_depth=None,
+        ):
             for pattern in SECRET_PATTERNS:
                 if pattern.regex.search(value):
-                    issues.append(f"Argument '{key}' appears to contain a raw secret")
+                    argument_name = path[0] if path and isinstance(path[0], str) else "argument"
+                    issues.append(f"Argument '{argument_name}' appears to contain a raw secret")
                     break
 
         return issues
@@ -1023,8 +1028,10 @@ class PEP:
 
     def _extract_credential_refs(self, arguments: dict[str, Any]) -> list[CredentialRef]:
         refs: list[CredentialRef] = []
-        for key, value in self._iter_string_arguments(arguments):
-            normalized_key = key.split(".")[-1]
+        for path, value in self._iter_string_arguments(arguments):
+            normalized_key = path[-1] if path else ""
+            if not isinstance(normalized_key, str):
+                continue
             if normalized_key in self._CREDENTIAL_REF_KEYS or normalized_key.endswith(
                 "_credential_ref"
             ):
@@ -1143,19 +1150,43 @@ class PEP:
         return False
 
     @staticmethod
-    def _iter_string_arguments(arguments: dict[str, Any]) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
-        for key, value in arguments.items():
+    def _iter_string_arguments(
+        arguments: dict[str, Any],
+        *,
+        max_container_depth: int | None = 1,
+    ) -> list[tuple[_ArgumentPath, str]]:
+        pairs: list[tuple[_ArgumentPath, str]] = []
+        pending: list[tuple[_ArgumentPath, Any, int]] = [
+            ((str(key),), value, 0) for key, value in reversed(list(arguments.items()))
+        ]
+        visited_containers: set[int] = set()
+
+        while pending:
+            path, value, container_depth = pending.pop()
             if isinstance(value, str):
-                pairs.append((key, value))
+                pairs.append((path, value))
             elif isinstance(value, dict):
-                for nested_key, nested_value in value.items():
-                    if isinstance(nested_value, str):
-                        pairs.append((f"{key}.{nested_key}", nested_value))
+                if max_container_depth is not None and container_depth >= max_container_depth:
+                    continue
+                identity = id(value)
+                if identity in visited_containers:
+                    continue
+                visited_containers.add(identity)
+                pending.extend(
+                    ((*path, str(nested_key)), nested_value, container_depth + 1)
+                    for nested_key, nested_value in reversed(list(value.items()))
+                )
             elif isinstance(value, list):
-                for i, item in enumerate(value):
-                    if isinstance(item, str):
-                        pairs.append((f"{key}[{i}]", item))
+                if max_container_depth is not None and container_depth >= max_container_depth:
+                    continue
+                identity = id(value)
+                if identity in visited_containers:
+                    continue
+                visited_containers.add(identity)
+                pending.extend(
+                    ((*path, index), item, container_depth + 1)
+                    for index, item in reversed(list(enumerate(value)))
+                )
         return pairs
 
     @staticmethod
