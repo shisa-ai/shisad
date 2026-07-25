@@ -264,7 +264,13 @@ class OutputFirewall:
                 )
                 continue
             host = safe_parsed_hostname(parsed)
-            redacted_host, _host_secret_kinds = self._redact_canonical_secrets(host)
+            redacted_host = host
+            # Host normalization lowercases; project source matches through the same transform.
+            for pattern in SECRET_PATTERNS:
+                for match in pattern.regex.finditer(parsed.netloc):
+                    redacted_host = redacted_host.replace(
+                        match.group().lower(), f"[REDACTED:{pattern.kind}]"
+                    )
             allowed = any(host_matches(host, domain) for domain in self.safe_domains)
             suspicious_reason = self._suspicious_reason(parsed, host=host, allowed=allowed)
             suspicious = bool(suspicious_reason)

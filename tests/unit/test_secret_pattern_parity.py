@@ -207,6 +207,27 @@ def test_f14a_output_url_diagnostics_redact_canonical_matches() -> None:
     assert f"[REDACTED:{github.kind}]" in host_output.url_findings[0].host
 
 
+@pytest.mark.parametrize(
+    "case",
+    (SECRET_CASES[3], SECRET_CASES[-2]),
+    ids=lambda case: case.kind,
+)
+def test_f14a_output_normalized_host_diagnostics_retain_secret_provenance(
+    case: SecretCase,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    output = OutputFirewall(
+        safe_domains=["example.com"],
+        alert_hook=lambda payload: alerts.append(payload),
+    ).inspect(f"https://{case.value}.example.com/upload")
+
+    normalized_value = case.value.lower()
+    assert normalized_value not in json.dumps(output.model_dump(mode="json"), sort_keys=True)
+    assert f"[REDACTED:{case.kind}]" in output.url_findings[0].host
+    assert alerts
+    assert normalized_value not in json.dumps(alerts, sort_keys=True)
+
+
 @pytest.mark.parametrize("case", SECRET_CASES[-2:], ids=lambda case: case.kind)
 def test_f14a_pep_rejects_canonical_matches_in_deep_containers(
     case: SecretCase,
