@@ -165,8 +165,6 @@ from shisad.security.control_plane.trace import trace_reason_requires_confirmati
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.intent_matching import (
-    OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
-    has_follow_on_command,
     has_follow_on_command_verb,
     normalize_intent_text,
     strip_optional_greeting_prefix,
@@ -209,8 +207,6 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
     )
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
-_SIMILAR_FILE_RECOVERY_INTENT_SOURCE = "user_text:explicit_similar_file_recovery_intent"
-_SIMILAR_FILE_READ_INTENT_SOURCE = "user_text:explicit_similar_file_read_intent"
 _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE = "planner:structured_similar_file_recovery"
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
@@ -2456,14 +2452,12 @@ def _proposal_has_current_turn_memory_write_authority(
     proposal: ActionProposal,
     validated: SessionMessageValidationResult,
 ) -> bool:
-    if "user_text:explicit_memory_intent" in proposal.data_sources:
-        return True
-    required_field = {
-        "note.create": "content",
-        "todo.create": "title",
+    stored_text_fields = {
+        "note.create": ("content", "key"),
+        "todo.create": ("title", "details", "due_date"),
     }.get(canonical_tool_name(str(proposal.tool_name), warn_on_alias=False))
     if (
-        required_field is None
+        stored_text_fields is None
         or PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE not in proposal.data_sources
         or validated.is_internal_ingress
         or not validated.trusted_input
@@ -2475,11 +2469,21 @@ def _proposal_has_current_turn_memory_write_authority(
         or not _is_clean_direct_trusted_cli_turn(validated)
     ):
         return False
-    return current_turn_value_is_structurally_anchored(
-        proposal.arguments.get(required_field),
-        normalized_current_turn=" ".join(
-            validated.firewall_result.sanitized_text.split()
-        ).casefold(),
+    normalized_current_turn = " ".join(validated.firewall_result.sanitized_text.split()).casefold()
+    required_field, *optional_fields = stored_text_fields
+    stored_values = [proposal.arguments.get(required_field)]
+    stored_values.extend(
+        value
+        for field in optional_fields
+        if (value := proposal.arguments.get(field)) is not None
+        and (not isinstance(value, str) or bool(value.strip()))
+    )
+    return all(
+        current_turn_value_is_structurally_anchored(
+            value,
+            normalized_current_turn=normalized_current_turn,
+        )
+        for value in stored_values
     )
 
 
@@ -2493,7 +2497,6 @@ def _has_current_turn_local_filesystem_read_intent(
     *,
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
-    proposal: ActionProposal | None,
     validated: SessionMessageValidationResult,
 ) -> bool:
     canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
@@ -2501,28 +2504,20 @@ def _has_current_turn_local_filesystem_read_intent(
         return False
     if not _has_clean_trusted_turn_privileges(validated):
         return False
-    if (
+    return (
         str(arguments.get("filesystem_intent", "")).strip()
         == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
-    ):
-        return True
-    return proposal is not None and "user_text:explicit_file_intent" in proposal.data_sources
+    )
 
 
 def _proposal_has_similar_file_recovery(proposal: ActionProposal) -> bool:
-    recovery_sources = {
-        _SIMILAR_FILE_RECOVERY_INTENT_SOURCE,
-        _SIMILAR_FILE_READ_INTENT_SOURCE,
-        _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE,
-    }
-    return bool(recovery_sources.intersection(proposal.data_sources))
+    return _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE in proposal.data_sources
 
 
 def _has_current_turn_reminder_create_intent(
     *,
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
-    proposal: ActionProposal | None,
     validated: SessionMessageValidationResult,
 ) -> bool:
     canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
@@ -2530,12 +2525,6 @@ def _has_current_turn_reminder_create_intent(
         return False
     if not _is_clean_direct_trusted_cli_turn(validated):
         return False
-    if (
-        proposal is not None
-        and "user_text:explicit_reminder_intent" in proposal.data_sources
-        and str(arguments.get("reminder_intent", "")).strip() == CURRENT_TURN_REMINDER_CREATE_INTENT
-    ):
-        return True
     structural_arguments = dict(arguments)
     structural_arguments.pop("reminder_intent", None)
     return reminder_create_arguments_are_current_turn_anchored(
@@ -3308,45 +3297,18 @@ def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSn
     )
 
 
-def _normalize_explicit_memory_intent_text(text: str) -> str:
+def _normalize_greeting_request_text(text: str) -> str:
     return normalize_intent_text(text)
 
 
-def _strip_explicit_memory_intent_greeting_prefix(text: str) -> str:
-    return strip_optional_greeting_prefix(text)
-
-
-def _normalize_explicit_reminder_when(prefix: str, when: str) -> str:
-    normalized = _normalize_explicit_memory_intent_text(when).strip()
-    normalized = normalized.strip("\"'")
-    if not normalized:
-        return ""
-    if normalized.lower().startswith(("in ", "at ")):
-        return normalized
-    if prefix.lower() == "at":
-        return f"at {normalized}"
-    relative = re.fullmatch(
-        r"(?P<value>\d+)\s+(?P<unit>seconds?|minutes?|hours?)(?:\s+from\s+now)?",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if relative is not None:
-        return f"in {relative.group('value')} {relative.group('unit')}"
-    return f"at {normalized}" if prefix.lower() == "for" else normalized
-
-
-def _has_explicit_memory_follow_on_command(text: str) -> bool:
-    return has_follow_on_command(text)
-
-
 def _is_plain_greeting(user_text: str) -> bool:
-    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = _normalize_greeting_request_text(user_text).lower().strip()
     normalized = normalized.rstrip("!?.")
     return normalized in {"hello", "hello there", "hi", "hi there", "hey", "hey there"}
 
 
 def _is_simple_greeting_response_request(user_text: str) -> bool:
-    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = _normalize_greeting_request_text(user_text).lower().strip()
     normalized = normalized.rstrip("!?.")
     if not normalized:
         return False
@@ -3390,7 +3352,7 @@ _GREETING_RESPONSES_BY_WORD_COUNT = {
 
 
 def _requested_greeting_word_count(user_text: str) -> int | None:
-    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = _normalize_greeting_request_text(user_text).lower().strip()
     normalized = normalized.rstrip("!?.")
     match = re.search(
         r"\bin\s+(?P<count>[1-9]|10|one|two|three|four|five|six|seven|eight|nine|ten)\s+words?$",
@@ -3449,20 +3411,6 @@ def _safe_exact_reply_text(user_text: str) -> str:
     return body
 
 
-def _is_explicit_memory_question(user_text: str) -> bool:
-    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
-    if not normalized:
-        return False
-    return (
-        re.fullmatch(
-            r"(?:what(?:'s| is)|do you remember|can you remind me)\s+my\s+(.+?)\??",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        is not None
-    )
-
-
 def _is_planner_validation_fallback_response(response_text: str) -> bool:
     normalized = normalize_intent_text(str(response_text or "")).lower()
     return any(
@@ -3477,64 +3425,12 @@ def _is_planner_validation_fallback_response(response_text: str) -> bool:
     )
 
 
-def _is_substantive_memory_question_answer(response_text: str) -> bool:
-    stripped = str(response_text or "").strip()
-    if not stripped:
-        return False
-    normalized = normalize_intent_text(stripped).lower().strip(" .!?")
-    if normalized in {"ok", "okay", "sure", "done", "working on it"}:
-        return False
-    if _is_planner_validation_fallback_response(stripped):
-        return False
-    internal_evidence_markers = (
-        "data evidence",
-        "memo content",
-        "context content",
-        "trust=untrusted",
-        "source=memory:retrieved",
-        "final response:",
-        "no external tools are needed",
-    )
-    if any(marker in normalized for marker in internal_evidence_markers):
-        return False
-    non_answer_markers = (
-        "i don't know",
-        "i do not know",
-        "i don't have",
-        "i do not have",
-        "not sure",
-        "no matching",
-        "no saved",
-        "couldn't find",
-        "could not find",
-        "can't determine",
-        "cannot determine",
-        "tell me",
-        "if you want",
-    )
-    return not any(marker in normalized for marker in non_answer_markers)
-
-
-def _is_web_search_only_explicit_intent(proposals: Sequence[ActionProposal]) -> bool:
-    return bool(proposals) and all(
-        proposal.tool_name == ToolName("web.search") for proposal in proposals
-    )
-
-
-def _planner_result_uses_web_search(planner_result: PlannerResult) -> bool:
-    proposals = [
-        *(evaluated.proposal for evaluated in planner_result.evaluated),
-        *planner_result.output.actions,
-    ]
-    return any(proposal.tool_name == ToolName("web.search") for proposal in proposals)
-
-
-def _clean_explicit_path_token(value: str) -> str:
+def _clean_failed_read_path_token(value: str) -> str:
     return str(value or "").strip().strip("`'\"").rstrip(".,;:!?)\"]'}>")
 
 
-def _looks_like_explicit_path_token(value: str) -> bool:
-    token = _clean_explicit_path_token(value)
+def _looks_like_failed_read_path_token(value: str) -> bool:
+    token = _clean_failed_read_path_token(value)
     if not token:
         return False
     if token.startswith(("http://", "https://")):
@@ -3572,614 +3468,6 @@ def _rewrite_plain_greeting_planner_result(
             actions=[],
         ),
         evaluated=[],
-        attempts=planner_result.attempts,
-        provider_response=planner_result.provider_response,
-        messages_sent=planner_result.messages_sent,
-    )
-
-
-def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | None:
-    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
-    if not normalized:
-        return None
-    if _has_explicit_memory_follow_on_command(normalized):
-        return None
-
-    if re.fullmatch(
-        r"(?:list|show) (?:my )?(?:open |active |stale |closed |all )?threads",
-        normalized,
-        flags=re.IGNORECASE,
-    ):
-        state_match = re.match(
-            r"^(?:list|show) (?:my )?(?P<state>open|active|stale|closed|all)? ?threads$",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        state = (
-            str(state_match.group("state")).lower()
-            if state_match is not None and state_match.group("state")
-            else "open"
-        )
-        return ActionProposal(
-            action_id="explicit-thread-list",
-            tool_name=ToolName("thread.list"),
-            arguments={"state": state},
-            reasoning="Execute the user's explicit thread-list request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    thread_inspect_match = re.match(
-        r"^(?:inspect|show)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if thread_inspect_match is not None:
-        return ActionProposal(
-            action_id="explicit-thread-inspect",
-            tool_name=ToolName("thread.inspect"),
-            arguments={"thread_id": thread_inspect_match.group("thread_id").strip()},
-            reasoning="Execute the user's explicit thread-inspect request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    thread_resume_match = re.match(
-        r"^(?:resume|reopen)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if thread_resume_match is not None:
-        return ActionProposal(
-            action_id="explicit-thread-resume",
-            tool_name=ToolName("thread.resume"),
-            arguments={"thread_id": thread_resume_match.group("thread_id").strip()},
-            reasoning="Execute the user's explicit thread-resume request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    thread_close_match = re.match(
-        r"^(?:close|resolve)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)"
-        r"(?:\s+(?:because|reason:)\s+(?P<reason>.+))?$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if thread_close_match is not None:
-        arguments = {"thread_id": thread_close_match.group("thread_id").strip()}
-        reason = str(thread_close_match.group("reason") or "").strip()
-        if reason:
-            arguments["reason"] = reason
-        return ActionProposal(
-            action_id="explicit-thread-close",
-            tool_name=ToolName("thread.close"),
-            arguments=arguments,
-            reasoning="Execute the user's explicit thread-close request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    thread_why_match = re.match(
-        r"^why\s+(?:was\s+)?thread\s+(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)"
-        r"(?:\s+(?:selected|not selected))?\s+(?:for|against)\s+(?P<query>.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if thread_why_match is not None:
-        query = thread_why_match.group("query").strip()
-        if query:
-            return ActionProposal(
-                action_id="explicit-thread-why",
-                tool_name=ToolName("thread.why"),
-                arguments={
-                    "thread_id": thread_why_match.group("thread_id").strip(),
-                    "query": query,
-                },
-                reasoning="Execute the user's explicit thread-selection explanation request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    note_match = re.match(r"^(?:add|save) (?:a )?note:\s*(.+)$", normalized, flags=re.IGNORECASE)
-    if note_match is None:
-        note_match = re.match(r"^remember(?: that)?\s+(.+)$", normalized, flags=re.IGNORECASE)
-    if note_match is not None:
-        content = note_match.group(1).strip()
-        if content:
-            return ActionProposal(
-                action_id="explicit-note-create",
-                tool_name=ToolName("note.create"),
-                arguments={"content": content},
-                reasoning="Execute the user's explicit note-creation request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    note_search_match = re.match(
-        r"^search (?:my )?notes for\s+(.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if note_search_match is not None:
-        query = note_search_match.group(1).strip()
-        if query:
-            return ActionProposal(
-                action_id="explicit-note-search",
-                tool_name=ToolName("note.search"),
-                arguments={"query": query},
-                reasoning="Execute the user's explicit note-search request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    memory_question_match = re.fullmatch(
-        r"(?:what(?:'s| is)|do you remember|can you remind me)\s+my\s+(.+?)\??",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if memory_question_match is not None:
-        query = memory_question_match.group(1).strip().rstrip("?")
-        if query:
-            return ActionProposal(
-                action_id="explicit-note-search",
-                tool_name=ToolName("note.search"),
-                arguments={"query": query},
-                reasoning="Execute the user's explicit memory lookup request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    if re.fullmatch(r"(?:list|show) (?:my )?notes", normalized, flags=re.IGNORECASE):
-        return ActionProposal(
-            action_id="explicit-note-list",
-            tool_name=ToolName("note.list"),
-            arguments={},
-            reasoning="Execute the user's explicit note-list request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    todo_create_match = re.match(
-        r"^(?:add|create) (?:a )?(?:todo|task):\s*(.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if todo_create_match is not None:
-        title = todo_create_match.group(1).strip()
-        if title:
-            return ActionProposal(
-                action_id="explicit-todo-create",
-                tool_name=ToolName("todo.create"),
-                arguments={"title": title},
-                reasoning="Execute the user's explicit todo-creation request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    if re.fullmatch(r"(?:list|show) (?:my )?(?:todos|tasks)", normalized, flags=re.IGNORECASE):
-        return ActionProposal(
-            action_id="explicit-todo-list",
-            tool_name=ToolName("todo.list"),
-            arguments={},
-            reasoning="Execute the user's explicit todo-list request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    todo_complete_match = re.match(
-        r"^(?:mark|complete|finish)\s+(?:the\s+)?(.+?)(?:\s+todo)?\s+(?:complete|done)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if todo_complete_match is not None:
-        selector = todo_complete_match.group(1).strip()
-        if selector:
-            return ActionProposal(
-                action_id="explicit-todo-complete",
-                tool_name=ToolName("todo.complete"),
-                arguments={"selector": selector},
-                reasoning="Execute the user's explicit todo-completion request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    set_reminder_match = re.match(
-        rf"^{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
-        r"(?:set|create|add)\s+(?:a\s+)?reminder"
-        r"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
-        r"(?:(?:to\s+)?say|saying|with\s+(?:message|text))\s+(?P<message>.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if set_reminder_match is not None:
-        message = set_reminder_match.group("message").strip().strip("\"'")
-        when = _normalize_explicit_reminder_when(
-            set_reminder_match.group("prefix"),
-            set_reminder_match.group("when"),
-        )
-        if message and when:
-            return ActionProposal(
-                action_id="explicit-reminder-create",
-                tool_name=ToolName("reminder.create"),
-                arguments={
-                    "message": message,
-                    "when": when,
-                    "reminder_intent": CURRENT_TURN_REMINDER_CREATE_INTENT,
-                },
-                reasoning="Execute the user's explicit reminder-creation request.",
-                data_sources=[
-                    "user_text:explicit_memory_intent",
-                    "user_text:explicit_reminder_intent",
-                ],
-            )
-
-    reminder_match = re.match(
-        r"^remind me(?: to)?\s+(.+?)\s+((?:in|at)\s+.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if reminder_match is not None:
-        message = reminder_match.group(1).strip()
-        when = reminder_match.group(2).strip()
-        if message and when:
-            return ActionProposal(
-                action_id="explicit-reminder-create",
-                tool_name=ToolName("reminder.create"),
-                arguments={
-                    "message": message,
-                    "when": when,
-                    "reminder_intent": CURRENT_TURN_REMINDER_CREATE_INTENT,
-                },
-                reasoning="Execute the user's explicit reminder-creation request.",
-                data_sources=[
-                    "user_text:explicit_memory_intent",
-                    "user_text:explicit_reminder_intent",
-                ],
-            )
-
-    if re.fullmatch(
-        r"(?:(?:list|show) (?:my )?reminders|what reminders do (?:i|we) have\??)",
-        normalized,
-        flags=re.IGNORECASE,
-    ):
-        return ActionProposal(
-            action_id="explicit-reminder-list",
-            tool_name=ToolName("reminder.list"),
-            arguments={},
-            reasoning="Execute the user's explicit reminder-list request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    fs_read_match = re.match(
-        r"^(?:please\s+)?(?:can you\s+)?"
-        r"(?:read|show|open|summarize)\s+(?:the\s+)?(?!evidence\b)"
-        r"(?P<path>\S+)"
-        r"(?:\s+(?:and\s+)?(?:summarize|tell|show|read|explain)\b.*)?$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if fs_read_match is not None:
-        path = _clean_explicit_path_token(str(fs_read_match.group("path") or ""))
-        if _looks_like_explicit_path_token(path):
-            return ActionProposal(
-                action_id="explicit-fs-read",
-                tool_name=ToolName("fs.read"),
-                arguments={
-                    "path": path,
-                    "max_bytes": 1048576,
-                    "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
-                },
-                reasoning="Execute the user's explicit file-read request.",
-                data_sources=["user_text:explicit_file_intent"],
-            )
-
-    similar_file_match = re.fullmatch(
-        r"(?:please\s+)?(?:can you\s+)?"
-        r"(?:(?:find|look for|search for)\s+)"
-        r"(?:the\s+)?(?:similar\s+)?file"
-        r"(?:\s+and\s+(?P<read_after_list>"
-        r"(?:read|open|show|summarize)(?:\s+(?:it|that|the\s+file))?"
-        r"(?:\s+instead)?"
-        r"))?\??",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if similar_file_match is not None:
-        data_sources = [
-            "user_text:explicit_file_intent",
-            _SIMILAR_FILE_RECOVERY_INTENT_SOURCE,
-        ]
-        if similar_file_match.group("read_after_list"):
-            data_sources.append(_SIMILAR_FILE_READ_INTENT_SOURCE)
-        return ActionProposal(
-            action_id="explicit-fs-similar-file-list",
-            tool_name=ToolName("fs.list"),
-            arguments={
-                "path": ".",
-                "recursive": True,
-                "limit": 25,
-                "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
-            },
-            reasoning="List the configured workspace to recover from a likely filename typo.",
-            data_sources=data_sources,
-        )
-
-    fetch_match = re.search(
-        r"\b(?:use\s+web[._\s]+fetch\s+to\s+)?(?:web\s+)?fetch\s+(https?://[^\s,;]+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if fetch_match is not None:
-        url = fetch_match.group(1).strip().rstrip(".,;:!?)\"]'}>")
-        if url:
-            return ActionProposal(
-                action_id="explicit-web-fetch",
-                tool_name=ToolName("web.fetch"),
-                arguments={"url": url},
-                reasoning="Execute the user's explicit web fetch request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    web_search_match = re.fullmatch(
-        r"(?:please\s+)?(?:can you\s+)?"
-        r"(?:search(?:\s+the\s+web)?|web\s+search|look\s+up)\s+"
-        r"(?:for\s+)?(?P<query>.+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if web_search_match is not None:
-        query = str(web_search_match.group("query") or "").strip()
-        if query:
-            return ActionProposal(
-                action_id="explicit-web-search",
-                tool_name=ToolName("web.search"),
-                arguments={"query": query, "limit": 5},
-                reasoning="Execute the user's explicit web search request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    browser_navigate_match = re.fullmatch(
-        r"(?:browser\s+)?(?:navigate|open)\s+(https?://\S+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if browser_navigate_match is not None:
-        url = browser_navigate_match.group(1).strip()
-        if url:
-            return ActionProposal(
-                action_id="explicit-browser-navigate",
-                tool_name=ToolName("browser.navigate"),
-                arguments={"url": url},
-                reasoning="Execute the user's explicit browser navigation request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    if re.fullmatch(
-        r"(?:browser\s+)?(?:read(?:\s+page)?|show\s+page)",
-        normalized,
-        flags=re.IGNORECASE,
-    ):
-        return ActionProposal(
-            action_id="explicit-browser-read-page",
-            tool_name=ToolName("browser.read_page"),
-            arguments={},
-            reasoning="Execute the user's explicit browser read request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        )
-
-    browser_click_match = re.fullmatch(
-        r"(?:browser\s+)?click\s+(.+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if browser_click_match is not None:
-        target = browser_click_match.group(1).strip()
-        if target:
-            return ActionProposal(
-                action_id="explicit-browser-click",
-                tool_name=ToolName("browser.click"),
-                arguments={"target": target, "description": target},
-                reasoning="Execute the user's explicit browser click request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    browser_type_match = re.fullmatch(
-        r'(?:browser\s+)?type\s+"([^"]+)"\s+into\s+(.+)',
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if browser_type_match is not None:
-        text = browser_type_match.group(1).strip()
-        target = browser_type_match.group(2).strip()
-        if text and target:
-            return ActionProposal(
-                action_id="explicit-browser-type-text",
-                tool_name=ToolName("browser.type_text"),
-                arguments={"target": target, "text": text},
-                reasoning="Execute the user's explicit browser type request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    read_evidence_match = re.fullmatch(
-        r"read\s+evidence\s+(?P<ref_id>\S+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if read_evidence_match is not None:
-        ref_id = str(read_evidence_match.group("ref_id") or "").strip()
-        if ref_id:
-            return ActionProposal(
-                action_id="explicit-evidence-read",
-                tool_name=ToolName("evidence.read"),
-                arguments={"ref_id": ref_id},
-                reasoning="Execute the user's explicit evidence-read request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    evidence_read_match = re.fullmatch(
-        r"evidence\.read\s+(?P<ref_id>\S+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if evidence_read_match is None:
-        evidence_read_match = re.fullmatch(
-            r"evidence\.read\((?P<quote>[\"'])?(?P<ref_id>[^\"')\s]+)(?P=quote)?\)",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-    if evidence_read_match is not None:
-        ref_id = str(evidence_read_match.group("ref_id") or "").strip()
-        if ref_id:
-            return ActionProposal(
-                action_id="explicit-evidence-read",
-                tool_name=ToolName("evidence.read"),
-                arguments={"ref_id": ref_id},
-                reasoning="Execute the user's explicit evidence-read request.",
-                data_sources=["user_text:explicit_memory_intent"],
-            )
-
-    return None
-
-
-def _build_explicit_multi_intent_proposals(user_text: str) -> list[ActionProposal]:
-    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
-    if not normalized:
-        return []
-    read_and_search_match = re.fullmatch(
-        r"(?:please\s+)?(?:can you\s+)?"
-        r"(?:read|show|open|summarize)\s+(?:the\s+)?(?!evidence\b)"
-        r"(?P<path>\S+)\s+and\s+"
-        r"(?:search(?:\s+the\s+web)?|web\s+search|look\s+up)\s+"
-        r"(?:for\s+)?(?P<query>.+)",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if read_and_search_match is None:
-        single = _build_explicit_memory_intent_proposal(user_text)
-        return [single] if single is not None else []
-
-    path = _clean_explicit_path_token(str(read_and_search_match.group("path") or ""))
-    query = str(read_and_search_match.group("query") or "").strip().rstrip(".,;:!?")
-    if not _looks_like_explicit_path_token(path) or not query:
-        single = _build_explicit_memory_intent_proposal(user_text)
-        return [single] if single is not None else []
-
-    return [
-        ActionProposal(
-            action_id="explicit-fs-read",
-            tool_name=ToolName("fs.read"),
-            arguments={
-                "path": path,
-                "max_bytes": 1048576,
-                "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
-            },
-            reasoning="Execute the user's explicit file-read request.",
-            data_sources=["user_text:explicit_file_intent"],
-        ),
-        ActionProposal(
-            action_id="explicit-web-search",
-            tool_name=ToolName("web.search"),
-            arguments={"query": query, "limit": 5},
-            reasoning="Execute the user's explicit web search request.",
-            data_sources=["user_text:explicit_memory_intent"],
-        ),
-    ]
-
-
-def _rewrite_explicit_memory_intent_planner_result(
-    *,
-    user_text: str,
-    planner_result: PlannerResult,
-    pep: Any,
-    context: PolicyContext,
-) -> PlannerResult:
-    explicit_proposals = _build_explicit_multi_intent_proposals(user_text)
-    if not explicit_proposals:
-        return planner_result
-
-    if (
-        _is_web_search_only_explicit_intent(explicit_proposals)
-        and (planner_result.output.actions or planner_result.evaluated)
-        and not _planner_result_uses_web_search(planner_result)
-    ):
-        return planner_result
-
-    if (
-        _is_explicit_memory_question(user_text)
-        and not planner_result.output.actions
-        and not planner_result.evaluated
-        and _is_substantive_memory_question_answer(
-            planner_result.output.assistant_response,
-        )
-    ):
-        return planner_result
-
-    if len(planner_result.evaluated) == len(explicit_proposals) and all(
-        evaluated.proposal.tool_name == explicit_proposal.tool_name
-        and evaluated.proposal.arguments == explicit_proposal.arguments
-        and (
-            set(explicit_proposal.data_sources).issubset(evaluated.proposal.data_sources)
-            or PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE in evaluated.proposal.data_sources
-        )
-        for evaluated, explicit_proposal in zip(
-            planner_result.evaluated,
-            explicit_proposals,
-            strict=True,
-        )
-    ):
-        return planner_result
-
-    evaluated = [
-        EvaluatedProposal(
-            proposal=explicit_proposal,
-            decision=pep.evaluate(
-                explicit_proposal.tool_name,
-                explicit_proposal.arguments,
-                context,
-            ),
-        )
-        for explicit_proposal in explicit_proposals
-    ]
-    return PlannerResult(
-        output=PlannerOutput(
-            assistant_response=(
-                planner_result.output.assistant_response
-                if (
-                    planner_result.provider_response is not None
-                    and planner_result.provider_response.trusted_origin == "local-fallback"
-                )
-                else ""
-            ),
-            actions=explicit_proposals,
-        ),
-        evaluated=evaluated,
-        attempts=planner_result.attempts,
-        provider_response=planner_result.provider_response,
-        messages_sent=planner_result.messages_sent,
-    )
-
-
-def _rewrite_explicit_filesystem_intent_planner_failure(
-    *,
-    user_text: str,
-    planner_result: PlannerResult,
-    pep: Any,
-    context: PolicyContext,
-) -> PlannerResult:
-    explicit_proposals = _build_explicit_multi_intent_proposals(user_text)
-    if not explicit_proposals:
-        return planner_result
-
-    if not all(
-        canonical_tool_name(str(proposal.tool_name), warn_on_alias=False) in {"fs.read", "fs.list"}
-        and proposal.arguments.get("filesystem_intent")
-        == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
-        for proposal in explicit_proposals
-    ):
-        return planner_result
-
-    evaluated = [
-        EvaluatedProposal(
-            proposal=explicit_proposal,
-            decision=pep.evaluate(
-                explicit_proposal.tool_name,
-                explicit_proposal.arguments,
-                context,
-            ),
-        )
-        for explicit_proposal in explicit_proposals
-    ]
-    return PlannerResult(
-        output=PlannerOutput(assistant_response="", actions=explicit_proposals),
-        evaluated=evaluated,
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
@@ -4582,6 +3870,7 @@ def _tool_outputs_include_initial_synthesis_evidence_tools(
         ToolName("browser.navigate"),
         ToolName("browser.read_page"),
         ToolName("browser.screenshot"),
+        ToolName("fs.read"),
         ToolName("web.search"),
         ToolName("web.fetch"),
         ToolName("evidence.read"),
@@ -7929,21 +7218,60 @@ def _recent_failed_fs_read_path_from_transcript(
             if immediate_only:
                 return ""
             continue
-        path = _clean_explicit_path_token(match.group("path"))
-        if "[REDACTED:" not in path and _looks_like_explicit_path_token(path):
+        path = _clean_failed_read_path_token(match.group("path"))
+        if "[REDACTED:" not in path and _looks_like_failed_read_path_token(path):
             return path
-        for previous in reversed(recent_entries[max(0, index - 4) : index]):
-            if str(getattr(previous, "role", "")).strip() != "user":
-                continue
-            proposal = _build_explicit_memory_intent_proposal(
-                str(getattr(previous, "content_preview", "") or "")
-            )
-            if proposal is None or str(proposal.tool_name) != "fs.read":
-                continue
-            previous_path = _clean_explicit_path_token(str(proposal.arguments.get("path", "")))
-            if _looks_like_explicit_path_token(previous_path):
-                return previous_path
     return ""
+
+
+def _recent_failed_fs_read_path_from_action_state(
+    transcript_store: TranscriptStore | None,
+    sid: SessionId,
+    *,
+    pending_actions: Mapping[str, Any],
+    current_turn_entry_id: str,
+) -> str:
+    """Recover one redacted failed-read path from matching daemon action state."""
+    if transcript_store is None or not current_turn_entry_id:
+        return ""
+    try:
+        entries = list(transcript_store.list_entries(sid))[-24:]
+    except (OSError, ValueError, TypeError):
+        return ""
+    current_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if str(getattr(entry, "entry_id", "")).strip() == current_turn_entry_id
+        ),
+        -1,
+    )
+    if (
+        current_index < 2
+        or str(getattr(entries[current_index - 1], "role", "")).strip() != "assistant"
+        or not str(getattr(entries[current_index - 1], "content_preview", "") or "")
+        .rstrip()
+        .endswith("path_not_found.")
+        or str(getattr(entries[current_index - 2], "role", "")).strip() != "user"
+    ):
+        return ""
+    failed_turn_id = str(getattr(entries[current_index - 2], "entry_id", "")).strip()
+    candidates = [
+        item
+        for item in pending_actions.values()
+        if getattr(item, "session_id", None) == sid
+        and str(getattr(item, "origin_turn_id", "")).strip() == failed_turn_id
+        and str(getattr(item, "status", "")).strip() == "failed"
+        and canonical_tool_name(str(getattr(item, "tool_name", "")), warn_on_alias=False)
+        == "fs.read"
+    ]
+    if len(candidates) != 1:
+        return ""
+    arguments = getattr(candidates[0], "arguments", {})
+    path = _clean_failed_read_path_token(
+        str(arguments.get("path", "")) if isinstance(arguments, Mapping) else ""
+    )
+    return path if _looks_like_failed_read_path_token(path) else ""
 
 
 def _filename_match_token(value: str) -> str:
@@ -11218,24 +10546,6 @@ class SessionImplMixin(HandlerMixinBase):
             )
         elif isinstance(raw_explicit_memory_ingress_context, IngressContext):
             explicit_memory_ingress_context = raw_explicit_memory_ingress_context
-        explicit_memory_intent = (
-            _build_explicit_memory_intent_proposal(firewall_result.sanitized_text) is not None
-        )
-        if explicit_memory_intent and (
-            explicit_memory_ingress_context is None or is_internal_ingress
-        ):
-            explicit_memory_ingress_context = mint_explicit_user_memory_ingress_context(
-                self._memory_ingress_registry,
-                channel=channel,
-                trust_level=trust_level,
-                session_id=str(sid),
-                message_id=channel_message_id,
-                content=firewall_result.sanitized_text,
-                transcript_entry_id=(
-                    user_transcript_entry.entry_id if user_transcript_entry is not None else ""
-                ),
-                taint_labels=list(firewall_result.taint_labels),
-            )
 
         return SessionMessageValidationResult(
             sid=sid,
@@ -11970,35 +11280,35 @@ class SessionImplMixin(HandlerMixinBase):
                 messages_sent=(),
             )
 
-        if planner_failure_code:
-            recovered_planner_result = _rewrite_explicit_filesystem_intent_planner_failure(
-                user_text=validated.firewall_result.sanitized_text,
-                planner_result=planner_result,
-                pep=self._pep,
-                context=planner_context.context,
-            )
-            if recovered_planner_result is not planner_result:
-                planner_result = recovered_planner_result
-                planner_failure_code = ""
-        else:
+        if not planner_failure_code:
             planner_result = _rewrite_plain_greeting_planner_result(
                 user_text=validated.firewall_result.sanitized_text,
                 planner_result=planner_result,
             )
-            planner_result = _rewrite_explicit_memory_intent_planner_result(
-                user_text=validated.firewall_result.sanitized_text,
-                planner_result=planner_result,
-                pep=self._pep,
-                context=planner_context.context,
-            )
+        current_turn_entry_id = str(
+            getattr(validated.user_transcript_entry, "entry_id", "") or ""
+        ).strip()
         planner_result = _bind_structured_similar_file_recovery(
             planner_result=planner_result,
-            failed_path=_recent_failed_fs_read_path_from_transcript(
-                getattr(self, "_transcript_store", None),
-                validated.sid,
-                immediate_only=True,
+            failed_path=(
+                _recent_failed_fs_read_path_from_transcript(
+                    getattr(self, "_transcript_store", None),
+                    validated.sid,
+                    immediate_only=True,
+                )
+                or _recent_failed_fs_read_path_from_action_state(
+                    getattr(self, "_transcript_store", None),
+                    validated.sid,
+                    pending_actions=getattr(self, "_pending_actions", {}),
+                    current_turn_entry_id=current_turn_entry_id,
+                )
             ),
-            trusted_current_turn=_is_clean_direct_trusted_cli_turn(validated),
+            trusted_current_turn=(
+                _is_clean_direct_trusted_cli_turn(validated)
+                and not planner_context.memory_context_tainted_for_amv
+                and TaintLabel.UNTRUSTED not in planner_context.context.taint_labels
+                and not self._session_has_tainted_user_history(validated.sid)
+            ),
             pep=self._pep,
             context=planner_context.context,
         )
@@ -12634,6 +11944,14 @@ class SessionImplMixin(HandlerMixinBase):
             failed_path = _recent_failed_fs_read_path_from_transcript(
                 getattr(self, "_transcript_store", None),
                 sid,
+                immediate_only=True,
+            ) or _recent_failed_fs_read_path_from_action_state(
+                getattr(self, "_transcript_store", None),
+                sid,
+                pending_actions=getattr(self, "_pending_actions", {}),
+                current_turn_entry_id=str(
+                    getattr(validated.user_transcript_entry, "entry_id", "") or ""
+                ).strip(),
             )
             if not failed_path:
                 return
@@ -12651,16 +11969,15 @@ class SessionImplMixin(HandlerMixinBase):
                 "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
             }
             read_data_sources = [
-                "user_text:explicit_file_intent",
+                *(
+                    [PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE]
+                    if PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE in source_proposal.data_sources
+                    else []
+                ),
                 "tool_output:fs.list",
                 "transcript:previous_fs_read_failure",
+                _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE,
             ]
-            if _SIMILAR_FILE_RECOVERY_INTENT_SOURCE in source_proposal.data_sources:
-                read_data_sources.append(_SIMILAR_FILE_RECOVERY_INTENT_SOURCE)
-            if _SIMILAR_FILE_READ_INTENT_SOURCE in source_proposal.data_sources:
-                read_data_sources.append(_SIMILAR_FILE_READ_INTENT_SOURCE)
-            if _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE in source_proposal.data_sources:
-                read_data_sources.append(_STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE)
             read_proposal = ActionProposal(
                 action_id="explicit-fs-similar-file-read",
                 tool_name=read_tool_name,
@@ -12930,7 +12247,6 @@ class SessionImplMixin(HandlerMixinBase):
             current_turn_reminder_create_intent = _has_current_turn_reminder_create_intent(
                 tool_name=proposal.tool_name,
                 arguments=proposal_arguments,
-                proposal=proposal,
                 validated=validated,
             )
             if proposal_tool_name == "reminder.create":
@@ -13635,7 +12951,6 @@ class SessionImplMixin(HandlerMixinBase):
                     _has_current_turn_local_filesystem_read_intent(
                         tool_name=proposal.tool_name,
                         arguments=proposal_arguments,
-                        proposal=proposal,
                         validated=validated,
                     )
                 )
@@ -13771,8 +13086,11 @@ class SessionImplMixin(HandlerMixinBase):
                 memory_ingress_context=(
                     _explicit_memory_ingress_context()
                     if (
-                        current_turn_memory_write_authority
-                        and proposal_tool_name in {"note.create", "todo.create"}
+                        proposal_tool_name in {"note.create", "todo.create"}
+                        and (
+                            current_turn_memory_write_authority
+                            or validated.explicit_memory_ingress_context is not None
+                        )
                     )
                     else None
                 ),

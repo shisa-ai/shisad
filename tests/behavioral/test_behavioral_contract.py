@@ -423,7 +423,7 @@ async def _stub_complete(
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             )
 
-    if "favorite color" in goal_lower:
+    if "favorite color" in goal_lower and "what" in goal_lower:
         memory_context = _extract_memory_context(planner_input).lower()
         trusted_context = _extract_trusted_context_before_request(planner_input).lower()
         response = (
@@ -458,7 +458,7 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
-    if "groceries" in goal_lower and "remember" in goal_lower:
+    if "groceries" in goal_lower and "what" in goal_lower:
         memory_context = _extract_memory_context(planner_input).lower()
         response = (
             "You asked me to remember to buy groceries."
@@ -746,6 +746,17 @@ async def _stub_complete(
         )
 
     tool_calls: list[dict[str, Any]] = []
+    thread_call = None
+    if normalized_goal == "list my threads":
+        thread_call = _tool_call("thread.list", {}, call_id="t-thread")
+    elif " thread " in normalized_goal:
+        verb, _, tail = normalized_goal.partition(" thread ")
+        thread_id = tail.split()[0]
+        if verb in {"inspect", "resume", "close", "why"}:
+            arguments = {"thread_id": thread_id}
+            if verb == "why":
+                arguments["query"] = goal.rsplit(" for ", 1)[-1]
+            thread_call = _tool_call(f"thread.{verb}", arguments, call_id="t-thread")
     note_create_call = None
     remembered_content = _extract_remembered_content(goal)
     if "add a note" in goal_lower or goal_lower.startswith("note:") or remembered_content:
@@ -809,17 +820,19 @@ async def _stub_complete(
         if ("list my reminders" in goal_lower or "what reminders" in goal_lower)
         else None
     )
+    search_query = goal.split("search", 1)[-1].strip().removeprefix("for ")
     search_call = (
         _tool_call(
             "web.search",
-            {"query": "latest world news", "limit": 3},
+            {"query": search_query, "limit": 3},
             call_id="t-search",
         )
         if ("search" in goal_lower or "latest news" in goal_lower)
         else None
     )
+    read_path = next((x for x in goal.split() if Path(x).suffix), "README.md")
     read_call = (
-        _tool_call("fs.read", {"path": "README.md", "max_bytes": 4096}, call_id="t-readme")
+        _tool_call("fs.read", {"path": read_path, "max_bytes": 4096}, call_id="t-readme")
         if ("read" in goal_lower and "readme" in goal_lower)
         else None
     )
@@ -941,6 +954,8 @@ async def _stub_complete(
         tool_calls.append(gh84_blocked_shell_call)
     elif unknown_probe_call is not None:
         tool_calls.append(unknown_probe_call)
+    elif thread_call is not None:
+        tool_calls.append(thread_call)
     elif note_create_call is not None:
         tool_calls.append(note_create_call)
     elif note_search_call is not None:

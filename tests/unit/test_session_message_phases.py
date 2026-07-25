@@ -1855,7 +1855,7 @@ async def test_gh47_suppressed_browser_tool_rejects_before_argument_prep() -> No
         tool_name=ToolName("browser.click"),
         arguments={"target": "continue", "description": "continue"},
         reasoning="Execute the user's explicit browser click request.",
-        data_sources=["user_text:explicit_memory_intent"],
+        data_sources=["planner:current_turn_tool_call"],
     )
     planner_dispatch = SessionMessagePlannerDispatchResult(
         planner_context=planner_context,
@@ -1942,7 +1942,7 @@ async def test_gh47_suppressed_browser_tool_feedback_handles_disabled_runtime() 
         tool_name=ToolName("browser.click"),
         arguments={"target": "continue", "description": "continue"},
         reasoning="Execute the user's explicit browser click request.",
-        data_sources=["user_text:explicit_memory_intent"],
+        data_sources=["planner:current_turn_tool_call"],
     )
     planner_dispatch = SessionMessagePlannerDispatchResult(
         planner_context=planner_context,
@@ -3068,7 +3068,6 @@ def test_gh88_69_planner_marker_does_not_authorize_unbound_reminder_values() -> 
     assert not impl_session._has_current_turn_reminder_create_intent(
         tool_name=proposal.tool_name,
         arguments=proposal.arguments,
-        proposal=proposal,
         validated=validated,
     )
 
@@ -3092,7 +3091,6 @@ def test_gh88_69_structurally_bound_planner_reminder_counts_without_marker() -> 
     assert impl_session._has_current_turn_reminder_create_intent(
         tool_name=proposal.tool_name,
         arguments=proposal.arguments,
-        proposal=proposal,
         validated=validated,
     )
 
@@ -3113,7 +3111,7 @@ def test_f1_structural_reminder_authority_rejects_malformed_durations(
     )
 
 
-def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> None:
+def test_gh49_typed_reminder_marker_remains_structurally_bound() -> None:
     validated = _validation_result(
         params={
             "session_id": "sess-g1",
@@ -3129,44 +3127,18 @@ def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> 
             "when": "in 5 seconds",
             "reminder_intent": "current_turn_reminder_create",
         },
-        reasoning="Execute the daemon-owned explicit reminder builder.",
-        data_sources=[
-            "user_text:explicit_memory_intent",
-            "user_text:explicit_reminder_intent",
-        ],
+        reasoning="Create the typed reminder from current-turn values.",
+        data_sources=["planner:current_turn_tool_call"],
     )
 
     assert impl_session._has_current_turn_reminder_create_intent(
         tool_name=proposal.tool_name,
         arguments=proposal.arguments,
-        proposal=proposal,
         validated=validated,
     )
 
 
-def test_lus_similar_file_read_phrase_sets_recovery_marker() -> None:
-    proposal = impl_session._build_explicit_memory_intent_proposal(
-        "Can you find the similar file and read it instead?"
-    )
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("fs.list")
-    assert "user_text:explicit_file_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
-
-
-def test_lus_similar_file_find_phrase_sets_recovery_without_read_marker() -> None:
-    proposal = impl_session._build_explicit_memory_intent_proposal("Can you find the similar file?")
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("fs.list")
-    assert "user_text:explicit_file_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_read_intent" not in proposal.data_sources
-
-
-def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args() -> None:
+def test_lus_structural_recovery_binds_planner_selected_listing() -> None:
     planner_proposal = ActionProposal(
         action_id="planner-fs-list",
         tool_name=ToolName("fs.list"),
@@ -3177,7 +3149,7 @@ def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args()
             "filesystem_intent": impl_session._CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
         },
         reasoning="List similar files.",
-        data_sources=[],
+        data_sources=["planner:current_turn_tool_call"],
     )
     planner_result = PlannerResult(
         output=PlannerOutput(actions=[planner_proposal], assistant_response=""),
@@ -3201,9 +3173,10 @@ def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args()
         )
     )
 
-    rewritten = impl_session._rewrite_explicit_memory_intent_planner_result(
-        user_text="Can you find the similar file and read it instead?",
+    rewritten = impl_session._bind_structured_similar_file_recovery(
         planner_result=planner_result,
+        failed_path="docs/README.md",
+        trusted_current_turn=True,
         pep=pep,
         context=PolicyContext(),
     )
@@ -3212,9 +3185,10 @@ def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args()
     [proposal] = [item.proposal for item in rewritten.evaluated]
     assert proposal.tool_name == ToolName("fs.list")
     assert proposal.arguments == planner_proposal.arguments
-    assert "user_text:explicit_file_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
-    assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
+    assert proposal.data_sources == [
+        "planner:current_turn_tool_call",
+        "planner:structured_similar_file_recovery",
+    ]
 
 
 def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
@@ -3767,24 +3741,41 @@ async def test_lt1_operator_cli_firewall_risk_controls_control_plane_metadata(
     assert control_plane_call["operator_owned_cli_input"] is expected_control_plane_trusted
 
 
-class _DispatchRewriteHarness(SessionImplMixin):
+class _DispatchPassThroughHarness(SessionImplMixin):
     def __init__(self) -> None:
         self._trace_recorder = None
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._planner = SimpleNamespace(propose=self._propose)
         self._pep = SimpleNamespace(evaluate=self._evaluate)
+        proposal = ActionProposal(
+            action_id="planner-todo",
+            tool_name=ToolName("todo.create"),
+            arguments={"title": "safe-title"},
+            reasoning="Create the typed todo.",
+            data_sources=["planner:current_turn_tool_call"],
+        )
+        self.planner_result = PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="Creating the todo."),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=self._evaluate(
+                        proposal.tool_name,
+                        proposal.arguments,
+                        PolicyContext(),
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
 
     async def _noop_publish(self, _event: object) -> None:
         return None
 
     async def _propose(self, *_args: object, **_kwargs: object) -> PlannerResult:
-        return PlannerResult(
-            output=PlannerOutput(actions=[], assistant_response=""),
-            evaluated=[],
-            attempts=1,
-            provider_response=None,
-            messages_sent=(),
-        )
+        return self.planner_result
 
     def _evaluate(
         self,
@@ -3801,8 +3792,8 @@ class _DispatchRewriteHarness(SessionImplMixin):
 
 
 @pytest.mark.asyncio
-async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -> None:
-    harness = _DispatchRewriteHarness()
+async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrite() -> None:
+    harness = _DispatchPassThroughHarness()
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": "add todo: raw-secret"}
     )
@@ -3834,6 +3825,7 @@ async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -
 
     dispatch = await SessionImplMixin._dispatch_to_planner(harness, planner_context)
 
+    assert dispatch.planner_result is harness.planner_result
     assert len(dispatch.planner_result.evaluated) == 1
     proposal = dispatch.planner_result.evaluated[0].proposal
     assert proposal.tool_name == ToolName("todo.create")
@@ -3983,9 +3975,7 @@ def test_m1_explicit_memory_ingress_context_derives_channel_provenance(
 
 
 @pytest.mark.asyncio
-async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explicit_note_create() -> (
-    None
-):
+async def test_f13b_evaluate_and_execute_actions_preserves_pre_minted_channel_note_handle() -> None:
     session = Session(
         id=SessionId("sess-g1"),
         channel="discord",
@@ -4002,6 +3992,14 @@ async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explici
     validated.channel = "discord"
     validated.trust_level = "owner"
     validated.channel_message_id = "msg-7"
+    validated.explicit_memory_ingress_context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        scope="user",
+        source_id="discord:msg-7",
+        content="remember that I like tea",
+    )
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
@@ -4028,7 +4026,7 @@ async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explici
         tool_name=ToolName("note.create"),
         arguments={"content": "I like tea"},
         reasoning="Execute the user's explicit note-creation request.",
-        data_sources=["user_text:explicit_memory_intent"],
+        data_sources=["planner:current_turn_tool_call"],
     )
     planner_dispatch = SessionMessagePlannerDispatchResult(
         planner_context=planner_context,
@@ -5072,13 +5070,12 @@ async def test_rc_lus_finalize_response_prefixes_unrequested_clean_url_from_tool
     execution = _finalize_execution_result(
         tool_outputs=[
             SimpleNamespace(
-                tool_name="fs.read",
+                tool_name="shell.run",
                 success=True,
                 content=json.dumps(
                     {
                         "ok": True,
-                        "path": "README.md",
-                        "content": "# ShisaD\n\nSecurity-first daemon.",
+                        "status": "done",
                     }
                 ),
                 taint_labels=set(),

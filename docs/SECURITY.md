@@ -557,9 +557,13 @@ subject to the explicit route boundary above.
 - Live handler/composition ownership, pending-action lifecycle ownership, RPC
   descriptors, and direct effect execution each have one current runtime
   authority; later refactors must preserve those boundaries.
-- Some explicit memory-intent routing still has daemon-side prose
-  interpretation; the target is planner-produced structured intent without
-  reducing user functionality.
+- COMMAND planner typed tool output now owns the characterized thread, note,
+  todo, reminder, filesystem, web, browser, evidence, and multi-action
+  conversational family. Session handling binds those typed consequences to
+  authenticated current-turn and machine state; it no longer builds or
+  substitutes those actions from prose. Separate finite state-bound
+  confirmation, authentication, greeting-response, and recovery protocols
+  remain.
 - Secret-detection and URL/network safety primitives still have multiple
   consumers with non-identical rules. Broader network-layer simplification,
   differential execution, and full datamarking remain later work.

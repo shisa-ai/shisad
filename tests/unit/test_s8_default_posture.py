@@ -32,7 +32,7 @@ from shisad.daemon.handlers._impl_session import (
     _trusted_cli_firewall_result_is_clean,
     _user_goal_host_patterns_for_validated_input,
 )
-from shisad.memory.ingress import IngressContextRegistry, digest_content
+from shisad.memory.ingress import IngressContextRegistry
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle, ToolPolicy
@@ -484,7 +484,7 @@ async def test_lt1_validate_default_cli_does_not_taint_clean_operator_input(
 
 
 @pytest.mark.asyncio
-async def test_m1_validate_default_cli_pre_mints_explicit_memory_ingress_handle(
+async def test_f13b_validate_default_cli_does_not_infer_memory_ingress_from_prose(
     tmp_path,
 ) -> None:
     harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
@@ -504,19 +504,12 @@ async def test_m1_validate_default_cli_pre_mints_explicit_memory_ingress_handle(
         },
     )  # type: ignore[arg-type]
 
-    context = validated.explicit_memory_ingress_context
-    assert context is not None
+    assert validated.explicit_memory_ingress_context is None
     assert validated.user_transcript_entry is not None
-    assert context.source_origin == "user_direct"
-    assert context.channel_trust == "command"
-    assert context.confirmation_status == "user_asserted"
-    assert context.scope == "user"
-    assert context.source_id == validated.user_transcript_entry.entry_id
-    assert context.content_digest == digest_content("remember that I like tea")
 
 
 @pytest.mark.asyncio
-async def test_m1_validate_internal_channel_memory_handle_rebinds_to_transcript_entry(
+async def test_f13b_validate_internal_channel_preserves_pre_minted_memory_handle(
     tmp_path,
 ) -> None:
     harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
@@ -567,8 +560,8 @@ async def test_m1_validate_internal_channel_memory_handle_rebinds_to_transcript_
     assert context.channel_trust == "owner_observed"
     assert context.confirmation_status == "auto_accepted"
     assert context.scope == "user"
-    assert context.source_id == validated.user_transcript_entry.entry_id
-    assert context.source_id != "discord:msg-9"
+    assert context.source_id == "discord:msg-9"
+    assert context.source_id != validated.user_transcript_entry.entry_id
 
 
 @pytest.mark.asyncio

@@ -120,23 +120,21 @@ async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
     )
     _assert_normal_reply(
         proposed,
-        executed_actions=0,
+        executed_actions=2,
         confirmation_required_actions=None,
     )
-    assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+    assert int(proposed.get("confirmation_required_actions", 0)) == 0
     pending_ids = proposed.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
-    assert pending_ids
+    assert pending_ids == []
 
-    confirmed = await harness.client.call(
-        "session.message",
-        {"session_id": sid, "content": "confirm"},
-    )
-    _assert_normal_reply(confirmed, executed_actions=1)
+    confirmed = proposed
+    _assert_normal_reply(confirmed, executed_actions=2)
     confirmed_outputs = extract_tool_outputs(confirmed)
     assert "file.read" not in confirmed_outputs
     assert "shell.exec" not in confirmed_outputs
     confirmed_payload = _first_tool_payload(confirmed, "fs.list")
+    assert _first_tool_payload(confirmed, "fs.read").get("ok") is True
     assert "todo.log" in json.dumps(confirmed_payload, ensure_ascii=True)
     assert "todo.log" in str(confirmed.get("response", ""))
 
@@ -362,9 +360,7 @@ async def test_current_turn_reminder_create_uses_structural_authority(
         _assert_normal_reply(created, executed_actions=1)
         payload = _first_tool_payload(created, "reminder.create")
         assert payload.get("ok") is True
-        assert str((payload.get("task") or {}).get("goal", "")) == (
-            f"Reminder: {expected_message}"
-        )
+        assert str((payload.get("task") or {}).get("goal", "")) == (f"Reminder: {expected_message}")
         response_text = str(created.get("response", ""))
         assert "Contains tainted data" not in response_text
         assert "Cross-thread overlap detected" not in response_text

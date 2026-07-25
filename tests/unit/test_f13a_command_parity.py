@@ -12,11 +12,8 @@ import shisad.daemon.handlers._impl_session as impl_session
 from shisad.core.planner import (
     BASE_SYSTEM_PROMPT,
     ActionProposal,
-    EvaluatedProposal,
     Planner,
-    PlannerOutput,
     PlannerOutputError,
-    PlannerResult,
 )
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
@@ -28,8 +25,6 @@ from shisad.core.tools.schema import (
     tool_definitions_to_openai,
 )
 from shisad.core.types import (
-    PEPDecision,
-    PEPDecisionKind,
     SessionId,
     SessionMode,
     TaintLabel,
@@ -169,18 +164,6 @@ def _planner(
         schema_strict_mode=True,
     )
     return planner, provider, tool_definitions_to_openai(registry.list_tools())
-
-
-def _evaluated(proposal: ActionProposal) -> EvaluatedProposal:
-    return EvaluatedProposal(
-        proposal=proposal,
-        decision=PEPDecision(
-            kind=PEPDecisionKind.ALLOW,
-            reason="allow",
-            tool_name=proposal.tool_name,
-            risk_score=0.0,
-        ),
-    )
 
 
 def _validated_turn(
@@ -342,35 +325,6 @@ def test_f13a_command_prompt_names_full_tool_posture_and_general_multi_action() 
     assert "multiple independent actions" in normalized
 
 
-def test_f13a_exact_command_proposal_is_not_replaced_for_private_label_absence() -> None:
-    registry = _registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    proposal = ActionProposal(
-        action_id="call-note",
-        tool_name=ToolName("note.create"),
-        arguments={"content": "remember to buy groceries"},
-        reasoning="Use the typed note tool.",
-        data_sources=[_CURRENT_TURN_TOOL_CALL_SOURCE],
-    )
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="Creating the note.",
-            actions=[proposal],
-        ),
-        evaluated=[_evaluated(proposal)],
-        attempts=1,
-    )
-
-    rewritten = impl_session._rewrite_explicit_memory_intent_planner_result(
-        user_text="add a note: remember to buy groceries",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(),
-    )
-
-    assert rewritten is planner_result
-
-
 @pytest.mark.parametrize(
     (
         "tool_name",
@@ -473,7 +427,7 @@ def test_f13a_exact_command_proposal_is_not_replaced_for_private_label_absence()
                 trusted_input=False,
                 operator_owned_cli_input=False,
             ),
-            True,
+            False,
         ),
     ],
     ids=(
@@ -486,7 +440,7 @@ def test_f13a_exact_command_proposal_is_not_replaced_for_private_label_absence()
         "tainted-turn",
         "firewall-risk",
         "task-mode",
-        "legacy-source-preserved",
+        "legacy-source-rejected",
     ),
 )
 def test_f13a_current_turn_source_grants_only_bounded_memory_authority(
@@ -511,31 +465,6 @@ def test_f13a_current_turn_source_grants_only_bounded_memory_authority(
     )
 
     assert helper(proposal=proposal, validated=validated) is expected
-
-
-def test_f13a_compatibility_action_preserves_local_fallback_truth() -> None:
-    registry = _registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    fallback_message = "Planner route is unavailable; configure a provider."
-    planner_result = PlannerResult(
-        output=PlannerOutput(actions=[], assistant_response=fallback_message),
-        evaluated=[],
-        attempts=1,
-        provider_response=ProviderResponse(
-            message=Message(role="assistant", content=fallback_message),
-            trusted_origin="local-fallback",
-        ),
-    )
-
-    rewritten = impl_session._rewrite_explicit_memory_intent_planner_result(
-        user_text="add a note: remember to buy groceries",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(),
-    )
-
-    assert [str(item.proposal.tool_name) for item in rewritten.evaluated] == ["note.create"]
-    assert rewritten.output.assistant_response == fallback_message
 
 
 def test_f13a_fallback_prefix_shifts_protected_tool_output_bounds() -> None:

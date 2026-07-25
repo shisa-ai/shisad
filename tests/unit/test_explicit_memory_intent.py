@@ -1,529 +1,29 @@
-"""M1 explicit memory-intent fallback coverage."""
+"""Retained greeting boundary after F13B removes explicit-intent fallback."""
 
 from __future__ import annotations
 
-import pytest
-
-from shisad.core.planner import (
-    ActionProposal,
-    EvaluatedProposal,
-    PlannerOutput,
-    PlannerResult,
-)
-from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, ToolName
-from shisad.daemon.handlers._impl_session import (
-    _build_explicit_memory_intent_proposal,
-    _build_explicit_multi_intent_proposals,
-    _rewrite_explicit_memory_intent_planner_result,
-    _rewrite_plain_greeting_planner_result,
-)
-from shisad.security.pep import PEP, PolicyContext
-from shisad.security.policy import PolicyBundle
+from shisad.core.planner import ActionProposal, PlannerOutput, PlannerResult
+from shisad.core.types import ToolName
+from shisad.daemon.handlers._impl_session import _rewrite_plain_greeting_planner_result
 
 
-def _memory_registry() -> ToolRegistry:
-    registry = ToolRegistry()
-    registry.register(
-        ToolDefinition(
-            name=ToolName("note.create"),
-            description="Create note",
-            parameters=[ToolParameter(name="content", type="string", required=True)],
-            capabilities_required=[Capability.MEMORY_WRITE],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("note.search"),
-            description="Search notes",
-            parameters=[ToolParameter(name="query", type="string", required=True)],
-            capabilities_required=[Capability.MEMORY_READ],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("todo.create"),
-            description="Create todo",
-            parameters=[ToolParameter(name="title", type="string", required=True)],
-            capabilities_required=[Capability.MEMORY_WRITE],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("todo.list"),
-            description="List todos",
-            capabilities_required=[Capability.MEMORY_READ],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("todo.complete"),
-            description="Complete todo",
-            parameters=[ToolParameter(name="selector", type="string", required=True)],
-            capabilities_required=[Capability.MEMORY_WRITE],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("reminder.create"),
-            description="Create reminder",
-            parameters=[
-                ToolParameter(name="message", type="string", required=True),
-                ToolParameter(name="when", type="string", required=True),
-            ],
-            capabilities_required=[Capability.MEMORY_WRITE, Capability.MESSAGE_SEND],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("reminder.list"),
-            description="List reminders",
-            capabilities_required=[Capability.MEMORY_READ],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("fs.read"),
-            description="Read file",
-            parameters=[
-                ToolParameter(name="path", type="string", required=True),
-                ToolParameter(name="max_bytes", type="integer", required=False),
-                ToolParameter(name="filesystem_intent", type="string", required=False),
-            ],
-            capabilities_required=[Capability.FILE_READ],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("web.search"),
-            description="Search web",
-            parameters=[
-                ToolParameter(name="query", type="string", required=True),
-                ToolParameter(name="limit", type="integer", required=False),
-            ],
-            capabilities_required=[Capability.HTTP_REQUEST],
-        )
-    )
-    return registry
-
-
-@pytest.mark.parametrize(
-    ("user_text", "tool_name", "arguments"),
-    [
-        (
-            "add a note: remember to buy groceries",
-            "note.create",
-            {"content": "remember to buy groceries"},
-        ),
-        (
-            "search my notes for groceries",
-            "note.search",
-            {"query": "groceries"},
-        ),
-        (
-            "add todo: review PRs",
-            "todo.create",
-            {"title": "review PRs"},
-        ),
-        (
-            "list my todos",
-            "todo.list",
-            {},
-        ),
-        (
-            "mark the review PRs todo complete",
-            "todo.complete",
-            {"selector": "review PRs"},
-        ),
-        (
-            "remind me to check email in 5 seconds",
-            "reminder.create",
-            {
-                "message": "check email",
-                "when": "in 5 seconds",
-                "reminder_intent": "current_turn_reminder_create",
-            },
-        ),
-        (
-            "list my reminders",
-            "reminder.list",
-            {},
-        ),
-        (
-            "what reminders do we have?",
-            "reminder.list",
-            {},
-        ),
-        (
-            "fetch https://example.com",
-            "web.fetch",
-            {"url": "https://example.com"},
-        ),
-        (
-            "fetch https://example.com/ and summarize it",
-            "web.fetch",
-            {"url": "https://example.com/"},
-        ),
-        (
-            "Use web.fetch to fetch https://example.com/ and tell me the title.",
-            "web.fetch",
-            {"url": "https://example.com/"},
-        ),
-        (
-            "Please web fetch https://example.org/page.",
-            "web.fetch",
-            {"url": "https://example.org/page"},
-        ),
-        (
-            "search the web for recent AI agent security news",
-            "web.search",
-            {"query": "recent AI agent security news", "limit": 5},
-        ),
-        (
-            "search for the latest news",
-            "web.search",
-            {"query": "the latest news", "limit": 5},
-        ),
-        (
-            "read evidence ev_test_123",
-            "evidence.read",
-            {"ref_id": "ev_test_123"},
-        ),
-        (
-            "evidence.read ev_test_123",
-            "evidence.read",
-            {"ref_id": "ev_test_123"},
-        ),
-        (
-            'evidence.read("ev_test_456")',
-            "evidence.read",
-            {"ref_id": "ev_test_456"},
-        ),
-        (
-            "read README.md",
-            "fs.read",
-            {
-                "path": "README.md",
-                "max_bytes": 1048576,
-                "filesystem_intent": "current_turn_local_read",
-            },
-        ),
-        (
-            "Please read /root/INSTALL.LOG and tell me what it says.",
-            "fs.read",
-            {
-                "path": "/root/INSTALL.LOG",
-                "max_bytes": 1048576,
-                "filesystem_intent": "current_turn_local_read",
-            },
-        ),
-        (
-            "can you find the similar file?",
-            "fs.list",
-            {
-                "path": ".",
-                "recursive": True,
-                "limit": 25,
-                "filesystem_intent": "current_turn_local_read",
-            },
-        ),
-        (
-            "can you look for the file?",
-            "fs.list",
-            {
-                "path": ".",
-                "recursive": True,
-                "limit": 25,
-                "filesystem_intent": "current_turn_local_read",
-            },
-        ),
-        (
-            "What is my favorite snack?",
-            "note.search",
-            {"query": "favorite snack"},
-        ),
-    ],
-)
-def test_m1_explicit_memory_intent_parser_covers_weekend_sprint_commands(
-    user_text: str,
-    tool_name: str,
-    arguments: dict[str, str],
-) -> None:
-    proposal = _build_explicit_memory_intent_proposal(user_text)
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName(tool_name)
-    assert proposal.arguments == arguments
-
-
-def test_rc_lus_explicit_multi_intent_parser_covers_read_and_search() -> None:
-    proposals = _build_explicit_multi_intent_proposals(
-        "Read README.md and search the web for related projects."
-    )
-
-    assert [(proposal.tool_name, proposal.arguments) for proposal in proposals] == [
-        (
-            ToolName("fs.read"),
-            {
-                "path": "README.md",
-                "max_bytes": 1048576,
-                "filesystem_intent": "current_turn_local_read",
-            },
-        ),
-        (ToolName("web.search"), {"query": "related projects", "limit": 5}),
-    ]
-
-
-def test_m1_explicit_memory_intent_rewrite_replaces_spurious_planner_actions() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    wrong_proposal = ActionProposal(
-        action_id="a-1",
-        tool_name=ToolName("note.create"),
-        arguments={"content": "Remind me to review PRs", "key": "review_prs"},
-        reasoning="Store a note.",
-        data_sources=[],
-    )
-    wrong_decision = PEPDecision(
-        kind=PEPDecisionKind.ALLOW,
-        reason="allow",
-        tool_name=wrong_proposal.tool_name,
-        risk_score=0.0,
-    )
-    planner_result = PlannerResult(
+def _planner_result(
+    *,
+    response: str = "",
+    actions: list[ActionProposal] | None = None,
+    attempts: int = 1,
+) -> PlannerResult:
+    return PlannerResult(
         output=PlannerOutput(
-            assistant_response="The correct tool call would be note.create.",
-            actions=[wrong_proposal],
-        ),
-        evaluated=[EvaluatedProposal(proposal=wrong_proposal, decision=wrong_decision)],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="add todo: review PRs",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(
-            capabilities={Capability.MEMORY_READ, Capability.MEMORY_WRITE, Capability.MESSAGE_SEND}
-        ),
-    )
-
-    assert rewritten.output.assistant_response == ""
-    assert len(rewritten.evaluated) == 1
-    assert rewritten.evaluated[0].proposal.tool_name == ToolName("todo.create")
-    assert rewritten.evaluated[0].proposal.arguments == {"title": "review PRs"}
-    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
-
-
-def test_rc_lus_explicit_file_intent_rewrite_replaces_tool_choice_prose() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="The appropriate tool to use is fs.read.",
-            actions=[],
+            assistant_response=response,
+            actions=list(actions or []),
         ),
         evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
+        attempts=attempts,
     )
 
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="read README.md",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.FILE_READ}),
-    )
 
-    assert rewritten.output.assistant_response == ""
-    assert len(rewritten.evaluated) == 1
-    assert rewritten.evaluated[0].proposal.tool_name == ToolName("fs.read")
-    assert rewritten.evaluated[0].proposal.arguments == {
-        "path": "README.md",
-        "max_bytes": 1048576,
-        "filesystem_intent": "current_turn_local_read",
-    }
-    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
-
-
-def test_explicit_memory_question_rewrite_preserves_substantive_direct_answer() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="Your favorite snack is mango slices.",
-            actions=[],
-        ),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="What is my favorite snack?",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
-    )
-
-    assert rewritten is planner_result
-
-
-def test_explicit_memory_question_rewrite_recovers_planner_validation_fallback() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response=(
-                "I could not safely complete this request due to an internal "
-                "planner validation error. Please retry."
-            ),
-            actions=[],
-        ),
-        evaluated=[],
-        attempts=0,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="What is my favorite snack?",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
-    )
-
-    assert rewritten is not planner_result
-    assert rewritten.output.assistant_response == ""
-    assert rewritten.evaluated[0].proposal.tool_name == ToolName("note.search")
-    assert rewritten.evaluated[0].proposal.arguments == {"query": "favorite snack"}
-    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
-
-
-def test_explicit_memory_question_rewrite_recovers_internal_evidence_scaffolding() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response=(
-                'Based on the user request "What is my favorite snack?" and the '
-                "provided DATA EVIDENCE (UNTRUSTED):\n\n"
-                "MEMO CONTENT: my favorite snack is mango slices\n"
-                "trust=UNTRUSTED source=memory:retrieved\n\n"
-                'Final response: "Your favorite snack is mango slices."'
-            ),
-            actions=[],
-        ),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="What is my favorite snack?",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
-    )
-
-    assert rewritten is not planner_result
-    assert rewritten.output.assistant_response == ""
-    assert rewritten.evaluated[0].proposal.tool_name == ToolName("note.search")
-    assert rewritten.evaluated[0].proposal.arguments == {"query": "favorite snack"}
-    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
-
-
-def test_explicit_web_search_rewrite_preserves_planner_tool_choice() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_proposal = ActionProposal(
-        action_id="a-docs",
-        tool_name=ToolName("mcp.docs.lookup-doc"),
-        arguments={"query": "roadmap", "limit": 4},
-        reasoning="Use the configured docs server.",
-        data_sources=[],
-    )
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="lookup started",
-            actions=[planner_proposal],
-        ),
-        evaluated=[
-            EvaluatedProposal(
-                proposal=planner_proposal,
-                decision=PEPDecision(
-                    kind=PEPDecisionKind.ALLOW,
-                    reason="allow",
-                    tool_name=planner_proposal.tool_name,
-                    risk_score=0.0,
-                ),
-            )
-        ],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="Look up the roadmap in docs.",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.HTTP_REQUEST}),
-    )
-
-    assert rewritten is planner_result
-
-
-def test_explicit_web_search_rewrite_clears_planner_search_narration() -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    proposal = ActionProposal(
-        action_id="a-search",
-        tool_name=ToolName("web.search"),
-        arguments={"query": "Hokkaido venues", "limit": 5},
-        reasoning="Search the web.",
-        data_sources=[],
-    )
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="Searching Hokkaido venues.",
-            actions=[proposal],
-        ),
-        evaluated=[
-            EvaluatedProposal(
-                proposal=proposal,
-                decision=PEPDecision(
-                    kind=PEPDecisionKind.ALLOW,
-                    reason="allow",
-                    tool_name=proposal.tool_name,
-                    risk_score=0.0,
-                ),
-            )
-        ],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text="search Hokkaido venues",
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.HTTP_REQUEST}),
-    )
-
-    assert rewritten is not planner_result
-    assert rewritten.output.assistant_response == ""
-    assert rewritten.evaluated[0].proposal.tool_name == ToolName("web.search")
-
-
-def test_m1_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
+def test_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
     wrong_proposal = ActionProposal(
         action_id="a-hello",
         tool_name=ToolName("note.create"),
@@ -531,20 +31,13 @@ def test_m1_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
         reasoning="Store hello.",
         data_sources=[],
     )
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="Tool results summary: - note.create: success=True",
-            actions=[wrong_proposal],
-        ),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
 
     rewritten = _rewrite_plain_greeting_planner_result(
         user_text="hello",
-        planner_result=planner_result,
+        planner_result=_planner_result(
+            response="Tool results summary: - note.create: success=True",
+            actions=[wrong_proposal],
+        ),
     )
 
     assert rewritten.output.actions == []
@@ -552,14 +45,8 @@ def test_m1_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
     assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
-def test_m1_plain_greeting_rewrite_ignores_greeting_prefixed_commands() -> None:
-    planner_result = PlannerResult(
-        output=PlannerOutput(assistant_response="", actions=[]),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
+def test_plain_greeting_rewrite_ignores_greeting_prefixed_commands() -> None:
+    planner_result = _planner_result(response="Creating your requested note.")
 
     rewritten = _rewrite_plain_greeting_planner_result(
         user_text="hello, add a note: test",
@@ -569,14 +56,8 @@ def test_m1_plain_greeting_rewrite_ignores_greeting_prefixed_commands() -> None:
     assert rewritten is planner_result
 
 
-def test_m1_plain_greeting_rewrite_normalizes_existing_tool_free_response() -> None:
-    planner_result = PlannerResult(
-        output=PlannerOutput(assistant_response="ok", actions=[]),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
+def test_plain_greeting_rewrite_normalizes_existing_tool_free_response() -> None:
+    planner_result = _planner_result(response="ok")
 
     rewritten = _rewrite_plain_greeting_planner_result(
         user_text="hello",
@@ -589,300 +70,32 @@ def test_m1_plain_greeting_rewrite_normalizes_existing_tool_free_response() -> N
     assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
-def test_rc_lus_plain_greeting_rewrite_drops_tool_call_boilerplate() -> None:
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response=(
-                "Hello. I can help with that. No tool call needed for this conversational response."
-            ),
-            actions=[],
-        ),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
+def test_plain_greeting_rewrite_normalizes_planner_validation_fallback() -> None:
     rewritten = _rewrite_plain_greeting_planner_result(
         user_text="hello",
-        planner_result=planner_result,
+        planner_result=_planner_result(
+            response="Assistant planner error (planner_output_invalid). Please retry.",
+            attempts=0,
+        ),
     )
 
-    assert rewritten is not planner_result
+    assert rewritten.output.actions == []
+    assert rewritten.evaluated == []
     assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
-def test_rc_lus_plain_greeting_rewrite_normalizes_planner_validation_fallback() -> None:
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response="Assistant planner error (planner_output_invalid). Please retry.",
-            actions=[],
+def test_plain_greeting_rewrite_keeps_authenticated_configuration_fallback() -> None:
+    planner_result = _planner_result(
+        response=(
+            "[PLANNER FALLBACK: CONFIGURATION] No language model configured. "
+            "Configure a planner route or local planner preset."
         ),
-        evaluated=[],
         attempts=0,
-        provider_response=None,
-        messages_sent=(),
     )
 
     rewritten = _rewrite_plain_greeting_planner_result(
-        user_text="hello",
+        user_text="hello there",
         planner_result=planner_result,
-    )
-
-    assert rewritten.output.actions == []
-    assert rewritten.evaluated == []
-    assert rewritten.output.assistant_response == "Hello. How can I help?"
-
-
-def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command() -> None:
-    proposal = _build_explicit_memory_intent_proposal("hello, add a note: test")
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("note.create")
-    assert proposal.arguments == {"content": "test"}
-
-
-@pytest.mark.parametrize(
-    "user_text",
-    [
-        "add todo: review PRs and list my todos",
-        "add todo: review PRs; list my todos",
-        "add todo: review PRs;list my todos",
-        "add todo: review PRs, list my todos",
-        "add todo: review PRs,read README.md",
-        "add todo: review PRs; read README.md",
-        "add todo: review PRs, read README.md",
-        "add a note: record evidence;list my notes",
-        "add a note: record evidence,read README.md",
-        'add todo: review PRs and set a reminder for 1 minute from now to say "timer done"',
-        'add todo: review PRs and please set a reminder for 1 minute from now to say "timer done"',
-        (
-            "add todo: review PRs and can you please set a reminder "
-            'for 1 minute from now to say "timer done"'
-        ),
-        "please set a reminder for 3pm to say timer done;list my reminders",
-        'please set a reminder for 3pm to say "timer done"; list my reminders',
-        'please set a reminder for 3pm to say "timer done";list my reminders',
-        'please set a reminder for 3pm to say "timer done". list my reminders',
-        'please set a reminder for 3pm to say "timer done".list my reminders',
-        "remind me to check email on 2026-03-30T12:00:00Z",
-    ],
-)
-def test_m1_explicit_memory_intent_parser_rejects_ambiguous_or_unsupported_forms(
-    user_text: str,
-) -> None:
-    assert _build_explicit_memory_intent_proposal(user_text) is None
-
-
-def test_m1_explicit_memory_intent_parser_allows_at_iso_reminder_datetime() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        "remind me to check email at 2026-03-30T12:00:00Z"
-    )
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("reminder.create")
-    assert proposal.arguments == {
-        "message": "check email",
-        "when": "at 2026-03-30T12:00:00Z",
-        "reminder_intent": "current_turn_reminder_create",
-    }
-    assert "user_text:explicit_reminder_intent" in proposal.data_sources
-
-
-def test_gh49_explicit_reminder_create_proposal_sets_structured_current_turn_intent() -> None:
-    proposal = _build_explicit_memory_intent_proposal("remind me to say timer done in 1 minute")
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("reminder.create")
-    assert proposal.arguments == {
-        "message": "say timer done",
-        "when": "in 1 minute",
-        "reminder_intent": "current_turn_reminder_create",
-    }
-    assert "user_text:explicit_reminder_intent" in proposal.data_sources
-
-
-@pytest.mark.parametrize(
-    "user_text",
-    [
-        'hello, please set a reminder for 1 minute from now to say "timer done"',
-        'please set a reminder for 1 minute from now to say "timer done"',
-        'can you set a reminder for 1 minute from now to say "timer done"',
-        'can you please set a reminder for 1 minute from now to say "timer done"',
-    ],
-)
-def test_gh49_explicit_reminder_create_parser_handles_set_reminder_time_first(
-    user_text: str,
-) -> None:
-    proposal = _build_explicit_memory_intent_proposal(user_text)
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("reminder.create")
-    assert proposal.arguments == {
-        "message": "timer done",
-        "when": "in 1 minute",
-        "reminder_intent": "current_turn_reminder_create",
-    }
-    assert "user_text:explicit_reminder_intent" in proposal.data_sources
-
-
-def test_gh49_explicit_reminder_create_parser_normalizes_for_clock_time() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        'please set a reminder for 3pm to say "timer done"'
-    )
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("reminder.create")
-    assert proposal.arguments == {
-        "message": "timer done",
-        "when": "at 3pm",
-        "reminder_intent": "current_turn_reminder_create",
-    }
-    assert "user_text:explicit_reminder_intent" in proposal.data_sources
-
-
-def test_gh49_explicit_reminder_create_parser_keeps_comma_message() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        'please set a reminder for 3pm to say "timer done, check oven"'
-    )
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("reminder.create")
-    assert proposal.arguments == {
-        "message": "timer done, check oven",
-        "when": "at 3pm",
-        "reminder_intent": "current_turn_reminder_create",
-    }
-    assert "user_text:explicit_reminder_intent" in proposal.data_sources
-
-
-def test_m1_explicit_memory_intent_parser_keeps_comma_separated_note_content() -> None:
-    proposal = _build_explicit_memory_intent_proposal("add a note: buy milk, eggs, bread")
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("note.create")
-    assert proposal.arguments == {"content": "buy milk, eggs, bread"}
-
-
-def test_m1_explicit_memory_intent_parser_keeps_dotted_note_content() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        "add a note: evidence.read completed for example.com"
-    )
-
-    assert proposal is not None
-    assert proposal.tool_name == ToolName("note.create")
-    assert proposal.arguments == {"content": "evidence.read completed for example.com"}
-
-
-@pytest.mark.parametrize(
-    "user_text",
-    [
-        "add todo: review PRs and list my todos",
-        "add todo: review PRs; list my todos",
-        "add todo: review PRs, list my todos",
-    ],
-)
-def test_m1_explicit_memory_intent_rewrite_preserves_multi_action_planner_results(
-    user_text: str,
-) -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    first = ActionProposal(
-        action_id="a-1",
-        tool_name=ToolName("todo.create"),
-        arguments={"title": "review PRs"},
-        reasoning="Create todo.",
-        data_sources=[],
-    )
-    second = ActionProposal(
-        action_id="a-2",
-        tool_name=ToolName("todo.list"),
-        arguments={},
-        reasoning="List todos.",
-        data_sources=[],
-    )
-    planner_result = PlannerResult(
-        output=PlannerOutput(assistant_response="", actions=[first, second]),
-        evaluated=[
-            EvaluatedProposal(
-                proposal=first,
-                decision=PEPDecision(
-                    kind=PEPDecisionKind.ALLOW,
-                    reason="allow",
-                    tool_name=first.tool_name,
-                    risk_score=0.0,
-                ),
-            ),
-            EvaluatedProposal(
-                proposal=second,
-                decision=PEPDecision(
-                    kind=PEPDecisionKind.ALLOW,
-                    reason="allow",
-                    tool_name=second.tool_name,
-                    risk_score=0.0,
-                ),
-            ),
-        ],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text=user_text,
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.MEMORY_READ, Capability.MEMORY_WRITE}),
-    )
-
-    assert rewritten is planner_result
-
-
-@pytest.mark.parametrize(
-    "user_text",
-    [
-        "add todo: review PRs; read README.md",
-        "add todo: review PRs, read README.md",
-    ],
-)
-def test_m1_explicit_memory_intent_rewrite_preserves_non_memory_follow_on_results(
-    user_text: str,
-) -> None:
-    registry = _memory_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner_result = PlannerResult(
-        output=PlannerOutput(
-            assistant_response=(
-                "Tool results summary: - todo.create: success=True - fs.read: success=True"
-            ),
-            actions=[
-                ActionProposal(
-                    action_id="todo-create",
-                    tool_name=ToolName("todo.create"),
-                    arguments={"title": "review PRs"},
-                    reasoning="Create the todo.",
-                    data_sources=[],
-                ),
-                ActionProposal(
-                    action_id="fs-read",
-                    tool_name=ToolName("fs.read"),
-                    arguments={"path": "README.md"},
-                    reasoning="Read the requested file.",
-                    data_sources=[],
-                ),
-            ],
-        ),
-        evaluated=[],
-        attempts=1,
-        provider_response=None,
-        messages_sent=(),
-    )
-
-    rewritten = _rewrite_explicit_memory_intent_planner_result(
-        user_text=user_text,
-        planner_result=planner_result,
-        pep=pep,
-        context=PolicyContext(capabilities={Capability.MEMORY_READ, Capability.MEMORY_WRITE}),
     )
 
     assert rewritten is planner_result

@@ -82,7 +82,7 @@ separate consumer with a different contract.
 
 | Concern | Current authorities | Current non-claim |
 |---|---|---|
-| Explicit memory intent | Planner/session orchestration plus bounded daemon-side proposal builders in [`_impl_session.py`](../src/shisad/daemon/handlers/_impl_session.py) | The daemon still performs some prose interpretation; it is not yet purely structured planner output |
+| Conversational action intent | COMMAND planner typed tool output, followed by structural session binding and the shared enforcement path in [`_impl_session.py`](../src/shisad/daemon/handlers/_impl_session.py) | The retired thread/note/todo/reminder/filesystem/web/browser/evidence compatibility family is no longer built or substituted from daemon prose; separate finite state-bound confirmation, auth, greeting-response, and recovery protocols remain |
 | Ingress secret detection | [`security/firewall/secrets.py`](../src/shisad/security/firewall/secrets.py) and ingress taint consumers | Pattern coverage is not yet one canonical registry across every consumer |
 | Output secret handling | [`security/firewall/output.py`](../src/shisad/security/firewall/output.py) | Output redaction rules are not asserted identical to ingress or PEP DLP rules |
 | PEP argument DLP | [`security/pep.py`](../src/shisad/security/pep.py) | Applies to planner, administrative tool execution, and typed operator convenience effects; it is not a universal claim about every daemon method |
@@ -105,7 +105,8 @@ a characterized user journey:
    preserving their authenticated functionality. *(Implemented in the current
    tree.)*
 5. Replace daemon prose intent interpretation with structured planner-produced
-   intent.
+   intent. *(Implemented for the characterized compatibility action family in
+   the current tree.)*
 6. Establish canonical secret-detection and URL-safety primitives for the
    current consumers; broader network architecture remains separate follow-up.
 

@@ -320,7 +320,7 @@ async def test_gh94_planner_structured_similarly_named_file_recovery_reads_match
 
 
 @pytest.mark.asyncio
-async def test_lus_similar_file_recovery_survives_initial_planner_validation_fallback(
+async def test_lus_similar_file_recovery_survives_truthful_planner_error_and_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -362,8 +362,17 @@ async def test_lus_similar_file_recovery_survives_initial_planner_validation_fal
             },
         )
         first_outputs = _extract_tool_outputs(first)
-        assert first.get("planner_error") == ""
-        assert first_outputs["fs.read"][0].get("error") == "path_not_found"
+        assert first.get("planner_error") == "planner_output_invalid"
+        assert first_outputs == {}
+
+        retried = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Please read READMEEE.md and summarize it.",
+            },
+        )
+        assert _extract_tool_outputs(retried)["fs.read"][0].get("error") == "path_not_found"
 
         recovered = await harness.client.call(
             "session.message",
