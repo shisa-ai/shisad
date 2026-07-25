@@ -394,7 +394,9 @@ class BrowserToolkit:
         self._session_root = session_root
         self._session_root.mkdir(parents=True, exist_ok=True)
         self._allowed_domains = [
-            host for item in allowed_domains if (host := canonicalize_url_host(item))
+            canonicalize_url_host(item) or item.strip().lower()
+            for item in allowed_domains
+            if item.strip()
         ]
         self._timeout_seconds = max(1.0, float(timeout_seconds))
         self._require_hardened_isolation = bool(require_hardened_isolation)

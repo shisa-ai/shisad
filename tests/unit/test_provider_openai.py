@@ -278,6 +278,30 @@ async def test_openai_compatible_complete_validates_redirect_hops(
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_complete_blocks_malformed_redirect_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = timeout
+        raise HTTPError(
+            url=str(request.full_url),
+            code=302,
+            msg="Found",
+            hdrs={"Location": "https://[::1"},
+            fp=None,
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+
+    with pytest.raises(RuntimeError, match=r"Provider redirect blocked.*malformed Location"):
+        await provider.complete([Message(role="user", content="Hi")])
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_complete_blocks_redirect_to_private_range(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -306,6 +306,19 @@ def test_proxy_preserves_bare_ipv6_allowlist() -> None:
     assert decision.allowed is True
 
 
+@pytest.mark.parametrize("rule", ["api.good.com:8443", "api.good.com/v1"])
+def test_proxy_preserves_baseline_host_projection_for_port_or_path_rule(rule: str) -> None:
+    proxy = EgressProxy(resolver=lambda _host: ["93.184.216.34"])
+
+    decision = proxy.authorize_request(
+        tool_name="http_request",
+        url="https://api.good.com:8443/v1",
+        policy=NetworkPolicy(allow_network=True, allowed_domains=[rule]),
+    )
+
+    assert decision.allowed is True
+
+
 @pytest.mark.parametrize(
     "resolved",
     [None, "not-an-address", "100.64.0.1", "224.0.0.1", "ff02::1"],
@@ -451,6 +464,20 @@ def test_browser_canonicalizes_root_dot_allowlist_for_local_target(
     assert policy.deny_ip_literals is False
 
 
+@pytest.mark.parametrize("rule", ["api.example/v1", "https://api.example/v1"])
+def test_browser_preserves_non_host_rule_for_proxy_owned_projection(
+    tmp_path: Path,
+    rule: str,
+) -> None:
+    toolkit = _browser_toolkit(
+        tmp_path,
+        local_network=BrowserLocalNetworkMode.BLOCKED,
+        allowed_domains=[rule],
+    )
+
+    assert toolkit._allowed_domains == [rule]
+
+
 def _web_toolkit(tmp_path: Path, *, allowed_domains: list[str] | None = None) -> WebToolkit:
     return WebToolkit(
         data_dir=tmp_path,
@@ -593,6 +620,21 @@ def _web_search_registry(destination: str) -> ToolRegistry:
     return registry
 
 
+def _url_field_registry(field: str) -> tuple[ToolRegistry, ToolName]:
+    registry = ToolRegistry()
+    tool_name = ToolName(f"test.{field}")
+    registry.register(
+        ToolDefinition(
+            name=tool_name,
+            description="Exercise a structurally named URL field.",
+            parameters=[ToolParameter(name=field, type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    return registry, tool_name
+
+
 def _pep_context(**patterns: set[str]) -> PolicyContext:
     return PolicyContext(
         capabilities={Capability.HTTP_REQUEST},
@@ -609,6 +651,17 @@ def test_pep_rejects_present_scheme_less_url_as_malformed() -> None:
         {"url": "example.com/path"},
         _pep_context(),
     )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason_code == "pep:egress_malformed_destination"
+
+
+@pytest.mark.parametrize("field", ["url", "endpoint", "destination", "webhook_url"])
+def test_pep_rejects_present_empty_url_field_as_malformed(field: str) -> None:
+    registry, tool_name = _url_field_registry(field)
+    pep = PEP(PolicyBundle(), registry)
+
+    decision = pep.evaluate(tool_name, {field: ""}, _pep_context())
 
     assert decision.kind == PEPDecisionKind.REJECT
     assert decision.reason_code == "pep:egress_malformed_destination"

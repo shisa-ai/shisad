@@ -271,7 +271,12 @@ class OpenAICompatibleProvider:
                         raise RuntimeError(
                             f"Provider redirect blocked for {active_url}: too many redirects"
                         ) from exc
-                    redirected_url = urljoin(active_url, location)
+                    try:
+                        redirected_url = urljoin(active_url, location)
+                    except ValueError as join_error:
+                        raise RuntimeError(
+                            f"Provider redirect blocked for {active_url}: malformed Location header"
+                        ) from join_error
                     redirect_errors = _validate_runtime_endpoint_url(
                         redirected_url,
                         allow_http_localhost=self._allow_http_localhost,

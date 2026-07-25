@@ -280,10 +280,10 @@ class EgressProxy:
             normalized = str(raw).strip().lower()
             if not normalized:
                 continue
-            if "://" in normalized:
-                destination = safe_url_destination(normalized)
-                if destination is not None:
-                    patterns.append(destination.host)
+            rule_url = normalized if "://" in normalized else f"https://{normalized}"
+            destination = safe_url_destination(rule_url)
+            if destination is not None:
+                patterns.append(destination.host)
                 continue
             candidate = canonicalize_url_host(normalized)
             if candidate:

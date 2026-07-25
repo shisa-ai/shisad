@@ -1043,9 +1043,11 @@ class PEP:
     def _extract_destination(self, arguments: dict[str, Any]) -> EgressDestination | None:
         url_fields = ("url", "endpoint", "destination", "webhook_url")
         for field in url_fields:
-            value = arguments.get(field)
-            if not isinstance(value, str) or not value:
+            if field not in arguments:
                 continue
+            value = arguments[field]
+            if not isinstance(value, str) or not value:
+                raise ValueError("invalid_destination_url")
 
             destination = safe_url_destination(value)
             if destination is None:
