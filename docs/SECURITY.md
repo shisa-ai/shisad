@@ -62,10 +62,12 @@ This is what distinguishes shisad from both permissive agents (which can't tell 
 
 **1. Content-blind enforcement vs. content-seeing detection.** Security components fall into two categories:
 
-- **Content-blind** (control plane): see only action types, resource identifiers, timing, sequence patterns. Never see file contents, message bodies, or free-form text. These are the hard enforcement boundary. Examples: PEP pipeline, behavioral sequence analyzer, resource access monitor, consensus voting.
-- **Content-seeing** (detection): see content to classify, score, or sanitize it. These use classifiers and heuristics, not general-purpose LLMs. They are detection layers, not sole enforcement boundaries — they can flag, escalate to confirmation, or add taint labels, but hard denial requires convergence with a content-blind signal or deterministic policy. Examples: content firewall (injection classifiers), output firewall (secret/PII detection).
+- **Content-blind** (control plane): see only action types, resource identifiers, timing, sequence patterns. They do not inspect file contents, message bodies, or free-form text. These are the hard enforcement boundary. Examples: the PEP's tool-registry/capability/resource/egress checks, behavioral sequence analyzer, resource access monitor, and consensus voting.
+- **Content-seeing** (detection): see content to classify, score, sanitize, or apply a bounded deterministic DLP rule. These use classifiers, finite signatures, and heuristics, not general-purpose LLMs. They are not general intent authorities — they can flag, redact, add taint, escalate, or reject an exact deterministic policy match. Examples: content firewall (injection and secret detection), output firewall (secret/PII detection), and the PEP's argument DLP check.
 
-Content-seeing components produce only structured metadata outputs (scores, flags, enum labels) — never free-form text that could carry injection back into control logic.
+Security signals from content-seeing components are structured metadata
+(scores, flags, enum labels). A sanitizer may also return rewritten user-facing
+text, but that text is not enforcement authority.
 
 **2. Commit before contamination.** Plans are committed *before* untrusted content is seen. Even if content contains "ignore the plan", the plan is already locked.
 
@@ -75,7 +77,12 @@ Content-seeing components produce only structured metadata outputs (scores, flag
 
 **5. Stateless context is a security primitive.** LLMs have no persistent memory between turns. We have complete, deterministic control over what the model "knows" at every turn. The model cannot hide state, cannot remember something we've removed, and cannot resist a context rollback. This enables: checkpoint rollback to pre-contamination state, context forking for isolated task agents, selective context construction and taint quarantine, clean-room sessions provably free of tainted content, and differential execution to empirically test whether content is influencing behavior.
 
-**6. Can't leak what you don't have.** Secrets (API keys, tokens, passwords, private keys) are never placed in the LLM context. A credential broker resolves credentials at the HTTP proxy layer — the tool executor sends a request with a credential reference, and the proxy injects the real secret on the outbound hop. The LLM never sees the secret, so even a fully compromised model cannot exfiltrate it. This is invariant I3.
+**6. Can't leak what you don't have.** Broker-managed credentials are not
+placed in the LLM context. A credential broker resolves an opaque reference at
+the HTTP proxy layer, so the model cannot exfiltrate the brokered value it
+never receives. User-provided or retrieved text can still contain
+credential-like material; bounded ingress, output, and argument-DLP detection
+is defense in depth for that separate case. This is the scoped invariant I3.
 
 **7. Approvals don't launder provenance.** When a user confirms an ambiguous action, the confirmation authorizes *that specific action* — it does not remove taint labels, change the content's provenance, or grant blanket trust to the source. A confirmed web fetch from an untrusted page does not make the fetched content trusted. Taint persists through the full data lifecycle regardless of intermediate approvals.
 
@@ -243,7 +250,9 @@ These hold regardless of LLM behavior:
 
 - **I1**: No outbound communication includes high-sensitivity content unless user-approved
 - **I2**: Untrusted content cannot trigger new privileges
-- **I3**: No tool call arguments contain raw secrets (tokens, API keys, passwords)
+- **I3**: On shared PEP paths, broker-managed credentials use opaque refs and
+  structured string arguments matching a canonical secret signature are
+  rejected before execution
 - **I4**: Silent forwarding is impossible (no hidden BCC, auto-forward, share-to-anyone)
 - **M1**: Long-term memory writes are gated (user approval or strict schema)
 - **M2**: Memory stores facts/preferences, not instructions
@@ -290,7 +299,10 @@ These hold regardless of LLM behavior:
 1. **Registry check** — is this a known, registered tool?
 2. **Schema validation** — do the arguments match the tool's typed schema?
 3. **Capability check** — does this session have the capability class for this tool?
-4. **DLP / argument scanning** — do the arguments contain raw secrets? (Not general PII — a personal assistant routinely handles names and emails in tool args. This catches API keys, tokens, passwords, private keys.)
+4. **DLP / argument scanning** — do structured string arguments match a
+   canonical secret signature? This is not general PII or password inference:
+   the current finite registry covers provider API keys, GitHub/OAuth tokens,
+   AWS access-key IDs, JWTs, and private-key blocks.
 5. **Resource authorization** — object-level access control; planner-proposed resource IDs are treated as untrusted and verified server-side
 6. **Egress allowlisting** — provenance-aware destination enforcement (see below)
 7. **Credential host-scoping** — credentials resolved by the broker at the proxy layer, never exposed to LLM context
@@ -333,6 +345,7 @@ An attacker would need to fool all voters simultaneously. Each sees a different 
 ### Content Firewall (ingress)
 
 - HTML/text normalization (strip hidden text, zero-width chars, Unicode canonicalization)
+- Canonical finite secret-signature redaction with `USER_CREDENTIALS` taint
 - Prompt injection classifiers (ML-based detection + YARA pattern rules)
 - Risk scoring (not just pass/fail)
 - All output taint-labeled with provenance for downstream enforcement
@@ -343,7 +356,12 @@ Three-tier prompt layout: trusted instructions, internal state, untrusted conten
 
 ### Credential Broker
 
-Secrets never enter the LLM context. Tools reference credentials by opaque handle; the credential broker resolves handles to real secrets at the HTTP proxy layer on the outbound hop. The LLM sees `credential_ref: "gmail_oauth"`, not the actual token. Even if the model is fully compromised and tries to exfiltrate credentials, it has nothing to exfiltrate — the secret exists only in the proxy's memory, scoped to the specific tool and destination host that needs it.
+Broker-managed secrets do not enter the LLM context. Tools reference those
+credentials by opaque handle; the credential broker resolves handles to real
+values at the HTTP proxy layer on the outbound hop. The LLM sees
+`credential_ref: "gmail_oauth"`, not the actual token. This claim is scoped to
+credentials held by the broker; credential-like text supplied by users or
+retrieved content is handled separately by the canonical signature consumers.
 
 For delegated TASK sessions and persisted scheduler/background tasks, credential
 use is narrowed again by the immutable task envelope: the envelope carries an
@@ -378,9 +396,16 @@ summary enter the orchestrator context.
 
 ### Output Firewall (egress)
 
-- Secret/credential pattern detection (API keys, tokens, private keys)
+- Canonical finite secret-signature redaction (API keys, tokens, JWTs, private
+  keys) with typed findings that omit raw matches
 - PII redaction for content crossing trust boundaries
 - URL/destination validation on outbound content
+
+The canonical registry is an ordered set of seven machine-defined signature
+families shared by ingress, output, and PEP argument DLP. Each consumer keeps
+its own action and preprocessing stage. The registry itself does not decode,
+normalize, infer entropy or passwords, or promise recognition of encoded and
+Unicode-obfuscated variants.
 
 ### Memory Manager (poisoning defense)
 
@@ -564,9 +589,12 @@ subject to the explicit route boundary above.
   substitutes those actions from prose. Separate finite state-bound
   confirmation, authentication, greeting-response, and recovery protocols
   remain.
-- Secret-detection and URL/network safety primitives still have multiple
-  consumers with non-identical rules. Broader network-layer simplification,
-  differential execution, and full datamarking remain later work.
+- One canonical seven-family secret-signature registry now feeds ingress
+  redaction/credential taint, output redaction/typed findings, and PEP argument
+  rejection while preserving their separate actions and preprocessing. URL
+  and network-safety consumers still have non-identical rules. Broader
+  network-layer simplification, normalization ordering, differential
+  execution, and full datamarking remain later work.
 - External effects do not carry a universal exactly-once guarantee. Automatic
   restart recovery is limited to the documented trusted routes and ambiguous
   outcomes fail closed to operator reconciliation.

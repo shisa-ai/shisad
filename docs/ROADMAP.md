@@ -87,8 +87,12 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   recovery and `outcome_unknown` containment, checksummed finite-state
   handling, single-daemon data-root ownership, managed-root filesystem/Git
   exclusions, and scoped delivery/approval continuity across Discord, Slack,
-  Telegram, and Matrix. No registry image is published or signed, and this
-  work does not claim the later setup wizard or live operator web application.
+  Telegram, and Matrix. The current tree also shares one canonical
+  seven-family secret-signature registry across ingress, output, and PEP
+  argument DLP; consumer actions and preprocessing remain distinct. No
+  registry image is published or signed, and this work does not claim the
+  later setup wizard, live operator web application, universal secret
+  normalization, or canonical URL/SSRF enforcement.
 
 ## Milestones
 
@@ -399,11 +403,12 @@ TOTP entry remain deferred to `v0.8.0`.
   theme and accessibility wiring; durable action attempts and conservative
   restart containment; finite-state integrity and one-daemon data-root
   ownership; managed-root containment; and four-channel scoped
-  delivery/approval continuity. The remaining bounded authority-consolidation
-  sequence is: one live handler/composition owner, one pending-action lifecycle
-  owner, typed RPC descriptors, one enforcement contract for direct operator
-  RPCs, structured planner-produced memory intent, and canonical secret plus
-  URL-safety primitives. Registry publication remains a release-close decision
+  delivery/approval continuity. The bounded authority sequence now has one live
+  handler/composition owner, one pending-action lifecycle owner, typed RPC
+  descriptors, one enforcement contract for direct operator RPCs, structured
+  planner-produced memory intent, and one canonical secret-signature registry.
+  Canonical URL-safety primitives remain the next bounded consolidation.
+  Registry publication remains a release-close decision
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -416,9 +421,9 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.9 — Security quality and consolidation
 
-- After the planned bounded v0.8.1 secret-pattern consolidation lands, extend
-  it to broader content-firewall and credential-consumer policy where evidence
-  warrants it
+- Build on the bounded canonical secret-pattern registry in the v0.8.1
+  development tree when extending broader content-firewall and
+  credential-consumer policy where evidence warrants it
 - If the planned v0.8.1 canonical URL/SSRF primitive lands for current
   consumers, use that boundary before simplifying the broader network
   enforcement stack

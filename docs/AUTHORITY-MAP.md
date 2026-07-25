@@ -83,11 +83,18 @@ separate consumer with a different contract.
 | Concern | Current authorities | Current non-claim |
 |---|---|---|
 | Conversational action intent | COMMAND planner typed tool output, followed by structural session binding and the shared enforcement path in [`_impl_session.py`](../src/shisad/daemon/handlers/_impl_session.py) | The retired thread/note/todo/reminder/filesystem/web/browser/evidence compatibility family is no longer built or substituted from daemon prose; separate finite state-bound confirmation, auth, greeting-response, and recovery protocols remain |
-| Ingress secret detection | [`security/firewall/secrets.py`](../src/shisad/security/firewall/secrets.py) and ingress taint consumers | Pattern coverage is not yet one canonical registry across every consumer |
-| Output secret handling | [`security/firewall/output.py`](../src/shisad/security/firewall/output.py) | Output redaction rules are not asserted identical to ingress or PEP DLP rules |
-| PEP argument DLP | [`security/pep.py`](../src/shisad/security/pep.py) | Applies to planner, administrative tool execution, and typed operator convenience effects; it is not a universal claim about every daemon method |
+| Canonical secret signatures | [`security/secret_patterns.py`](../src/shisad/security/secret_patterns.py) | One ordered registry recognizes seven finite API-key, token, access-key, JWT, and private-key shapes in supplied text, including the canonical `oauth_access_token` label; it does not decode, normalize, infer entropy/passwords, or classify prose |
+| Ingress secret action | [`security/firewall/secrets.py`](../src/shisad/security/firewall/secrets.py) and ingress taint consumers | Uses the canonical signatures for redaction and `USER_CREDENTIALS` taint; ingress preprocessing remains a separate stage |
+| Output secret action | [`security/firewall/output.py`](../src/shisad/security/firewall/output.py) | Uses the canonical signatures for redaction and typed findings before separate entropy/path, PII, and URL logic; those other rules are not part of the registry |
+| PEP argument DLP | [`security/pep.py`](../src/shisad/security/pep.py) | Uses the canonical signatures to reject matching structured string arguments on planner, administrative tool execution, and typed operator convenience effect paths; this is not a universal claim about every daemon method or encoded variant |
 | URL syntax parsing | [`core/url_parsing.py`](../src/shisad/core/url_parsing.py) | Syntax normalization alone is not a complete SSRF/network authorization decision |
 | URL/network policy consumers | Provider base URLs, executor proxy, browser, web/reality-check toolkits, PEP, output firewall, approval origin, and A2A transports | Private-address, allowlist, redirect, DNS, and connect-path semantics are not yet derived from one canonical primitive |
+
+The browser subprocess failure-detail sanitizer intentionally remains separate
+from the canonical secret registry. It applies broader assignment-name,
+short-token, and hexadecimal heuristics to untrusted process diagnostics and
+emits only generic `[redacted]` text; it neither classifies canonical families
+nor authorizes or rejects an action.
 
 ## Bounded consolidation sequence
 
@@ -108,7 +115,9 @@ a characterized user journey:
    intent. *(Implemented for the characterized compatibility action family in
    the current tree.)*
 6. Establish canonical secret-detection and URL-safety primitives for the
-   current consumers; broader network architecture remains separate follow-up.
+   current consumers. *(The seven-family secret-signature registry is
+   implemented in the current tree; URL-safety consolidation and broader
+   network architecture remain separate work.)*
 
 Any later ref that changes these owners must update this map together with the
 affected route documentation and behavioral evidence.

@@ -17,6 +17,7 @@ from shisad.core.host_matching import host_matches
 from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.security.firewall.normalize import normalize_text
 from shisad.security.firewall.pii import PIIDetector
+from shisad.security.secret_patterns import SECRET_PATTERNS
 
 _URL_RE = re.compile(r"https?://[^\s)>]+")
 _DATA_URI_RE = re.compile(r"\bdata:[^\s)>]+", re.IGNORECASE)
@@ -51,12 +52,6 @@ class OutputFirewall:
     alert_hook: Callable[[dict[str, Any]], None] | None = None
     pii_detector: PIIDetector = field(default_factory=PIIDetector)
 
-    _SECRET_PATTERNS: ClassVar[list[tuple[str, re.Pattern[str]]]] = [
-        ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
-        ("openai_key", re.compile(r"\bsk-(?!ant-)[A-Za-z0-9_-]{16,}\b")),
-        ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-        ("oauth_token", re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b")),
-    ]
     _MALICIOUS_HOST_HINTS: ClassVar[set[str]] = {
         "evil.com",
         "attacker.com",
@@ -172,10 +167,10 @@ class OutputFirewall:
         findings: list[str] = []
         sanitized = normalized
 
-        for kind, pattern in self._SECRET_PATTERNS:
-            if pattern.search(sanitized):
-                findings.append(kind)
-                sanitized = pattern.sub(f"[REDACTED:{kind}]", sanitized)
+        for pattern in SECRET_PATTERNS:
+            if pattern.regex.search(sanitized):
+                findings.append(pattern.kind)
+                sanitized = pattern.regex.sub(f"[REDACTED:{pattern.kind}]", sanitized)
         if findings:
             reason_codes.append("secret_redaction")
 

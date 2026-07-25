@@ -20,8 +20,8 @@ def test_m2_t5_output_firewall_redacts_aws_keys() -> None:
 def test_m2_t6_output_firewall_redacts_oauth_tokens() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("Bearer ya29.A0ARrdaMXXXXXXXXXXXXXXXXXXXXXX")
-    assert "[REDACTED:oauth_token]" in result.sanitized_text
-    assert "oauth_token" in result.secret_findings
+    assert "[REDACTED:oauth_access_token]" in result.sanitized_text
+    assert "oauth_access_token" in result.secret_findings
 
 
 def test_gh20_output_firewall_still_labels_openai_keys() -> None:

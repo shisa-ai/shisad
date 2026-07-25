@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +37,7 @@ from shisad.core.types import (
 from shisad.core.url_parsing import safe_parsed_hostname, safe_url_hostname, safe_urlparse
 from shisad.security.credentials import CredentialStore
 from shisad.security.policy import PolicyBundle
+from shisad.security.secret_patterns import SECRET_PATTERNS
 from shisad.security.taint import sink_decision_for_tool
 
 logger = logging.getLogger(__name__)
@@ -141,12 +141,6 @@ class PEP:
     LLM outputs are proposals, never authority.
     """
 
-    _SECRET_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
-        re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-        re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
-    ]
     _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
     _RESOURCE_ARG_NAMES: ClassVar[set[str]] = {"path", "repo_path"}
@@ -787,8 +781,8 @@ class PEP:
     def _check_argument_dlp(self, arguments: dict[str, Any]) -> list[str]:
         issues: list[str] = []
         for key, value in self._iter_string_arguments(arguments):
-            for pattern in self._SECRET_PATTERNS:
-                if pattern.search(value):
+            for pattern in SECRET_PATTERNS:
+                if pattern.regex.search(value):
                     issues.append(f"Argument '{key}' appears to contain a raw secret")
                     break
 
