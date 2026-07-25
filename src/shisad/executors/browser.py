@@ -6,7 +6,6 @@ import base64
 import binascii
 import contextlib
 import hashlib
-import ipaddress
 import json
 import math
 import os
@@ -26,7 +25,12 @@ from pydantic import BaseModel, Field
 from shisad.core.host_matching import host_matches
 from shisad.core.session import Session
 from shisad.core.types import TaintLabel
-from shisad.core.url_parsing import safe_url_hostname, safe_urlparse
+from shisad.core.url_parsing import (
+    canonicalize_url_host,
+    safe_url_destination,
+    safe_url_hostname,
+    safe_urlparse,
+)
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -38,6 +42,10 @@ from shisad.executors.sandbox import (
     SandboxType,
 )
 from shisad.security.firewall.output import OutputFirewall
+from shisad.security.network_address import (
+    is_local_hostname,
+    is_private_or_special_address,
+)
 
 _SNAPSHOT_ELEMENT_RE = re.compile(
     r'^\[(?P<ref>e\d+)\]\s+(?P<kind>\w+)\s+"(?P<label>[^"]*)"\s+selector="(?P<selector>[^"]*)"'
@@ -385,7 +393,9 @@ class BrowserToolkit:
         self._command = [str(token) for token in command if str(token).strip()]
         self._session_root = session_root
         self._session_root.mkdir(parents=True, exist_ok=True)
-        self._allowed_domains = [item.strip().lower() for item in allowed_domains if item.strip()]
+        self._allowed_domains = [
+            host for item in allowed_domains if (host := canonicalize_url_host(item))
+        ]
         self._timeout_seconds = max(1.0, float(timeout_seconds))
         self._require_hardened_isolation = bool(require_hardened_isolation)
         self._max_read_bytes = max(1024, int(max_read_bytes))
@@ -461,7 +471,7 @@ class BrowserToolkit:
         availability = self._availability_error()
         if availability is not None:
             return availability
-        if not safe_url_hostname(normalized_url):
+        if safe_url_destination(normalized_url) is None:
             return self._error_payload("browser_url_invalid")
         opened = await self._ensure_session_open(session=session)
         if opened is not None:
@@ -1853,7 +1863,8 @@ class BrowserToolkit:
         allow_private_targets = self._allows_private_network_target(target_urls)
         hosts = list(self._allowed_domains)
         for url in target_urls:
-            host = safe_url_hostname(url)
+            destination = safe_url_destination(url)
+            host = destination.host if destination is not None else ""
             if host and host not in hosts:
                 hosts.append(host)
         return NetworkPolicy(
@@ -1867,26 +1878,15 @@ class BrowserToolkit:
         if not target_urls:
             return False
         for url in target_urls:
-            host = safe_url_hostname(url)
-            if not self._is_private_network_host(host):
+            destination = safe_url_destination(url)
+            host = destination.host if destination is not None else ""
+            if not (is_local_hostname(host) or is_private_or_special_address(host)):
                 continue
             if self._browser_sandbox.policy.local_network == BrowserLocalNetworkMode.ALLOWED or any(
                 host_matches(host, rule) for rule in self._allowed_domains
             ):
                 return True
         return False
-
-    @staticmethod
-    def _is_private_network_host(host: str) -> bool:
-        if not host:
-            return False
-        if host == "localhost":
-            return True
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        return bool(address.is_private or address.is_loopback or address.is_link_local)
 
     @staticmethod
     def _preflight_error_details(reason: str) -> dict[str, Any]:

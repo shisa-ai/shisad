@@ -328,6 +328,24 @@ model-controllable planner proposals. They require the local authenticated
 control surface and retain their input, filesystem, Git, URL, readiness, and
 configuration checks while sharing downstream decision and effect authority.
 
+### URL and network destination facts
+
+Matching provider endpoint, egress proxy, browser, assistant web, and PEP
+paths share one typed absolute-URL projection for scheme, canonical host,
+explicit port, and userinfo presence. They also share one address classifier
+for standard and supported Linux/Python legacy numeric IP forms, public versus
+private/special addresses, loopback, and the bounded local-name family.
+Equivalent host case, one DNS root dot, legacy numeric IPv4, and IPv4-mapped
+IPv6 forms therefore enter those consumers with the same structural facts.
+
+Those facts are not themselves authorization. Each consumer retains its own
+public-destination path and its explicit local/private exceptions, along with
+its existing allowlist, provenance, confirmation, provider authentication,
+redirect, DNS, expected-address rebinding, credential, connection-scope,
+reason-code, and audit layers. Host classification alone neither pins DNS nor
+verifies the peer used by a later connection, so this is not a universal SSRF
+or DNS-rebinding guarantee.
+
 ### Consensus Voting (5 independent voters)
 
 Multiple content-blind analyzers must converge before escalation:
@@ -591,10 +609,12 @@ subject to the explicit route boundary above.
   remain.
 - One canonical seven-family secret-signature registry now feeds ingress
   redaction/credential taint, output redaction/typed findings, and PEP argument
-  rejection while preserving their separate actions and preprocessing. URL
-  and network-safety consumers still have non-identical rules. Broader
-  network-layer simplification, normalization ordering, differential
-  execution, and full datamarking remain later work.
+  rejection while preserving their separate actions and preprocessing.
+- Canonical absolute-URL and network-address facts now feed the matching
+  provider, proxy, browser, assistant-web, and PEP paths while preserving
+  their separate authorization and enforcement layers. Broader network-layer
+  simplification, connection-time peer verification, normalization ordering,
+  differential execution, and full datamarking remain later work.
 - External effects do not carry a universal exactly-once guarantee. Automatic
   restart recovery is limited to the documented trusted routes and ambiguous
   outcomes fail closed to operator reconciliation.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import re
 from collections.abc import Iterator
@@ -12,10 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin
 from urllib.request import OpenerDirector, Request, build_opener
 
 from shisad.assistant.boundary_helpers import _host_matches, _NoRedirectHandler, _read_limited
+from shisad.core.url_parsing import canonicalize_url_host, safe_url_destination
+from shisad.security.network_address import is_ip_literal, is_local_hostname
 
 _MAX_SEARCH_BYTES = 2 * 1024 * 1024
 _MAX_REDIRECT_HOPS = 5
@@ -125,7 +126,15 @@ class WebToolkit:
                 reason="web_search_backend_unconfigured",
                 query=normalized_query,
             )
-        backend_host = (urlparse(backend).hostname or "").lower()
+        backend_destination = safe_url_destination(backend)
+        if backend_destination is None:
+            return self._error_payload(
+                operation="web_search",
+                reason="malformed_destination",
+                query=normalized_query,
+                backend=backend,
+            )
+        backend_host = backend_destination.host
         backend_block_reason = self._host_block_reason(backend_host)
         if backend_block_reason:
             return self._error_payload(
@@ -188,7 +197,8 @@ class WebToolkit:
             url = str(item.get("url") or item.get("link") or "").strip()
             if not url:
                 continue
-            host = (urlparse(url).hostname or "").lower()
+            destination = safe_url_destination(url)
+            host = destination.host if destination is not None else ""
             results.append(
                 {
                     "title": str(item.get("title", "")).strip(),
@@ -238,9 +248,15 @@ class WebToolkit:
                 reason="web_fetch_disabled",
                 url=normalized_url,
             )
-        parsed = urlparse(normalized_url)
-        host = (parsed.hostname or "").lower()
-        if parsed.scheme.lower() not in {"http", "https"}:
+        destination = safe_url_destination(normalized_url)
+        if destination is None:
+            return self._error_payload(
+                operation="web_fetch",
+                reason="malformed_destination",
+                url=normalized_url,
+            )
+        host = destination.host
+        if destination.scheme not in {"http", "https"}:
             return self._error_payload(
                 operation="web_fetch",
                 reason="unsupported_scheme",
@@ -351,36 +367,21 @@ class WebToolkit:
         }
 
     def _host_allowed(self, host: str) -> bool:
-        return any(_host_matches(host, rule) for rule in self.allowed_domains)
+        return any(
+            _host_matches(host, canonical_rule)
+            for rule in self.allowed_domains
+            if (canonical_rule := canonicalize_url_host(rule))
+        )
 
     def _host_block_reason(self, host: str) -> str:
         normalized = host.strip().lower().rstrip(".")
         if not normalized:
             return "missing_host"
-        if self._is_ip_literal(normalized) and not self._host_allowed(normalized):
+        if is_ip_literal(normalized) and not self._host_allowed(normalized):
             return "ip_literal_not_allowlisted"
-        if self._looks_like_local_destination(normalized) and not self._host_allowed(normalized):
+        if is_local_hostname(normalized) and not self._host_allowed(normalized):
             return "local_destination_not_allowlisted"
         return ""
-
-    @staticmethod
-    def _is_ip_literal(host: str) -> bool:
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        return True
-
-    @staticmethod
-    def _looks_like_local_destination(host: str) -> bool:
-        lowered = host.strip().lower()
-        if not lowered:
-            return False
-        if lowered in {"localhost"}:
-            return True
-        return (
-            lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan")
-        )
 
     def _redirect_allowed(self, *, initial_host: str, target_host: str) -> bool:
         source = initial_host.strip().lower().rstrip(".")
@@ -409,12 +410,21 @@ class WebToolkit:
     ) -> _HttpResponsePayload | dict[str, Any]:
         current_url = source_url
         redirect_count = 0
-        initial_host = (urlparse(source_url).hostname or "").lower()
+        initial_destination = safe_url_destination(source_url)
+        initial_host = initial_destination.host if initial_destination is not None else ""
         headers = dict(request.header_items())
         while True:
-            parsed = urlparse(current_url)
-            scheme = parsed.scheme.lower()
-            host = (parsed.hostname or "").lower()
+            destination = safe_url_destination(current_url)
+            if destination is None:
+                return self._error_payload(
+                    operation=operation,
+                    reason="malformed_destination",
+                    query=query,
+                    url=source_url,
+                    backend=backend,
+                )
+            scheme = destination.scheme
+            host = destination.host
             if scheme not in {"http", "https"}:
                 return self._error_payload(
                     operation=operation,
@@ -441,10 +451,16 @@ class WebToolkit:
                     content_type = str(response.headers.get("Content-Type", ""))
                     response_geturl = getattr(response, "geturl", None)
                     final_url = str(response_geturl()) if callable(response_geturl) else current_url
-                    final_parsed = urlparse(final_url)
-                    final_scheme = final_parsed.scheme.lower()
-                    final_host = (final_parsed.hostname or "").lower()
-                    if final_scheme not in {"http", "https"}:
+                    final_destination = safe_url_destination(final_url)
+                    if final_destination is None:
+                        return self._error_payload(
+                            operation=operation,
+                            reason="malformed_destination",
+                            query=query,
+                            url=source_url,
+                            backend=backend,
+                        )
+                    if final_destination.scheme not in {"http", "https"}:
                         return self._error_payload(
                             operation=operation,
                             reason=invalid_scheme_reason,
@@ -452,7 +468,7 @@ class WebToolkit:
                             url=source_url,
                             backend=backend,
                         )
-                    final_block_reason = self._host_block_reason(final_host)
+                    final_block_reason = self._host_block_reason(final_destination.host)
                     if final_block_reason:
                         return self._error_payload(
                             operation=operation,
@@ -495,8 +511,27 @@ class WebToolkit:
                         url=source_url,
                         backend=backend,
                     )
-                next_url = urljoin(current_url, location)
-                next_host = (urlparse(next_url).hostname or "").lower()
+                try:
+                    next_url = urljoin(current_url, location)
+                except ValueError:
+                    return self._error_payload(
+                        operation=operation,
+                        reason="malformed_destination",
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                    )
+                next_destination = safe_url_destination(next_url)
+                if next_destination is None:
+                    return self._error_payload(
+                        operation=operation,
+                        reason="malformed_destination",
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                        redirect_url=next_url,
+                    )
+                next_host = next_destination.host
                 if not self._redirect_allowed(initial_host=initial_host, target_host=next_host):
                     return self._error_payload(
                         operation=operation,

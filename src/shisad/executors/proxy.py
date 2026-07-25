@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import math
 import re
 import socket
@@ -12,21 +11,15 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from shisad.core.host_matching import host_matches
-from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
+from shisad.core.url_parsing import canonicalize_url_host, safe_url_destination
 from shisad.security.credentials import CredentialStore, is_placeholder
+from shisad.security.network_address import (
+    NetworkAddress,
+    classify_network_address,
+    is_ip_literal,
+)
 
 _PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
-
-_PRIVATE_NETWORKS = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-)
 
 
 class DnsResolver(Protocol):
@@ -85,8 +78,8 @@ class EgressProxy:
         expected_addresses: list[str] | None = None,
     ) -> ProxyDecision:
         """Authorize a request and inject credentials if allowed."""
-        parsed = safe_urlparse(url)
-        if parsed is None:
+        destination = safe_url_destination(url)
+        if destination is None:
             decision = ProxyDecision(
                 allowed=False,
                 reason="malformed_destination",
@@ -96,23 +89,12 @@ class EgressProxy:
             )
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
-        protocol = (parsed.scheme or "").lower()
-        try:
-            host = safe_parsed_hostname(parsed)
-            port = parsed.port
-        except ValueError:
-            decision = ProxyDecision(
-                allowed=False,
-                reason="malformed_destination",
-                destination_host="",
-                destination_port=None,
-                protocol=protocol,
-                request_size=len(body.encode("utf-8")),
-            )
-            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
-            return decision
+        protocol = destination.scheme
+        host = destination.host
+        raw_host = destination.parsed.hostname or host
+        port = destination.port
         if port is None:
-            port = 443 if parsed.scheme == "https" else 80
+            port = 443 if protocol == "https" else 80
 
         decision = ProxyDecision(
             allowed=False,
@@ -127,12 +109,12 @@ class EgressProxy:
             decision.reason = "network_disabled"
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
-        if parsed.scheme not in {"http", "https"} or not host:
+        if protocol not in {"http", "https"}:
             decision.reason = "malformed_destination"
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
 
-        if policy.deny_ip_literals and self._is_ip_literal(host):
+        if policy.deny_ip_literals and is_ip_literal(host):
             decision.reason = "ip_literal_blocked"
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
@@ -147,24 +129,31 @@ class EgressProxy:
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
 
-        resolved = self._resolver(host)
-        decision.resolved_addresses = list(resolved)
-        if not resolved:
+        raw_resolved = list(self._resolver(host))
+        if not raw_resolved:
             decision.reason = "dns_resolution_failed"
             decision.alert = True
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
-        if expected_addresses and set(expected_addresses) != set(resolved):
+        classified = self._canonical_addresses(raw_resolved)
+        if classified is None:
+            decision.reason = "private_range_blocked"
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
+        resolved, classified_addresses = classified
+        decision.resolved_addresses = resolved
+        expected = self._canonical_addresses(expected_addresses) if expected_addresses else None
+        if expected_addresses and (expected is None or set(expected[0]) != set(resolved)):
             decision.reason = "dns_rebinding_blocked"
             decision.alert = True
             self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
             return decision
-        if policy.deny_private_ranges:
-            for addr in resolved:
-                if self._is_private(addr):
-                    decision.reason = "private_range_blocked"
-                    self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
-                    return decision
+        if policy.deny_private_ranges and any(
+            not address.is_public for address in classified_addresses
+        ):
+            decision.reason = "private_range_blocked"
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
 
         injected_headers = dict(headers or {})
         placeholders_used: list[str] = []
@@ -178,7 +167,7 @@ class EgressProxy:
                 decision.used_placeholders = placeholders_used
                 self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
                 return decision
-            resolved_secret = self._resolve_placeholder(value, host)
+            resolved_secret = self._resolve_placeholder(value, host, raw_host=raw_host)
             if resolved_secret is None:
                 decision.reason = "credential_host_mismatch"
                 decision.alert = True
@@ -196,7 +185,11 @@ class EgressProxy:
                     decision.used_placeholders = placeholders_used
                     self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
                     return decision
-                resolved_secret = self._resolve_placeholder(placeholder, host)
+                resolved_secret = self._resolve_placeholder(
+                    placeholder,
+                    host,
+                    raw_host=raw_host,
+                )
                 if resolved_secret is None:
                     decision.reason = "placeholder_exfiltration_blocked"
                     decision.alert = True
@@ -218,43 +211,48 @@ class EgressProxy:
         policy: NetworkPolicy,
     ) -> list[str]:
         """Resolve literal allowlisted hosts for runtime network narrowing."""
-        parsed = safe_urlparse(url)
-        if parsed is None:
+        destination = safe_url_destination(url)
+        if destination is None:
             return []
-        protocol = (parsed.scheme or "").lower()
-        try:
-            host = safe_parsed_hostname(parsed)
-        except ValueError:
-            return []
+        protocol = destination.scheme
+        host = destination.host
         if not policy.allow_network:
             return []
         if protocol not in {"http", "https"} or not host:
             return []
-        if self._is_ip_literal(host) and policy.deny_ip_literals:
+        if is_ip_literal(host) and policy.deny_ip_literals:
             return []
         if not self._host_allowed(host, policy.allowed_domains):
             return []
         if self._looks_like_dns_exfil(host):
             return []
-        resolved = list(self._resolver(host))
-        if not resolved:
+        raw_resolved = list(self._resolver(host))
+        if not raw_resolved:
             return []
-        if policy.deny_private_ranges and any(self._is_private(addr) for addr in resolved):
+        classified = self._canonical_addresses(raw_resolved)
+        if classified is None:
             return []
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for address in resolved:
-            normalized = str(address).strip()
-            if not normalized or normalized in seen:
-                continue
-            deduped.append(normalized)
-            seen.add(normalized)
-        return deduped
+        resolved, classified_addresses = classified
+        if policy.deny_private_ranges and any(
+            not address.is_public for address in classified_addresses
+        ):
+            return []
+        return resolved
 
-    def _resolve_placeholder(self, placeholder: str, host: str) -> str | None:
+    def _resolve_placeholder(
+        self,
+        placeholder: str,
+        host: str,
+        *,
+        raw_host: str | None = None,
+    ) -> str | None:
         if self._credential_store is None:
             return None
-        return self._credential_store.resolve(placeholder, host)
+        resolved = self._credential_store.resolve(placeholder, host)
+        fallback_host = (raw_host or "").strip().lower()
+        if resolved is not None or not fallback_host or fallback_host == host:
+            return resolved
+        return self._credential_store.resolve(placeholder, fallback_host)
 
     def _audit(self, *, tool_name: str, url: str, decision: ProxyDecision, body: str) -> None:
         if self._audit_hook is None:
@@ -282,26 +280,35 @@ class EgressProxy:
             normalized = str(raw).strip().lower()
             if not normalized:
                 continue
-            parsed = safe_urlparse(normalized if "://" in normalized else f"https://{normalized}")
-            candidate = safe_parsed_hostname(parsed)
-            patterns.append(candidate or normalized)
+            if "://" in normalized:
+                destination = safe_url_destination(normalized)
+                if destination is not None:
+                    patterns.append(destination.host)
+                continue
+            candidate = canonicalize_url_host(normalized)
+            if candidate:
+                patterns.append(candidate)
         return any(host_matches(host, pattern) for pattern in patterns if pattern)
 
     @staticmethod
-    def _is_ip_literal(host: str) -> bool:
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        return True
-
-    @staticmethod
-    def _is_private(addr: str) -> bool:
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return False
-        return any(ip in network for network in _PRIVATE_NETWORKS)
+    def _canonical_addresses(
+        addresses: list[str],
+    ) -> tuple[list[str], list[NetworkAddress]] | None:
+        canonical: list[str] = []
+        classified: list[NetworkAddress] = []
+        seen: set[str] = set()
+        for raw in addresses:
+            if not isinstance(raw, str):
+                return None
+            address = classify_network_address(raw)
+            if address is None:
+                return None
+            if address.canonical in seen:
+                continue
+            seen.add(address.canonical)
+            canonical.append(address.canonical)
+            classified.append(address)
+        return canonical, classified
 
     @staticmethod
     def _default_resolver(hostname: str) -> list[str]:

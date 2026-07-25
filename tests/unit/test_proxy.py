@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import ipaddress
-
 from shisad.core.types import CredentialRef
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
+from shisad.security.network_address import is_private_or_special_address
 
 
 def _public_resolver(_hostname: str) -> list[str]:
@@ -188,10 +187,8 @@ def test_m3_proxy_blocks_dns_rebinding_on_revalidation() -> None:
 
 
 def test_m3_proxy_ipv6_private_ranges_are_blocked() -> None:
-    proxy = EgressProxy(resolver=_public_resolver)
     for candidate in ["::1", "fc00::1", "fe80::1234"]:
-        assert ipaddress.ip_address(candidate).version == 6
-        assert proxy._is_private(candidate) is True
+        assert is_private_or_special_address(candidate) is True
 
 
 def test_m3_proxy_fails_closed_on_empty_dns_resolution() -> None:

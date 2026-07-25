@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import fnmatch
 import hashlib
-import ipaddress
 import json
 import logging
 import socket
@@ -22,6 +21,16 @@ from urllib.parse import urljoin, urlparse, urlunparse
 from pydantic import BaseModel, Field
 
 from shisad.core.providers.capabilities import RequestParameters
+from shisad.core.url_parsing import (
+    URLDestination,
+    canonicalize_url_host,
+    safe_url_destination,
+)
+from shisad.security.network_address import (
+    classify_network_address,
+    is_ip_literal,
+    is_loopback_host,
+)
 
 logger = logging.getLogger(__name__)
 _PROVIDER_REDIRECT_CODES: set[int] = {301, 302, 303, 307, 308}
@@ -297,19 +306,6 @@ class OpenAICompatibleProvider:
 # --- Endpoint validation ---
 
 
-# RFC 1918 + loopback + link-local ranges
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-]
-
-
 def validate_endpoint(
     url: str,
     *,
@@ -322,45 +318,42 @@ def validate_endpoint(
     Returns a list of validation errors (empty = valid).
     """
     errors: list[str] = []
-
-    parsed = urlparse(url)
+    destination = safe_url_destination(url)
+    if destination is None:
+        return [f"Malformed endpoint URL: {url}"]
 
     # Scheme check
-    if parsed.scheme not in ("http", "https"):
-        errors.append(f"Unsupported scheme: {parsed.scheme} (must be http or https)")
+    if destination.scheme not in ("http", "https"):
+        errors.append(f"Unsupported scheme: {destination.scheme} (must be http or https)")
         return errors
 
-    hostname = parsed.hostname or ""
+    hostname = destination.host
+    loopback = is_loopback_host(hostname)
 
     # HTTPS required for non-localhost
-    if parsed.scheme == "http":
-        is_localhost = hostname in ("localhost", "127.0.0.1", "::1")
-        if not is_localhost or not allow_http_localhost:
-            errors.append(f"HTTP not allowed for non-localhost endpoint: {hostname}")
+    if destination.scheme == "http" and (not loopback or not allow_http_localhost):
+        errors.append(f"HTTP not allowed for non-localhost endpoint: {hostname}")
 
     # Private range check for IP literals (hostname checks happen at runtime request time).
     # Loopback is only exempt when localhost HTTP is explicitly allowed.
-    allow_loopback = allow_http_localhost and hostname in ("localhost", "127.0.0.1", "::1")
+    allow_loopback = allow_http_localhost and loopback
     if block_private_ranges and not allow_loopback:
-        try:
-            addr = ipaddress.ip_address(hostname)
-            for network in _PRIVATE_NETWORKS:
-                if addr in network:
-                    errors.append(f"Endpoint in private range: {hostname} ({network})")
-                    break
-        except ValueError:
-            pass
+        address = classify_network_address(hostname)
+        if loopback or (address is not None and not address.is_public):
+            errors.append(
+                f"Endpoint in private range (including special-use): {hostname}",
+            )
 
     # Explicit endpoint allowlist (trusted config)
-    if endpoint_allowlist and not _matches_endpoint_allowlist(parsed, endpoint_allowlist):
+    if endpoint_allowlist and not _matches_endpoint_allowlist(destination, endpoint_allowlist):
         errors.append(f"Endpoint not in configured allowlist: {url}")
 
     return errors
 
 
-def _matches_endpoint_allowlist(parsed_url: Any, allowlist: list[str]) -> bool:
-    hostname = parsed_url.hostname or ""
-    normalized_path = parsed_url.path.rstrip("/")
+def _matches_endpoint_allowlist(destination: URLDestination, allowlist: list[str]) -> bool:
+    hostname = destination.host
+    normalized_path = destination.parsed.path.rstrip("/")
 
     for raw_rule in allowlist:
         rule = raw_rule.strip()
@@ -368,20 +361,22 @@ def _matches_endpoint_allowlist(parsed_url: Any, allowlist: list[str]) -> bool:
             continue
 
         if "://" in rule:
-            parsed_rule = urlparse(rule)
-            rule_host = parsed_rule.hostname or ""
-            if parsed_rule.scheme and parsed_url.scheme != parsed_rule.scheme:
+            rule_destination = safe_url_destination(rule)
+            if rule_destination is None:
                 continue
-            if rule_host and not fnmatch.fnmatch(hostname, rule_host):
+            if rule_destination.scheme and destination.scheme != rule_destination.scheme:
                 continue
-            rule_path = parsed_rule.path.rstrip("/")
+            if rule_destination.host and not fnmatch.fnmatch(hostname, rule_destination.host):
+                continue
+            rule_path = rule_destination.parsed.path.rstrip("/")
             if rule_path and not (
                 normalized_path == rule_path or normalized_path.startswith(rule_path + "/")
             ):
                 continue
             return True
 
-        if fnmatch.fnmatch(hostname, rule):
+        rule_host = canonicalize_url_host(rule, allow_pattern=True)
+        if rule_host and fnmatch.fnmatch(hostname, rule_host):
             return True
 
     return False
@@ -454,45 +449,50 @@ def _validate_runtime_endpoint_url(
         block_private_ranges=block_private_ranges,
         endpoint_allowlist=endpoint_allowlist,
     )
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or "").strip()
-    if not block_private_ranges or not hostname or hostname in {"localhost", "127.0.0.1", "::1"}:
+    destination = safe_url_destination(url)
+    if destination is None:
+        return errors
+    hostname = destination.host
+    if not block_private_ranges or (allow_http_localhost and is_loopback_host(hostname)):
         return errors
 
-    if _is_ip_literal(hostname):
+    if is_ip_literal(hostname):
         return errors
 
     try:
-        records = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        default_port = 443 if destination.scheme == "https" else 80
+        records = socket.getaddrinfo(
+            hostname,
+            destination.port or default_port,
+            type=socket.SOCK_STREAM,
+        )
     except (OSError, socket.gaierror) as exc:
         logger.debug("Endpoint hostname resolution skipped for %s: %s", hostname, exc)
         return errors
 
     seen_addresses: set[str] = set()
     for record in records:
+        if not isinstance(record, tuple) or len(record) < 5:
+            errors.append(f"Endpoint resolves to invalid address record: {hostname}")
+            break
         sockaddr = record[4]
         if not isinstance(sockaddr, tuple) or not sockaddr:
-            continue
+            errors.append(f"Endpoint resolves to invalid address record: {hostname}")
+            break
         address = str(sockaddr[0])
         if address in seen_addresses:
             continue
         seen_addresses.add(address)
-        if _address_in_private_ranges(address):
-            errors.append(f"Endpoint resolves to private range: {hostname} ({address})")
+        classified = classify_network_address(address)
+        if classified is None:
+            errors.append(
+                f"Endpoint resolves to invalid private/special address: {hostname} ({address})",
+            )
+            break
+        if not classified.is_public:
+            errors.append(
+                "Endpoint resolves to private range "
+                f"(including special-use): {hostname} ({classified.canonical})",
+            )
             break
     return errors
-
-
-def _is_ip_literal(hostname: str) -> bool:
-    with contextlib.suppress(ValueError):
-        ipaddress.ip_address(hostname)
-        return True
-    return False
-
-
-def _address_in_private_ranges(address: str) -> bool:
-    try:
-        ip_addr = ipaddress.ip_address(address)
-    except ValueError:
-        return False
-    return any(ip_addr in network for network in _PRIVATE_NETWORKS)

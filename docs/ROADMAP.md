@@ -89,10 +89,12 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   exclusions, and scoped delivery/approval continuity across Discord, Slack,
   Telegram, and Matrix. The current tree also shares one canonical
   seven-family secret-signature registry across ingress, output, and PEP
-  argument DLP; consumer actions and preprocessing remain distinct. No
-  registry image is published or signed, and this work does not claim the
-  later setup wizard, live operator web application, universal secret
-  normalization, or canonical URL/SSRF enforcement.
+  argument DLP, plus bounded absolute-URL and network-address fact primitives
+  across matching provider, proxy, browser, assistant-web, and PEP paths;
+  consumer actions and enforcement layers remain distinct. No registry image
+  is published or signed, and this work does not claim the later setup wizard,
+  live operator web application, universal secret normalization, universal
+  SSRF prevention, DNS pinning, or connection-time peer verification.
 
 ## Milestones
 
@@ -406,9 +408,10 @@ TOTP entry remain deferred to `v0.8.0`.
   delivery/approval continuity. The bounded authority sequence now has one live
   handler/composition owner, one pending-action lifecycle owner, typed RPC
   descriptors, one enforcement contract for direct operator RPCs, structured
-  planner-produced memory intent, and one canonical secret-signature registry.
-  Canonical URL-safety primitives remain the next bounded consolidation.
-  Registry publication remains a release-close decision
+  planner-produced memory intent, one canonical secret-signature registry, and
+  bounded absolute-URL/network-address facts for the five matching current
+  consumers. Broader network-authorization and connection architecture remain
+  v0.9 work. Registry publication remains a release-close decision
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -424,9 +427,8 @@ TOTP entry remain deferred to `v0.8.0`.
 - Build on the bounded canonical secret-pattern registry in the v0.8.1
   development tree when extending broader content-firewall and
   credential-consumer policy where evidence warrants it
-- If the planned v0.8.1 canonical URL/SSRF primitive lands for current
-  consumers, use that boundary before simplifying the broader network
-  enforcement stack
+- Build on the bounded v0.8.1 absolute-URL/network-address fact boundary when
+  simplifying the broader network enforcement stack
 - Simplify network enforcement layers (single PEP decision point)
 - Unify crypto key management across signing and encryption systems
 - Wire or remove unused policy scope compilation code

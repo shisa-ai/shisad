@@ -5,7 +5,6 @@ The PEP is the sole authority for approving proposed tool calls.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -34,8 +33,9 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.core.url_parsing import safe_parsed_hostname, safe_url_hostname, safe_urlparse
+from shisad.core.url_parsing import canonicalize_url_host, safe_url_destination
 from shisad.security.credentials import CredentialStore
+from shisad.security.network_address import is_ip_literal, is_local_hostname
 from shisad.security.policy import PolicyBundle
 from shisad.security.secret_patterns import SECRET_PATTERNS
 from shisad.security.taint import sink_decision_for_tool
@@ -347,7 +347,7 @@ class PEP:
                 destination.host, context.untrusted_host_patterns
             )
 
-            if self._is_ip_literal(destination.host) and not allowlisted:
+            if is_ip_literal(destination.host) and not allowlisted:
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -366,7 +366,7 @@ class PEP:
                     ),
                     reason_code="pep:ip_literal_not_allowlisted",
                 )
-            if self._looks_like_local_destination(destination.host) and not allowlisted:
+            if is_local_hostname(destination.host) and not allowlisted:
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -381,8 +381,8 @@ class PEP:
                     tool_name,
                     (
                         f"Egress blocked: destination '{destination.host}' looks like a local "
-                        "host (localhost or a .local/.internal/.lan name) and is not "
-                        "allowlisted by operator policy."
+                        "host (localhost or a .local/.internal/.lan name, including "
+                        ".localhost subdomains) and is not allowlisted by operator policy."
                     ),
                     reason_code="pep:local_destination_not_allowlisted",
                 )
@@ -795,25 +795,10 @@ class PEP:
 
     @staticmethod
     def _host_matches_any(host: str, patterns: set[str]) -> bool:
-        return any(host_matches(host, pattern) for pattern in patterns)
-
-    @staticmethod
-    def _is_ip_literal(host: str) -> bool:
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        return True
-
-    @staticmethod
-    def _looks_like_local_destination(host: str) -> bool:
-        lowered = host.strip().lower()
-        if not lowered:
-            return False
-        if lowered in {"localhost"}:
-            return True
-        return (
-            lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan")
+        return any(
+            host_matches(host, canonical_pattern)
+            for pattern in patterns
+            if (canonical_pattern := canonicalize_url_host(pattern))
         )
 
     def _check_resource_authorization(
@@ -970,7 +955,11 @@ class PEP:
                 )
 
             allowed_hosts = self._credential_store.allowed_hosts(credential_ref)
-            if not any(host_matches(destination.host, pattern) for pattern in allowed_hosts):
+            if not any(
+                host_matches(destination.host, canonical_pattern)
+                for pattern in allowed_hosts
+                if (canonical_pattern := canonicalize_url_host(pattern))
+            ):
                 self._record_credential_attempt(
                     CredentialUseAttempt(
                         tool_name=tool_name,
@@ -1058,24 +1047,28 @@ class PEP:
             if not isinstance(value, str) or not value:
                 continue
 
-            parsed = safe_urlparse(value)
-            if parsed is None:
+            destination = safe_url_destination(value)
+            if destination is None:
                 raise ValueError("invalid_destination_url")
-            host = safe_parsed_hostname(parsed)
-            if host:
-                protocol = parsed.scheme.lower() if parsed.scheme else None
-                port = self._safe_url_port(parsed)
-                if port is None and protocol in {"http", "https"}:
-                    port = 80 if protocol == "http" else 443
-                return EgressDestination(host=host, protocol=protocol, port=port)
+            port = destination.port
+            if port is None and destination.scheme in {"http", "https"}:
+                port = 80 if destination.scheme == "http" else 443
+            return EgressDestination(
+                host=destination.host,
+                protocol=destination.scheme,
+                port=port,
+            )
 
         host_value = arguments.get("host")
         if isinstance(host_value, str) and host_value:
+            host = canonicalize_url_host(host_value)
+            if not host:
+                raise ValueError("invalid_destination_host")
             protocol = arguments.get("protocol")
             protocol_value = protocol.lower() if isinstance(protocol, str) else None
             port = arguments.get("port")
             port_value = int(port) if isinstance(port, int | str) and str(port).isdigit() else None
-            return EgressDestination(host=host_value, protocol=protocol_value, port=port_value)
+            return EgressDestination(host=host, protocol=protocol_value, port=port_value)
 
         return None
 
@@ -1085,40 +1078,35 @@ class PEP:
         if len(destinations) != 1:
             return None
         destination = destinations[0]
-        if not destination or any(token in destination for token in ("*", "?", "[", "]")):
+        if not destination:
             return None
         if "://" in destination:
-            parsed = safe_urlparse(destination)
-            if parsed is None:
+            parsed_destination = safe_url_destination(destination)
+            if parsed_destination is None or "*" in parsed_destination.host:
                 return None
-            host = safe_parsed_hostname(parsed)
-            if not host:
-                return None
-            protocol = (parsed.scheme or "").lower() or None
-            port = PEP._safe_url_port(parsed)
+            protocol = parsed_destination.scheme
+            port = parsed_destination.port
             if port is None and protocol in {"http", "https"}:
                 port = 80 if protocol == "http" else 443
-            return EgressDestination(host=host, protocol=protocol, port=port)
-        return EgressDestination(host=destination, protocol="https", port=443)
-
-    @staticmethod
-    def _safe_url_port(parsed: Any) -> int | None:
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError("invalid_destination_port") from exc
-        if port is None:
+            return EgressDestination(
+                host=parsed_destination.host,
+                protocol=protocol,
+                port=port,
+            )
+        if any(token in destination for token in ("*", "?", "[", "]")):
             return None
-        if isinstance(port, int):
-            return port
-        return None
+        host = canonicalize_url_host(destination)
+        if not host:
+            return None
+        return EgressDestination(host=host, protocol="https", port=443)
 
     @staticmethod
     def _destination_host_pattern(destination: str) -> str:
         value = destination.strip().lower()
         if "://" not in value:
-            return value
-        return safe_url_hostname(value)
+            return canonicalize_url_host(value)
+        parsed_destination = safe_url_destination(value)
+        return parsed_destination.host if parsed_destination is not None else ""
 
     def _tool_destination_matches(self, *, destination: EgressDestination, tool: Any) -> bool:
         for raw_pattern in getattr(tool, "destinations", []):
@@ -1132,7 +1120,8 @@ class PEP:
             return False
 
         for rule in self._policy.egress:
-            if not host_matches(destination.host, rule.host):
+            rule_host = canonicalize_url_host(rule.host)
+            if not rule_host or not host_matches(destination.host, rule_host):
                 continue
 
             if destination.protocol is None:
