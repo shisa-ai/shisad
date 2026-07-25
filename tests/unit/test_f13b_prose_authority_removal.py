@@ -419,3 +419,41 @@ def test_f13b_failed_read_action_state_rejects_ambiguous_matches() -> None:
         )
         == ""
     )
+
+
+@pytest.mark.parametrize(
+    ("success", "entries", "expected", "absent"),
+    [
+        (True, [], "No file contents were read.", "reply with its filename"),
+        (
+            False,
+            [{"name": "README.md", "path": "README.md"}],
+            "Completed action result:",
+            "This listing contains names only",
+        ),
+    ],
+    ids=("empty-list", "failed-list"),
+)
+def test_f13b_fs_list_guidance_does_not_overclaim(
+    success: bool,
+    entries: list[dict[str, str]],
+    expected: str,
+    absent: str,
+) -> None:
+    response = impl_session._direct_tool_output_response_without_synthesis(
+        [
+            {
+                "tool_name": "fs.list",
+                "success": success,
+                "payload": {
+                    "ok": success,
+                    "path": ".",
+                    "entries": entries,
+                    "count": len(entries),
+                },
+            }
+        ]
+    )
+
+    assert expected in response
+    assert absent not in response

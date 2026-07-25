@@ -6784,7 +6784,7 @@ async def test_finalize_response_direct_fs_read_summary_skips_output_confirmatio
 
 
 @pytest.mark.asyncio
-async def test_finalize_response_fs_list_uses_user_visible_summary_without_synthesis() -> None:
+async def test_f13b_fs_list_fallback_asks_for_a_named_read_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("")
     harness._planner = synthesis
@@ -6815,10 +6815,14 @@ async def test_finalize_response_fs_list_uses_user_visible_summary_without_synth
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("Completed action result:\n- fs.list returned 2 entries")
+    assert text.startswith("File listing:\n- fs.list returned 2 entries")
     assert "README.md" in text
+    assert "This listing contains names only; I have not read any file contents." in text
+    assert "If a listed entry is a file you want to read, reply with its filename or path." in text
+    assert "Completed action result" not in text
     assert "intermediate tool output" not in text
     assert "Tool results summary:" not in text
+    assert synthesis.calls == []
 
 
 @pytest.mark.asyncio

@@ -8098,9 +8098,27 @@ def _direct_tool_output_response_without_synthesis(
     }
     if not tool_names or not tool_names <= {"fs.read", "fs.list"}:
         return ""
-    return _summarize_tool_outputs_for_user_response(
+    successful_list_only = tool_names == {"fs.list"} and all(
+        bool(record.get("success", False)) for record in records
+    )
+    summary = _summarize_tool_outputs_for_user_response(
         records,
-        header="Completed action result",
+        header="File listing" if successful_list_only else "Completed action result",
+    )
+    if not successful_list_only:
+        return summary
+    has_entries = any(
+        isinstance(payload, Mapping)
+        and isinstance(payload.get("entries"), list)
+        and bool(payload["entries"])
+        for record in records
+        if (payload := record.get("payload")) is not None
+    )
+    if not has_entries:
+        return f"{summary}\n\nNo file contents were read."
+    return (
+        f"{summary}\n\nThis listing contains names only; I have not read any file contents.\n"
+        "If a listed entry is a file you want to read, reply with its filename or path."
     )
 
 
