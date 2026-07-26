@@ -25,6 +25,7 @@ from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.services import DaemonServices
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
+from shisad.security.pep import PolicyContext
 
 
 class _EventCollector:
@@ -518,5 +519,75 @@ async def test_f15_background_run_uses_policy_loaded_after_startup(
         assert any(
             "not permitted by session/policy allowlist" in reason for reason in rejection_reasons
         )
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f15_background_confirmation_preserves_queue_time_pep_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for variable in (
+        "SHISAD_MODEL_BASE_URL",
+        "SHISAD_MODEL_PLANNER_BASE_URL",
+        "SHISAD_MODEL_EMBEDDINGS_BASE_URL",
+        "SHISAD_MODEL_MONITOR_BASE_URL",
+    ):
+        monkeypatch.setenv(variable, "https://api.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'version: "1"\ndefault_require_confirmation: true\n',
+        encoding="utf-8",
+    )
+    services = await DaemonServices.build(
+        DaemonConfig(
+            data_dir=tmp_path / "data",
+            socket_path=tmp_path / "control.sock",
+            policy_path=policy_path,
+            assistant_fs_roots=[tmp_path],
+        )
+    )
+    try:
+        task = services.scheduler.create_task(
+            name="f15-queue-context",
+            goal="Send one scheduled reminder",
+            schedule=Schedule(kind="interval", expression="1s"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="f15-queue-context",
+            created_by=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+            allowed_recipients=["ops-room"],
+            delivery_target={"channel": "discord", "recipient": "ops-room"},
+            max_runs=1,
+        )
+        runs = services.scheduler.trigger_due(now=task.created_at + timedelta(seconds=2))
+        assert len(runs) == 1
+        impl = services.control_handlers._impl
+        session = impl._ensure_task_execution_session(task)
+
+        confirmation_id = await impl._queue_task_confirmation(
+            task=task,
+            run=runs[0],
+            event_type="scheduler.due",
+            session=session,
+            arguments={
+                "channel": "discord",
+                "recipient": "ops-room",
+                "message": task.goal,
+            },
+            reason="requires_confirmation",
+            capabilities={Capability.MESSAGE_SEND},
+            preflight_action=None,
+            pep_context=PolicyContext(
+                capabilities={Capability.MESSAGE_SEND},
+                trust_level="internal",
+            ),
+        )
+
+        snapshot = impl._pending_actions[confirmation_id].pep_context
+        assert snapshot is not None
+        assert snapshot.capabilities == {Capability.MESSAGE_SEND}
+        assert snapshot.trust_level == "internal"
     finally:
         await services.shutdown()

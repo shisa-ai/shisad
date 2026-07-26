@@ -6510,11 +6510,15 @@ class HandlerImplementation(
         pending: PendingAction,
         *,
         preserve_authenticated_effect_posture: bool = False,
+        account_uncertain_effect: bool = False,
     ) -> None:
         invalidated = _without_recovery_execution_authority(
             pending,
             preserve_authenticated_effect_posture=preserve_authenticated_effect_posture,
         )
+        if account_uncertain_effect:
+            invalidated.recovery_effect_invoked = True
+            invalidated.recovery_accounting_pending = True
         _neutralize_untrusted_recovery_event_identity(invalidated)
         _neutralize_untrusted_scheduler_accounting_intent(invalidated)
         self._mutate_pending_action(
@@ -6567,7 +6571,11 @@ class HandlerImplementation(
             and pending.recovery_started_at is not None
             and pending.status in {"approved", "failed", "outcome_unknown"}
         )
-        if self._recovered_authority_invalid_reason(
+        recovery_already_invalidated = (
+            pending.status == "outcome_unknown"
+            and pending.status_reason == "uncertain_effect_requires_fresh_approval"
+        )
+        if not recovery_already_invalidated and self._recovered_authority_invalid_reason(
             pending,
             require_live_authority=not terminal_recovery_result_published,
         ):
@@ -6782,14 +6790,12 @@ class HandlerImplementation(
             structural_read_recovery = self._time_now_recovery_descriptor_is_current(pending)
             stable_key_adapter = self._stable_key_recovery_adapter(pending)
             if not structural_read_recovery and stable_key_adapter is None:
-                self._mutate_pending_action(
+                self._invalidate_recovered_authority(
                     pending,
-                    kind=PendingActionMutationKind.RECOVERY,
-                    values={
-                        "recovery_effect_invoked": True,
-                        "recovery_accounting_pending": True,
-                    },
-                    bind_execution_identity=True,
+                    preserve_authenticated_effect_posture=(
+                        self._recovery_authority_snapshot_is_authenticated(pending)
+                    ),
+                    account_uncertain_effect=True,
                 )
                 self._sync_task_confirmation_status(pending)
                 continue

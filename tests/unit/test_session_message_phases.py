@@ -1356,7 +1356,7 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
             )
         )
 
-    def _pep_for_current_policy(self) -> Any:
+    def _pep_for_current_policy(self, _policy: Any | None = None) -> Any:
         """Keep finite evaluator doubles explicit in action-path unit tests."""
 
         return self._pep
@@ -1469,11 +1469,40 @@ class _CurrentPolicyActionHarness(_PendingPolicySnapshotHarness):
             session_tool_allowlist=[ToolName("fs.read")],
         )
 
-    def _pep_for_current_policy(self) -> PEP:
-        return HandlerImplementation._pep_for_current_policy(self)
+    def _pep_for_current_policy(self, policy: Any | None = None) -> PEP:
+        return HandlerImplementation._pep_for_current_policy(self, policy)
 
     async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
         return None
+
+
+@pytest.mark.parametrize(
+    ("evaluated_tool_name", "expected_allowlist"),
+    [
+        (ToolName("action.resolve"), {ToolName("action.resolve")}),
+        (ToolName("lockdown.resume"), {ToolName("lockdown.resume")}),
+        (ToolName("shell.exec"), set()),
+    ],
+)
+def test_f15_current_policy_recheck_preserves_only_visible_runtime_tools(
+    evaluated_tool_name: ToolName,
+    expected_allowlist: set[ToolName],
+) -> None:
+    original_allowlist = {
+        ToolName("action.resolve"),
+        ToolName("lockdown.resume"),
+        ToolName("shell.exec"),
+    }
+    context = PolicyContext(tool_allowlist=set(original_allowlist))
+
+    current_context = impl_session._policy_context_for_current_policy(
+        context=context,
+        policy=PolicyBundle(session_tool_allowlist=[ToolName("fs.read")]),
+        evaluated_tool_name=evaluated_tool_name,
+    )
+
+    assert current_context.tool_allowlist == expected_allowlist
+    assert context.tool_allowlist == original_allowlist
 
 
 @pytest.mark.asyncio
@@ -1495,7 +1524,10 @@ async def test_f15_action_recheck_uses_policy_loaded_after_planner_evaluation() 
         untrusted_current_turn="",
         untrusted_host_patterns=set(),
         policy_egress_host_patterns=set(),
-        context=PolicyContext(capabilities={Capability.SHELL_EXEC}),
+        context=PolicyContext(
+            capabilities={Capability.SHELL_EXEC},
+            tool_allowlist={ToolName("shell.exec")},
+        ),
         planner_origin="planner-origin",
         committed_plan_hash="plan-g1",
         active_plan_hash="plan-g1",
@@ -2674,7 +2706,12 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
         untrusted_current_turn="",
         untrusted_host_patterns=set(),
         policy_egress_host_patterns=set(),
-        context=PolicyContext(),
+        context=PolicyContext(
+            capabilities={Capability.SHELL_EXEC},
+            taint_labels={TaintLabel.UNTRUSTED},
+            tool_allowlist={ToolName("shell.exec")},
+            trust_level="trusted",
+        ),
         planner_origin="planner-origin",
         committed_plan_hash="plan-g1",
         active_plan_hash="plan-g1",
@@ -2727,6 +2764,12 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+    pep_context = harness.pending_action_calls[0]["pep_context"]
+    assert pep_context is not None
+    assert pep_context.capabilities == {Capability.SHELL_EXEC}
+    assert pep_context.taint_labels == {TaintLabel.UNTRUSTED}
+    assert pep_context.tool_allowlist == {ToolName("shell.exec")}
+    assert pep_context.trust_level == "trusted"
     queued_event = next(
         event
         for event in harness.published_events
@@ -4203,9 +4246,13 @@ def _finalize_execution_result(
     provider_response_trusted_origin: str = "",
     rejected: int = 0,
     rejection_reasons_for_user: list[str] | None = None,
+    origin_turn_id: str = "",
 ) -> SessionMessageExecutionResult:
+    params = {"session_id": "sess-g1", "content": content}
+    if origin_turn_id:
+        params["_origin_turn_id"] = origin_turn_id
     validated = _validation_result(
-        params={"session_id": "sess-g1", "content": content},
+        params=params,
         sanitized_text=sanitized_text,
     )
     validated.trust_level = trust_level
@@ -7185,6 +7232,7 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled(
         pending_confirmation_ids=["c-1"],
         content="Fetch this page title, then write it down.",
         sanitized_text="Fetch this page title, then write it down.",
+        origin_turn_id="turn-g1",
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)
@@ -7270,6 +7318,7 @@ async def test_f15_pending_sibling_tool_output_is_redacted_before_persistence(
         pending_confirmation_ids=["c-1"],
         content="Read the credentials, then write the result.",
         sanitized_text="Read the credentials, then write the result.",
+        origin_turn_id="turn-g1",
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)
@@ -7284,6 +7333,50 @@ async def test_f15_pending_sibling_tool_output_is_redacted_before_persistence(
     assert raw_secret not in sibling_content
     assert "[REDACTED:aws_access_key]" in sibling_content
     assert TaintLabel.UNTRUSTED in sibling_result.taint_labels
+
+
+def test_f15_pending_sibling_tool_output_requires_turn_and_strips_reservation(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._transcript_store = TranscriptStore(tmp_path / "transcript")
+    metadata = {
+        "channel": "discord",
+        "user_id": "user-g1",
+        "workspace_id": "workspace-g1",
+        "pending_confirmation_bridge": True,
+        "outbound_delivery_reservation_id": "delivery-reservation-1",
+    }
+
+    missing_turn = SessionImplMixin._append_pending_confirmation_sibling_tool_output(
+        harness,
+        session_id=SessionId("sess-g1"),
+        result_content="Completed action result.",
+        taint_labels={TaintLabel.UNTRUSTED},
+        assistant_metadata=metadata,
+        pending_confirmation_ids=["c-1"],
+        tool_output_count=1,
+        origin_turn_id="",
+    )
+
+    assert missing_turn is False
+    assert harness._transcript_store.list_entries(SessionId("sess-g1")) == []
+
+    persisted = SessionImplMixin._append_pending_confirmation_sibling_tool_output(
+        harness,
+        session_id=SessionId("sess-g1"),
+        result_content="Completed action result.",
+        taint_labels={TaintLabel.UNTRUSTED},
+        assistant_metadata=metadata,
+        pending_confirmation_ids=["c-1"],
+        tool_output_count=1,
+        origin_turn_id="turn-g1",
+    )
+
+    assert persisted is True
+    sibling = harness._transcript_store.list_entries(SessionId("sess-g1"))[0]
+    assert sibling.metadata["origin_turn_id"] == "turn-g1"
+    assert "outbound_delivery_reservation_id" not in sibling.metadata
 
 
 @pytest.mark.asyncio

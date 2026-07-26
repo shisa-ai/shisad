@@ -211,6 +211,9 @@ _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE = "planner:structured_similar_file_reco
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
+_RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS: frozenset[ToolName] = frozenset(
+    {_ACTION_RESOLVE_TOOL_NAME, _LOCKDOWN_RESUME_TOOL_NAME}
+)
 _LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY
 _LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
@@ -3206,6 +3209,33 @@ def _planner_tool_allowlist_for_current_policy(
     }
 
 
+def _policy_context_for_current_policy(
+    *,
+    context: PolicyContext,
+    policy: Any,
+    evaluated_tool_name: ToolName | str,
+) -> PolicyContext:
+    current_context = copy(context)
+    current_allowlist = _planner_tool_allowlist_for_current_policy(
+        base_allowlist=context.tool_allowlist,
+        policy=policy,
+    )
+    if current_allowlist is not None:
+        current_allowlist = set(current_allowlist)
+        evaluated_tool = canonical_tool_name_typed(str(evaluated_tool_name))
+        was_visible_at_dispatch = context.tool_allowlist is None or any(
+            canonical_tool_name_typed(str(tool_name)) == evaluated_tool
+            for tool_name in context.tool_allowlist
+        )
+        if evaluated_tool in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS and was_visible_at_dispatch:
+            # These daemon-owned tools are added after policy narrowing only
+            # when finite runtime state permits them. Preserve that existing
+            # exception without carrying an ordinary stale-policy tool forward.
+            current_allowlist.add(evaluated_tool)
+    current_context.tool_allowlist = current_allowlist
+    return current_context
+
+
 def _assistant_fs_roots_configured(config: Any) -> bool:
     roots = getattr(config, "assistant_fs_roots", [])
     if roots is None:
@@ -5962,6 +5992,15 @@ def _transcript_entry_content(
 ) -> str:
     # Use inlined transcript previews to avoid per-turn full-blob reads.
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if metadata.get(_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY) is True and entry.blob_ref:
+        authenticated_content = (
+            transcript_store.entry_content(entry) if transcript_store is not None else None
+        )
+        return _strip_lockdown_recovery_notice_from_content(
+            authenticated_content if isinstance(authenticated_content, str) else "",
+            metadata,
+            role=entry.role,
+        )
     if (
         (
             metadata.get("promoted_evidence") is True
@@ -6096,6 +6135,7 @@ def _is_pending_confirmation_sibling_tool_output_entry(entry: TranscriptEntry) -
     return (
         metadata.get(_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY) is True
         and str(metadata.get("actor", "")).strip() == "policy_loop"
+        and bool(str(metadata.get("origin_turn_id", "")).strip())
     )
 
 
@@ -12081,10 +12121,15 @@ class SessionImplMixin(HandlerMixinBase):
                     arguments=dict(read_arguments),
                 )
             )
-            read_pep_decision = self._pep_for_current_policy().evaluate(
+            live_policy = self._policy_loader.policy
+            read_pep_decision = self._pep_for_current_policy(live_policy).evaluate(
                 read_tool_name,
                 pep_arguments_for_policy_evaluation(read_tool_name, read_arguments),
-                planner_context.context,
+                _policy_context_for_current_policy(
+                    context=planner_context.context,
+                    policy=live_policy,
+                    evaluated_tool_name=read_tool_name,
+                ),
             )
             read_monitor_decision = self._monitor.evaluate(
                 user_goal=validated.firewall_result.sanitized_text,
@@ -12384,10 +12429,16 @@ class SessionImplMixin(HandlerMixinBase):
                 validated.content,
                 control_plane_sensitive_browser_values,
             )
-            pep_decision = self._pep_for_current_policy().evaluate(
+            live_policy = self._policy_loader.policy
+            proposal_policy_context = _policy_context_for_current_policy(
+                context=planner_context.context,
+                policy=live_policy,
+                evaluated_tool_name=proposal.tool_name,
+            )
+            pep_decision = self._pep_for_current_policy(live_policy).evaluate(
                 proposal.tool_name,
                 pep_arguments,
-                planner_context.context,
+                proposal_policy_context,
             )
             if str(proposal.tool_name) == "action.resolve":
                 live_pending_action_rows = self._pending_confirmations_for_binding(
@@ -13069,11 +13120,7 @@ class SessionImplMixin(HandlerMixinBase):
                                 or f"proposal:{proposal.action_id}"
                             )
                         ),
-                        pep_context=(
-                            _pending_pep_context_snapshot(planner_context.context)
-                            if pep_elevation is not None
-                            else None
-                        ),
+                        pep_context=_pending_pep_context_snapshot(proposal_policy_context),
                         pep_elevation=pep_elevation,
                         confirmation_requirement=(
                             ConfirmationRequirement.model_validate(
@@ -14606,9 +14653,11 @@ class SessionImplMixin(HandlerMixinBase):
                 if (confirmation_id := str(raw_confirmation_id).strip())
             )
         )
+        normalized_origin_turn_id = str(origin_turn_id).strip()
         if (
             tool_output_count <= 0
             or not normalized_pending_ids
+            or not normalized_origin_turn_id
             or not bool(assistant_metadata.get("pending_confirmation_bridge"))
         ):
             return False
@@ -14619,17 +14668,16 @@ class SessionImplMixin(HandlerMixinBase):
         metadata = dict(assistant_metadata)
         metadata.pop("pending_confirmation_bridge", None)
         metadata.pop("system_generated_pending_confirmations", None)
+        metadata.pop("outbound_delivery_reservation_id", None)
         metadata.update(
             {
                 "actor": "policy_loop",
                 _PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY: True,
                 "pending_confirmation_ids": normalized_pending_ids,
                 "tool_output_count": int(tool_output_count),
+                "origin_turn_id": normalized_origin_turn_id,
             }
         )
-        normalized_origin_turn_id = str(origin_turn_id).strip()
-        if normalized_origin_turn_id:
-            metadata["origin_turn_id"] = normalized_origin_turn_id
         self._transcript_store.append(
             session_id,
             role="tool",
@@ -15306,10 +15354,7 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_metadata=assistant_transcript_metadata,
             pending_confirmation_ids=returned_pending_confirmation_ids,
             tool_output_count=len(raw_serialized_tool_outputs),
-            origin_turn_id=str(
-                getattr(validated.user_transcript_entry, "entry_id", "") or ""
-            ).strip()
-            or str(validated.params.get("_origin_turn_id", "")).strip(),
+            origin_turn_id=_validated_origin_turn_id(validated),
         ):
             assistant_transcript_metadata[_PENDING_SIBLING_RESULT_PERSISTED_METADATA_KEY] = True
         self._transcript_store.append(

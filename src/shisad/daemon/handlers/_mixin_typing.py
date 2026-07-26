@@ -43,7 +43,7 @@ if TYPE_CHECKING:
             confirmation_id: str = "",
         ) -> bool: ...
 
-        def _pep_for_current_policy(self) -> Any: ...
+        def _pep_for_current_policy(self, policy: Any | None = None) -> Any: ...
 
         def __getattr__(self, name: str) -> Any: ...
 
@@ -55,10 +55,12 @@ else:
         async def _call_control_plane(self, method_name: str, /, *args: Any, **kwargs: Any) -> Any:
             return await call_control_plane(self, method_name, *args, **kwargs)
 
-        def _pep_for_current_policy(self) -> Any:
+        def _pep_for_current_policy(self, policy: Any | None = None) -> Any:
             """Derive an evaluator from the policy loader's current bundle."""
 
-            return self._pep.for_policy(self._policy_loader.policy)
+            return self._pep.for_policy(
+                policy if policy is not None else self._policy_loader.policy
+            )
 
         def _terminate_session(self, session_id: Any, *, reason: str = "") -> bool:
             terminated = bool(self._session_manager.terminate(session_id, reason=reason))

@@ -39,6 +39,7 @@ from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
 from shisad.daemon.handlers._pending_approval import (
+    PendingPepContextSnapshot,
     pending_action_event_identity_fields,
     pending_action_state_view,
 )
@@ -244,6 +245,7 @@ class TasksImplMixin(HandlerMixinBase):
         reason: str,
         capabilities: set[Capability],
         preflight_action: Any | None,
+        pep_context: PolicyContext,
         confirmation_requirement: ConfirmationRequirement | None = None,
         start_executing: bool = False,
     ) -> str:
@@ -259,6 +261,27 @@ class TasksImplMixin(HandlerMixinBase):
             delivery_target=self._task_delivery_target(task),
             preflight_action=preflight_action,
             taint_labels=list(_payload_taints(str(getattr(run, "payload_taint", "")))),
+            pep_context=PendingPepContextSnapshot(
+                capabilities=set(pep_context.capabilities),
+                taint_labels=set(pep_context.taint_labels),
+                user_goal_host_patterns=set(pep_context.user_goal_host_patterns),
+                same_session_user_goal_host_patterns=set(
+                    pep_context.same_session_user_goal_host_patterns
+                ),
+                context_confirmation_host_patterns=set(
+                    pep_context.context_confirmation_host_patterns
+                ),
+                untrusted_host_patterns=set(pep_context.untrusted_host_patterns),
+                tool_allowlist=(
+                    set(pep_context.tool_allowlist)
+                    if pep_context.tool_allowlist is not None
+                    else None
+                ),
+                trust_level=pep_context.trust_level,
+                credential_refs=set(pep_context.credential_refs),
+                enforce_explicit_credential_refs=bool(pep_context.enforce_explicit_credential_refs),
+                filesystem_roots=tuple(str(root) for root in pep_context.filesystem_roots),
+            ),
             confirmation_requirement=confirmation_requirement,
             origin_turn_id=(
                 "task-run:"
@@ -508,24 +531,25 @@ class TasksImplMixin(HandlerMixinBase):
             evaluation=cp_eval,
         )
 
+        pep_context = PolicyContext(
+            capabilities=effective_capabilities,
+            taint_labels=_payload_taints(str(getattr(run, "payload_taint", ""))),
+            session_id=sid,
+            workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
+            user_id=UserId(str(getattr(task, "created_by", ""))),
+            resource_authorizer=task_resource_authorizer(task_envelope),
+            trust_level=trust_level,
+            credential_refs={
+                CredentialRef(str(item))
+                for item in getattr(task_envelope, "credential_refs", ())
+                if str(item).strip()
+            },
+            enforce_explicit_credential_refs=task_envelope is not None,
+        )
         pep_decision = self._pep_for_current_policy().evaluate(
             _BACKGROUND_MESSAGE_SEND,
             dict(delivery_arguments),
-            PolicyContext(
-                capabilities=effective_capabilities,
-                taint_labels=_payload_taints(str(getattr(run, "payload_taint", ""))),
-                session_id=sid,
-                workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
-                user_id=UserId(str(getattr(task, "created_by", ""))),
-                resource_authorizer=task_resource_authorizer(task_envelope),
-                trust_level=trust_level,
-                credential_refs={
-                    CredentialRef(str(item))
-                    for item in getattr(task_envelope, "credential_refs", ())
-                    if str(item).strip()
-                },
-                enforce_explicit_credential_refs=task_envelope is not None,
-            ),
+            pep_context,
         )
 
         trace_only_stage2_block = (
@@ -639,6 +663,7 @@ class TasksImplMixin(HandlerMixinBase):
                     capabilities=effective_capabilities,
                     preflight_action=cp_eval.action,
                     confirmation_requirement=confirmation_requirement,
+                    pep_context=pep_context,
                 )
             except ApprovalRoutingError as exc:
                 return await self._reject_task_run(
@@ -658,6 +683,7 @@ class TasksImplMixin(HandlerMixinBase):
             capabilities=effective_capabilities,
             preflight_action=cp_eval.action,
             start_executing=True,
+            pep_context=pep_context,
         )
         pending = self._pending_actions[confirmation_id]
         action_identity = pending_action_state_view(pending).identity

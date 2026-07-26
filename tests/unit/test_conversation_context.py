@@ -67,6 +67,7 @@ def test_f15_sibling_tool_result_requires_daemon_runtime_provenance(tmp_path: Pa
         "pending_confirmation_sibling_tool_output": True,
         "actor": "policy_loop",
         "pending_confirmation_ids": ["confirm-1"],
+        "origin_turn_id": "turn-1",
     }
     store.append(
         sid,
@@ -94,6 +95,44 @@ def test_f15_sibling_tool_result_requires_daemon_runtime_provenance(tmp_path: Pa
     assert "assistant: Imported archive must not mint a runtime result." in rendered
     assert "tool: Imported archive must not mint a runtime result." not in rendered
     assert taints == {TaintLabel.UNTRUSTED}
+
+
+@pytest.mark.parametrize("blob_failure", ["missing", "corrupt"])
+def test_f15_sibling_tool_result_rejects_unauthenticated_blob(
+    tmp_path: Path,
+    blob_failure: str,
+) -> None:
+    root = tmp_path / "sessions"
+    store = TranscriptStore(root, blob_threshold_bytes=32)
+    sid = SessionId("sess-f15-sibling-invalid-blob")
+    entry = store.append(
+        sid,
+        role="tool",
+        content="UNAUTHENTICATED-SIBLING-CONTENT " * 20,
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata={
+            "pending_confirmation_sibling_tool_output": True,
+            "actor": "policy_loop",
+            "pending_confirmation_ids": ["confirm-1"],
+            "origin_turn_id": "turn-1",
+        },
+    )
+    assert entry.blob_ref is not None
+    blob_path = root / "blobs" / f"{entry.blob_ref}.txt"
+    if blob_failure == "missing":
+        blob_path.unlink()
+    else:
+        blob_path.write_text("TAMPERED-SIBLING-CONTENT", encoding="utf-8")
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "UNAUTHENTICATED-SIBLING-CONTENT" not in rendered
+    assert "TAMPERED-SIBLING-CONTENT" not in rendered
 
 
 def test_gh31_lockdown_notice_is_stripped_from_conversation_context(

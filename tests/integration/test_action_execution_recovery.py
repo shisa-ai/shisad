@@ -30,6 +30,7 @@ from shisad.core.types import Capability, EventId, SessionId, ToolName
 from shisad.daemon import control_handlers as control_handlers_module
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
+from shisad.daemon.handlers._pending_approval import PendingPepContextSnapshot
 from shisad.daemon.services import DaemonServices
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
@@ -2777,6 +2778,13 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
             capabilities={Capability.HTTP_REQUEST},
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id="turn-web-fetch-recovery",
+            pep_context=PendingPepContextSnapshot(
+                capabilities={Capability.HTTP_REQUEST},
+                user_goal_host_patterns={
+                    str(arguments["url"]).split("://", 1)[-1].split("/", 1)[0]
+                },
+                trust_level="trusted",
+            ),
         )
 
         async def _stop_after_possible_effect(**_kwargs: object) -> object:
@@ -2785,6 +2793,18 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
             raise _ProcessStopped
 
         monkeypatch.setattr(impl, "_execute_approved_action", _stop_after_possible_effect)
+        if scenario == "malformed_snapshot":
+            invalid = await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+            assert invalid["confirmed"] is False
+            assert invalid["reason"] == "policy_changed_after_queue"
+            assert pending.status == "rejected"
+            assert initial_effect_calls == 0
+            return
         with pytest.raises(_ProcessStopped):
             await impl.do_action_confirm(
                 {

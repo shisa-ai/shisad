@@ -21,6 +21,7 @@ from shisad.core.types import Capability, PEPDecisionKind, SessionId, UserId, Wo
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers.tasks import TaskHandlers
+from shisad.security.pep import PolicyContext
 
 
 class _ProgrammableImpl:
@@ -204,6 +205,10 @@ async def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None
         reason="requires_confirmation",
         capabilities={Capability.MESSAGE_SEND},
         preflight_action=None,
+        pep_context=PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            trust_level="internal",
+        ),
     )
 
     assert confirmation_id == "confirm-task-1"
