@@ -322,6 +322,8 @@ async def test_signer_confirmation_executes_and_records_l3_audit(
             [
                 'version: "1"',
                 "default_require_confirmation: false",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "default_capabilities:",
                 "  - shell.exec",
                 "tools:",

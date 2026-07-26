@@ -206,6 +206,33 @@ def test_approver_service_process_pending_once_confirms_local_fido2_action() -> 
     ]
 
 
+def test_f15_approver_service_keeps_available_helper_row_for_cli_origin() -> None:
+    service = _HarnessService(
+        device=_FakeDevice(),
+        responses={
+            "action.pending": [
+                {
+                    "actions": [
+                        {
+                            "confirmation_id": "c-1",
+                            "decision_nonce": "nonce-1",
+                            "selected_backend_method": "local_fido2",
+                            "channel_capability": {
+                                "backend_available": True,
+                                "can_approve": False,
+                            },
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+
+    rows = asyncio.run(service.pending_local_fido2_actions())
+
+    assert [row["confirmation_id"] for row in rows] == ["c-1"]
+
+
 def test_approver_service_skips_unavailable_local_fido2_action() -> None:
     device = _FakeDevice()
     service = _HarnessService(

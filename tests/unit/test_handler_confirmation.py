@@ -446,6 +446,7 @@ class _AvailableWebAuthnRouteBackend:
 
 class _ConfirmationImplHarness(ConfirmationImplMixin):
     _capture_pending_scheduler_posture = HandlerImplementation._capture_pending_scheduler_posture
+    _recovery_policy_allows = HandlerImplementation._recovery_policy_allows
 
     def __init__(
         self,
@@ -458,22 +459,29 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
-        self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
+        self._lockdown_manager = SimpleNamespace(
+            should_block_all_actions=lambda _sid: False,
+            apply_capability_restrictions=lambda _sid, capabilities: set(capabilities),
+        )
         self.published_events: list[object] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._session = SimpleNamespace(
+            id=SessionId("s-1"),
             channel="cli",
             mode=SessionMode.DEFAULT,
+            user_id=UserId("alice"),
             workspace_id=WorkspaceId("w-1"),
+            capabilities=set(Capability),
         )
         self._session_manager = SimpleNamespace(get=lambda _sid: self._session)
-        self._policy_loader = SimpleNamespace(
-            policy=SimpleNamespace(
-                control_plane=SimpleNamespace(
-                    trace=SimpleNamespace(allow_amendment=allow_amendment)
-                )
-            )
+        initial_policy = PolicyBundle.model_validate(
+            {
+                "default_require_confirmation": False,
+                "control_plane": {"trace": {"allow_amendment": allow_amendment}},
+            }
         )
+        self._policy_loader = SimpleNamespace(policy=initial_policy)
+        self._config = SimpleNamespace(assistant_fs_roots=[tmp_path])
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
@@ -497,8 +505,17 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._execution_error_tool_output = execution_error_tool_output
         self.persist_calls = 0
         self._pep = PEP(
-            PolicyBundle(default_require_confirmation=False),
+            initial_policy,
             self._registry,
+            evidence_store=self._evidence_store,
+        )
+
+    def set_policy(self, policy: PolicyBundle) -> None:
+        self._policy_loader.policy = policy
+        self._pep = PEP(
+            policy,
+            self._registry,
+            evidence_store=self._evidence_store,
         )
 
     async def _noop_publish(self, _event: object) -> None:
@@ -6355,6 +6372,56 @@ async def test_m1_d11_confirmation_reuses_pending_merged_policy_snapshot(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_f15_confirmation_rechecks_current_policy_before_effect(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    _bind_pending_action_identity(pending)
+    harness._pending_actions["c-1"] = pending
+    harness._policy_loader.policy = PolicyBundle(
+        default_require_confirmation=False,
+        session_tool_allowlist=[ToolName("fs.read")],
+    )
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "rejected"
+    assert result["reason"] == "policy_changed_after_queue"
+    assert pending.status_reason == "policy_changed_after_queue"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_f15_confirmation_preserves_direct_operator_override_semantics(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.preflight_action = ControlPlaneAction(
+        tool_name="web.search",
+        action_kind=ActionKind.EGRESS,
+        origin=Origin(actor="control_api"),
+        resource_id="https://example.com",
+    )
+    _bind_pending_action_identity(pending)
+    harness._pending_actions["c-1"] = pending
+    harness._policy_loader.policy = PolicyBundle(
+        default_require_confirmation=False,
+        session_tool_allowlist=[ToolName("fs.read")],
+    )
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert pending.status_reason != "policy_changed_after_queue"
+    assert len(harness.execution_kwargs) == 1
+
+
+@pytest.mark.asyncio
 async def test_i1_confirmation_replays_direct_mcp_strip_intent(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     harness._registry.register(
@@ -6683,6 +6750,9 @@ async def test_gh42_direct_confirmation_waits_short_cross_session_cooldown(
     second.workspace_id = WorkspaceId("workspace-b")
     second.tool_name = ToolName("web.fetch")
     second.arguments = {"url": "https://example.com/"}
+    second.pep_context = _pep_context_snapshot(
+        capabilities={Capability.HTTP_REQUEST},
+    )
     _bind_pending_action_identity(first)
     _bind_pending_action_identity(second)
     harness._pending_actions[first.confirmation_id] = first
@@ -6998,20 +7068,17 @@ async def test_trace_only_capability_elevation_fails_closed_when_pep_requires_st
     tmp_path,
 ) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
-    harness._pep = PEP(
-        PolicyBundle.model_validate(
-            {
-                "default_require_confirmation": False,
-                "tools": {
-                    "web.fetch": {
-                        "confirmation": {
-                            "level": "bound_approval",
-                        }
+    harness._policy_loader.policy = PolicyBundle.model_validate(
+        {
+            "default_require_confirmation": False,
+            "tools": {
+                "web.fetch": {
+                    "confirmation": {
+                        "level": "bound_approval",
                     }
-                },
-            }
-        ),
-        _registry_for_confirmation(),
+                }
+            },
+        }
     )
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("web.fetch")
@@ -7049,7 +7116,7 @@ async def test_trace_only_capability_elevation_accepts_explicit_fallback_confirm
     tmp_path,
 ) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
-    harness._pep = PEP(
+    harness.set_policy(
         PolicyBundle.model_validate(
             {
                 "default_require_confirmation": False,
@@ -7066,7 +7133,6 @@ async def test_trace_only_capability_elevation_accepts_explicit_fallback_confirm
                 },
             }
         ),
-        _registry_for_confirmation(),
     )
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("web.fetch")

@@ -27,6 +27,7 @@ from shisad.daemon.runner import run_daemon
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier, build_action
+from shisad.security.pep import PEP, PolicyContext
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
@@ -74,6 +75,13 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
         await client.call("daemon.shutdown")
     await client.close()
     await asyncio.wait_for(daemon_task, timeout=3)
+
+
+async def _create_cli_session(client: ControlClient) -> dict[str, object]:
+    return await client.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )
 
 
 class _StubMonitorProvider:
@@ -712,10 +720,11 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
     async def _forced_fs_read_propose(
         self: Planner,
         user_content: str,
-        context: object,
+        context: PolicyContext,
         *,
         tools: list[dict[str, object]] | None = None,
         persona_tone_override: str | None = None,
+        pep: PEP | None = None,
     ) -> PlannerResult:
         _ = user_content, tools, persona_tone_override
         proposal = ActionProposal(
@@ -725,7 +734,11 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
             reasoning="g2 structured fs.read parity",
             data_sources=[],
         )
-        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        decision = (pep or self._pep).evaluate(
+            proposal.tool_name,
+            proposal.arguments,
+            context,
+        )
         return PlannerResult(
             output=PlannerOutput(actions=[proposal], assistant_response="reading note"),
             evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
@@ -741,9 +754,9 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
         policy={"version": "1", "default_require_confirmation": False},
     )
     try:
-        session_created = await client.call("session.create", {"channel": "cli"})
+        session_created = await _create_cli_session(client)
         session_sid = session_created["session_id"]
-        direct_created = await client.call("session.create", {"channel": "cli"})
+        direct_created = await _create_cli_session(client)
         direct_sid = direct_created["session_id"]
 
         session_reply = await client.call(
@@ -873,7 +886,7 @@ async def test_h3_session_message_repeated_pep_rejects_emit_warning_without_lock
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         for attempt in range(3):
@@ -1178,7 +1191,7 @@ async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_seman
         policy={"version": "1", "default_require_confirmation": False},
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         result = await client.call(
@@ -1211,10 +1224,14 @@ async def test_g2_t3_direct_sandbox_tool_execute_returns_precreated_checkpoint_i
 ) -> None:
     daemon_task, client = await _start_daemon_with_policy(
         tmp_path,
+        policy={
+            "version": "1",
+            "sandbox": {"containment_profile": "expert_host_fallback"},
+        },
         checkpoint_trigger="before_any_tool",
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         result = await client.call(
@@ -1253,7 +1270,7 @@ async def test_m5_rt1_tool_execute_stage2_upgrade_requires_confirmation_gate(
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         result = await client.call(
@@ -1310,10 +1327,11 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
             "default_deny": False,
             "default_require_confirmation": False,
             "default_capabilities": ["file.read", "memory.read"],
+            "sandbox": {"containment_profile": "expert_host_fallback"},
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         queued = await client.call(
@@ -1349,6 +1367,7 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
                 "default_require_confirmation": False,
                 "default_capabilities": ["file.read", "memory.read"],
                 "sandbox": {
+                    "containment_profile": "expert_host_fallback",
                     "tool_overrides": {
                         "http.request": {
                             "network": {
@@ -1358,7 +1377,7 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
                                 "deny_ip_literals": True,
                             }
                         }
-                    }
+                    },
                 },
             },
             sort_keys=False,
@@ -1378,9 +1397,7 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
         assert row["required_level"] == "software"
         assert row["selected_backend_id"] == "software.default"
         assert row["approval_envelope"]["schema_version"] == "shisad.approval.v2"
-        assert str(row["approval_envelope"]["approval_contract_hash"]).startswith(
-            "sha256:"
-        )
+        assert str(row["approval_envelope"]["approval_contract_hash"]).startswith("sha256:")
         assert str(row["approval_envelope"]["action_digest"]).startswith("sha256:")
         assert str(row["approval_envelope_hash"]).startswith("sha256:")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -206,6 +207,10 @@ class Planner:
         self._custom_persona_text = custom_persona_text.strip()
         self._capabilities = capabilities or ProviderCapabilities()
         self._tool_registry = tool_registry
+        self._pep_override: ContextVar[PEP | None] = ContextVar(
+            f"shisad_planner_pep_override_{id(self)}",
+            default=None,
+        )
         # Keep direct-constructor default lenient for backwards-compatible test/tooling
         # callers; daemon runtime wiring sets this from model config (default enabled).
         self._schema_strict_mode = bool(schema_strict_mode)
@@ -222,6 +227,34 @@ class Planner:
             self._persona_tone = normalized
         self._custom_persona_text = custom_text.strip()
 
+    async def propose_with_pep(
+        self,
+        user_content: str,
+        context: PolicyContext,
+        *,
+        pep: PEP,
+        tools: list[dict[str, Any]] | None = None,
+        persona_tone_override: PersonaTone | None = None,
+    ) -> PlannerResult:
+        """Propose with a concurrency-local evaluator while preserving the base API."""
+
+        token = self._pep_override.set(pep)
+        try:
+            if persona_tone_override is None:
+                return await self.propose(
+                    user_content,
+                    context,
+                    tools=tools,
+                )
+            return await self.propose(
+                user_content,
+                context,
+                tools=tools,
+                persona_tone_override=persona_tone_override,
+            )
+        finally:
+            self._pep_override.reset(token)
+
     async def propose(
         self,
         user_content: str,
@@ -231,6 +264,7 @@ class Planner:
         persona_tone_override: PersonaTone | None = None,
     ) -> PlannerResult:
         """Generate tool proposals and evaluate all proposals via PEP."""
+        evaluator = self._pep_override.get() or self._pep
         tainted_context = TaintLabel.UNTRUSTED in context.taint_labels
         system_prompt = self._compose_system_prompt(
             persona_tone_override=persona_tone_override,
@@ -258,7 +292,7 @@ class Planner:
                 evaluated = [
                     EvaluatedProposal(
                         proposal=proposal,
-                        decision=self._pep.evaluate(
+                        decision=evaluator.evaluate(
                             proposal.tool_name,
                             proposal.arguments,
                             context,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -12,7 +13,7 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, PEPDecision, TaintLabel, ToolName
+from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 
@@ -468,3 +469,110 @@ async def test_m5_rr2_schema_strict_mode_allows_non_tool_json_array_assistant_te
 
     assert result.output.actions == []
     assert result.output.assistant_response == "[1, 2, 3]"
+
+
+@pytest.mark.asyncio
+async def test_f15_planner_call_uses_explicit_current_policy_pep() -> None:
+    registry = _make_registry()
+    startup_pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        registry,
+    )
+    current_pep = startup_pep.for_policy(
+        PolicyBundle(
+            default_require_confirmation=False,
+            session_tool_allowlist=[ToolName("shell.exec")],
+        )
+    )
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="Running echo.",
+                    tool_calls=[
+                        {
+                            "id": "call-live-policy",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": json.dumps({"text": "hello"}),
+                            },
+                        }
+                    ],
+                )
+            ]
+        ),
+        startup_pep,
+        max_retries=0,
+    )
+
+    result = await planner.propose_with_pep(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=current_pep,
+    )
+
+    assert len(result.evaluated) == 1
+    assert result.evaluated[0].decision.kind == PEPDecisionKind.REJECT
+    assert result.evaluated[0].decision.reason_code == "pep:tool_not_permitted"
+
+
+@pytest.mark.asyncio
+async def test_f15_concurrent_planner_policy_views_do_not_cross_contaminate() -> None:
+    class ConcurrentProvider(StaticProvider):
+        def __init__(self, response: Message) -> None:
+            super().__init__([response])
+            self._entered = 0
+            self._both_entered = asyncio.Event()
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            self._entered += 1
+            if self._entered == 2:
+                self._both_entered.set()
+            await self._both_entered.wait()
+            return await super().complete(messages, tools)
+
+    registry = _make_registry()
+    startup_pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    deny_pep = startup_pep.for_policy(
+        PolicyBundle(
+            default_require_confirmation=False,
+            session_tool_allowlist=[ToolName("shell.exec")],
+        )
+    )
+    response = Message(
+        role="assistant",
+        content="Running echo.",
+        tool_calls=[
+            {
+                "id": "call-concurrent-policy",
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "arguments": json.dumps({"text": "hello"}),
+                },
+            }
+        ],
+    )
+    planner = Planner(ConcurrentProvider(response), startup_pep, max_retries=0)
+
+    allowed, denied = await asyncio.gather(
+        planner.propose_with_pep(
+            "echo allowed",
+            PolicyContext(capabilities={Capability.FILE_READ}),
+            pep=startup_pep,
+        ),
+        planner.propose_with_pep(
+            "echo denied",
+            PolicyContext(capabilities={Capability.FILE_READ}),
+            pep=deny_pep,
+        ),
+    )
+
+    assert allowed.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
+    assert denied.evaluated[0].decision.kind == PEPDecisionKind.REJECT

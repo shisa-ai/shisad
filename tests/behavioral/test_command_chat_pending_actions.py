@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,141 @@ async def test_gh91_completed_read_is_result_not_pending(
     assert "[CONFIRMATION REQUIRED]" not in response_text
     assert "# Completed read" in response_text
     assert reply.get("output_policy", {}).get("require_confirmation") is True
+
+
+@pytest.mark.asyncio
+async def test_f15_post_confirmation_synthesis_preserves_successful_sibling_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    followup_inputs: list[str] = []
+
+    async def _sibling_result_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        planner_input = messages[-1].content if messages else ""
+        normalized = planner_input.replace("^", "")
+        current_request = _current_user_request(planner_input).lower()
+        if "post-tool synthesis pass" in normalized.lower():
+            response = "The README read completed before the search confirmation."
+            return ProviderResponse(
+                message=Message(role="assistant", content=response),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if "read sibling-readme.md and search" in current_request:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="I will read the file and search.",
+                    tool_calls=[
+                        _tool_call(
+                            "fs.read",
+                            {"path": "SIBLING-README.md", "max_bytes": 4096},
+                            call_id="t-f15-sibling-read",
+                        ),
+                        _tool_call(
+                            "web.search",
+                            {"query": "related sibling projects", "limit": 3},
+                            call_id="t-f15-sibling-search",
+                        ),
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if "synthesize the read and search results" in current_request:
+            followup_inputs.append(normalized)
+            typed_read_present = (
+                "tool: Completed actions:" in normalized and "sibling-read-success" in normalized
+            )
+            search_failure_present = "web_search_" in normalized or "network_error:" in normalized
+            response = (
+                "The README read succeeded with sibling-read-success; "
+                "the related-project search failed because its backend request failed."
+                if typed_read_present and search_failure_present
+                else "I do not have trustworthy evidence that the README read succeeded."
+            )
+            return ProviderResponse(
+                message=Message(role="assistant", content=response),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return await _stub_complete(self, messages, tools)
+
+    policy_lines = [
+        "tools:",
+        "  web.search:",
+        "    confirmation:",
+        "      level: software",
+    ]
+    with socket.socket() as reserved_socket:
+        reserved_socket.bind(("127.0.0.1", 0))
+        unavailable_port = int(reserved_socket.getsockname()[1])
+    unavailable_backend = f"http://localhost:{unavailable_port}"
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        web_search_backend_url_override=unavailable_backend,
+        policy_extra_lines=policy_lines,
+    ) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _sibling_result_complete,
+            raising=True,
+        )
+        (harness.workspace_root / "SIBLING-README.md").write_text(
+            "# Sibling\n\nsibling-read-success\n",
+            encoding="utf-8",
+        )
+        sid = await _create_session(harness.client)
+        initial = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "read SIBLING-README.md and search for related sibling projects",
+            },
+        )
+        pending_ids = list(initial.get("pending_confirmation_ids", []))
+        assert int(initial.get("executed_actions", 0)) == 1
+        assert len(pending_ids) == 1
+        pending = await harness.client.call(
+            "action.pending",
+            {"confirmation_id": pending_ids[0]},
+        )
+        pending_rows = list(pending.get("actions", []))
+        assert len(pending_rows) == 1
+        confirmed = await harness.client.call(
+            "action.confirm",
+            {
+                "confirmation_id": pending_ids[0],
+                "decision_nonce": str(pending_rows[0]["decision_nonce"]),
+            },
+        )
+        assert confirmed.get("confirmed") is False
+        assert str(confirmed.get("status_reason", "")).startswith("network_error:")
+
+        followup = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "synthesize the read and search results",
+            },
+        )
+
+    assert followup_inputs
+    assert "tool: Completed actions:" in followup_inputs[-1]
+    response = str(followup.get("response", ""))
+    assert "README read succeeded" in response
+    assert "sibling-read-success" in response
+    assert "search failed" in response
+    assert "backend request failed" in response
 
 
 @pytest.mark.asyncio

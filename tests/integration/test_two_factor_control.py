@@ -220,6 +220,8 @@ async def test_local_fido2_enrollment_survives_data_dir_move(
         [
             'version: "1"',
             "default_require_confirmation: false",
+            "sandbox:",
+            "  containment_profile: expert_host_fallback",
             "default_capabilities:",
             "  - shell.exec",
             "tools:",

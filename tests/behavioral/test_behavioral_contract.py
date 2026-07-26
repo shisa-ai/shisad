@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sqlite3
 import struct
 import subprocess
@@ -36,6 +37,8 @@ from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
+from shisad.executors.sandbox import SandboxConfig, SandboxOrchestrator, SandboxResult
+from shisad.executors.sandbox.models import ContainmentProfile
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import (
@@ -1210,6 +1213,7 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
 
 
 _extract_tool_outputs = extract_tool_outputs
+_production_sandbox_execute_async = SandboxOrchestrator.execute_async
 
 
 @dataclass(frozen=True, slots=True)
@@ -1229,6 +1233,19 @@ def _executable_fake_browser_command(tmp_path: Path) -> str:
     return str(target)
 
 
+async def _execute_fake_browser_with_explicit_test_posture(
+    self: SandboxOrchestrator,
+    config: SandboxConfig,
+    *,
+    session: Any | None = None,
+) -> SandboxResult:
+    if any(Path(part).name == "fake_playwright_cli.py" for part in config.command):
+        config = config.model_copy(
+            update={"containment_profile": ContainmentProfile.EXPERT_HOST_FALLBACK}
+        )
+    return await _production_sandbox_execute_async(self, config, session=session)
+
+
 @asynccontextmanager
 async def _contract_harness_context(
     tmp_path: Path,
@@ -1237,6 +1254,7 @@ async def _contract_harness_context(
     prestart: Callable[[DaemonConfig], None] | None = None,
     default_require_confirmation: bool = False,
     web_search_backend_configured: bool = True,
+    web_search_backend_url_override: str | None = None,
     policy_egress_allowed: bool = True,
     browser_enabled: bool | None = None,
     browser_allowed_domains: list[str] | None = None,
@@ -1248,6 +1266,9 @@ async def _contract_harness_context(
     backend_port = 0
     if web_search_backend_configured:
         server, thread, backend_url, backend_port = _start_stub_search_backend()
+    if web_search_backend_url_override is not None:
+        backend_url = web_search_backend_url_override
+        backend_port = int(urlparse(backend_url).port or 0)
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
     (workspace_root / "README.md").write_text("behavioral-readme\n", encoding="utf-8")
@@ -1267,6 +1288,8 @@ async def _contract_harness_context(
             [
                 'version: "1"',
                 f"default_require_confirmation: {str(default_require_confirmation).lower()}",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "safe_output_domains:",
                 '  - "localhost"',
                 '  - "example.com"',
@@ -1278,6 +1301,11 @@ async def _contract_harness_context(
     )
 
     _force_deterministic_local_planner(monkeypatch=monkeypatch)
+    monkeypatch.setattr(
+        SandboxOrchestrator,
+        "execute_async",
+        _execute_fake_browser_with_explicit_test_posture,
+    )
 
     try:
         async with daemon_harness(
@@ -1611,6 +1639,73 @@ async def test_contract_web_search_executes_and_returns_results(
     assert payload.get("ok") is True
     assert payload.get("results")
     assert str(payload.get("backend", "")).startswith(contract_harness.web_search_backend_url)
+
+
+@pytest.mark.asyncio
+async def test_f15_session_route_uses_policy_loaded_after_supported_reload(
+    contract_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _policy_visible_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        visible_tools = {
+            str(item.get("function", {}).get("name", "")).strip() for item in tools or []
+        }
+        if visible_tools.intersection({"web.search", "web_search"}):
+            return await _stub_complete(self, messages, tools)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Web search is not permitted under the current policy.",
+            ),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    monkeypatch.setattr(
+        LocalPlannerProvider,
+        "complete",
+        _policy_visible_complete,
+        raising=True,
+    )
+    sid = await _create_session(contract_harness.client)
+    before_reload = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "search for the latest news"},
+    )
+    assert int(before_reload.get("executed_actions", 0)) == 1
+    assert "web.search" in _extract_tool_outputs(before_reload)
+
+    contract_harness.config.policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "session_tool_allowlist:",
+                "  - fs.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reload_handler = signal.getsignal(signal.SIGHUP)
+    assert callable(reload_handler)
+    reload_handler(signal.SIGHUP, None)
+
+    after_reload = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "search for the latest news"},
+    )
+
+    assert int(after_reload.get("executed_actions", 0)) == 0
+    assert int(after_reload.get("blocked_actions", 0)) == 0
+    assert "web.search" not in _extract_tool_outputs(after_reload)
+    assert "not permitted" in str(after_reload.get("response", "")).lower()
 
 
 @pytest.mark.asyncio
@@ -8242,7 +8337,7 @@ async def test_contract_browser_click_routes_to_confirmation_not_lockdown(
     actions = pending.get("actions", [])
     assert actions
     arguments = dict(actions[0].get("arguments", {}))
-    assert arguments.get("resolved_target") == "#continue"
+    assert arguments.get("resolved_target", arguments.get("target")) == "#continue"
     assert str(arguments.get("destination", "")).endswith("/browser-next")
     assert str(arguments.get("source_url", "")).endswith("/browser")
     assert str(arguments.get("source_binding", "")).strip()

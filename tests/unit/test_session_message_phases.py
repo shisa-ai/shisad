@@ -87,6 +87,7 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.control_plane.trace import PlanVerificationResult
 from shisad.security.firewall import FirewallResult
+from shisad.security.firewall.output import OutputFirewall
 from shisad.security.monitor import ActionMonitor, MonitorDecisionType
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
@@ -1355,6 +1356,11 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
             )
         )
 
+    def _pep_for_current_policy(self) -> Any:
+        """Keep finite evaluator doubles explicit in action-path unit tests."""
+
+        return self._pep
+
     async def _noop_publish(self, event: object) -> None:
         self.published_events.append(event)
 
@@ -1439,6 +1445,114 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     ) -> dict[str, object]:
         _ = (session, tool_name)
         return dict(arguments)
+
+
+class _CurrentPolicyActionHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("shell.exec"),
+                description="execute a shell command",
+                parameters=[ToolParameter(name="command", type="array", required=True)],
+                capabilities_required=[Capability.SHELL_EXEC],
+            )
+        )
+        self._registry = registry
+        self._pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            registry,
+        )
+        self._policy_loader.policy = PolicyBundle(
+            default_require_confirmation=False,
+            session_tool_allowlist=[ToolName("fs.read")],
+        )
+
+    def _pep_for_current_policy(self) -> PEP:
+        return HandlerImplementation._pep_for_current_policy(self)
+
+    async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_f15_action_recheck_uses_policy_loaded_after_planner_evaluation() -> None:
+    harness = _CurrentPolicyActionHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "run echo"},
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.SHELL_EXEC},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.SHELL_EXEC}),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="f15-current-policy",
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": ["echo", "hello"]},
+        reasoning="Run the requested command.",
+        data_sources=["planner:current_turn_tool_call"],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Running the command.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allowed by the planner's earlier view",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.rejected == 1
+    assert result.executed == 0
+    assert result.pending_confirmation == 0
+    assert harness.pending_action_calls == []
+    assert result.rejection_reasons_for_user == ["pep:tool_not_permitted"]
 
 
 class _PlannerActionResolveContinuationHarness(_PendingPolicySnapshotHarness):
@@ -3745,8 +3859,13 @@ class _DispatchPassThroughHarness(SessionImplMixin):
     def __init__(self) -> None:
         self._trace_recorder = None
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
-        self._planner = SimpleNamespace(propose=self._propose)
+        self._planner = SimpleNamespace(
+            propose=self._propose,
+            propose_with_pep=self._propose,
+        )
         self._pep = SimpleNamespace(evaluate=self._evaluate)
+        self._pep.for_policy = lambda _policy: self._pep
+        self._policy_loader = SimpleNamespace(policy=object())
         proposal = ActionProposal(
             action_id="planner-todo",
             tool_name=ToolName("todo.create"),
@@ -4162,6 +4281,10 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         self._evidence_store = object()
         self._firewall = object()
         self._planner: Any = None
+        self._policy_loader = SimpleNamespace(
+            policy=PolicyBundle(default_require_confirmation=False)
+        )
+        self._pep = PEP(self._policy_loader.policy, ToolRegistry())
         self.approval_link_notifications: list[dict[str, Any]] = []
         self._pending_actions: dict[str, Any] = {}
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
@@ -4391,6 +4514,7 @@ class _PostToolSynthesisPlanner:
         *,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: str | None = None,
+        pep: PEP | None = None,
     ) -> PlannerResult:
         self.calls.append(
             {
@@ -4398,6 +4522,7 @@ class _PostToolSynthesisPlanner:
                 "context": context,
                 "tools": tools,
                 "persona_tone_override": persona_tone_override,
+                "pep": pep,
             }
         )
         return PlannerResult(
@@ -4413,6 +4538,23 @@ class _PostToolSynthesisPlanner:
             messages_sent=(Message(role="user", content=user_content),),
         )
 
+    async def propose_with_pep(
+        self,
+        user_content: str,
+        context: PolicyContext,
+        *,
+        pep: PEP,
+        tools: list[dict[str, Any]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        return await self.propose(
+            user_content,
+            context,
+            tools=tools,
+            persona_tone_override=persona_tone_override,
+            pep=pep,
+        )
+
 
 class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
     async def propose(
@@ -4422,6 +4564,7 @@ class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
         *,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: str | None = None,
+        pep: PEP | None = None,
     ) -> PlannerResult:
         cleaned = user_content.replace("^", "")
         recovery_policy = ""
@@ -4446,6 +4589,7 @@ class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
             context,
             tools=tools,
             persona_tone_override=persona_tone_override,
+            pep=pep,
         )
 
 
@@ -7057,9 +7201,16 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled(
     assert "ネット予約" not in primary_summary
     assert '"title"' not in primary_summary
     transcript_entries = transcript_store.list_entries(SessionId("sess-g1"))
-    assert len(transcript_entries) == 1
-    assert transcript_entries[0].blob_ref
-    assert transcript_entries[0].metadata["pending_confirmation_bridge"] is True
+    assert len(transcript_entries) == 2
+    sibling_result, pending_bridge = transcript_entries
+    assert sibling_result.role == "tool"
+    assert sibling_result.blob_ref
+    assert sibling_result.metadata["pending_confirmation_sibling_tool_output"] is True
+    assert sibling_result.metadata["actor"] == "policy_loop"
+    assert sibling_result.metadata["pending_confirmation_ids"] == ["c-1"]
+    assert pending_bridge.blob_ref
+    assert pending_bridge.metadata["pending_confirmation_bridge"] is True
+    assert pending_bridge.metadata["pending_confirmation_sibling_result_persisted"] is True
 
     followup_response = await SessionImplMixin._maybe_handle_recent_result_followup(
         harness,
@@ -7074,6 +7225,65 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled(
     assert "Completed action result:" in followup_text
     assert "Optional page-title metadata" in followup_text
     assert "ネット予約" in followup_text
+
+
+@pytest.mark.asyncio
+async def test_f15_pending_sibling_tool_output_is_redacted_before_persistence(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._evidence_store = None
+    harness._output_firewall = OutputFirewall(safe_domains=[])
+    transcript_store = TranscriptStore(tmp_path / "transcript")
+    harness._transcript_store = transcript_store
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    raw_secret = "AKIAABCDEFGHIJKLMNOP"
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "path": "credentials.txt",
+                        "content": f"token={raw_secret}",
+                    },
+                    sort_keys=True,
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        pending_confirmation_ids=["c-1"],
+        content="Read the credentials, then write the result.",
+        sanitized_text="Read the credentials, then write the result.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert raw_secret not in str(response["response"])
+    transcript_entries = transcript_store.list_entries(SessionId("sess-g1"))
+    sibling_result = transcript_entries[0]
+    sibling_content = transcript_store.entry_content(sibling_result)
+    assert sibling_result.role == "tool"
+    assert sibling_result.metadata["pending_confirmation_sibling_tool_output"] is True
+    assert sibling_content is not None
+    assert raw_secret not in sibling_content
+    assert "[REDACTED:aws_access_key]" in sibling_content
+    assert TaintLabel.UNTRUSTED in sibling_result.taint_labels
 
 
 @pytest.mark.asyncio

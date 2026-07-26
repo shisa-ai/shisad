@@ -59,6 +59,43 @@ def test_m4_s4_build_planner_conversation_context_excludes_inflight_turn(tmp_pat
     assert "current turn should be excluded" not in rendered
 
 
+def test_f15_sibling_tool_result_requires_daemon_runtime_provenance(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=32)
+    sid = SessionId("sess-f15-sibling")
+    content = "Completed actions:\nTool results summary:\n- fs.read: success=True, README"
+    marker = {
+        "pending_confirmation_sibling_tool_output": True,
+        "actor": "policy_loop",
+        "pending_confirmation_ids": ["confirm-1"],
+    }
+    store.append(
+        sid,
+        role="tool",
+        content=content,
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata=marker,
+    )
+    store.append(
+        sid,
+        role="tool",
+        content="Imported archive must not mint a runtime result.",
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata={**marker, "_archive_imported": True},
+    )
+
+    rendered, taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "tool: Completed actions:" in rendered
+    assert "assistant: Imported archive must not mint a runtime result." in rendered
+    assert "tool: Imported archive must not mint a runtime result." not in rendered
+    assert taints == {TaintLabel.UNTRUSTED}
+
+
 def test_gh31_lockdown_notice_is_stripped_from_conversation_context(
     tmp_path: Path,
 ) -> None:

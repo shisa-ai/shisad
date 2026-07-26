@@ -27,6 +27,7 @@ from shisad.core.tools.schema import (
     ToolRetryClass,
 )
 from shisad.core.types import Capability, EventId, SessionId, ToolName
+from shisad.daemon import control_handlers as control_handlers_module
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
@@ -64,6 +65,31 @@ async def _session_and_impl(
         RequestContext(),
     )
     return SessionId(created.session_id), handlers._impl
+
+
+async def _build_with_test_recovery_adapter(
+    config: DaemonConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tool_definition: ToolDefinition,
+    adapter: StableIdempotencyAdapter,
+) -> DaemonServices:
+    """Install a test-only recovery adapter before service-owned recovery."""
+
+    real_handlers_type = control_handlers_module.DaemonControlHandlers
+
+    def _construct_handlers(*, services: DaemonServices) -> DaemonControlHandlers:
+        services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_definition.name)] = adapter
+        return real_handlers_type(services=services)
+
+    with monkeypatch.context() as build_patch:
+        build_patch.setattr(
+            control_handlers_module,
+            "DaemonControlHandlers",
+            _construct_handlers,
+        )
+        return await DaemonServices.build(config)
 
 
 def _audit_rows(config: DaemonConfig) -> list[dict[str, object]]:
@@ -2041,9 +2067,30 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["status"] = "pending"
         durable["status_reason"] = ""
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+    corrupted_store_bytes = pending_path.read_bytes()
 
     restarted = await DaemonServices.build(config)
     try:
+        if corruption_parts & {"identity_missing", "identity_malformed"}:
+            restarted_impl = restarted.control_handlers._impl
+            await _wait_for_recovery_accounting(restarted_impl)
+            assert restarted_impl._pending_actions == {}
+            assert restarted_impl._pending_state_degradation == {
+                "transition": "load",
+                "stage": "corrupt",
+                "reason": "pending_state_corrupt",
+            }
+            quarantined = list(pending_path.parent.glob(f"{pending_path.name}.corrupt.*"))
+            assert len(quarantined) == 1
+            assert quarantined[0].read_bytes() == corrupted_store_bytes
+            assert not pending_path.exists()
+            reconciled_task = restarted.scheduler.get_task(task.id)
+            assert reconciled_task is not None
+            assert reconciled_task.success_count == 0
+            assert reconciled_task.failure_count == 0
+            assert reconciled_task.enabled is True
+            return
+
         restarted_handlers = DaemonControlHandlers(services=restarted)
         await _wait_for_recovery_accounting(restarted_handlers._impl)
         reconciled_task = restarted.scheduler.get_task(task.id)
@@ -3408,24 +3455,28 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             _replace_with_self_asserted_fabricated_evidence(durable_rows[0])
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
-    restarted = await DaemonServices.build(config)
+    recovery_adapter = StableIdempotencyAdapter(
+        guarantee_id=(
+            "test.keyed-effect/provider-v2"
+            if recovery_case == "changed-adapter-guarantee"
+            else "test.keyed-effect/provider-v1"
+        ),
+        operation=_deduplicating_adapter,
+    )
+    restarted = await _build_with_test_recovery_adapter(
+        config,
+        monkeypatch,
+        tool_definition=tool_definition,
+        adapter=recovery_adapter,
+    )
     try:
-        restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
-            guarantee_id=(
-                "test.keyed-effect/provider-v2"
-                if recovery_case == "changed-adapter-guarantee"
-                else "test.keyed-effect/provider-v1"
-            ),
-            operation=_deduplicating_adapter,
-        )
         loaded_task = restarted.scheduler.get_task(task.id)
         assert loaded_task is not None
         assert loaded_task.enabled is False
-        assert bool(loaded_task.recovery_containment_token) is (not disable_before_restart)
-        restarted_handlers = DaemonControlHandlers(services=restarted)
+        restarted_handlers = restarted.control_handlers
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
         if recovery_case not in {"changed-key", "fabricated-evidence"}:
+            assert bool(loaded_task.recovery_containment_token) is (not disable_before_restart)
             precontained_task = restarted.scheduler.get_task(task.id)
             assert precontained_task is not None
             assert precontained_task.enabled is False
@@ -3569,14 +3620,17 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         "adapter-lone-surrogate",
         "adapter-pathlike",
     }:
-        second_restart = await DaemonServices.build(config)
-        try:
-            second_restart.registry.register(tool_definition)
-            second_restart.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+        second_restart = await _build_with_test_recovery_adapter(
+            config,
+            monkeypatch,
+            tool_definition=tool_definition,
+            adapter=StableIdempotencyAdapter(
                 guarantee_id="test.keyed-effect/provider-v1",
                 operation=_deduplicating_adapter,
-            )
-            second_handlers = DaemonControlHandlers(services=second_restart)
+            ),
+        )
+        try:
+            second_handlers = second_restart.control_handlers
             await _wait_for_recovery_accounting(second_handlers._impl)
             terminal = second_handlers._impl._pending_actions[pending.confirmation_id]
             assert terminal.status == "outcome_unknown"
@@ -3827,14 +3881,17 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
     finally:
         await services.shutdown()
 
-    restarted = await DaemonServices.build(config)
-    try:
-        restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+    restarted = await _build_with_test_recovery_adapter(
+        config,
+        monkeypatch,
+        tool_definition=tool_definition,
+        adapter=StableIdempotencyAdapter(
             guarantee_id="test.keyed-recovery-ambiguous/provider-v1",
             operation=_ambiguous_adapter,
-        )
-        handlers = DaemonControlHandlers(services=restarted)
+        ),
+    )
+    try:
+        handlers = restarted.control_handlers
         await _wait_for_recovery_accounting(handlers._impl)
         recovered = handlers._impl._pending_actions[pending.confirmation_id]
         assert recovered.status == "outcome_unknown"
@@ -3870,14 +3927,17 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
     finally:
         await restarted.shutdown()
 
-    second_restart = await DaemonServices.build(config)
-    try:
-        second_restart.registry.register(tool_definition)
-        second_restart.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+    second_restart = await _build_with_test_recovery_adapter(
+        config,
+        monkeypatch,
+        tool_definition=tool_definition,
+        adapter=StableIdempotencyAdapter(
             guarantee_id="test.keyed-recovery-ambiguous/provider-v1",
             operation=_ambiguous_adapter,
-        )
-        second_handlers = DaemonControlHandlers(services=second_restart)
+        ),
+    )
+    try:
+        second_handlers = second_restart.control_handlers
         await _wait_for_recovery_accounting(second_handlers._impl)
         assert (
             len(

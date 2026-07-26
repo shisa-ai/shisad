@@ -1060,6 +1060,8 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         [
             'version: "1"',
             "default_require_confirmation: false",
+            "sandbox:",
+            "  containment_profile: expert_host_fallback",
             "default_capabilities:",
             "  - file.read",
             "  - memory.read",
@@ -1623,6 +1625,8 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
         [
             'version: "1"',
             "default_require_confirmation: false",
+            "sandbox:",
+            "  containment_profile: expert_host_fallback",
             "default_capabilities:",
             "  - shell.exec",
             "tools:",
@@ -1871,6 +1875,8 @@ async def test_behavioral_webauthn_confirmation_executes_and_records_l2_audit(
         [
             'version: "1"',
             "default_require_confirmation: false",
+            "sandbox:",
+            "  containment_profile: expert_host_fallback",
             "default_capabilities:",
             "  - shell.exec",
             "tools:",
@@ -2037,6 +2043,8 @@ async def test_behavioral_local_fido2_helper_executes_and_records_l2_audit(
         [
             'version: "1"',
             "default_require_confirmation: false",
+            "sandbox:",
+            "  containment_profile: expert_host_fallback",
             "default_capabilities:",
             "  - shell.exec",
             "tools:",
@@ -2131,6 +2139,8 @@ async def test_behavioral_signed_authorization_executes_and_records_l3_audit(
             [
                 'version: "1"',
                 "default_require_confirmation: false",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "default_capabilities:",
                 "  - shell.exec",
                 "tools:",

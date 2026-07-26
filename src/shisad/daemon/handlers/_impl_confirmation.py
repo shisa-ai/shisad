@@ -2808,7 +2808,38 @@ class ConfirmationImplMixin(HandlerMixinBase):
             user_id=str(pending.user_id),
             method=confirmation_method,
         )
+        pep_elevation = getattr(pending, "pep_elevation", None)
         pending_preflight_action = pending.preflight_action
+        preflight_origin = getattr(pending_preflight_action, "origin", None)
+        # Direct operator tool.execute requests are authorized by the control-plane
+        # contract, so planner PEP policy must not reinterpret them at confirmation.
+        direct_operator_override = (
+            str(getattr(preflight_origin, "actor", "")).strip() == "control_api"
+        )
+        if (
+            pep_elevation is None
+            and not direct_operator_override
+            and not self._recovery_policy_allows(
+                replace(pending, confirmation_evidence=validated_evidence),
+                session=session,
+            )
+        ):
+            await self._commit_and_publish_pending_terminal(
+                pending,
+                status="rejected",
+                status_reason="policy_changed_after_queue",
+                event_reason="Current policy no longer authorizes the queued action.",
+                rollback_snapshot=pre_decision_attempt,
+                confirmation_evidence=validated_evidence,
+            )
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "decision_nonce": pending.decision_nonce,
+                "status": pending.status,
+                "status_reason": pending.status_reason,
+                "reason": pending.status_reason,
+            }
         stage2_reason = "stage2_upgrade_required" in pending.reason
         stage2_action: Any | None = None
         stage2_previous_hash = ""
@@ -2851,7 +2882,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
 
         execution_capabilities = set(pending.capabilities)
-        pep_elevation = getattr(pending, "pep_elevation", None)
         if pep_elevation is not None:
             # Human approval authorizes a scoped retry; it does not directly
             # execute an action that the original PEP evaluation rejected.
@@ -2879,7 +2909,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 snapshot=pep_context,
                 elevation=pep_elevation,
             )
-            pep_decision = self._pep.evaluate(
+            live_policy = self._policy_loader.policy
+            live_allowlist = set(live_policy.session_tool_allowlist)
+            if not live_allowlist and live_policy.default_deny and live_policy.tools:
+                live_allowlist = set(live_policy.tools)
+            if live_allowlist:
+                policy_context.tool_allowlist = (
+                    live_allowlist
+                    if policy_context.tool_allowlist is None
+                    else policy_context.tool_allowlist.intersection(live_allowlist)
+                )
+            pep_decision = self._pep_for_current_policy().evaluate(
                 pending.tool_name,
                 pep_arguments_for_policy_evaluation(pending.tool_name, pending.arguments),
                 policy_context,

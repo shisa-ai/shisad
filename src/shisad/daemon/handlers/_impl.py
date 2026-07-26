@@ -6038,7 +6038,7 @@ class HandlerImplementation(
                 else context.tool_allowlist.intersection(live_allowlist)
             )
 
-        decision = self._pep.evaluate(
+        decision = self._pep_for_current_policy().evaluate(
             pending.tool_name,
             pep_arguments_for_policy_evaluation(pending.tool_name, pending.arguments),
             context,
@@ -6048,12 +6048,15 @@ class HandlerImplementation(
         if decision.kind.value != "require_confirmation":
             return True
         requirement_payload = decision.confirmation_requirement
-        if not isinstance(requirement_payload, Mapping):
+        if requirement_payload is None:
+            requirement = legacy_software_confirmation_requirement()
+        elif not isinstance(requirement_payload, Mapping):
             return False
-        try:
-            requirement = ConfirmationRequirement.model_validate(requirement_payload)
-        except ValidationError:
-            return False
+        else:
+            try:
+                requirement = ConfirmationRequirement.model_validate(requirement_payload)
+            except ValidationError:
+                return False
         backend = self._confirmation_backend_registry.get_backend(
             pending.selected_backend_id or "software.default"
         )
@@ -6781,13 +6784,12 @@ class HandlerImplementation(
             if not structural_read_recovery and stable_key_adapter is None:
                 self._mutate_pending_action(
                     pending,
-                    operation=PendingActionTransitionKind.INVALIDATE_RECOVERY,
-                    reason="uncertain_effect_requires_fresh_approval",
                     kind=PendingActionMutationKind.RECOVERY,
                     values={
                         "recovery_effect_invoked": True,
                         "recovery_accounting_pending": True,
                     },
+                    bind_execution_identity=True,
                 )
                 self._sync_task_confirmation_status(pending)
                 continue

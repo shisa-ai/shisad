@@ -508,7 +508,7 @@ class TasksImplMixin(HandlerMixinBase):
             evaluation=cp_eval,
         )
 
-        pep_decision = self._pep.evaluate(
+        pep_decision = self._pep_for_current_policy().evaluate(
             _BACKGROUND_MESSAGE_SEND,
             dict(delivery_arguments),
             PolicyContext(

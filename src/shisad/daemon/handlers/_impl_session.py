@@ -11,7 +11,7 @@ import shlex
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -457,6 +457,8 @@ _EPISODE_GAP_THRESHOLD = DEFAULT_EPISODE_GAP_THRESHOLD
 _EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
 _CONTEXT_SCAFFOLD_DEGRADED_KEY = "context_scaffold_degraded"
 _ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY = "_archive_imported"
+_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY = "pending_confirmation_sibling_tool_output"
+_PENDING_SIBLING_RESULT_PERSISTED_METADATA_KEY = "pending_confirmation_sibling_result_persisted"
 _CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY = "context_scaffold_degraded_reason_codes"
 _DESTINATION_ATTRIBUTION_METADATA_KEY = "destination_attribution"
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
@@ -3180,6 +3182,30 @@ def _planner_runtime_tool_allowlist(
     }
 
 
+def _planner_tool_allowlist_for_current_policy(
+    *,
+    base_allowlist: set[ToolName] | None,
+    policy: Any,
+) -> set[ToolName] | None:
+    configured_allowlist = {
+        canonical_tool_name_typed(str(tool_name))
+        for tool_name in getattr(policy, "session_tool_allowlist", ())
+    }
+    if not configured_allowlist and bool(getattr(policy, "default_deny", False)):
+        configured_allowlist = {
+            canonical_tool_name_typed(str(tool_name)) for tool_name in getattr(policy, "tools", {})
+        }
+    if not configured_allowlist:
+        return base_allowlist
+    if base_allowlist is None:
+        return configured_allowlist
+    return {
+        tool_name
+        for tool_name in base_allowlist
+        if canonical_tool_name_typed(str(tool_name)) in configured_allowlist
+    }
+
+
 def _assistant_fs_roots_configured(config: Any) -> bool:
     roots = getattr(config, "assistant_fs_roots", [])
     if roots is None:
@@ -3921,6 +3947,8 @@ def _transcript_entry_context_role(
     content: str | None = None,
 ) -> str:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if _is_pending_confirmation_sibling_tool_output_entry(entry):
+        return "tool"
     if bool(metadata.get("system_generated_pending_confirmations")):
         if _is_mixed_pending_confirmation_context(
             entry.content_preview if content is None else content
@@ -5938,6 +5966,7 @@ def _transcript_entry_content(
         (
             metadata.get("promoted_evidence") is True
             or metadata.get("confirmed_tool_output") is True
+            or metadata.get(_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY) is True
             or metadata.get("system_generated_pending_confirmations") is True
             or metadata.get("pending_confirmation_bridge") is True
             or metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY) is True
@@ -5979,7 +6008,14 @@ def _summarize_context_entries(
         if not raw.strip():
             continue
         role = _transcript_entry_context_role(entry, content=raw)
-        compact = _compact_context_text(raw, max_chars=96)
+        compact = _compact_context_text(
+            raw,
+            max_chars=(
+                _CONTEXT_ENTRY_MAX_CHARS
+                if _is_pending_confirmation_sibling_tool_output_entry(entry)
+                else 96
+            ),
+        )
         snippets.append(f"{role}: {compact}")
         if len(snippets) >= _CONTEXT_SUMMARY_SAMPLE_SIZE:
             break
@@ -6007,6 +6043,8 @@ def _conversation_context_content_for_entry(
         entry=entry,
         transcript_store=transcript_store,
     )
+    if bool(metadata.get(_PENDING_SIBLING_RESULT_PERSISTED_METADATA_KEY)):
+        return ""
     if bool(metadata.get("pending_confirmation_bridge")):
         result_content = _mixed_pending_confirmation_result_portion(raw_content)
         if result_content is not None:
@@ -6047,6 +6085,18 @@ def _transcript_entry_has_firewall_risk_metadata(entry: TranscriptEntry) -> bool
 def _transcript_entry_is_archive_imported(entry: TranscriptEntry) -> bool:
     metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
     return metadata.get(_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY) is True
+
+
+def _is_pending_confirmation_sibling_tool_output_entry(entry: TranscriptEntry) -> bool:
+    if str(entry.role or "").strip().lower() != "tool":
+        return False
+    if _transcript_entry_is_archive_imported(entry):
+        return False
+    metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    return (
+        metadata.get(_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY) is True
+        and str(metadata.get("actor", "")).strip() == "policy_loop"
+    )
 
 
 def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntry) -> bool:
@@ -10940,6 +10990,10 @@ class SessionImplMixin(HandlerMixinBase):
             session=session,
             task_envelope=task_envelope,
         )
+        planner_tool_allowlist = _planner_tool_allowlist_for_current_policy(
+            base_allowlist=planner_tool_allowlist,
+            policy=self._policy_loader.policy,
+        )
         planner_tool_allowlist = _planner_tool_allowlist_with_action_resolve(
             registry_tools=registry_tools,
             base_allowlist=planner_tool_allowlist,
@@ -11246,17 +11300,20 @@ class SessionImplMixin(HandlerMixinBase):
         validated = planner_context.validated
         trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
         planner_failure_code = ""
+        current_pep = self._pep_for_current_policy()
         try:
             if planner_context.assistant_tone_override is None:
-                planner_result = await self._planner.propose(
+                planner_result = await self._planner.propose_with_pep(
                     planner_context.planner_input,
                     planner_context.context,
+                    pep=current_pep,
                     tools=planner_context.planner_tools_payload,
                 )
             else:
-                planner_result = await self._planner.propose(
+                planner_result = await self._planner.propose_with_pep(
                     planner_context.planner_input,
                     planner_context.context,
+                    pep=current_pep,
                     tools=planner_context.planner_tools_payload,
                     persona_tone_override=planner_context.assistant_tone_override,
                 )
@@ -11327,7 +11384,7 @@ class SessionImplMixin(HandlerMixinBase):
                 and TaintLabel.UNTRUSTED not in planner_context.context.taint_labels
                 and not self._session_has_tainted_user_history(validated.sid)
             ),
-            pep=self._pep,
+            pep=current_pep,
             context=planner_context.context,
         )
         delegation_advisory = should_delegate_to_task(
@@ -12024,7 +12081,7 @@ class SessionImplMixin(HandlerMixinBase):
                     arguments=dict(read_arguments),
                 )
             )
-            read_pep_decision = self._pep.evaluate(
+            read_pep_decision = self._pep_for_current_policy().evaluate(
                 read_tool_name,
                 pep_arguments_for_policy_evaluation(read_tool_name, read_arguments),
                 planner_context.context,
@@ -12327,7 +12384,7 @@ class SessionImplMixin(HandlerMixinBase):
                 validated.content,
                 control_plane_sensitive_browser_values,
             )
-            pep_decision = self._pep.evaluate(
+            pep_decision = self._pep_for_current_policy().evaluate(
                 proposal.tool_name,
                 pep_arguments,
                 planner_context.context,
@@ -14171,9 +14228,10 @@ class SessionImplMixin(HandlerMixinBase):
         )
         try:
             result = await asyncio.wait_for(
-                planner.propose(
+                planner.propose_with_pep(
                     synthesis_input,
                     context,
+                    pep=self._pep_for_current_policy(),
                     tools=[],
                     persona_tone_override=planner_context.assistant_tone_override,
                 ),
@@ -14325,6 +14383,10 @@ class SessionImplMixin(HandlerMixinBase):
             session=session,
             task_envelope=task_envelope,
         )
+        planner_tool_allowlist = _planner_tool_allowlist_for_current_policy(
+            base_allowlist=planner_tool_allowlist,
+            policy=self._policy_loader.policy,
+        )
         planner_enabled_tool_defs = _planner_enabled_tools(
             registry_tools=registry_tools,
             capabilities=effective_caps,
@@ -14425,9 +14487,10 @@ class SessionImplMixin(HandlerMixinBase):
             plan_step_id=plan_step_id,
         )
         try:
-            planner_result = await planner.propose(
+            planner_result = await planner.propose_with_pep(
                 planner_input,
                 context,
+                pep=self._pep_for_current_policy(),
                 tools=planner_tools_payload,
                 persona_tone_override=None,
             )
@@ -14522,6 +14585,59 @@ class SessionImplMixin(HandlerMixinBase):
         if execution is None:
             return None
         return await self._finalize_response(execution)
+
+    def _append_pending_confirmation_sibling_tool_output(
+        self,
+        *,
+        session_id: SessionId,
+        result_content: str,
+        taint_labels: set[TaintLabel],
+        assistant_metadata: Mapping[str, Any],
+        pending_confirmation_ids: Sequence[str],
+        tool_output_count: int,
+        origin_turn_id: str,
+    ) -> bool:
+        """Persist completed mixed-turn output as typed, still-untrusted data."""
+
+        normalized_pending_ids = list(
+            dict.fromkeys(
+                confirmation_id
+                for raw_confirmation_id in pending_confirmation_ids
+                if (confirmation_id := str(raw_confirmation_id).strip())
+            )
+        )
+        if (
+            tool_output_count <= 0
+            or not normalized_pending_ids
+            or not bool(assistant_metadata.get("pending_confirmation_bridge"))
+        ):
+            return False
+        normalized_result_content = str(result_content).strip()
+        if not normalized_result_content:
+            return False
+
+        metadata = dict(assistant_metadata)
+        metadata.pop("pending_confirmation_bridge", None)
+        metadata.pop("system_generated_pending_confirmations", None)
+        metadata.update(
+            {
+                "actor": "policy_loop",
+                _PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY: True,
+                "pending_confirmation_ids": normalized_pending_ids,
+                "tool_output_count": int(tool_output_count),
+            }
+        )
+        normalized_origin_turn_id = str(origin_turn_id).strip()
+        if normalized_origin_turn_id:
+            metadata["origin_turn_id"] = normalized_origin_turn_id
+        self._transcript_store.append(
+            session_id,
+            role="tool",
+            content=normalized_result_content,
+            taint_labels=set(taint_labels),
+            metadata=metadata,
+        )
+        return True
 
     async def _finalize_response(
         self,
@@ -14655,6 +14771,7 @@ class SessionImplMixin(HandlerMixinBase):
             should_synthesize_initial_tool_response or execution.force_post_tool_synthesis
         )
         post_tool_synthesis_result = PostToolSynthesisResult()
+        pending_sibling_result_content = ""
         system_generated_pending_confirmation_response = False
         response_action_confirmation_ids: list[str] = []
         if execution.pending_confirmation_ids:
@@ -14820,6 +14937,9 @@ class SessionImplMixin(HandlerMixinBase):
                 protected_tool_output_start = len(response_text) + 2
                 response_text = f"{response_text}\n\nCompleted actions:\n{completed_summary}"
                 protected_tool_output_end = len(response_text)
+                pending_sibling_result_content = (
+                    _mixed_pending_confirmation_result_portion(response_text) or ""
+                )
                 system_generated_pending_confirmation_response = False
         else:
             if action_resolution_text:
@@ -15088,6 +15208,7 @@ class SessionImplMixin(HandlerMixinBase):
             response_text,
             context={"session_id": sid, "actor": "assistant"},
         )
+        accepted_pending_sibling_result_content = ""
         if output_result.blocked:
             response_text = _output_policy_blocked_response_text(
                 session_id=sid,
@@ -15097,6 +15218,16 @@ class SessionImplMixin(HandlerMixinBase):
             response_action_confirmation_ids = []
         else:
             response_text = output_result.sanitized_text
+            if pending_sibling_result_content:
+                sibling_output_firewall = copy(self._output_firewall)
+                if hasattr(sibling_output_firewall, "alert_hook"):
+                    sibling_output_firewall.alert_hook = None
+                sibling_output_result = sibling_output_firewall.inspect(
+                    pending_sibling_result_content,
+                    context={"session_id": sid, "actor": "assistant_tool_result"},
+                )
+                if not sibling_output_result.blocked:
+                    accepted_pending_sibling_result_content = sibling_output_result.sanitized_text
             if _should_prefix_output_confirmation(
                 output_result=output_result,
                 user_goal=output_confirmation_user_goal,
@@ -15168,6 +15299,19 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_transcript_metadata["outbound_delivery_reservation_id"] = (
                 outbound_reservation_id
             )
+        if self._append_pending_confirmation_sibling_tool_output(
+            session_id=sid,
+            result_content=accepted_pending_sibling_result_content,
+            taint_labels=response_taint_labels,
+            assistant_metadata=assistant_transcript_metadata,
+            pending_confirmation_ids=returned_pending_confirmation_ids,
+            tool_output_count=len(raw_serialized_tool_outputs),
+            origin_turn_id=str(
+                getattr(validated.user_transcript_entry, "entry_id", "") or ""
+            ).strip()
+            or str(validated.params.get("_origin_turn_id", "")).strip(),
+        ):
+            assistant_transcript_metadata[_PENDING_SIBLING_RESULT_PERSISTED_METADATA_KEY] = True
         self._transcript_store.append(
             sid,
             role="assistant",
@@ -15822,9 +15966,10 @@ class SessionImplMixin(HandlerMixinBase):
         )
         try:
             result = await asyncio.wait_for(
-                self._planner.propose(
+                self._planner.propose_with_pep(
                     planner_input,
                     context,
+                    pep=self._pep_for_current_policy(),
                     tools=[],
                 ),
                 timeout=_TASK_CLOSE_GATE_TIMEOUT_SEC,

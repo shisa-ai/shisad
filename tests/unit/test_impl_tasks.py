@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from shisad.core.config import DaemonConfig
 from shisad.core.events import ToolRejected
-from shisad.core.types import SessionId, SessionMode, SessionRole, SessionState, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    SessionRole,
+    SessionState,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
+from shisad.daemon.services import DaemonServices
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 
@@ -422,3 +434,89 @@ def test_t2_scheduler_status_snapshot_includes_safe_delivery_channel() -> None:
     assert rows[0]["task_id"] == task.id
     assert rows[0]["delivery_channel"] == "discord"
     assert "recipient" not in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_f15_background_run_uses_policy_loaded_after_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for variable in (
+        "SHISAD_MODEL_BASE_URL",
+        "SHISAD_MODEL_PLANNER_BASE_URL",
+        "SHISAD_MODEL_EMBEDDINGS_BASE_URL",
+        "SHISAD_MODEL_MONITOR_BASE_URL",
+    ):
+        monkeypatch.setenv(variable, "https://api.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'version: "1"\ndefault_require_confirmation: false\n',
+        encoding="utf-8",
+    )
+    services = await DaemonServices.build(
+        DaemonConfig(
+            data_dir=tmp_path / "data",
+            socket_path=tmp_path / "control.sock",
+            policy_path=policy_path,
+            assistant_fs_roots=[tmp_path],
+        )
+    )
+    try:
+        task = services.scheduler.create_task(
+            name="f15-current-policy",
+            goal="Send one scheduled reminder",
+            schedule=Schedule(kind="interval", expression="1s"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="f15-current-policy",
+            created_by=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+            allowed_recipients=["ops-room"],
+            delivery_target={"channel": "discord", "recipient": "ops-room"},
+            max_runs=3,
+        )
+        runs = services.scheduler.trigger_due(
+            now=task.created_at + timedelta(seconds=2),
+        )
+        assert len(runs) == 1
+        policy_path.write_text(
+            "\n".join(
+                [
+                    'version: "1"',
+                    "default_require_confirmation: false",
+                    "session_tool_allowlist:",
+                    "  - fs.read",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        services.policy_loader.load()
+
+        result = await services.control_handlers._impl._execute_task_run(
+            runs[0],
+            event_type="scheduler.due",
+            due_run=True,
+        )
+
+        audit_rows = [
+            json.loads(line)
+            for line in (services.config.data_dir / "audit.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        rejection_reasons = [
+            str(row.get("data", {}).get("reason", ""))
+            for row in audit_rows
+            if row.get("event_type") == "ToolRejected"
+            and row.get("data", {}).get("tool_name") == "message.send"
+        ]
+        assert result == {
+            "accepted": False,
+            "queued_confirmation": False,
+            "executed": False,
+        }
+        assert any(
+            "not permitted by session/policy allowlist" in reason for reason in rejection_reasons
+        )
+    finally:
+        await services.shutdown()

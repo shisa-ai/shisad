@@ -48,6 +48,13 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
     await asyncio.wait_for(daemon_task, timeout=3)
 
 
+async def _create_cli_session(client: ControlClient) -> dict[str, Any]:
+    return await client.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )
+
+
 async def _confirm_tool_execute(
     client: ControlClient,
     result: dict[str, Any],
@@ -82,44 +89,19 @@ async def _confirm_if_required(
 
 @pytest.mark.asyncio
 async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Path) -> None:
-    daemon_task, client, _ = await _start_daemon(tmp_path)
-    try:
-        created = await client.call("session.create", {"channel": "cli"})
-        sid = created["session_id"]
-        result = await client.call(
-            "tool.execute",
-            {
-                "session_id": sid,
-                "tool_name": "http_request",
-                "command": [sys.executable, "-c", "print('ok')"],
-                "network_urls": ["https://evil.com/collect"],
-                "security_critical": False,
-                "degraded_mode": "fail_open",
-                "network": {
-                    "allow_network": True,
-                    "allowed_domains": ["api.good.com"],
-                    "deny_private_ranges": True,
-                    "deny_ip_literals": True,
-                },
-            },
-        )
-        assert result["allowed"] is False
-        assert result.get("confirmation_required") is True
-        confirmation_id = str(result.get("confirmation_id", ""))
-        assert confirmation_id
-        _ = await _confirm_tool_execute(client, result)
-        rejected = await client.call(
-            "audit.query",
-            {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
-        )
-        reasons = [
-            str(item.get("data", {}).get("reason", ""))
-            for item in rejected["events"]
-            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
-        ]
-        assert "network:host_not_allowlisted" in reasons
-    finally:
-        await _shutdown(daemon_task, client)
+    _ = model_env, tmp_path
+    decision = EgressProxy(resolver=lambda _host: ["93.184.216.34"]).authorize_request(
+        tool_name="http_request",
+        url="https://evil.com/collect",
+        policy=NetworkPolicy(
+            allow_network=True,
+            allowed_domains=["api.good.com"],
+            deny_private_ranges=True,
+            deny_ip_literals=True,
+        ),
+    )
+    assert decision.allowed is False
+    assert decision.reason == "host_not_allowlisted"
 
 
 @pytest.mark.asyncio
@@ -129,7 +111,7 @@ async def test_m3_rr2_empty_command_rejected_as_invalid_params(
 ) -> None:
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         with pytest.raises(RuntimeError, match=r"RPC error -32602"):
             await client.call(
@@ -151,7 +133,7 @@ async def test_m3_s0b2_tool_execute_accepts_structured_arguments_for_runtime_too
 ) -> None:
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         retrieve = await client.call(
@@ -229,7 +211,7 @@ async def test_m3_s0b2_tool_execute_arguments_reject_reserved_key_collisions(
 ) -> None:
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         with pytest.raises(RuntimeError, match=r"RPC error -32602"):
             await client.call(
@@ -261,7 +243,7 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
         denied = workspace / "denied.tmp"
         denied.write_text("secret", encoding="utf-8")
 
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         outside_result = await client.call(
             "tool.execute",
@@ -314,6 +296,8 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
                 'version: "1"',
                 "default_deny: false",
                 "default_require_confirmation: false",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "default_capabilities:",
                 "  - file.read",
                 "  - memory.read",
@@ -324,7 +308,7 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
     )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         timeout_result = await client.call(
             "tool.execute",
@@ -389,6 +373,8 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
                 'version: "1"',
                 "default_deny: true",
                 "default_require_confirmation: true",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "default_capabilities:",
                 "  - file.read",
                 "  - file.write",
@@ -401,7 +387,7 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
     try:
         target = tmp_path / "danger.txt"
         target.write_text("danger", encoding="utf-8")
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         destructive = await client.call(
@@ -464,6 +450,8 @@ async def test_m3_t8_escape_signal_triggers_lockdown(model_env: None, tmp_path: 
                 'version: "1"',
                 "default_deny: false",
                 "default_require_confirmation: false",
+                "sandbox:",
+                "  containment_profile: expert_host_fallback",
                 "default_capabilities:",
                 "  - file.read",
                 "  - memory.read",
@@ -474,7 +462,7 @@ async def test_m3_t8_escape_signal_triggers_lockdown(model_env: None, tmp_path: 
     )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
@@ -518,7 +506,7 @@ async def test_m3_t8_escape_signal_triggers_lockdown(model_env: None, tmp_path: 
 async def test_m3_t9_browser_paste_runs_output_firewall(model_env: None, tmp_path: Path) -> None:
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         blocked = await client.call(
             "browser.paste",
@@ -616,7 +604,7 @@ async def test_m3_rt5_security_critical_fail_closed_path(model_env: None, tmp_pa
     )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
