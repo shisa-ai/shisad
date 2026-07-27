@@ -700,9 +700,9 @@ async def test_m1_channel_ingest_default_deny_records_pairing_request(
             {"event_type": "ChannelPairingRequested", "actor": "channel_ingest", "limit": 10},
         )
         assert events["total"] == 1
-        pairing_file = config.data_dir / "channels" / "pairing_requests.jsonl"
-        assert pairing_file.exists()
-        assert len(pairing_file.read_text(encoding="utf-8").splitlines()) == 1
+        pairing_files = list((config.data_dir / "channels" / "pairing_requests").rglob("*.jsonl"))
+        assert len(pairing_files) == 1
+        assert len(pairing_files[0].read_text(encoding="utf-8").splitlines()) == 1
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

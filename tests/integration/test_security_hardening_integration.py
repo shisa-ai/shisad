@@ -107,7 +107,10 @@ async def test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         _ = await client.call(
             "session.message",
@@ -173,7 +176,10 @@ async def test_m6_t13_explicit_forward_intent_allows_warning_trail(
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         _ = await client.call(
             "session.message",

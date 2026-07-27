@@ -3236,6 +3236,18 @@ def _policy_context_for_current_policy(
     return current_context
 
 
+def _planner_validation_context(context: PolicyContext) -> PolicyContext:
+    """Validate finite daemon-owned tools before their runtime state gate."""
+
+    validation_context = copy(context)
+    if context.tool_allowlist is not None:
+        validation_context.tool_allowlist = {
+            *context.tool_allowlist,
+            *_RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS,
+        }
+    return validation_context
+
+
 def _assistant_fs_roots_configured(config: Any) -> bool:
     roots = getattr(config, "assistant_fs_roots", [])
     if roots is None:
@@ -11341,21 +11353,28 @@ class SessionImplMixin(HandlerMixinBase):
         trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
         planner_failure_code = ""
         current_pep = self._pep_for_current_policy()
+        validation_context = _planner_validation_context(planner_context.context)
         try:
             if planner_context.assistant_tone_override is None:
                 planner_result = await self._planner.propose_with_pep(
                     planner_context.planner_input,
-                    planner_context.context,
+                    validation_context,
                     pep=current_pep,
                     tools=planner_context.planner_tools_payload,
+                    validation_tool_names={
+                        str(name) for name in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS
+                    },
                 )
             else:
                 planner_result = await self._planner.propose_with_pep(
                     planner_context.planner_input,
-                    planner_context.context,
+                    validation_context,
                     pep=current_pep,
                     tools=planner_context.planner_tools_payload,
                     persona_tone_override=planner_context.assistant_tone_override,
+                    validation_tool_names={
+                        str(name) for name in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS
+                    },
                 )
         except PlannerOutputError as exc:
             planner_failure_code = "planner_output_invalid"

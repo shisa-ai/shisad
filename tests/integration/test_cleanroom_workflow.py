@@ -137,7 +137,10 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
     monkeypatch.setattr(Planner, "propose", _propose_web_fetch)
     daemon_task, client, _config = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli", "user_id": "alice"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         _ = await ingest_memory_via_ingress(
             client,
@@ -331,6 +334,19 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
 
     monkeypatch.setattr(Planner, "propose", _propose_sensitive_browser_type)
 
+    async def _browser_ready(**_kwargs: object) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "status": "ok",
+            "problems": [],
+            "protocol": {"supported": True, "probe": "test", "reason": ""},
+        }
+
+    monkeypatch.setattr("shisad.daemon.services._browser_startup_status", _browser_ready)
+    (tmp_path / "policy.yaml").write_text(
+        'version: "1"\nsandbox:\n  containment_profile: expert_host_fallback\n',
+        encoding="utf-8",
+    )
     daemon_task, client, config = await _start_daemon(
         tmp_path,
         browser_enabled=True,

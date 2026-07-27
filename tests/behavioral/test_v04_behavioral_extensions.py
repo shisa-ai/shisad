@@ -452,7 +452,10 @@ async def test_behavioral_msgvault_email_search_executes_without_lockdown(
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
 
         reply = await client.call(
@@ -604,7 +607,10 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
 
         reply = await client.call(

@@ -363,7 +363,10 @@ async def test_m4_rr10_default_tool_execute_omission_uses_fail_closed_posture(
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
@@ -507,7 +510,10 @@ async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
 
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
@@ -561,7 +567,10 @@ async def test_m4_t27_audit_durable_prelaunch_failure_blocks_execution(
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
@@ -659,7 +668,10 @@ async def test_m4_t33_network_enabled_execution_blocks_without_isolated_boundary
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",
@@ -714,7 +726,10 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
     )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         sid = created["session_id"]
         result = await client.call(
             "tool.execute",

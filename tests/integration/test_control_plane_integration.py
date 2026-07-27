@@ -443,7 +443,7 @@ async def test_h4_missing_path_read_routes_to_confirmation(
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         response = await client.call(
             "session.message",
@@ -592,7 +592,7 @@ async def test_h4_runtime_path_normalization_uses_assistant_fs_root(
         assistant_fs_roots=[workspace_root],
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         response = await client.call(
             "session.message",
@@ -673,7 +673,7 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
 ) -> None:
     daemon_task, client = await _start_daemon_with_policy(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         with pytest.raises(RuntimeError):
@@ -969,7 +969,7 @@ async def test_h3_trace_only_stage2_capability_elevation_still_records_underlyin
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         for attempt in range(3):
@@ -1057,7 +1057,7 @@ async def test_h3_trace_only_capability_elevation_confirmation_rechecks_pep_and_
         },
     )
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
 
         reply = await client.call(
@@ -1455,10 +1455,37 @@ async def test_m5_rt2_policy_explain_includes_control_plane_section(
 async def test_m5_rt3_session_message_execution_reuses_preflight_action_timestamp(
     model_env: None,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def _forced_retrieve(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="m5-rt3-retrieve",
+            tool_name=ToolName("retrieve_rag"),
+            arguments={"query": "recent security incidents", "limit": 5},
+            reasoning="Exercise decision and execution identity reuse.",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="retrieving"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_retrieve)
     daemon_task, client = await _start_daemon_with_policy(tmp_path)
     try:
-        created = await client.call("session.create", {"channel": "cli"})
+        created = await _create_cli_session(client)
         sid = created["session_id"]
         response = await client.call(
             "session.message",

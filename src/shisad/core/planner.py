@@ -211,6 +211,10 @@ class Planner:
             f"shisad_planner_pep_override_{id(self)}",
             default=None,
         )
+        self._validation_tool_names: ContextVar[frozenset[str]] = ContextVar(
+            f"shisad_planner_validation_tool_names_{id(self)}",
+            default=frozenset(),
+        )
         # Keep direct-constructor default lenient for backwards-compatible test/tooling
         # callers; daemon runtime wiring sets this from model config (default enabled).
         self._schema_strict_mode = bool(schema_strict_mode)
@@ -235,10 +239,12 @@ class Planner:
         pep: PEP,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: PersonaTone | None = None,
+        validation_tool_names: set[str] | None = None,
     ) -> PlannerResult:
         """Propose with a concurrency-local evaluator while preserving the base API."""
 
         token = self._pep_override.set(pep)
+        validation_token = self._validation_tool_names.set(frozenset(validation_tool_names or ()))
         try:
             if persona_tone_override is None:
                 return await self.propose(
@@ -253,6 +259,7 @@ class Planner:
                 persona_tone_override=persona_tone_override,
             )
         finally:
+            self._validation_tool_names.reset(validation_token)
             self._pep_override.reset(token)
 
     async def propose(
@@ -278,7 +285,11 @@ class Planner:
         for attempt in range(self._max_retries + 1):
             response = await self._provider.complete(messages, tools)
             try:
-                output = self._parse_provider_output(response.message, tools_payload=tools)
+                output = self._parse_provider_output(
+                    response.message,
+                    tools_payload=tools,
+                    additional_allowed_tool_names=self._validation_tool_names.get(),
+                )
                 if (
                     not tainted_context
                     and attempt < self._max_retries
@@ -405,6 +416,7 @@ class Planner:
         message: Message,
         *,
         tools_payload: list[dict[str, Any]] | None = None,
+        additional_allowed_tool_names: frozenset[str] = frozenset(),
     ) -> PlannerOutput:
         assistant_response = message.content.strip()
         allowed_native_tools = (
@@ -412,6 +424,8 @@ class Planner:
             if tools_payload is not None
             else None
         )
+        if allowed_native_tools is not None:
+            allowed_native_tools.update(additional_allowed_tool_names)
         actions, native_invalid = self._extract_tool_calls(
             message.tool_calls,
             allowed_tool_names=allowed_native_tools,
@@ -426,6 +440,7 @@ class Planner:
             content_actions, content_invalid = self._extract_content_tool_calls(
                 message.content,
                 tools_payload=tools_payload,
+                additional_allowed_tool_names=additional_allowed_tool_names,
             )
             if self._schema_strict_mode and content_invalid > 0:
                 raise PlannerOutputError(
@@ -564,6 +579,7 @@ class Planner:
         content: str,
         *,
         tools_payload: list[dict[str, Any]] | None,
+        additional_allowed_tool_names: frozenset[str] = frozenset(),
     ) -> tuple[list[ActionProposal], int]:
         invalid_count = 0
         has_structured_payload = self._has_content_tool_call_syntax(content)
@@ -572,6 +588,7 @@ class Planner:
         if self._tool_registry is None:
             return [], 1 if (self._schema_strict_mode and has_structured_payload) else 0
         allowed_tools = self._allowed_content_tool_names(tools_payload)
+        allowed_tools.update(additional_allowed_tool_names)
         if not allowed_tools:
             return [], 1 if (self._schema_strict_mode and has_structured_payload) else 0
         parsed_calls = self._parse_content_tool_call_payloads(content)

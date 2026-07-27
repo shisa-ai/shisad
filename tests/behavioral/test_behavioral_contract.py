@@ -1872,7 +1872,7 @@ async def test_contract_fs_list_executes_and_returns_entries(
 
 
 @pytest.mark.asyncio
-async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
+async def test_contract_similar_file_recovery_result_is_usable_on_followup(
     contract_harness: ContractHarness,
 ) -> None:
     (contract_harness.workspace_root / "todo.log").write_text(
@@ -1906,37 +1906,24 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     )
     assert proposed.get("lockdown_level") == "normal"
     assert int(proposed.get("blocked_actions", 0)) == 0
-    assert int(proposed.get("executed_actions", 0)) == 0
-    assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+    assert int(proposed.get("executed_actions", 0)) == 2
+    assert int(proposed.get("confirmation_required_actions", 0)) == 0
     pending_ids = proposed.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
-    assert pending_ids
-    pending_result = await contract_harness.client.call(
-        "action.pending",
-        {"confirmation_id": str(pending_ids[0])},
-    )
-    pending_identity = dict(pending_result["actions"][0]["identity"])
+    assert pending_ids == []
 
-    confirmed = await contract_harness.client.call(
-        "session.message",
-        {"session_id": sid, "content": "confirm"},
-    )
+    confirmed = proposed
     assert confirmed.get("lockdown_level") == "normal"
     assert int(confirmed.get("blocked_actions", 0)) == 0
     assert int(confirmed.get("confirmation_required_actions", 0)) == 0
-    assert int(confirmed.get("executed_actions", 0)) == 1
+    assert int(confirmed.get("executed_actions", 0)) == 2
     confirmed_outputs = _extract_tool_outputs(confirmed)
     assert "fs.list" in confirmed_outputs
+    assert confirmed_outputs["fs.read"][-1].get("ok") is True
     assert "file.read" not in confirmed_outputs
     assert "shell.exec" not in confirmed_outputs
     assert "todo.log" in json.dumps(confirmed_outputs["fs.list"], ensure_ascii=True)
     assert "todo.log" in str(confirmed.get("response", ""))
-    followup_identity = confirmed.get("action_followup_identity")
-    assert isinstance(followup_identity, dict)
-    assert followup_identity["action_id"] == pending_identity["action_id"]
-    assert followup_identity["confirmation_id"] == pending_identity["confirmation_id"]
-    assert followup_identity["followup_id"] == pending_identity["followup_id"]
-    assert str(followup_identity["result_id"]).startswith("result-")
 
     followup = await contract_harness.client.call(
         "session.message",
@@ -2759,7 +2746,7 @@ async def test_gh84_mixed_policy_denial_preserves_success_and_reports_denial(
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) >= 1
     assert "fs.read" in outputs
-    assert "fs.read" in normalized_response
+    assert "behavioral-readme" in normalized_response
     assert "could not safely execute" in normalized_response
     assert "reason:" in normalized_response
     assert "shell.exec" in normalized_response

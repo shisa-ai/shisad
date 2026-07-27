@@ -73,4 +73,9 @@ async def test_prefill_pending_actions_smoke(
         session_id=sid,
         queued=profile["pending_actions"],
     )
-    assert pending_ids
+    assert pending_ids == []
+    pending = await confirmation_followup_harness.client.call(
+        "action.pending",
+        {"session_id": sid, "status": "pending", "limit": 20},
+    )
+    assert pending["actions"] == []

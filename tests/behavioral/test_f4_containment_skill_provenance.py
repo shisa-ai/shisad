@@ -110,7 +110,10 @@ async def test_f4_dynamic_skill_preserves_declared_use_without_silent_host_fallb
         assert ("expert_host_fallback_enabled" in sandbox_status["problems"]) is (
             profile == "expert_host_fallback"
         )
-        session = await client.call("session.create", {"channel": "cli"})
+        session = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
         result = await client.call(
             "tool.execute",
             {

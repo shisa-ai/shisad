@@ -313,6 +313,17 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
         _ = persona_tone_override
         if "TASK CLOSE-GATE SELF-CHECK" in user_content:
             return _complete_close_gate_result()
+        if not tools:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="Delegated read scope checked.",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
         observed_tool_names.update(
             str(item.get("function", {}).get("name", "")) for item in (tools or [])
         )

@@ -67,13 +67,17 @@ def test_gh46_synthesizes_for_nonempty_prose_and_realitycheck_evidence_tools(
     )
 
 
-@pytest.mark.parametrize("tool_name", ["fs.read", "fs.list"])
-def test_rc_lus_does_not_replace_nonempty_prose_for_filesystem_only_tools(
-    tool_name: str,
-) -> None:
+def test_rc_lus_synthesizes_nonempty_prose_for_fs_read_evidence() -> None:
+    assert _should_synthesize_initial_evidence_tool_response(
+        "I'll inspect the local file evidence before answering.",
+        [_tool_output("fs.read")],
+    )
+
+
+def test_rc_lus_does_not_replace_nonempty_prose_for_fs_list_only() -> None:
     assert not _should_synthesize_initial_evidence_tool_response(
         "I'll inspect the local file evidence before answering.",
-        [_tool_output(tool_name)],
+        [_tool_output("fs.list")],
     )
 
 

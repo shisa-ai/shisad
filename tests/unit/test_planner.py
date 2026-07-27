@@ -10,6 +10,7 @@ import pytest
 
 from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -516,6 +517,84 @@ async def test_f15_planner_call_uses_explicit_current_policy_pep() -> None:
     assert len(result.evaluated) == 1
     assert result.evaluated[0].decision.kind == PEPDecisionKind.REJECT
     assert result.evaluated[0].decision.reason_code == "pep:tool_not_permitted"
+
+
+@pytest.mark.asyncio
+async def test_f15_validation_tool_does_not_leak_into_provider_manifest() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content="Running echo.",
+                tool_calls=[
+                    {
+                        "id": "call-runtime-gated",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hello"}),
+                        },
+                    }
+                ],
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
+
+    result = await planner.propose_with_pep(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
+        tools=[],
+        validation_tool_names={"echo"},
+    )
+
+    assert provider.tools == [[]]
+    assert [str(item.proposal.tool_name) for item in result.evaluated] == ["echo"]
+
+
+@pytest.mark.asyncio
+async def test_f15_content_validation_tool_does_not_leak_into_provider_manifest() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content=json.dumps([{"name": "echo", "arguments": {"text": "hello"}}]),
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
+
+    result = await planner.propose_with_pep(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
+        tools=[],
+        validation_tool_names={"echo"},
+    )
+
+    assert provider.tools == [[]]
+    assert [str(item.proposal.tool_name) for item in result.evaluated] == ["echo"]
 
 
 @pytest.mark.asyncio

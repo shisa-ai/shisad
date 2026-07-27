@@ -849,17 +849,21 @@ async def test_terminal_recovery_accounting_preserves_authenticated_result_acros
             bind_preflight_action=True,
         )
 
-    recovered_services = await DaemonServices.build(config)
+    recovered_services = (
+        await _build_with_test_recovery_adapter(
+            config,
+            monkeypatch,
+            tool_definition=stable_tool_definition,
+            adapter=StableIdempotencyAdapter(
+                guarantee_id="test.terminal-accounting-stable/provider-v1",
+                operation=_stable_adapter,
+            ),
+        )
+        if live_drift == "policy-stable-adapter"
+        else await DaemonServices.build(config)
+    )
     try:
-        if live_drift == "policy-stable-adapter":
-            recovered_services.registry.register(stable_tool_definition)
-            recovered_services.idempotent_recovery_adapters[str(stable_tool_name)] = (
-                StableIdempotencyAdapter(
-                    guarantee_id="test.terminal-accounting-stable/provider-v1",
-                    operation=_stable_adapter,
-                )
-            )
-        recovered_handlers = DaemonControlHandlers(services=recovered_services)
+        recovered_handlers = recovered_services.control_handlers
         recovered_impl = recovered_handlers._impl
         accounting_tasks = list(recovered_impl._recovery_accounting_tasks)
         assert len(accounting_tasks) == 1
@@ -890,7 +894,7 @@ async def test_terminal_recovery_accounting_preserves_authenticated_result_acros
                 guarantee_id="test.terminal-accounting-stable/provider-v2",
                 operation=_stable_adapter,
             )
-        replayed_handlers = DaemonControlHandlers(services=replayed)
+        replayed_handlers = replayed.control_handlers
         if live_drift == "human-backend":
             replayed_handlers._impl._confirmation_backend_registry._backends.pop("software.default")
         await _wait_for_recovery_accounting(replayed_handlers._impl)
@@ -1366,14 +1370,17 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
         durable_rows[0]["execution_authorization_kind"] = ""
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
-    restarted = await DaemonServices.build(config)
-    try:
-        restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+    restarted = await _build_with_test_recovery_adapter(
+        config,
+        monkeypatch,
+        tool_definition=tool_definition,
+        adapter=StableIdempotencyAdapter(
             guarantee_id="test.allowed-stable-retry/provider-v1",
             operation=_deduplicating_adapter,
-        )
-        restarted_handlers = DaemonControlHandlers(services=restarted)
+        ),
+    )
+    try:
+        restarted_handlers = restarted.control_handlers
         recovered = restarted_handlers._impl._pending_actions[confirmation_id]
         if restart_posture == "lockdown":
             assert restarted.lockdown_manager.should_block_all_actions(recovered.session_id)
@@ -1382,7 +1389,7 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
             assert recovered.execution_authorization_kind == (
-                "" if restart_posture == "tampered" else "policy_allow"
+                "" if restart_posture in {"tampered", "lockdown"} else "policy_allow"
             )
             assert recovered.retry_generation == 0
             assert recovered.provider_operation_id == ""
@@ -2072,7 +2079,14 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
 
     restarted = await DaemonServices.build(config)
     try:
-        if corruption_parts & {"identity_missing", "identity_malformed"}:
+        if corruption_parts & {
+            "identity_missing",
+            "identity_malformed",
+            "confirmation_missing",
+            "confirmation_both_missing",
+            "confirmation_malformed",
+            "confirmation_mismatch",
+        }:
             restarted_impl = restarted.control_handlers._impl
             await _wait_for_recovery_accounting(restarted_impl)
             assert restarted_impl._pending_actions == {}
@@ -2515,7 +2529,7 @@ async def test_human_confirmed_structural_recovery_respects_restored_lockdown(
 
     restarted = await DaemonServices.build(config)
     try:
-        handlers = DaemonControlHandlers(services=restarted)
+        handlers = restarted.control_handlers
         recovered = handlers._impl._pending_actions[confirmation_id]
         assert restarted.lockdown_manager.should_block_all_actions(recovered.session_id)
         assert recovered.status == "outcome_unknown"
@@ -2527,8 +2541,10 @@ async def test_human_confirmed_structural_recovery_respects_restored_lockdown(
             user_id=str(recovered.user_id),
             window_seconds=3600,
         )
-        assert metrics["decisions"] == 1
-        assert metrics["approve_rate"] == 1.0
+        assert recovered.confirmation_evidence is None
+        assert recovered.approval_evidence_hash == ""
+        assert metrics["decisions"] == 0
+        assert metrics["approve_rate"] == 0.0
     finally:
         await restarted.shutdown()
 
@@ -3259,6 +3275,7 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
             "workspace_hint": "",
         }
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+    corrupted_store_bytes = pending_path.read_bytes()
     if tamper == "policy_reject":
         config.policy_path.write_text(
             """version: "1"
@@ -3273,7 +3290,25 @@ tools:
 
     restarted = await DaemonServices.build(config)
     try:
-        restarted_handlers = DaemonControlHandlers(services=restarted)
+        restarted_handlers = restarted.control_handlers
+        if tamper in {
+            "arguments_non_finite",
+            "recovery_result_non_finite",
+            "top_level_identity",
+        }:
+            restarted_impl = restarted_handlers._impl
+            assert restarted_impl._pending_actions == {}
+            assert restarted_impl._pending_state_degradation == {
+                "transition": "load",
+                "stage": "corrupt",
+                "reason": "pending_state_corrupt",
+            }
+            quarantined = list(pending_path.parent.glob(f"{pending_path.name}.corrupt.*"))
+            assert len(quarantined) == 1
+            assert quarantined[0].read_bytes() == corrupted_store_bytes
+            assert not pending_path.exists()
+            assert clock_calls == 1
+            return
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
         assert recovered.status == "outcome_unknown"
         assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
@@ -3495,7 +3530,11 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert loaded_task.enabled is False
         restarted_handlers = restarted.control_handlers
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
-        if recovery_case not in {"changed-key", "fabricated-evidence"}:
+        if recovery_case not in {
+            "changed-key",
+            "changed-adapter-guarantee",
+            "fabricated-evidence",
+        }:
             assert bool(loaded_task.recovery_containment_token) is (not disable_before_restart)
             precontained_task = restarted.scheduler.get_task(task.id)
             assert precontained_task is not None
@@ -3773,8 +3812,9 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         uncertain_task = services.scheduler.get_task(task.id)
         assert uncertain_task is not None
         assert uncertain_task.success_count == 0
-        assert uncertain_task.failure_count == 1
+        assert uncertain_task.failure_count == 0
         assert uncertain_task.enabled is False
+        assert pending.scheduler_accounting_mode == "ambiguous"
         execution_rows = [
             row
             for row in _control_plane_history_rows(config)
