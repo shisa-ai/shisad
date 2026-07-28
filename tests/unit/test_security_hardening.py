@@ -46,6 +46,12 @@ def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
     lint_runs = _run_commands(lint_and_test)
     security_runs = _run_commands(security_runtime)
 
+    matrix_python = "${{ matrix.python-version }}"
+    assert lint_and_test.get("env", {}).get("UV_PYTHON") == matrix_python
+    sync_steps = [cmd for cmd in lint_runs if cmd.startswith("uv sync ")]
+    assert sync_steps, "lint-and-test must install the matrix environment"
+    assert all(f"--python {matrix_python}" in cmd for cmd in sync_steps)
+
     # Coverage generation + validation must happen in security-runtime.
     coverage_steps = [cmd for cmd in security_runs if "--cov=src" in cmd]
     assert coverage_steps, "security-runtime must run pytest with --cov=src"

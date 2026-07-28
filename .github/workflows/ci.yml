@@ -23,6 +23,8 @@ jobs:
   lint-and-test:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
@@ -42,7 +44,7 @@ jobs:
         run: uv lock --check
 
       - name: Install dependencies (default profile)
-        run: uv sync --exclude-newer P7D --frozen --dev
+        run: uv sync --python ${{ matrix.python-version }} --exclude-newer P7D --frozen --dev
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/ scripts/

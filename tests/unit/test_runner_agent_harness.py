@@ -44,7 +44,7 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
 
     assert "runner/harness.sh" in readme_text
     assert "runner/harness.sh" in skill_text
-    assert "uv run shisad" in harness_text
+    assert "uv --no-config run shisad" in harness_text
     assert "RUNNER_INHERIT_SHISAD_ENV" in harness_text
     assert "SHISAD_DISCORD_ENABLED" in harness_text
     assert "tmux" in harness_text
@@ -236,6 +236,32 @@ def _harness_env(
             k, v = line.split("=", 1)
             out[k] = v
     return out
+
+
+def test_harness_env_preserves_active_project_interpreter(tmp_path: Path) -> None:
+    """Nested uv probes must not replace the environment running the caller."""
+    project_python = Path(".venv/bin/python")
+    uv_config = tmp_path / "uv.toml"
+    uv_config.write_text(
+        'exclude-newer = "2099-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    before = subprocess.run(
+        [str(project_python), "-c", "import platform; print(platform.python_version())"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    _harness_env({"UV_CONFIG_FILE": str(uv_config)})
+
+    after = subprocess.run(
+        [str(project_python), "-c", "import platform; print(platform.python_version())"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert after == before
 
 
 def test_harness_env_file_survives_default_clear() -> None:
