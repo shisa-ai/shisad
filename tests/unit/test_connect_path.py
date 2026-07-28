@@ -199,6 +199,14 @@ def test_m6_connect_path_detect_capability_branches(monkeypatch: pytest.MonkeyPa
     assert IptablesConnectPathProxy.detect_net_admin_capability() is True
 
 
+def test_rc_plat_001_connect_path_capability_is_false_without_geteuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr("os.geteuid")
+
+    assert IptablesConnectPathProxy.detect_net_admin_capability() is False
+
+
 def test_f4c_connect_path_children_use_fixed_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

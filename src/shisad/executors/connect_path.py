@@ -129,7 +129,10 @@ class IptablesConnectPathProxy:
 
     @staticmethod
     def detect_net_admin_capability() -> bool:
-        if os.geteuid() == 0 and shutil.which("iptables"):
+        get_effective_uid = getattr(os, "geteuid", None)
+        if get_effective_uid is None:
+            return False
+        if get_effective_uid() == 0 and shutil.which("iptables"):
             return True
         capsh = shutil.which("capsh")
         if not capsh:
