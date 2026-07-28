@@ -234,6 +234,12 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # This journey targets filesystem policy, not host backend availability.
+    # Keep it deterministic on runners without a supported containment backend.
+    (tmp_path / "policy.yaml").write_text(
+        'version: "1"\nsandbox:\n  containment_profile: expert_host_fallback\n',
+        encoding="utf-8",
+    )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         workspace = tmp_path / "workspace"
