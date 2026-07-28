@@ -565,9 +565,9 @@ full analysis.
 
 ## Implementation Status
 
-The latest published stable package is `v0.8.0`; `v0.8.1` is in development.
-The following statements describe the current public development tree and are
-subject to the explicit route boundary above.
+The latest published stable package is `v0.8.0`; `v0.8.1` is a pre-tag
+release-close candidate. The following statements describe the current public
+candidate tree and are subject to the explicit route boundary above.
 
 **Implemented on the shared execution path**:
 

@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.1 (in development) | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
+| v0.8.1 (release-close candidate) | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
@@ -146,7 +146,7 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.1 development CLI can create and inspect the typed operator TOML
+The v0.8.1 release-close candidate CLI can create and inspect the typed TOML
 surface without starting the daemon:
 
 ```bash
@@ -174,7 +174,9 @@ motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
 `NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
 selection is not a supported configuration surface. `shisad web-ui` writes a
 local static investigation/export artifact; it is not the planned live
-operator web application.
+operator web application. The artifact embeds session, pending-action, alert,
+and egress-review data, so keep it private and remove it when the investigation
+is complete.
 
 Expected CLI failures use exit status 1 for command/user-state errors, 2 for
 daemon-connect/RPC errors (and Click usage compatibility), and 3 for invalid or

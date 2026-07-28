@@ -11,6 +11,119 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## 0.8.1 Release Content - 2026-07-28
+
+This release candidate makes actions, recovery, configuration, containment,
+and command-channel completion reliable enough to support the onboarding
+work that follows this release.
+
+### Added
+
+- **Pending actions survive daemon restarts.** Confirmations, execution
+  attempts, results, and scheduled actions move through durable states with a
+  bounded approval lifetime. An interrupted action recovers to a verified
+  terminal result or an explicit `outcome_unknown` state instead of silently
+  becoming a fresh approval opportunity.
+
+- **Channel delivery has durable local recovery.** Discord, Slack, Telegram,
+  and Matrix replies retain scoped attempt, result, and recipient identity
+  across restarts. Recovery prevents silent local replay while remaining
+  explicit that the channel providers do not share an exactly-once guarantee.
+
+- **Configuration and readiness are inspectable before startup.** The
+  candidate adds typed TOML loading, no-overwrite `shisad init`, redacted
+  config/env inspection, and readiness diagnostics that distinguish
+  configured credentials from a successful live provider probe.
+  ([#62](https://github.com/shisa-ai/shisad/issues/62),
+  [#89](https://github.com/shisa-ai/shisad/issues/89),
+  [#90](https://github.com/shisa-ai/shisad/issues/90))
+
+- **The assistant runtime has one consumer package profile.** The
+  `shisad[assistant]` extra assembles the terminal UI, Model Context Protocol
+  (MCP), Matrix E2EE, Discord, Telegram, and Slack runtimes without requiring a
+  source checkout. Installation does not enable channels or provide
+  credentials.
+
+- **A local Linux/amd64 container candidate is included.** The Dockerfile
+  installs the built wheel into a fixed non-root runtime, separates data from
+  workspace storage, and preflights its namespace/isolation dependencies. It
+  is a local candidate, not a published or signed registry image.
+
+### Changed
+
+- **A policy reload binds the next action.** Session, task, confirmation,
+  recovery, and equivalent direct-command paths resolve the current validated
+  policy at their enforcement boundary rather than retaining a stale startup
+  view.
+
+- **Equivalent direct and assistant commands share enforcement.** Typed direct
+  commands use the same policy, confirmation, audit, identity, readiness, and
+  output-sanitization authorities as their planner-tool equivalents without
+  replanning already-structured input.
+
+- **Trusted command meaning stays with the model.** Command chat and recovery
+  use typed model output and bounded machine state instead of a parallel
+  daemon-side natural-language intent rewriter, reducing false denials without
+  weakening per-action enforcement.
+
+- **Secret and network-address facts are consistent across consumers.** The
+  touched ingress, output, policy, provider, proxy, browser, and assistant-web
+  paths share bounded secret signatures and absolute-address facts while
+  retaining their separate authorization and connection responsibilities.
+
+### Fixed
+
+- **Reminder follow-ups stay attached to the current action.** Explicit
+  message-first reminders avoid false cross-thread warnings, benign reminders
+  keep the authorized path, follow-ups select the current reminder, and
+  completed results no longer present stale approval controls.
+  ([#69](https://github.com/shisa-ai/shisad/issues/69),
+  [#70](https://github.com/shisa-ai/shisad/issues/70),
+  [#88](https://github.com/shisa-ai/shisad/issues/88),
+  [#91](https://github.com/shisa-ai/shisad/issues/91),
+  [#92](https://github.com/shisa-ai/shisad/issues/92))
+
+- **Command-channel confirmations are readable and actionable.** Confirmation
+  output uses action-specific review text, hides internal control fields, and
+  keeps routine approve/reject completion available on the channel that
+  originated it, with CLI fallback where needed.
+  ([#63](https://github.com/shisa-ai/shisad/issues/63),
+  [#64](https://github.com/shisa-ai/shisad/issues/64),
+  [#74](https://github.com/shisa-ai/shisad/issues/74),
+  [#78](https://github.com/shisa-ai/shisad/issues/78))
+
+- **Mixed-action replies preserve successful evidence.** When one action
+  succeeds while another remains pending or fails, the successful result stays
+  available to the confirmation continuation and final answer.
+  ([#107](https://github.com/shisa-ai/shisad/issues/107))
+
+- **Similar-file recovery can finish the requested read.** A typo followed by
+  an unambiguous structured filename candidate can produce the file result
+  instead of repeatedly listing the same match.
+  ([#108](https://github.com/shisa-ai/shisad/issues/108))
+
+### Security
+
+- **Mutable control state is integrity checked.** Covered approval, scheduler,
+  evidence, skill, self-modification, and retained-state stores use atomic
+  publication and explicit corrupt/unsupported handling; one daemon owns a
+  data directory at a time.
+
+- **Supported containment fails closed without disabling expert use.**
+  Command-backed tools require the supported isolation backend or return an
+  actionable unavailable result. The separately selected
+  `expert_host_fallback` posture remains visibly degraded and makes no
+  supported-isolation claim.
+
+- **Recovery does not manufacture trust.** Stored actions are rebound to
+  current identity, policy, schema, and retry metadata before execution.
+  Unknown or contradictory effects require an informed new request and fresh
+  approval.
+
+- **The frozen dependency audit is clean without advisory exceptions.**
+  Vulnerable locked versions of Click, MCP, ONNX, setuptools, and PyTorch were
+  updated, and the publish gate no longer suppresses historical advisories.
+
 ## [0.8.0] - 2026-07-02
 
 This stable v0.8.0 release turns the beta authorization fixes into the

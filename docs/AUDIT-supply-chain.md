@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-07-21 (v0.8.1 F5 distribution-candidate review)*
+*Updated: 2026-07-28 (v0.8.1 ReleaseClose candidate)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at the pre-release v0.8.1 F5 distribution candidate for the 2026-07-21 Python/container review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. No registry image is published by this snapshot.*
+*Snapshot basis: code/dependency and workflow state in the pre-tag v0.8.1 ReleaseClose candidate prepared on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
 
 ## Scope and Intent
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev`; focused groups plus an opt-in clean-wheel/image job |
 | Release path | PyPI: GitHub Actions `publish.yml` via OIDC; container: local candidate only, no registry path |
-| Current risk summary | Python runtime resolutions remain hash-locked; the assistant extra reuses existing locked packages; the local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. Existing Ledger/ACP findings below remain unchanged. |
+| Current risk summary | Python runtime resolutions remain hash-locked; the release audit has no advisory exceptions; the assistant extra reuses existing locked packages; the local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. Existing Ledger/ACP findings below remain unchanged. |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,28 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-07-28 — v0.8.1 ReleaseClose dependency remediation
+
+- Scope: audit the frozen `uv export --all-groups` dependency set and the
+  publish-workflow exception list for the pre-tag candidate.
+- Initial audit:
+  - `pip-audit` reported nine fixed advisories across locked `click 8.3.1`,
+    `mcp 1.27.0`, `onnx 1.21.0`, `setuptools 81.0.0`, and `torch 2.12.1`.
+  - The direct lower bounds now exclude the vulnerable lines:
+    `click>=8.3.3`, `mcp>=1.28.1`, `onnx>=1.22`, and `torch>=2.13`.
+  - The lock now resolves `click 8.4.2`, `mcp 1.28.1`, `onnx 1.22.0`,
+    `setuptools 83.0.0`, and `torch 2.13.0`.
+- Supported resolution posture:
+  - `[tool.uv].environments` limits the universal development lock to Darwin,
+    Windows, and Linux other than `s390x`, matching the release's tested
+    platform scope. The unsupported `s390x` CUDA branch published no artifact
+    hash usable by the release audit and is not part of a shisad support claim.
+- Exception cleanup:
+  - The post-update hash-enforced `pip-audit` returned `No known
+    vulnerabilities found`.
+  - All historical `--ignore-vuln` flags were removed from `publish.yml`; the
+    publish audit is again fail-closed with no advisory exceptions.
 
 ### 2026-06-25 — v0.8.0b0 release-audit dependency refresh
 
@@ -663,9 +685,10 @@ sed -n '1,140p' docs/DEPLOY.md
 | Package | Declared in `pyproject.toml` | Locked in `uv.lock` | Lock quality |
 | --- | --- | --- | --- |
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
-| `click` | `>=8.1,<9` | `8.3.1` | Range in spec, exact in lock |
+| `click` | `>=8.3.3,<9` | `8.4.2` | Range in spec, exact in lock |
 | `cryptography` | `>=48.0.1,<49` | `48.0.1` | Range in spec, exact in lock |
 | `fido2` | `>=2.1,<3` | `2.1.1` | Range in spec, exact in lock |
+| `filelock` | `>=3.25,<4` | `3.25.2` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.14.2` | Range in spec, exact in lock |
@@ -752,13 +775,13 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
 cachetools==5.5.2
 certifi==2026.1.4
 cffi==2.0.0
-click==8.3.1
+click==8.4.2
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
 cryptography==48.0.1
 cuda-bindings==13.2.0 ; sys_platform == 'linux'
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
-cuda-toolkit==13.0.2 ; sys_platform == 'linux'
+cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
 discord-py==2.6.4
 fido2==2.1.1
 filelock==3.25.2
@@ -785,7 +808,7 @@ loguru==0.7.3
 markdown-it-py==4.0.0
 markupsafe==3.0.3
 matrix-nio==0.25.2
-mcp==1.27.0
+mcp==1.28.1
 mdit-py-plugins==0.5.0
 mdurl==0.1.2
 ml-dtypes==0.5.4
@@ -795,7 +818,7 @@ mypy==1.19.1
 mypy-extensions==1.1.0
 networkx==3.6.1
 numpy==2.4.4
-nvidia-cublas==13.1.0.3 ; sys_platform == 'linux'
+nvidia-cublas==13.1.1.3 ; sys_platform == 'linux'
 nvidia-cuda-cupti==13.0.85 ; sys_platform == 'linux'
 nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
 nvidia-cuda-runtime==13.0.96 ; sys_platform == 'linux'
@@ -810,7 +833,7 @@ nvidia-nccl-cu13==2.29.7 ; sys_platform == 'linux'
 nvidia-nvjitlink==13.0.88 ; sys_platform == 'linux'
 nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
-onnx==1.21.0
+onnx==1.22.0
 onnx-ir==0.2.0
 onnxruntime==1.24.4
 onnxscript==0.6.2
@@ -846,7 +869,7 @@ rpds-py==0.30.0
 ruff==0.15.0
 safetensors==0.7.0
 sentencepiece==0.2.1
-setuptools==81.0.0
+setuptools==83.0.0
 shellingham==1.5.4
 slack-bolt==1.27.0
 slack-sdk==3.40.0
@@ -856,7 +879,7 @@ sympy==1.14.0
 textguard==1.0.0
 textual==0.89.1
 tokenizers==0.22.2
-torch==2.12.1
+torch==2.13.0
 tqdm==4.67.3
 transformers==5.5.3
 triton==3.7.1 ; sys_platform == 'linux'
@@ -874,7 +897,10 @@ yarl==1.22.0
 
 ### E. Upstream edge map (who pulls what)
 
-Immediate upstream edges from the lock export (`uv export --all-groups --frozen --format requirements.txt --no-hashes --no-header`):
+Immediate upstream edges derived from the lock export (`uv export --all-groups
+--frozen --format requirements.txt --no-hashes --no-header`). The table omits
+the common outer Darwin / non-`s390x` Linux / Windows resolution markers for
+readability:
 
 ```text
 agent-client-protocol==0.8.1
@@ -921,7 +947,7 @@ cffi==2.0.0
     # via
     #   cryptography
     #   python-olm
-click==8.3.1
+click==8.4.2
     # via
     #   shisad
     #   typer
@@ -944,7 +970,7 @@ cuda-bindings==13.2.0 ; sys_platform == 'linux'
     # via torch
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
     # via cuda-bindings
-cuda-toolkit==13.0.2 ; sys_platform == 'linux'
+cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
     # via torch
 discord-py==2.6.4
 fido2==2.1.1
@@ -1018,7 +1044,7 @@ markdown-it-py==4.0.0
 markupsafe==3.0.3
     # via jinja2
 matrix-nio==0.25.2
-mcp==1.27.0
+mcp==1.28.1
 mdit-py-plugins==0.5.0
     # via markdown-it-py
 mdurl==0.1.2
@@ -1047,7 +1073,7 @@ numpy==2.4.4
     #   onnxruntime
     #   onnxscript
     #   transformers
-nvidia-cublas==13.1.0.3 ; sys_platform == 'linux'
+nvidia-cublas==13.1.1.3 ; sys_platform == 'linux'
     # via
     #   cuda-toolkit
     #   nvidia-cudnn-cu13
@@ -1086,7 +1112,7 @@ nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
     # via torch
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
     # via cuda-toolkit
-onnx==1.21.0
+onnx==1.22.0
     # via
     #   onnx-ir
     #   onnxscript
@@ -1184,7 +1210,7 @@ ruff==0.15.0
 safetensors==0.7.0
     # via transformers
 sentencepiece==0.2.1
-setuptools==81.0.0
+setuptools==83.0.0
     # via torch
 shellingham==1.5.4
     # via typer
@@ -1207,7 +1233,7 @@ textguard==1.0.0
 textual==0.89.1
 tokenizers==0.22.2
     # via transformers
-torch==2.12.1
+torch==2.13.0
 tqdm==4.67.3
     # via
     #   huggingface-hub

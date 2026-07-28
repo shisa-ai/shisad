@@ -3,11 +3,11 @@
 > **Current 2FA feature status:** The approval protocol, credential store, and
 > currently available approval backends documented here were introduced across
 > `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
-> published line. The current `v0.8.1` development tree preserves TOTP through
-> trusted command-channel replies and the CLI, and provides routine approve /
-> reject handling on Discord, Slack, Telegram, and Matrix. Passkey (WebAuthn)
-> and signer approvals work via browser and remote KMS respectively. QR code
-> rendering for TOTP enrollment is also included.
+> published line. The current `v0.8.1` release-close candidate preserves TOTP
+> through trusted command-channel replies and the CLI, and provides routine
+> approve / reject handling on Discord, Slack, Telegram, and Matrix. Passkey
+> (WebAuthn) and signer approvals work via browser and remote KMS respectively.
+> QR code rendering for TOTP enrollment is also included.
 > Entering a TOTP code on the approval web page is not included yet; browser
 > approval today is WebAuthn only.
 
@@ -163,9 +163,14 @@ any time.
 | `shisad 2fa list` | List enrolled TOTP and passkey credentials |
 | `shisad signer list` | List enrolled signer keys |
 
+The JSON action-list form is operator-sensitive output. It may include
+user-authored action arguments, delivery details, identity metadata, and the
+current decision nonce. Avoid copying it into shared logs or tickets, and
+protect any file to which you redirect it.
+
 ### Approval surface matrix
 
-This matrix describes the current `v0.8.1` development tree. “Typed” means a
+This matrix describes the current `v0.8.1` release-close candidate. “Typed” means a
 trusted command reply handled before planner flow; it does not mean that proof
 is flattened into ordinary chat content.
 
