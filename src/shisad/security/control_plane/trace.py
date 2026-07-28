@@ -403,14 +403,8 @@ class ExecutionTraceVerifier:
         normalized_execution_key = execution_idempotency_key.strip()
         if bool(normalized_correlation) != bool(normalized_execution_key):
             raise ValueError("stage2 correlation execution-key mismatch")
-        if (
-            normalized_correlation
-            and current.amendment_correlation_id == normalized_correlation
-        ):
-            if (
-                normalized_previous_hash
-                and current.amendment_of != normalized_previous_hash
-            ):
+        if normalized_correlation and current.amendment_correlation_id == normalized_correlation:
+            if normalized_previous_hash and current.amendment_of != normalized_previous_hash:
                 raise ValueError("stage2 correlation previous-plan mismatch")
             if current.amendment_execution_idempotency_key != normalized_execution_key:
                 raise ValueError("stage2 correlation execution-key mismatch")
@@ -474,9 +468,7 @@ class ExecutionTraceVerifier:
         if amendment_correlation_id:
             payload["amendment_correlation_id"] = amendment_correlation_id
         if amendment_execution_idempotency_key:
-            payload["amendment_execution_idempotency_key"] = (
-                amendment_execution_idempotency_key
-            )
+            payload["amendment_execution_idempotency_key"] = amendment_execution_idempotency_key
         encoded = json.dumps(payload, sort_keys=True)
         plan_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         return CommittedPlan(
@@ -493,9 +485,7 @@ class ExecutionTraceVerifier:
             stage=stage,
             amendment_of=amendment_of,
             amendment_correlation_id=amendment_correlation_id,
-            amendment_execution_idempotency_key=(
-                amendment_execution_idempotency_key
-            ),
+            amendment_execution_idempotency_key=(amendment_execution_idempotency_key),
             executed_actions=0,
         )
 

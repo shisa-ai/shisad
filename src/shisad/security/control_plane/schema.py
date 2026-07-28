@@ -85,11 +85,7 @@ class ControlDecision(StrEnum):
 def control_plane_execution_idempotency_key(execution_attempt_id: str) -> str:
     """Return the control-plane key shared by one execution attempt."""
     normalized_attempt_id = execution_attempt_id.strip()
-    return (
-        f"execution:{normalized_attempt_id}:control-plane"
-        if normalized_attempt_id
-        else ""
-    )
+    return f"execution:{normalized_attempt_id}:control-plane" if normalized_attempt_id else ""
 
 
 def control_plane_trace_action_idempotency_key(

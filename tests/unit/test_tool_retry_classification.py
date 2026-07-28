@@ -41,9 +41,7 @@ def test_retry_class_changes_trusted_schema_and_action_hashes() -> None:
         name=ToolName("test.retry-hash"),
         description="same trusted tool",
     )
-    structural_read = unknown.model_copy(
-        update={"retry_class": ToolRetryClass.STRUCTURAL_READ}
-    )
+    structural_read = unknown.model_copy(update={"retry_class": ToolRetryClass.STRUCTURAL_READ})
 
     assert unknown.schema_hash() != structural_read.schema_hash()
     assert compute_action_digest(

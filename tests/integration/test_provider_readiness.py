@@ -168,9 +168,7 @@ async def test_u41_doctor_projects_all_components_through_shared_states() -> Non
     assert result["status"] == ReadinessState.CONFIGURED
     assert result["checks"]["dependencies"]["status"] == ReadinessState.VERIFIED
     assert result["checks"]["channels"]["status"] == ReadinessState.ABSENT
-    assert result["checks"]["channels"]["channels"]["matrix"]["status"] == (
-        ReadinessState.ABSENT
-    )
+    assert result["checks"]["channels"]["channels"]["matrix"]["status"] == (ReadinessState.ABSENT)
     assert result["checks"]["browser"]["status"] == ReadinessState.ABSENT
     assert result["checks"]["mcp"]["status"] == ReadinessState.ABSENT
     assert result["checks"]["search"]["status"] == ReadinessState.ABSENT

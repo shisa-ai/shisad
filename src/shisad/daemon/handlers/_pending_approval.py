@@ -72,10 +72,7 @@ def _approval_contract_value(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         return _approval_contract_value(asdict(value))
     if isinstance(value, Mapping):
-        return {
-            str(key): _approval_contract_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): _approval_contract_value(item) for key, item in value.items()}
     if isinstance(value, (set, frozenset)):
         return sorted(
             (_approval_contract_value(item) for item in value),
@@ -110,13 +107,9 @@ def pending_approval_contract_payload(pending: Any) -> dict[str, Any]:
         },
         "action": {
             "tool_name": str(getattr(pending, "tool_name", "")).strip(),
-            "arguments": _approval_contract_value(
-                getattr(pending, "arguments", {})
-            ),
+            "arguments": _approval_contract_value(getattr(pending, "arguments", {})),
             "action_digest": str(getattr(pending, "action_digest", "")).strip(),
-            "stable_idempotency_key": str(
-                getattr(pending, "stable_idempotency_key", "")
-            ).strip(),
+            "stable_idempotency_key": str(getattr(pending, "stable_idempotency_key", "")).strip(),
             "retry_descriptor": _approval_contract_value(
                 getattr(pending, "retry_descriptor", None)
             ),
@@ -130,69 +123,47 @@ def pending_approval_contract_payload(pending: Any) -> dict[str, Any]:
             "created_at": getattr(pending, "created_at", None),
             "execute_after": getattr(pending, "execute_after", None),
             "expires_at": getattr(pending, "expires_at", None),
-            "required_level": str(
-                getattr(getattr(pending, "required_level", ""), "value", "")
-            ),
+            "required_level": str(getattr(getattr(pending, "required_level", ""), "value", "")),
             "required_methods": list(getattr(pending, "required_methods", ())),
             "allowed_principals": list(getattr(pending, "allowed_principals", ())),
-            "allowed_channel_principals": list(
-                getattr(pending, "allowed_channel_principals", ())
-            ),
+            "allowed_channel_principals": list(getattr(pending, "allowed_channel_principals", ())),
             "allowed_credentials": list(getattr(pending, "allowed_credentials", ())),
             "required_capabilities": _approval_contract_value(
                 getattr(pending, "required_capabilities", None)
             ),
             "fallback": _approval_contract_value(getattr(pending, "fallback", None)),
-            "selected_backend_id": str(
-                getattr(pending, "selected_backend_id", "")
-            ).strip(),
-            "selected_backend_method": str(
-                getattr(pending, "selected_backend_method", "")
-            ).strip(),
+            "selected_backend_id": str(getattr(pending, "selected_backend_id", "")).strip(),
+            "selected_backend_method": str(getattr(pending, "selected_backend_method", "")).strip(),
             "fallback_used": bool(getattr(pending, "fallback_used", False)),
             "approval_task_envelope_id": str(
                 getattr(pending, "approval_task_envelope_id", "")
             ).strip(),
             "intent_envelope_hash": (
-                intent_envelope_hash(intent_envelope)
-                if intent_envelope is not None
-                else ""
+                intent_envelope_hash(intent_envelope) if intent_envelope is not None else ""
             ),
         },
         "policy": {
             "preflight_action": _approval_contract_value(
                 getattr(pending, "preflight_action", None)
             ),
-            "merged_policy": _approval_contract_value(
-                getattr(pending, "merged_policy", None)
-            ),
-            "pep_context": _approval_contract_value(
-                getattr(pending, "pep_context", None)
-            ),
-            "pep_elevation": _approval_contract_value(
-                getattr(pending, "pep_elevation", None)
-            ),
+            "merged_policy": _approval_contract_value(getattr(pending, "merged_policy", None)),
+            "pep_context": _approval_contract_value(getattr(pending, "pep_context", None)),
+            "pep_elevation": _approval_contract_value(getattr(pending, "pep_elevation", None)),
         },
         "presentation": {
             "public_arguments": _approval_contract_value(
                 getattr(pending, "public_arguments", None)
             ),
-            "sensitive_public_payload": bool(
-                getattr(pending, "sensitive_public_payload", False)
-            ),
+            "sensitive_public_payload": bool(getattr(pending, "sensitive_public_payload", False)),
             "safe_preview": str(getattr(pending, "safe_preview", "")),
             "warnings": list(getattr(pending, "warnings", ())),
-            "leak_check": _approval_contract_value(
-                getattr(pending, "leak_check", {})
-            ),
+            "leak_check": _approval_contract_value(getattr(pending, "leak_check", {})),
         },
         "continuation": {
             "strip_direct_tool_execute_envelope_keys": bool(
                 getattr(pending, "strip_direct_tool_execute_envelope_keys", False)
             ),
-            "continuation_user_goal": str(
-                getattr(pending, "continuation_user_goal", "")
-            ),
+            "continuation_user_goal": str(getattr(pending, "continuation_user_goal", "")),
             "continuation_mode": str(getattr(pending, "continuation_mode", "")),
         },
     }

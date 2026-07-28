@@ -135,9 +135,7 @@ async def test_f3_doctor_reports_redacted_lock_and_component_storage_health(
         assert storage["lock"]["status"] == "verified"
         assert storage["lock"]["held"] is True
         assert {"scheduler", "skills", "selfmod", "evidence"} <= set(components)
-        assert all(
-            row["status"] in {"verified", "absent"} for row in components.values()
-        )
+        assert all(row["status"] in {"verified", "absent"} for row in components.values())
         assert str(config.data_dir) not in json.dumps(storage)
     finally:
         with suppress(Exception):

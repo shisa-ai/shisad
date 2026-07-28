@@ -5,13 +5,14 @@
       "tests/adversarial/test_adversarial_task_handoffs.py": 2,
       "tests/behavioral/test_f2_action_recovery.py": 2,
       "tests/behavioral/test_f7_channel_completion.py": 4,
-      "tests/integration/test_a2a_ingress.py": 1,
-      "tests/integration/test_action_execution_recovery.py": 52,
+      "tests/integration/test_a2a_ingress.py": 2,
+      "tests/integration/test_action_execution_recovery.py": 48,
       "tests/integration/test_chat_confirmation_e2e.py": 11,
       "tests/integration/test_context_scaffold_degraded.py": 3,
       "tests/integration/test_daemon_data_lock.py": 1,
       "tests/integration/test_skill_tool_execution.py": 7,
-      "tests/unit/test_daemon_services.py": 30,
+      "tests/unit/test_daemon_services.py": 37,
+      "tests/unit/test_impl_tasks.py": 2,
       "tests/unit/test_session_memory_summarizer.py": 6
     },
     "run_daemon": {
@@ -51,7 +52,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 121,
+    "DaemonServices.build": 127,
     "run_daemon": 114
   }
 }

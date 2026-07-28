@@ -53,9 +53,7 @@ def configured_route_readiness(route: Any) -> ReadinessStatus:
             state=ReadinessState.BLOCKED,
             configured=False,
             reason="route_disabled",
-            next_action=(
-                "configure or explicitly enable this route; live probe has not run"
-            ),
+            next_action=("configure or explicitly enable this route; live probe has not run"),
         )
     if requires_key and not has_key:
         return ReadinessStatus(
@@ -136,10 +134,7 @@ def failed_probe_readiness(error_text: str) -> ReadinessStatus:
 def normalize_readiness_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Project existing component diagnostics through the shared vocabulary."""
 
-    result = {
-        key: _normalize_nested_readiness(value)
-        for key, value in payload.items()
-    }
+    result = {key: _normalize_nested_readiness(value) for key, value in payload.items()}
     raw_status = str(result.get("status", "")).strip().lower()
     if raw_status in {state.value for state in ReadinessState}:
         state = ReadinessState(raw_status)

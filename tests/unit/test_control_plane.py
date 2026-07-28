@@ -978,9 +978,7 @@ def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
     failed_trace_write: int,
     replace_plan_before_replay: bool,
 ) -> None:
-    data_dir = tmp_path / (
-        f"cp-f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}"
-    )
+    data_dir = tmp_path / (f"cp-f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}")
     engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
     origin = _origin(f"s-f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}")
     original_plan_hash = engine.begin_precontent_plan(
@@ -3128,9 +3126,7 @@ def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
     ]
     execution_rows = [row for row in rows if row.get("execution_status")]
     assert len(execution_rows) == 1
-    plans = json.loads(
-        (data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-    )
+    plans = json.loads((data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8"))
     assert plans[origin.session_id]["executed_actions"] == 1
 
 

@@ -430,11 +430,7 @@ class ControlPlaneEngine:
                 action,
                 decision_status=ControlDecision.ALLOW.value,
                 execution_status=(
-                    "outcome_unknown"
-                    if outcome_unknown
-                    else "success"
-                    if success
-                    else "failed"
+                    "outcome_unknown" if outcome_unknown else "success" if success else "failed"
                 ),
                 idempotency_key=idempotency_key,
                 trace_plan_hash=trace_plan_hash,
@@ -473,9 +469,7 @@ class ControlPlaneEngine:
             )
             self._trace_verifier.record_action(
                 session_id=action.origin.session_id,
-                idempotency_key=control_plane_trace_action_idempotency_key(
-                    normalized_key
-                ),
+                idempotency_key=control_plane_trace_action_idempotency_key(normalized_key),
                 expected_plan_hash=trace_plan_hash,
             )
 
@@ -564,9 +558,7 @@ class ControlPlaneEngine:
                 "amendment_of": amended.amendment_of,
                 "stage": amended.stage,
                 "correlation_id": amended.amendment_correlation_id,
-                "execution_idempotency_key": (
-                    amended.amendment_execution_idempotency_key
-                ),
+                "execution_idempotency_key": (amended.amendment_execution_idempotency_key),
                 "allowed_actions": sorted(item.value for item in amended.allowed_actions),
             },
         )

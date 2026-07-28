@@ -133,9 +133,7 @@ class SignerKeyRecord(BaseModel):
 class _ApprovalStoreState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[
-        "shisad.approval_factor_store.v1", "shisad.approval_factor_store.v2"
-    ]
+    schema_version: Literal["shisad.approval_factor_store.v1", "shisad.approval_factor_store.v2"]
     approval_factors: list[ApprovalFactorRecord]
     signer_keys: list[SignerKeyRecord]
     local_fido2_realm_id: str
