@@ -8,6 +8,7 @@ import os
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -244,7 +245,8 @@ def test_atomic_write_reports_real_permission_failure_without_blocking_publicati
     def _deny_chmod(*_args: object, **_kwargs: object) -> None:
         raise PermissionError("permission tightening denied")
 
-    monkeypatch.setattr(storage_platform.os, "chmod", _deny_chmod)
+    platform_os = SimpleNamespace(name="posix", chmod=_deny_chmod)
+    monkeypatch.setattr(storage_platform, "os", platform_os)
 
     capability = atomic_write_bytes(target, b"payload")
 
