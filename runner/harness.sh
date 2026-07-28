@@ -23,7 +23,7 @@ Commands:
   session new [--user U] [--workspace W] [--mode M]
   session say <id> <text...>
   session list
-  shisad <args...>            Raw passthrough to "uv --no-config run shisad ..."
+  shisad <args...>            Raw passthrough to "uv --no-config run --frozen --python 3.12 shisad ..."
   env                         Print effective runner env + paths
 
 Notes:
@@ -218,7 +218,7 @@ _clear_inherited_shisad_env() {
 _runner_config_state() {
   (
     cd "${REPO_ROOT}"
-    uv --no-config run python - <<'PY'
+    uv --no-config run --frozen --python 3.12 python - <<'PY'
 import sys
 
 from shisad.core.config_file import ConfigFileError, load_effective_config
@@ -250,7 +250,7 @@ _load_config_runner_context() {
     esac
   done < <(
     cd "${REPO_ROOT}"
-    uv --no-config run python - <<'PY'
+    uv --no-config run --frozen --python 3.12 python - <<'PY'
 import json
 import sys
 
@@ -351,7 +351,7 @@ _ensure_policy_file() {
 _preflight_planner_credential_from_config() {
   (
     cd "${REPO_ROOT}"
-    uv --no-config run python - <<'PY'
+    uv --no-config run --frozen --python 3.12 python - <<'PY'
 import sys
 
 from shisad.core.config_file import ConfigFileError, load_effective_config
@@ -492,7 +492,7 @@ _runner_env() {
 _shisad() {
   _runner_env
   _preflight_socket_parent false
-  uv --no-config run shisad "$@"
+  uv --no-config run --frozen --python 3.12 shisad "$@"
 }
 
 _tmux_socket_name() {
@@ -571,7 +571,7 @@ _cmd_start() {
   data_dir="$(_runner_data_dir)"
   policy_path="$(_runner_policy_path)"
 
-  if uv --no-config run shisad status >/dev/null 2>&1; then
+  if uv --no-config run --frozen --python 3.12 shisad status >/dev/null 2>&1; then
     printf '%s\n' "Daemon already running (socket: ${socket_path})"
     return 0
   fi
@@ -586,9 +586,9 @@ _cmd_start() {
     printf '%s\n' "  data dir : ${data_dir}"
     printf '%s\n' "  policy   : ${policy_path}"
     if [[ "${debug}" == true ]]; then
-      exec uv --no-config run shisad start --debug
+      exec uv --no-config run --frozen --python 3.12 shisad start --debug
     fi
-    exec uv --no-config run shisad start --foreground
+    exec uv --no-config run --frozen --python 3.12 shisad start --foreground
   fi
 
   printf '%s\n' "Starting shisad in background (debug=${debug})"
@@ -623,7 +623,7 @@ _cmd_start() {
   if [[ "${RUNNER_CONFIG_SELECTED}" == true ]]; then
     local selected_command
     printf -v selected_command \
-      'mkdir -p %q; exec uv --no-config run shisad start %q >>%q 2>&1' \
+      'mkdir -p %q; exec uv --no-config run --frozen --python 3.12 shisad start %q >>%q 2>&1' \
       "${data_dir}" "${daemon_args}" "${log_path}"
     _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" \
       "bash -c $(printf '%q' "${selected_command}")"
@@ -634,7 +634,7 @@ _cmd_start() {
   # Wait for socket + status to succeed.
   local i
   for i in {1..150}; do
-    if uv --no-config run shisad status >/dev/null 2>&1; then
+    if uv --no-config run --frozen --python 3.12 shisad status >/dev/null 2>&1; then
       printf '%s\n' "Daemon is up."
       return 0
     fi
@@ -654,7 +654,7 @@ _cmd_stop() {
   pid_path="$(_daemon_pid_path)"
   socket_path="$(_runner_socket_path)"
 
-  uv --no-config run shisad stop >/dev/null 2>&1 || true
+  uv --no-config run --frozen --python 3.12 shisad stop >/dev/null 2>&1 || true
 
   if command -v tmux >/dev/null 2>&1; then
     local session
@@ -730,7 +730,7 @@ _cmd_logs() {
 _cmd_events() {
   _runner_env
   _preflight_socket_parent false
-  uv --no-config run shisad events subscribe "$@"
+  uv --no-config run --frozen --python 3.12 shisad events subscribe "$@"
 }
 
 _cmd_session() {
@@ -742,7 +742,7 @@ _cmd_session() {
       _runner_env
       _preflight_socket_parent false
       local out session_id
-      out="$(uv --no-config run shisad session create "$@" 2>&1)"
+      out="$(uv --no-config run --frozen --python 3.12 shisad session create "$@" 2>&1)"
       session_id=""
       while IFS= read -r line; do
         line="${line//$'\r'/}"
@@ -765,7 +765,7 @@ _cmd_session() {
       local session_id="$1"
       shift
       local content="$*"
-      uv --no-config run shisad session message "${session_id}" "${content}"
+      uv --no-config run --frozen --python 3.12 shisad session message "${session_id}" "${content}"
       ;;
     list)
       _shisad session list

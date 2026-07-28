@@ -44,7 +44,7 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
 
     assert "runner/harness.sh" in readme_text
     assert "runner/harness.sh" in skill_text
-    assert "uv --no-config run shisad" in harness_text
+    assert "uv --no-config run --frozen --python 3.12 shisad" in harness_text
     assert "RUNNER_INHERIT_SHISAD_ENV" in harness_text
     assert "SHISAD_DISCORD_ENABLED" in harness_text
     assert "tmux" in harness_text
@@ -52,6 +52,18 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
     assert "conda" in readme_text
     assert "mamba" in readme_text
     assert "bash runner/harness.sh shisad status" in readme_text
+
+
+def test_runner_uv_calls_are_lock_and_interpreter_isolated() -> None:
+    expected_prefix = "uv --no-config run --frozen --python 3.12"
+    for path in (
+        Path("runner/harness.sh"),
+        Path("runner/daemon_entrypoint.sh"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        occurrences = text.count("uv --no-config run")
+        assert occurrences > 0
+        assert text.count(expected_prefix) == occurrences, f"{path} has an unisolated uv run call"
 
 
 def test_gh50_manual_socket_docs_require_absolute_xdg_runtime_dir() -> None:
@@ -239,8 +251,10 @@ def _harness_env(
 
 
 def test_harness_env_preserves_active_project_interpreter(tmp_path: Path) -> None:
-    """Nested uv probes must not replace the environment running the caller."""
+    """Ambient uv controls must not replace Python or modify the lock."""
     project_python = Path(".venv/bin/python")
+    lock_path = Path("uv.lock")
+    lock_before = lock_path.read_bytes()
     uv_config = tmp_path / "uv.toml"
     uv_config.write_text(
         'exclude-newer = "2099-01-01T00:00:00Z"\n',
@@ -253,7 +267,13 @@ def test_harness_env_preserves_active_project_interpreter(tmp_path: Path) -> Non
         text=True,
     ).stdout.strip()
 
-    _harness_env({"UV_CONFIG_FILE": str(uv_config)})
+    _harness_env(
+        {
+            "UV_CONFIG_FILE": str(uv_config),
+            "UV_EXCLUDE_NEWER": "1970-01-01T00:00:00Z",
+            "UV_PYTHON": str(tmp_path / "missing-python"),
+        }
+    )
 
     after = subprocess.run(
         [str(project_python), "-c", "import platform; print(platform.python_version())"],
@@ -262,6 +282,7 @@ def test_harness_env_preserves_active_project_interpreter(tmp_path: Path) -> Non
         text=True,
     ).stdout.strip()
     assert after == before
+    assert lock_path.read_bytes() == lock_before
 
 
 def test_harness_env_file_survives_default_clear() -> None:

@@ -35,6 +35,6 @@ log_path="${SHISAD_DATA_DIR}/daemon.log"
 exec >>"${log_path}" 2>&1
 
 if [[ "${debug}" == true ]]; then
-  exec uv --no-config run shisad start --debug
+  exec uv --no-config run --frozen --python 3.12 shisad start --debug
 fi
-exec uv --no-config run shisad start --foreground
+exec uv --no-config run --frozen --python 3.12 shisad start --foreground
