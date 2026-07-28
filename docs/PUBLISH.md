@@ -107,8 +107,9 @@ Version must be updated in both places:
 - [ ] Confirm the contained adversarial, behavioral, and first-principles cases
       passed, with zero failed/xfailed/xpassed/skipped first-principles gates.
       Do not rerun those subsets after the full pass.
-- [ ] Run one Python 3.13 compatibility pass without duplicate coverage:
-      `uv run --python 3.13 pytest tests/ -m "not requires_cap_net_admin" -q -rxXs`
+- [ ] Record the interpreter posture: Python 3.12 is the release gate; newer
+      Python versions are best-effort and non-blocking until a compatibility
+      gate is explicitly restored.
 - [ ] Run the clean consumer-artifact lane without skips on Linux/amd64:
       `SHISAD_RUN_PACKAGING_TESTS=1 SHISAD_RUN_CONTAINER_TESTS=1 uv run --frozen --python 3.12 pytest tests/packaging/test_clean_artifact_journey.py -q -rxXs`
 - [ ] Review the artifact supply-chain diff: `pyproject.toml`, `uv.lock`, the

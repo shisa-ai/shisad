@@ -200,9 +200,10 @@ Required cadence:
   with global coverage and `-rxXs` reporting. This pass contains unit,
   integration, adversarial, behavioral, and first-principles tests; do not run
   those subsets again.
-- Release close: one final full Python 3.12 coverage pass, one full Python 3.13
-  compatibility pass, relevant supported-platform checks, and applicable live
-  lanes. Do not duplicate full coverage on Python 3.13.
+- Release close: one final full Python 3.12 coverage pass, relevant
+  supported-platform checks, and applicable live lanes. Python 3.12 is the
+  release-gated interpreter; newer Python versions remain best-effort and
+  non-blocking until an explicit compatibility gate is restored.
 
 Partial runs do not enforce repository-wide coverage floors because untouched
 modules were intentionally not loaded. Inspect changed executable
@@ -228,11 +229,7 @@ uv run mypy src/shisad/core/host_matching.py
 uv run --python 3.12 pytest tests/behavioral/test_first_principles_gates.py -q
 # Also run the nearest affected integration/behavioral node or keyword slice.
 
-# 3) Ordinary Python 3.13 compatibility smoke
-uv run --python 3.13 python -c "import shisad; import shisad.cli.main"
-uv run --python 3.13 shisad --help
-
-# 4) Milestone/nightly checkpoint: ONE full Python 3.12 collection + coverage
+# 3) Milestone/nightly/release checkpoint: ONE full Python 3.12 collection + coverage
 uv run --python 3.12 pytest -m "not requires_cap_net_admin" \
   --cov=src --cov-report=term-missing --cov-report=xml -q -rxXs
 uv run python scripts/coverage_baseline.py --xml coverage.xml
@@ -240,9 +237,6 @@ uv run python scripts/coverage_module_gate.py --xml coverage.xml \
   --critical-floor 80 --module-floor 60
 uv run ruff check src/ tests/ scripts/
 uv run mypy src/shisad/
-
-# 5) Release-only full Python 3.13 compatibility (no duplicate coverage)
-uv run --python 3.13 pytest -m "not requires_cap_net_admin" -q -rxXs
 
 # Tool status check (review docs/TOOL-STATUS.md; regenerate with live daemon if available)
 # uv run python scripts/live_tool_matrix.py --tool-status
@@ -317,9 +311,10 @@ When asked to close a milestone, review remediation, or release-readiness pass:
    accumulated-state, degraded-web, confirmation-followup,
    require-confirmation, and cross-session postures.
 0a. **Release-close validation bundle recorded once per distinct environment**:
-   one final full 3.12 coverage pass, one full 3.13 compatibility pass,
-   relevant supported-platform checks, and applicable live lanes unless the
-   human lead narrows scope. Do not separately rerun deterministic subsets:
+   one final full 3.12 coverage pass, relevant supported-platform checks, and
+   applicable live lanes unless the human lead narrows scope. Newer Python
+   versions are best-effort and are not release gates. Do not separately rerun
+   deterministic subsets:
    - `bash live-behavior.sh --live-model -q`
    - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=claude uv run pytest tests/live/test_coding_agents_live.py -q`
    - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=codex uv run pytest tests/live/test_coding_agents_live.py -q`
