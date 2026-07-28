@@ -11,11 +11,11 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
-## 0.8.1 Release Content - 2026-07-28
+## [0.8.1] - 2026-07-28
 
-This release candidate makes actions, recovery, configuration, containment,
-and command-channel completion reliable enough to support the onboarding
-work that follows this release.
+This release makes actions, recovery, configuration, containment, and
+command-channel completion reliable enough to support the onboarding work
+that follows this release.
 
 ### Added
 
@@ -1330,6 +1330,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.1]: https://github.com/shisa-ai/shisad/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/shisa-ai/shisad/compare/v0.8.0b1...v0.8.0
 [0.8.0b1]: https://github.com/shisa-ai/shisad/compare/v0.8.0b0...v0.8.0b1
 [0.8.0b0]: https://github.com/shisa-ai/shisad/compare/v0.7.4...v0.8.0b0

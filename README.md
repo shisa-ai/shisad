@@ -61,12 +61,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published stable line is
-`v0.8.0`. The `v0.8.0b1` beta checkpoint remains available for users who need
+`v0.8.1`. The `v0.8.0b1` beta checkpoint remains available for users who need
 the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.1 (release-close candidate) | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
+| v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
@@ -146,8 +146,8 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.1 release-close candidate CLI can create and inspect the typed TOML
-surface without starting the daemon:
+The v0.8.1 CLI can create and inspect the typed TOML surface without starting
+the daemon:
 
 ```bash
 shisad init

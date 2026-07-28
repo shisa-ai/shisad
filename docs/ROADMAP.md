@@ -78,7 +78,7 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.8.0` is published: the stable release covers command-channel approval
   parity, TUI/confirmation polish, task panels, and the broader UX overhaul
   foundation.
-- `v0.8.1` is a pre-tag release-close candidate. Its current tree adds a locked
+- `v0.8.1` is published. The release adds a locked
   `shisad[assistant]` consumer profile, a tested local Linux/amd64 image
   candidate, and bounded CLI/config/runtime UX closure: no-overwrite minimal
   init, typed config/env inspection, grouped help and actionable errors,
@@ -399,7 +399,7 @@ TOTP entry remain deferred to `v0.8.0`.
   with CLI fallback, TOTP stays on trusted command channels when possible, and
   stronger method-specific proofs route to browser/helper/signer surfaces
   truthfully
-- v0.8.1 patch line (release-close candidate) — supported package assembly, a local
+- v0.8.1 patch line (shipped) — supported package assembly, a local
   container candidate, minimal no-overwrite init, typed config/env inspection,
   grouped help/actionable errors, and built-in chat/dashboard/static-snapshot
   theme and accessibility wiring; durable action attempts and conservative
@@ -411,7 +411,7 @@ TOTP entry remain deferred to `v0.8.0`.
   planner-produced memory intent, one canonical secret-signature registry, and
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
-  v0.9 work. Registry publication remains a release-close decision
+  v0.9 work. Container registry publication remains future work
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -467,7 +467,7 @@ TOTP entry remain deferred to `v0.8.0`.
 | Memory hardening + benchmark closure | v0.7.2 (shipped) |
 | Open-threads UX + procedural memory pilot + timeline search | v0.7.3 (shipped) |
 | UX overhaul foundation | v0.8.0 (shipped) |
-| Reliable-foundation patch line | v0.8.1 (release-close candidate) |
+| Reliable-foundation patch line | v0.8.1 (shipped) |
 | Live operator web UI | Later operator UX |
 | Security infrastructure consolidation | v0.9 (planned) |
 | Multitenant support | v0.10 (planned) |
@@ -487,7 +487,7 @@ TOTP entry remain deferred to `v0.8.0`.
 11. Memory hardening + benchmark closure (`v0.7.2`)
 12. Open threads + procedural memory pilot + timeline search (`v0.7.3`)
 13. UX overhaul foundation (`v0.8.0`); live operator web UI remains later work
-14. Reliable-foundation patch line (`v0.8.1`, release-close candidate)
+14. Reliable-foundation patch line (`v0.8.1`, shipped)
 15. Security infrastructure consolidation (`v0.9`, planned)
 16. Multi-tenant support (`v0.10`, planned)
 

@@ -3,7 +3,7 @@
 > **Current 2FA feature status:** The approval protocol, credential store, and
 > currently available approval backends documented here were introduced across
 > `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
-> published line. The current `v0.8.1` release-close candidate preserves TOTP
+> published line. The current `v0.8.1` release preserves TOTP
 > through trusted command-channel replies and the CLI, and provides routine
 > approve / reject handling on Discord, Slack, Telegram, and Matrix. Passkey
 > (WebAuthn) and signer approvals work via browser and remote KMS respectively.
@@ -170,9 +170,9 @@ protect any file to which you redirect it.
 
 ### Approval surface matrix
 
-This matrix describes the current `v0.8.1` release-close candidate. “Typed” means a
-trusted command reply handled before planner flow; it does not mean that proof
-is flattened into ordinary chat content.
+This matrix describes the current `v0.8.1` release. “Typed” means a trusted
+command reply handled before planner flow; it does not mean that proof is
+flattened into ordinary chat content.
 
 | Surface | Routine L0 approve / reject | TOTP / recovery | Stronger proof |
 |---|---|---|---|

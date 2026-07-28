@@ -1,8 +1,8 @@
 # Runtime Authority Map
 
 This document records selected live authority and ownership boundaries in the
-v0.8.1 release-close candidate after the handler-graph and typed-RPC-registry
-consolidations. It is not a claim that every route already has one ideal owner.
+v0.8.1 release after the handler-graph and typed-RPC-registry consolidations.
+It is not a claim that every route already has one ideal owner.
 
 ## Reading the map
 

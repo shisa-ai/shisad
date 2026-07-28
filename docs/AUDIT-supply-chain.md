@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-07-28 (v0.8.1 ReleaseClose candidate)*
+*Updated: 2026-07-28 (v0.8.1)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency and workflow state in the pre-tag v0.8.1 ReleaseClose candidate prepared on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
+*Snapshot basis: code/dependency and workflow state in the v0.8.1 release published on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
 
 ## Scope and Intent
 

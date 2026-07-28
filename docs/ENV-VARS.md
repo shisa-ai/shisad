@@ -33,10 +33,9 @@ and secret-bearing fields are redacted.
 
 ## Artifact Profiles
 
-The `v0.8.1` release-close candidate's consumer package profile is
-`shisad[assistant]`. It installs runtime libraries but does not set any
-`SHISAD_*` channel flag, endpoint, or credential. PromptGuard remains the
-separate `promptguard` extra.
+The `v0.8.1` release's consumer package profile is `shisad[assistant]`. It
+installs runtime libraries but does not set any `SHISAD_*` channel flag,
+endpoint, or credential. PromptGuard remains the separate `promptguard` extra.
 
 The local Linux container candidate supplies these non-secret defaults:
 
