@@ -112,7 +112,7 @@ def _assert_assistant_metadata(wheel: Path) -> None:
     expected = {
         "Requires-Dist: discord-py<3,>=2.4; extra == 'assistant'",
         "Requires-Dist: matrix-nio[e2e]<0.26,>=0.25; extra == 'assistant'",
-        "Requires-Dist: mcp<2,>=1.27; extra == 'assistant'",
+        "Requires-Dist: mcp<2,>=1.28.1; extra == 'assistant'",
         "Requires-Dist: python-telegram-bot<22,>=21.6; extra == 'assistant'",
         "Requires-Dist: slack-bolt<2,>=1.21; extra == 'assistant'",
         "Requires-Dist: slack-sdk<4,>=3.33; extra == 'assistant'",
@@ -350,12 +350,17 @@ def _write_policy(path: Path) -> None:
                 "default_require_confirmation: false",
                 "default_capabilities:",
                 "  - file.read",
+                "  - file.write",
                 "  - http.request",
                 "  - email.read",
                 "  - memory.read",
                 "  - memory.write",
                 "  - message.send",
                 "  - shell.exec",
+                "tools:",
+                "  fs.write:",
+                "    confirmation:",
+                "      level: software",
                 "",
             ]
         ),
@@ -483,7 +488,7 @@ def _exercise_core_journey(
         "session",
         "message",
         session_id,
-        f"write package approval WRITE_PATH={workspace_file}",
+        f"write package approval to {workspace_file} WRITE_PATH={workspace_file}",
     )
     assert "shisad action confirm" in pending_reply.stdout
     pending = json.loads(cli.run("action", "list", "--session", session_id, "--json").stdout)[
