@@ -1307,53 +1307,10 @@ class AcpAdapter(CodingAgentAdapter):
         config: CodingAgentConfig,
         request_step: Callable[[Awaitable[Any], str], Awaitable[Any]] | None = None,
     ) -> dict[str, str]:
-        desired: dict[str, str] = {}
-        permissive_legacy_config = not available_config and self._spec.name != "claude"
-        if config.model:
-            desired["model"] = config.model
-        if config.reasoning_effort:
-            effort_config_id = next(
-                (
-                    candidate
-                    for candidate in ("reasoning_effort", "effort")
-                    if candidate in available_config
-                ),
-                None,
-            )
-            if effort_config_id is not None:
-                desired[effort_config_id] = config.reasoning_effort
-            elif permissive_legacy_config:
-                desired["reasoning_effort"] = config.reasoning_effort
-            else:
-                raise RequestError(
-                    -32602,
-                    (
-                        f"ACP agent '{self._spec.name}' does not advertise "
-                        "a reasoning-effort config option"
-                    ),
-                    {
-                        "semantic_config": "reasoning_effort",
-                        "requested_value": config.reasoning_effort,
-                        "advertised_config_ids": sorted(available_config),
-                    },
-                )
-        if ("max_turns" in available_config or permissive_legacy_config) and (
-            config.max_turns is not None
-        ):
-            desired["max_turns"] = str(config.max_turns)
-        if (
-            "permission_mode" in available_config or permissive_legacy_config
-        ) and config.permission_mode:
-            desired["permission_mode"] = config.permission_mode
-        if "allowed_tools" in available_config or permissive_legacy_config:
-            if config.allowed_tools:
-                desired["allowed_tools"] = ",".join(config.allowed_tools)
-            elif config.read_only:
-                desired["allowed_tools"] = "read-only"
-        if selected_mode is None:
-            desired_mode = "plan" if config.read_only else "build"
-            desired["mode"] = desired_mode
-
+        config_state = dict(available_config)
+        initial_config_ids = frozenset(config_state)
+        permissive_legacy_config = not config_state and self._spec.name != "claude"
+        claude_empty_surface = not config_state and self._spec.name == "claude"
         applied: dict[str, str] = {}
 
         async def _request(awaitable: Awaitable[Any], phase: str) -> Any:
@@ -1361,31 +1318,21 @@ class AcpAdapter(CodingAgentAdapter):
                 return await awaitable
             return await request_step(awaitable, phase)
 
-        for config_id, value in desired.items():
-            advertised_config = available_config.get(config_id)
-            if advertised_config is not None:
-                _, advertised_values = advertised_config
-                if value not in advertised_values:
-                    raise RequestError(
-                        -32602,
-                        (
-                            f"ACP config option '{config_id}' does not advertise "
-                            f"requested value '{value}'"
-                        ),
-                        {
-                            "config_id": config_id,
-                            "requested_value": value,
-                            "advertised_values": sorted(advertised_values),
-                        },
-                    )
+        async def _apply_option(
+            config_id: str,
+            value: str,
+            *,
+            require_exact_acknowledgement: bool = False,
+        ) -> None:
+            nonlocal config_state
             response = await _request(
                 conn.set_config_option(config_id, session_id=session_id, value=value),
                 "set_config_option",
             )
-            acknowledged_config = _extract_config_options(
-                getattr(response, "config_options", None)
-            ).get(config_id)
-            if acknowledged_config is None:
+            response_options = getattr(response, "config_options", None)
+            response_state = _extract_config_options(response_options)
+            acknowledged_config = response_state.get(config_id)
+            if require_exact_acknowledgement and acknowledged_config is None:
                 raise RequestError(
                     -32602,
                     (
@@ -1397,8 +1344,12 @@ class AcpAdapter(CodingAgentAdapter):
                         "requested_value": value,
                     },
                 )
-            acknowledged_value, _ = acknowledged_config
-            if acknowledged_value != value:
+            if (
+                require_exact_acknowledgement
+                and acknowledged_config is not None
+                and acknowledged_config[0] != value
+            ):
+                acknowledged_value = acknowledged_config[0]
                 raise RequestError(
                     -32602,
                     (
@@ -1411,5 +1362,72 @@ class AcpAdapter(CodingAgentAdapter):
                         "acknowledged_value": acknowledged_value,
                     },
                 )
-            applied[config_id] = acknowledged_value
+            if acknowledged_config is not None:
+                applied[config_id] = acknowledged_config[0]
+            if response_options is not None:
+                config_state = response_state
+
+        if config.model:
+            await _apply_option("model", config.model)
+
+        if config.reasoning_effort:
+            effort_config_id = next(
+                (
+                    candidate
+                    for candidate in ("reasoning_effort", "effort")
+                    if candidate in config_state
+                ),
+                None,
+            )
+            if effort_config_id is None:
+                raise RequestError(
+                    -32602,
+                    (
+                        f"ACP agent '{self._spec.name}' does not advertise "
+                        "a reasoning-effort config option"
+                    ),
+                    {
+                        "semantic_config": "reasoning_effort",
+                        "requested_value": config.reasoning_effort,
+                        "advertised_config_ids": sorted(config_state),
+                    },
+                )
+            _, advertised_effort_values = config_state[effort_config_id]
+            if config.reasoning_effort not in advertised_effort_values:
+                raise RequestError(
+                    -32602,
+                    (
+                        f"ACP config option '{effort_config_id}' does not advertise "
+                        f"requested value '{config.reasoning_effort}'"
+                    ),
+                    {
+                        "config_id": effort_config_id,
+                        "requested_value": config.reasoning_effort,
+                        "advertised_values": sorted(advertised_effort_values),
+                    },
+                )
+            await _apply_option(
+                effort_config_id,
+                config.reasoning_effort,
+                require_exact_acknowledgement=True,
+            )
+
+        def _available_for_optional_config(config_id: str) -> bool:
+            if claude_empty_surface:
+                return False
+            if permissive_legacy_config:
+                return True
+            return config_id in initial_config_ids and config_id in config_state
+
+        if config.max_turns is not None and _available_for_optional_config("max_turns"):
+            await _apply_option("max_turns", str(config.max_turns))
+        if config.permission_mode and _available_for_optional_config("permission_mode"):
+            await _apply_option("permission_mode", config.permission_mode)
+        if _available_for_optional_config("allowed_tools"):
+            if config.allowed_tools:
+                await _apply_option("allowed_tools", ",".join(config.allowed_tools))
+            elif config.read_only:
+                await _apply_option("allowed_tools", "read-only")
+        if selected_mode is None:
+            await _apply_option("mode", "plan" if config.read_only else "build")
         return applied

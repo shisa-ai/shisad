@@ -8,7 +8,8 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
-from acp import RequestError
+from acp import RequestError, SetSessionConfigOptionResponse
+from acp.schema import SessionConfigOptionSelect, SessionConfigSelectOption
 
 import shisad.coding.acp_adapter as acp_adapter_module
 from shisad.coding.acp_adapter import (
@@ -17,6 +18,7 @@ from shisad.coding.acp_adapter import (
     _AcpProcessExited,
     _agent_process_command,
     _await_acp_step,
+    _extract_config_options,
     _ProcessStderrTail,
     _request_error_payload,
 )
@@ -109,6 +111,40 @@ class _TransportExceptionSpawn:
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+
+def _select_config_option(
+    config_id: str,
+    *,
+    current_value: str,
+    values: tuple[str, ...],
+) -> SessionConfigOptionSelect:
+    return SessionConfigOptionSelect(
+        id=config_id,
+        name=config_id.replace("_", " ").title(),
+        type="select",
+        current_value=current_value,
+        options=[SessionConfigSelectOption(name=value.title(), value=value) for value in values],
+    )
+
+
+class _SequencedConfigConnection:
+    def __init__(self, *responses: SetSessionConfigOptionResponse) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[str, str]] = []
+
+    async def set_config_option(
+        self,
+        config_id: str,
+        *,
+        session_id: str,
+        value: str,
+    ) -> SetSessionConfigOptionResponse:
+        _ = session_id
+        self.calls.append((config_id, value))
+        if not self._responses:
+            raise AssertionError("unexpected set_config_option call")
+        return self._responses.pop(0)
 
 
 def test_m3_acp_adapter_process_group_wrapper_does_not_require_gnu_setsid() -> None:
@@ -578,6 +614,177 @@ async def test_gh109_claude_rejects_requested_effort_without_advertised_surface(
             "requested_value": "high",
             "advertised_config_ids": [],
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh109_model_alias_acknowledgement_records_returned_current_value() -> None:
+    initial_options = [
+        _select_config_option(
+            "model",
+            current_value="default",
+            values=("default", "opus", "sonnet"),
+        )
+    ]
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(
+            config_options=[
+                _select_config_option(
+                    "model",
+                    current_value="opus",
+                    values=("default", "opus", "sonnet"),
+                )
+            ]
+        )
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    applied = await adapter._apply_config(
+        conn=connection,
+        session_id="session-1",
+        available_config=_extract_config_options(initial_options),
+        selected_mode="plan",
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            model="claude-opus-5",
+        ),
+    )
+
+    assert connection.calls == [("model", "claude-opus-5")]
+    assert applied == {"model": "opus"}
+
+
+@pytest.mark.asyncio
+async def test_gh109_effort_uses_config_surface_refreshed_after_model() -> None:
+    initial_options = [
+        _select_config_option(
+            "model",
+            current_value="default",
+            values=("default", "opus"),
+        ),
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium"),
+        ),
+    ]
+    after_model = [
+        _select_config_option(
+            "model",
+            current_value="opus",
+            values=("default", "opus"),
+        ),
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        ),
+    ]
+    after_effort = [
+        after_model[0],
+        _select_config_option(
+            "effort",
+            current_value="high",
+            values=("low", "medium", "high"),
+        ),
+    ]
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(config_options=after_model),
+        SetSessionConfigOptionResponse(config_options=after_effort),
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    applied = await adapter._apply_config(
+        conn=connection,
+        session_id="session-1",
+        available_config=_extract_config_options(initial_options),
+        selected_mode="plan",
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            model="opus",
+            reasoning_effort="high",
+        ),
+    )
+
+    assert connection.calls == [("model", "opus"), ("effort", "high")]
+    assert applied == {"model": "opus", "effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_gh109_non_claude_rejects_requested_effort_without_advertised_surface(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("codex", "--omit-config-options"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            read_only=True,
+            reasoning_effort="high",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.applied_config == {}
+    assert result.transport_error == {
+        "kind": "request_error",
+        "message": ("ACP agent 'codex' does not advertise a reasoning-effort config option"),
+        "code": -32602,
+        "data": {
+            "semantic_config": "reasoning_effort",
+            "requested_value": "high",
+            "advertised_config_ids": [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh109_rejects_effort_acknowledgement_missing_requested_id() -> None:
+    initial_options = [
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        )
+    ]
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(
+            config_options=[
+                _select_config_option(
+                    "model",
+                    current_value="default",
+                    values=("default", "opus"),
+                )
+            ]
+        )
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    with pytest.raises(RequestError) as captured:
+        await adapter._apply_config(
+            conn=connection,
+            session_id="session-1",
+            available_config=_extract_config_options(initial_options),
+            selected_mode="plan",
+            config=CodingAgentConfig(
+                preferred_agent="claude",
+                read_only=True,
+                reasoning_effort="high",
+            ),
+        )
+
+    assert captured.value.code == -32602
+    assert str(captured.value) == (
+        "ACP config option 'effort' did not acknowledge requested value 'high'"
+    )
+    assert captured.value.data == {
+        "config_id": "effort",
+        "requested_value": "high",
     }
 
 
