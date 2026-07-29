@@ -98,6 +98,9 @@ class FakeAcpAgent(Agent):
         exit_stderr: str = "",
         exit_code: int = 1,
         omit_config_options: bool = False,
+        effort_config_id: str = "reasoning_effort",
+        ignore_config_option: str | None = None,
+        reject_config_option: str | None = None,
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
@@ -115,6 +118,9 @@ class FakeAcpAgent(Agent):
         self._exit_stderr = exit_stderr
         self._exit_code = exit_code
         self._omit_config_options = omit_config_options
+        self._effort_config_id = effort_config_id
+        self._ignore_config_option = ignore_config_option
+        self._reject_config_option = reject_config_option
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
@@ -183,7 +189,7 @@ class FakeAcpAgent(Agent):
         config = {
             "mode": self._default_mode,
             "model": "fake-model",
-            "reasoning_effort": "medium",
+            self._effort_config_id: "medium",
             "max_turns": "4",
             "allowed_tools": "all",
             "permission_mode": "approve-all",
@@ -277,8 +283,11 @@ class FakeAcpAgent(Agent):
     ) -> SetSessionConfigOptionResponse | None:
         _ = kwargs
         self._exit_process_if_configured(self._exit_on_set_config_option)
+        if config_id == self._reject_config_option:
+            raise RequestError.invalid_params({"config_id": config_id, "value": value})
         state = self._sessions[session_id]
-        state["config"][config_id] = value
+        if config_id != self._ignore_config_option:
+            state["config"][config_id] = value
         return SetSessionConfigOptionResponse(config_options=self._config_options(state["config"]))
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> Any:
@@ -313,7 +322,7 @@ class FakeAcpAgent(Agent):
         if do_edit:
             patch_line = (
                 f"\nFake ACP edit from {self._agent_name} mode={mode} "
-                f"reasoning={config.get('reasoning_effort', '')}\n"
+                f"reasoning={config.get(self._effort_config_id, '')}\n"
             )
             new_text = f"{old_text}{patch_line}"
             target_file.write_text(new_text, encoding="utf-8")
@@ -426,8 +435,10 @@ class FakeAcpAgent(Agent):
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         _ = (method, params)
 
-    @staticmethod
-    def _config_options(config: dict[str, str]) -> list[SessionConfigOptionSelect]:
+    def _config_options(
+        self,
+        config: dict[str, str],
+    ) -> list[SessionConfigOptionSelect]:
         return [
             SessionConfigOptionSelect(
                 id="mode",
@@ -452,10 +463,10 @@ class FakeAcpAgent(Agent):
                 ],
             ),
             SessionConfigOptionSelect(
-                id="reasoning_effort",
+                id=self._effort_config_id,
                 name="Reasoning Effort",
                 type="select",
-                current_value=str(config["reasoning_effort"]),
+                current_value=str(config[self._effort_config_id]),
                 options=[
                     SessionConfigSelectOption(name="Low", value="low"),
                     SessionConfigSelectOption(name="Medium", value="medium"),
@@ -513,6 +524,9 @@ async def _main() -> None:
     parser.add_argument("--exit-on-set-session-mode", action="store_true")
     parser.add_argument("--exit-on-set-config-option", action="store_true")
     parser.add_argument("--omit-config-options", action="store_true")
+    parser.add_argument("--effort-config-id", default="reasoning_effort")
+    parser.add_argument("--ignore-config-option")
+    parser.add_argument("--reject-config-option")
     args = parser.parse_args()
     _ = default_environment()
     if args.exit_before_initialize:
@@ -535,6 +549,9 @@ async def _main() -> None:
             exit_stderr=args.stderr,
             exit_code=args.exit_code,
             omit_config_options=args.omit_config_options,
+            effort_config_id=args.effort_config_id,
+            ignore_config_option=args.ignore_config_option,
+            reject_config_option=args.reject_config_option,
         )
     )
 

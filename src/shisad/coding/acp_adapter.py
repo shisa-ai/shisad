@@ -817,13 +817,28 @@ def _extract_cost_usd(payload: object) -> float | None:
         return None
 
 
-def _extract_config_ids(config_options: list[SessionConfigOption] | None) -> set[str]:
-    ids: set[str] = set()
+def _extract_config_options(
+    config_options: list[SessionConfigOption] | None,
+) -> dict[str, tuple[str, frozenset[str]]]:
+    extracted: dict[str, tuple[str, frozenset[str]]] = {}
     for option in config_options or []:
-        option_id = str(getattr(option, "id", "")).strip()
-        if option_id:
-            ids.add(option_id)
-    return ids
+        normalized_option = getattr(option, "root", option)
+        option_id = str(getattr(normalized_option, "id", "")).strip()
+        if not option_id:
+            continue
+        values: set[str] = set()
+        for candidate in getattr(normalized_option, "options", []):
+            value = str(getattr(candidate, "value", "")).strip()
+            if value:
+                values.add(value)
+                continue
+            for grouped_candidate in getattr(candidate, "options", []):
+                grouped_value = str(getattr(grouped_candidate, "value", "")).strip()
+                if grouped_value:
+                    values.add(grouped_value)
+        current_value = str(getattr(normalized_option, "current_value", "")).strip()
+        extracted[option_id] = (current_value, frozenset(values))
+    return extracted
 
 
 def _extract_mode_ids(modes: Any) -> set[str]:
@@ -1063,7 +1078,7 @@ class AcpAdapter(CodingAgentAdapter):
                         request_step=_step,
                     )
 
-                    available_config = _extract_config_ids(
+                    available_config = _extract_config_options(
                         getattr(new_session, "config_options", None)
                     )
                     applied_config = await self._apply_config(
@@ -1287,7 +1302,7 @@ class AcpAdapter(CodingAgentAdapter):
         *,
         conn: Any,
         session_id: str,
-        available_config: set[str],
+        available_config: Mapping[str, tuple[str, frozenset[str]]],
         selected_mode: str | None,
         config: CodingAgentConfig,
         request_step: Callable[[Awaitable[Any], str], Awaitable[Any]] | None = None,
@@ -1296,10 +1311,32 @@ class AcpAdapter(CodingAgentAdapter):
         permissive_legacy_config = not available_config and self._spec.name != "claude"
         if config.model:
             desired["model"] = config.model
-        if (
-            "reasoning_effort" in available_config or permissive_legacy_config
-        ) and config.reasoning_effort:
-            desired["reasoning_effort"] = config.reasoning_effort
+        if config.reasoning_effort:
+            effort_config_id = next(
+                (
+                    candidate
+                    for candidate in ("reasoning_effort", "effort")
+                    if candidate in available_config
+                ),
+                None,
+            )
+            if effort_config_id is not None:
+                desired[effort_config_id] = config.reasoning_effort
+            elif permissive_legacy_config:
+                desired["reasoning_effort"] = config.reasoning_effort
+            else:
+                raise RequestError(
+                    -32602,
+                    (
+                        f"ACP agent '{self._spec.name}' does not advertise "
+                        "a reasoning-effort config option"
+                    ),
+                    {
+                        "semantic_config": "reasoning_effort",
+                        "requested_value": config.reasoning_effort,
+                        "advertised_config_ids": sorted(available_config),
+                    },
+                )
         if ("max_turns" in available_config or permissive_legacy_config) and (
             config.max_turns is not None
         ):
@@ -1325,12 +1362,54 @@ class AcpAdapter(CodingAgentAdapter):
             return await request_step(awaitable, phase)
 
         for config_id, value in desired.items():
-            try:
-                await _request(
-                    conn.set_config_option(config_id, session_id=session_id, value=value),
-                    "set_config_option",
+            advertised_config = available_config.get(config_id)
+            if advertised_config is not None:
+                _, advertised_values = advertised_config
+                if value not in advertised_values:
+                    raise RequestError(
+                        -32602,
+                        (
+                            f"ACP config option '{config_id}' does not advertise "
+                            f"requested value '{value}'"
+                        ),
+                        {
+                            "config_id": config_id,
+                            "requested_value": value,
+                            "advertised_values": sorted(advertised_values),
+                        },
+                    )
+            response = await _request(
+                conn.set_config_option(config_id, session_id=session_id, value=value),
+                "set_config_option",
+            )
+            acknowledged_config = _extract_config_options(
+                getattr(response, "config_options", None)
+            ).get(config_id)
+            if acknowledged_config is None:
+                raise RequestError(
+                    -32602,
+                    (
+                        f"ACP config option '{config_id}' did not acknowledge "
+                        f"requested value '{value}'"
+                    ),
+                    {
+                        "config_id": config_id,
+                        "requested_value": value,
+                    },
                 )
-            except RequestError:
-                continue
-            applied[config_id] = value
+            acknowledged_value, _ = acknowledged_config
+            if acknowledged_value != value:
+                raise RequestError(
+                    -32602,
+                    (
+                        f"ACP config option '{config_id}' acknowledged "
+                        f"'{acknowledged_value}' instead of requested '{value}'"
+                    ),
+                    {
+                        "config_id": config_id,
+                        "requested_value": value,
+                        "acknowledged_value": acknowledged_value,
+                    },
+                )
+            applied[config_id] = acknowledged_value
         return applied

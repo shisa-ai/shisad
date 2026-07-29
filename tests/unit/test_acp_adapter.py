@@ -412,8 +412,6 @@ async def test_m3_acp_adapter_empty_config_surface_applies_only_model_override(
             preferred_agent="claude",
             read_only=True,
             model="opus",
-            reasoning_effort="xhigh",
-            max_turns=8,
         ),
     )
 
@@ -421,6 +419,166 @@ async def test_m3_acp_adapter_empty_config_surface_applies_only_model_override(
     assert result.selected_mode == "plan"
     assert "model=opus" in result.result.summary
     assert result.applied_config == {"model": "opus"}
+
+
+@pytest.mark.asyncio
+async def test_gh109_claude_applies_reasoning_effort_through_advertised_effort_id(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--effort-config-id", "effort"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: implement\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=False,
+            reasoning_effort="high",
+        ),
+    )
+
+    assert result.result.success is True
+    assert result.applied_config["effort"] == "high"
+    assert "reasoning=high" in (tmp_path / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_gh109_claude_rejects_unadvertised_effort_value(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--effort-config-id", "effort"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            reasoning_effort="xhigh",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.applied_config == {}
+    assert result.transport_error == {
+        "kind": "request_error",
+        "message": ("ACP config option 'effort' does not advertise requested value 'xhigh'"),
+        "code": -32602,
+        "data": {
+            "config_id": "effort",
+            "requested_value": "xhigh",
+            "advertised_values": ["high", "low", "medium"],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh109_claude_rejects_unacknowledged_effort_value(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "claude",
+            "--effort-config-id",
+            "effort",
+            "--ignore-config-option",
+            "effort",
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            reasoning_effort="high",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.applied_config == {}
+    assert result.transport_error == {
+        "kind": "request_error",
+        "message": ("ACP config option 'effort' acknowledged 'medium' instead of requested 'high'"),
+        "code": -32602,
+        "data": {
+            "config_id": "effort",
+            "requested_value": "high",
+            "acknowledged_value": "medium",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh109_claude_surfaces_rejected_effort_value(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "claude",
+            "--effort-config-id",
+            "effort",
+            "--reject-config-option",
+            "effort",
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            reasoning_effort="high",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.applied_config == {}
+    assert result.transport_error == {
+        "kind": "request_error",
+        "message": "Invalid params",
+        "code": -32602,
+        "data": {
+            "config_id": "effort",
+            "value": "high",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh109_claude_rejects_requested_effort_without_advertised_surface(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--omit-config-options"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            reasoning_effort="high",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.applied_config == {}
+    assert result.transport_error == {
+        "kind": "request_error",
+        "message": ("ACP agent 'claude' does not advertise a reasoning-effort config option"),
+        "code": -32602,
+        "data": {
+            "semantic_config": "reasoning_effort",
+            "requested_value": "high",
+            "advertised_config_ids": [],
+        },
+    }
 
 
 @pytest.mark.asyncio

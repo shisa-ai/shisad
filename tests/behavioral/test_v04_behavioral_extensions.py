@@ -2941,7 +2941,7 @@ async def test_behavioral_review_mode_signals_read_only_and_preserves_opportunis
         config_overrides={
             "coding_repo_root": Path.cwd(),
             "coding_agent_registry_overrides": {
-                "claude": _fake_coding_agent_command("claude"),
+                "claude": f"{_fake_coding_agent_command('claude')} --effort-config-id effort",
             },
         },
     )
@@ -2968,6 +2968,7 @@ async def test_behavioral_review_mode_signals_read_only_and_preserves_opportunis
                     ],
                     "preferred_agent": "claude",
                     "task_kind": "review",
+                    "reasoning_effort": "high",
                 },
             },
         )
@@ -2979,6 +2980,7 @@ async def test_behavioral_review_mode_signals_read_only_and_preserves_opportunis
         assert "mode=plan" in task_result["summary"]
         proposal_payload = json.loads(Path(task_result["proposal_ref"]).read_text(encoding="utf-8"))
         assert "Fake ACP edit from claude" in proposal_payload["diff"]
+        assert "reasoning=high" in proposal_payload["diff"]
     finally:
         await _shutdown_daemon(daemon_task, client)
 
