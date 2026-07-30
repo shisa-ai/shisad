@@ -1312,6 +1312,7 @@ class AcpAdapter(CodingAgentAdapter):
         permissive_legacy_config = not config_state and self._spec.name != "claude"
         claude_empty_surface = not config_state and self._spec.name == "claude"
         applied: dict[str, str] = {}
+        required_effort: tuple[str, str] | None = None
 
         async def _request(awaitable: Awaitable[Any], phase: str) -> Any:
             if request_step is None:
@@ -1323,12 +1324,18 @@ class AcpAdapter(CodingAgentAdapter):
             value: str,
             *,
             require_exact_acknowledgement: bool = False,
+            tolerate_unadvertised_rejection: bool = False,
         ) -> None:
             nonlocal config_state
-            response = await _request(
-                conn.set_config_option(config_id, session_id=session_id, value=value),
-                "set_config_option",
-            )
+            try:
+                response = await _request(
+                    conn.set_config_option(config_id, session_id=session_id, value=value),
+                    "set_config_option",
+                )
+            except RequestError:
+                if tolerate_unadvertised_rejection:
+                    return
+                raise
             response_options = getattr(response, "config_options", None)
             response_state = _extract_config_options(response_options)
             acknowledged_config = response_state.get(config_id)
@@ -1362,10 +1369,38 @@ class AcpAdapter(CodingAgentAdapter):
                         "acknowledged_value": acknowledged_value,
                     },
                 )
+            if response_options is not None:
+                if required_effort is not None:
+                    effort_config_id, requested_effort = required_effort
+                    acknowledged_effort = response_state.get(effort_config_id)
+                    if acknowledged_effort is None or acknowledged_effort[0] != requested_effort:
+                        raise RequestError(
+                            -32602,
+                            (
+                                f"ACP config option '{effort_config_id}' no longer "
+                                f"acknowledges requested value '{requested_effort}' "
+                                f"after configuring '{config_id}'"
+                            ),
+                            {
+                                "config_id": effort_config_id,
+                                "requested_value": requested_effort,
+                                "acknowledged_value": (
+                                    acknowledged_effort[0]
+                                    if acknowledged_effort is not None
+                                    else None
+                                ),
+                                "after_config_id": config_id,
+                            },
+                        )
+                for applied_config_id in tuple(applied):
+                    current_config = response_state.get(applied_config_id)
+                    if current_config is None:
+                        del applied[applied_config_id]
+                    else:
+                        applied[applied_config_id] = current_config[0]
+                config_state = response_state
             if acknowledged_config is not None:
                 applied[config_id] = acknowledged_config[0]
-            if response_options is not None:
-                config_state = response_state
 
         if config.model:
             await _apply_option("model", config.model)
@@ -1411,6 +1446,7 @@ class AcpAdapter(CodingAgentAdapter):
                 config.reasoning_effort,
                 require_exact_acknowledgement=True,
             )
+            required_effort = (effort_config_id, config.reasoning_effort)
 
         def _available_for_optional_config(config_id: str) -> bool:
             if claude_empty_surface:
@@ -1420,14 +1456,34 @@ class AcpAdapter(CodingAgentAdapter):
             return config_id in initial_config_ids and config_id in config_state
 
         if config.max_turns is not None and _available_for_optional_config("max_turns"):
-            await _apply_option("max_turns", str(config.max_turns))
+            await _apply_option(
+                "max_turns",
+                str(config.max_turns),
+                tolerate_unadvertised_rejection="max_turns" not in config_state,
+            )
         if config.permission_mode and _available_for_optional_config("permission_mode"):
-            await _apply_option("permission_mode", config.permission_mode)
+            await _apply_option(
+                "permission_mode",
+                config.permission_mode,
+                tolerate_unadvertised_rejection="permission_mode" not in config_state,
+            )
         if _available_for_optional_config("allowed_tools"):
             if config.allowed_tools:
-                await _apply_option("allowed_tools", ",".join(config.allowed_tools))
+                await _apply_option(
+                    "allowed_tools",
+                    ",".join(config.allowed_tools),
+                    tolerate_unadvertised_rejection="allowed_tools" not in config_state,
+                )
             elif config.read_only:
-                await _apply_option("allowed_tools", "read-only")
+                await _apply_option(
+                    "allowed_tools",
+                    "read-only",
+                    tolerate_unadvertised_rejection="allowed_tools" not in config_state,
+                )
         if selected_mode is None:
-            await _apply_option("mode", "plan" if config.read_only else "build")
+            await _apply_option(
+                "mode",
+                "plan" if config.read_only else "build",
+                tolerate_unadvertised_rejection="mode" not in config_state,
+            )
         return applied

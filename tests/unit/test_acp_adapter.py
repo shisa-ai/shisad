@@ -448,6 +448,7 @@ async def test_m3_acp_adapter_empty_config_surface_applies_only_model_override(
             preferred_agent="claude",
             read_only=True,
             model="opus",
+            max_turns=8,
         ),
     )
 
@@ -710,6 +711,201 @@ async def test_gh109_effort_uses_config_surface_refreshed_after_model() -> None:
 
     assert connection.calls == [("model", "opus"), ("effort", "high")]
     assert applied == {"model": "opus", "effort": "high"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_effort", ["medium", None])
+async def test_gh109_later_response_rejects_changed_or_missing_effort(
+    later_effort: str | None,
+) -> None:
+    initial_options = [
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        ),
+        _select_config_option(
+            "max_turns",
+            current_value="4",
+            values=("4", "8"),
+        ),
+    ]
+    after_effort = [
+        _select_config_option(
+            "effort",
+            current_value="high",
+            values=("low", "medium", "high"),
+        ),
+        initial_options[1],
+    ]
+    after_max_turns = [
+        _select_config_option(
+            "max_turns",
+            current_value="8",
+            values=("4", "8"),
+        )
+    ]
+    if later_effort is not None:
+        after_max_turns.append(
+            _select_config_option(
+                "effort",
+                current_value=later_effort,
+                values=("low", "medium", "high"),
+            )
+        )
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(config_options=after_effort),
+        SetSessionConfigOptionResponse(config_options=after_max_turns),
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    with pytest.raises(RequestError) as captured:
+        await adapter._apply_config(
+            conn=connection,
+            session_id="session-1",
+            available_config=_extract_config_options(initial_options),
+            selected_mode="plan",
+            config=CodingAgentConfig(
+                preferred_agent="claude",
+                reasoning_effort="high",
+                max_turns=8,
+                permission_mode="",
+            ),
+        )
+
+    assert connection.calls == [("effort", "high"), ("max_turns", "8")]
+    assert captured.value.code == -32602
+    assert str(captured.value) == (
+        "ACP config option 'effort' no longer acknowledges requested value "
+        "'high' after configuring 'max_turns'"
+    )
+    assert captured.value.data == {
+        "config_id": "effort",
+        "requested_value": "high",
+        "acknowledged_value": later_effort,
+        "after_config_id": "max_turns",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_model", ["sonnet", None])
+async def test_gh109_later_response_reconciles_applied_config(
+    later_model: str | None,
+) -> None:
+    initial_options = [
+        _select_config_option(
+            "model",
+            current_value="default",
+            values=("default", "opus", "sonnet"),
+        ),
+        _select_config_option(
+            "max_turns",
+            current_value="4",
+            values=("4", "8"),
+        ),
+    ]
+    after_model = [
+        _select_config_option(
+            "model",
+            current_value="opus",
+            values=("default", "opus", "sonnet"),
+        ),
+        initial_options[1],
+    ]
+    after_max_turns = [
+        _select_config_option(
+            "max_turns",
+            current_value="8",
+            values=("4", "8"),
+        )
+    ]
+    if later_model is not None:
+        after_max_turns.append(
+            _select_config_option(
+                "model",
+                current_value=later_model,
+                values=("default", "opus", "sonnet"),
+            )
+        )
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(config_options=after_model),
+        SetSessionConfigOptionResponse(config_options=after_max_turns),
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    applied = await adapter._apply_config(
+        conn=connection,
+        session_id="session-1",
+        available_config=_extract_config_options(initial_options),
+        selected_mode="plan",
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            model="claude-opus-5",
+            max_turns=8,
+            permission_mode="",
+        ),
+    )
+
+    assert connection.calls == [("model", "claude-opus-5"), ("max_turns", "8")]
+    expected = {"max_turns": "8"}
+    if later_model is not None:
+        expected["model"] = later_model
+    assert applied == expected
+
+
+@pytest.mark.asyncio
+async def test_gh109_speculative_legacy_optional_rejection_does_not_abort_task(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "codex",
+            "--omit-config-options",
+            "--reject-config-option",
+            "max_turns",
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: implement\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            max_turns=8,
+        ),
+    )
+
+    assert result.result.success is True
+    assert "max_turns" not in result.applied_config
+
+
+@pytest.mark.asyncio
+async def test_gh109_advertised_optional_rejection_remains_strict(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "codex",
+            "--reject-config-option",
+            "max_turns",
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: implement\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            max_turns=8,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error["data"] == {
+        "config_id": "max_turns",
+        "value": "8",
+    }
 
 
 @pytest.mark.asyncio
