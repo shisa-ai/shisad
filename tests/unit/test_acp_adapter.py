@@ -714,6 +714,136 @@ async def test_gh109_effort_uses_config_surface_refreshed_after_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh109_dual_alias_selects_candidate_advertising_requested_value() -> None:
+    initial_options = [
+        _select_config_option(
+            "reasoning_effort",
+            current_value="medium",
+            values=("low", "medium"),
+        ),
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        ),
+    ]
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(
+            config_options=[
+                initial_options[0],
+                _select_config_option(
+                    "effort",
+                    current_value="high",
+                    values=("low", "medium", "high"),
+                ),
+            ]
+        )
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    applied = await adapter._apply_config(
+        conn=connection,
+        session_id="session-1",
+        available_config=_extract_config_options(initial_options),
+        selected_mode="plan",
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            reasoning_effort="high",
+            permission_mode="",
+        ),
+    )
+
+    assert connection.calls == [("effort", "high")]
+    assert applied == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_gh109_dual_alias_prefers_reasoning_effort_when_both_are_compatible() -> None:
+    initial_options = [
+        _select_config_option(
+            "reasoning_effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        ),
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "high"),
+        ),
+    ]
+    connection = _SequencedConfigConnection(
+        SetSessionConfigOptionResponse(
+            config_options=[
+                _select_config_option(
+                    "reasoning_effort",
+                    current_value="high",
+                    values=("low", "medium", "high"),
+                ),
+                initial_options[1],
+            ]
+        )
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    applied = await adapter._apply_config(
+        conn=connection,
+        session_id="session-1",
+        available_config=_extract_config_options(initial_options),
+        selected_mode="plan",
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            reasoning_effort="high",
+            permission_mode="",
+        ),
+    )
+
+    assert connection.calls == [("reasoning_effort", "high")]
+    assert applied == {"reasoning_effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_gh109_dual_alias_rejects_when_neither_candidate_advertises_value() -> None:
+    initial_options = [
+        _select_config_option(
+            "reasoning_effort",
+            current_value="medium",
+            values=("low", "medium"),
+        ),
+        _select_config_option(
+            "effort",
+            current_value="medium",
+            values=("low", "medium", "max"),
+        ),
+    ]
+    connection = _SequencedConfigConnection()
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude"))
+
+    with pytest.raises(RequestError) as captured:
+        await adapter._apply_config(
+            conn=connection,
+            session_id="session-1",
+            available_config=_extract_config_options(initial_options),
+            selected_mode="plan",
+            config=CodingAgentConfig(
+                preferred_agent="claude",
+                reasoning_effort="high",
+                permission_mode="",
+            ),
+        )
+
+    assert connection.calls == []
+    assert captured.value.code == -32602
+    assert str(captured.value) == (
+        "ACP config option 'reasoning_effort' does not advertise requested value 'high'"
+    )
+    assert captured.value.data == {
+        "config_id": "reasoning_effort",
+        "requested_value": "high",
+        "advertised_values": ["low", "medium"],
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("later_effort", ["medium", None])
 async def test_gh109_later_response_rejects_changed_or_missing_effort(
     later_effort: str | None,

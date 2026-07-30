@@ -1406,15 +1406,12 @@ class AcpAdapter(CodingAgentAdapter):
             await _apply_option("model", config.model)
 
         if config.reasoning_effort:
-            effort_config_id = next(
-                (
-                    candidate
-                    for candidate in ("reasoning_effort", "effort")
-                    if candidate in config_state
-                ),
-                None,
+            advertised_effort_ids = tuple(
+                candidate
+                for candidate in ("reasoning_effort", "effort")
+                if candidate in config_state
             )
-            if effort_config_id is None:
+            if not advertised_effort_ids:
                 raise RequestError(
                     -32602,
                     (
@@ -1427,6 +1424,14 @@ class AcpAdapter(CodingAgentAdapter):
                         "advertised_config_ids": sorted(config_state),
                     },
                 )
+            effort_config_id = next(
+                (
+                    candidate
+                    for candidate in advertised_effort_ids
+                    if config.reasoning_effort in config_state[candidate][1]
+                ),
+                advertised_effort_ids[0],
+            )
             _, advertised_effort_values = config_state[effort_config_id]
             if config.reasoning_effort not in advertised_effort_values:
                 raise RequestError(
