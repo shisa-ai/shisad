@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import subprocess
@@ -15,6 +16,7 @@ from filelock import FileLock
 from pydantic import ValidationError
 
 import shisad.daemon.control_handlers as control_handlers_module
+import shisad.daemon.services as services_module
 from shisad.channels.state import ReplayIdentity
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.config_file import load_config_file
@@ -1528,6 +1530,219 @@ async def test_daemon_services_slack_missing_config_raises(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh111_healthy_channel_startup_remains_active() -> None:
+    calls: list[str] = []
+
+    class _HealthyChannel:
+        async def connect(self) -> None:
+            calls.append("connect")
+
+        async def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    result = await services_module._start_channel(
+        name="telegram",
+        channel=_HealthyChannel(),
+        timeout_seconds=0.05,
+    )
+
+    assert result.active is True
+    assert result.diagnostic == {
+        "status": "ready",
+        "reason_code": "",
+        "timeout_seconds": 0.05,
+    }
+    assert calls == ["connect"]
+
+
+@pytest.mark.asyncio
+async def test_gh111_channel_startup_timeout_cancels_cleans_and_degrades() -> None:
+    cancelled = asyncio.Event()
+    calls: list[str] = []
+
+    class _BlockedChannel:
+        async def connect(self) -> None:
+            calls.append("connect")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        async def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    result = await services_module._start_channel(
+        name="telegram",
+        channel=_BlockedChannel(),
+        timeout_seconds=0.01,
+    )
+
+    assert result.active is False
+    assert result.diagnostic == {
+        "status": "degraded",
+        "reason_code": "channel.startup_timeout",
+        "timeout_seconds": 0.01,
+    }
+    assert cancelled.is_set()
+    assert calls == ["connect", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_gh111_channel_startup_error_is_redacted_and_degraded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    placeholder_secret = "placeholder-secret-from-exception"
+    sensitive_type_name = "Credential_placeholder_secret_endpoint_example_com"
+    sensitive_error = type(sensitive_type_name, (RuntimeError,), {})
+    disconnected = False
+
+    class _BrokenChannel:
+        async def connect(self) -> None:
+            raise sensitive_error(placeholder_secret)
+
+        async def disconnect(self) -> None:
+            nonlocal disconnected
+            disconnected = True
+
+    with caplog.at_level("WARNING"):
+        result = await services_module._start_channel(
+            name="telegram",
+            channel=_BrokenChannel(),
+            timeout_seconds=0.05,
+        )
+
+    assert result.active is False
+    assert result.diagnostic == {
+        "status": "degraded",
+        "reason_code": "channel.startup_error",
+        "timeout_seconds": 0.05,
+        "error_type": "RuntimeError",
+    }
+    assert disconnected is True
+    assert "channel=telegram" in caplog.text
+    assert "reason_code=channel.startup_error" in caplog.text
+    assert placeholder_secret not in caplog.text
+    assert sensitive_type_name not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_gh111_channel_startup_cleanup_timeout_fails_bounded() -> None:
+    regular_disconnect_called = False
+
+    class _UncleanableChannel:
+        async def connect(self) -> None:
+            await asyncio.Event().wait()
+
+        async def disconnect(self) -> None:
+            nonlocal regular_disconnect_called
+            regular_disconnect_called = True
+
+        async def disconnect_strict(self) -> None:
+            await asyncio.Event().wait()
+
+    with pytest.raises(RuntimeError, match="telegram channel startup cleanup timed out"):
+        await asyncio.wait_for(
+            services_module._start_channel(
+                name="telegram",
+                channel=_UncleanableChannel(),
+                timeout_seconds=0.01,
+            ),
+            timeout=0.5,
+        )
+    assert regular_disconnect_called is False
+
+
+@pytest.mark.asyncio
+async def test_gh111_external_startup_cancellation_propagates_after_cleanup() -> None:
+    connect_started = asyncio.Event()
+    connect_cancelled = asyncio.Event()
+    disconnected = False
+
+    class _BlockedChannel:
+        async def connect(self) -> None:
+            connect_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                connect_cancelled.set()
+
+        async def disconnect(self) -> None:
+            nonlocal disconnected
+            disconnected = True
+
+    task = asyncio.create_task(
+        services_module._start_channel(
+            name="telegram",
+            channel=_BlockedChannel(),
+            timeout_seconds=1.0,
+        )
+    )
+    await connect_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert connect_cancelled.is_set()
+    assert disconnected is True
+
+
+@pytest.mark.parametrize(
+    ("channel_name", "builder_name", "enabled_field", "service_field"),
+    [
+        ("matrix", "_build_matrix_channel", "matrix_enabled", "matrix_channel"),
+        ("discord", "_build_discord_channel", "discord_enabled", "discord_channel"),
+        ("telegram", "_build_telegram_channel", "telegram_enabled", "telegram_channel"),
+        ("slack", "_build_slack_channel", "slack_enabled", "slack_channel"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh111_all_channel_builders_use_bounded_startup_owner(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel_name: str,
+    builder_name: str,
+    enabled_field: str,
+    service_field: str,
+) -> None:
+    class _BlockedChannel:
+        available = True
+        connected = True
+
+        async def connect(self) -> None:
+            await asyncio.Event().wait()
+
+        async def disconnect(self) -> None:
+            self.connected = False
+
+    channel = _BlockedChannel()
+
+    def _fake_builder(*_args: object, **_kwargs: object) -> _BlockedChannel:
+        return channel
+
+    monkeypatch.setattr(services_module, builder_name, _fake_builder)
+    config = DaemonConfig(
+        data_dir=tmp_path / channel_name / "data",
+        socket_path=tmp_path / channel_name / "control.sock",
+        policy_path=tmp_path / channel_name / "policy.yaml",
+        channel_startup_timeout_seconds=0.1,
+        **{enabled_field: True},
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        assert getattr(services, service_field) is channel
+        assert channel_name not in services.channels
+        assert services.channel_startup_status[channel_name] == {
+            "status": "degraded",
+            "reason_code": "channel.startup_timeout",
+            "timeout_seconds": 0.1,
+        }
+        assert channel.connected is False
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1535,11 +1750,14 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
     disconnected = False
 
     class _MatrixStub:
+        async def connect(self) -> None:
+            return None
+
         async def disconnect(self) -> None:
             nonlocal disconnected
             disconnected = True
 
-    async def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
+    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
         _ = config
         return _MatrixStub()
 
@@ -1573,11 +1791,14 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_unexpected_f
     disconnected = False
 
     class _MatrixStub:
+        async def connect(self) -> None:
+            return None
+
         async def disconnect(self) -> None:
             nonlocal disconnected
             disconnected = True
 
-    async def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
+    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
         _ = config
         return _MatrixStub()
 
@@ -1611,11 +1832,14 @@ async def test_daemon_services_build_rolls_back_when_container_construction_fail
     disconnected = False
 
     class _MatrixStub:
+        async def connect(self) -> None:
+            return None
+
         async def disconnect(self) -> None:
             nonlocal disconnected
             disconnected = True
 
-    async def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
+    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
         _ = config
         return _MatrixStub()
 

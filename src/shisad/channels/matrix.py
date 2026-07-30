@@ -102,6 +102,26 @@ class MatrixChannel(InMemoryChannel):
 
         await super().disconnect()
 
+    async def disconnect_strict(self) -> None:
+        """Disconnect a failed startup while surfacing incomplete cleanup."""
+        sync_task = self._sync_task
+        if sync_task is not None:
+            sync_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sync_task
+
+        client = self._client
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+
+        self._sync_task = None
+        self._client = None
+        await super().disconnect()
+
     async def send(
         self,
         message: str,

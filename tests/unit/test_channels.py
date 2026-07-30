@@ -2249,6 +2249,248 @@ async def test_telegram_channel_ignores_bot_messages(
 
 
 @pytest.mark.asyncio
+async def test_gh111_telegram_startup_error_reaches_daemon_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import telegram as telegram_module
+    from shisad.daemon import services as services_module
+
+    class _FakeFilter:
+        def __and__(self, _other: object) -> _FakeFilter:
+            return self
+
+        def __invert__(self) -> _FakeFilter:
+            return self
+
+    class _FakeMessageHandler:
+        def __init__(self, _filters: object, _callback: object) -> None:
+            pass
+
+    class _StoppedUpdater:
+        running = False
+
+        async def stop(self) -> None:
+            raise AssertionError("stopped updater must not be stopped")
+
+    class _BrokenApplication:
+        running = False
+
+        def __init__(self) -> None:
+            self.updater = _StoppedUpdater()
+            self.shutdown_called = False
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            raise RuntimeError("placeholder transport detail")
+
+        async def stop(self) -> None:
+            raise AssertionError("stopped application must not be stopped")
+
+        async def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    application = _BrokenApplication()
+
+    class _FakeApplicationBuilder:
+        def token(self, _token: str) -> _FakeApplicationBuilder:
+            return self
+
+        def build(self) -> _BrokenApplication:
+            return application
+
+    class _FakeApplicationFactory:
+        @staticmethod
+        def builder() -> _FakeApplicationBuilder:
+            return _FakeApplicationBuilder()
+
+    monkeypatch.setattr(telegram_module, "Application", _FakeApplicationFactory)
+    monkeypatch.setattr(telegram_module, "MessageHandler", _FakeMessageHandler)
+    monkeypatch.setattr(
+        telegram_module,
+        "filters",
+        SimpleNamespace(TEXT=_FakeFilter(), COMMAND=_FakeFilter()),
+    )
+
+    channel = TelegramChannel(TelegramConfig(bot_token="placeholder-token"))
+    result = await services_module._start_channel(
+        name="telegram",
+        channel=channel,
+        timeout_seconds=0.05,
+    )
+
+    assert result.active is False
+    assert result.diagnostic["reason_code"] == "channel.startup_error"
+    assert application.shutdown_called is True
+    assert channel._application is None
+    assert channel.connected is False
+
+
+@pytest.mark.asyncio
+async def test_gh111_telegram_pre_polling_timeout_skips_stopped_updater(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import telegram as telegram_module
+    from shisad.daemon import services as services_module
+
+    class _FakeFilter:
+        def __and__(self, _other: object) -> _FakeFilter:
+            return self
+
+        def __invert__(self) -> _FakeFilter:
+            return self
+
+    class _FakeMessageHandler:
+        def __init__(self, _filters: object, _callback: object) -> None:
+            pass
+
+    class _StartingUpdater:
+        running = False
+
+        async def start_polling(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop(self) -> None:
+            raise AssertionError("not-yet-running updater must not be stopped")
+
+    class _StartedApplication:
+        def __init__(self) -> None:
+            self.running = False
+            self.updater = _StartingUpdater()
+            self.stop_called = False
+            self.shutdown_called = False
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            self.running = True
+
+        async def stop(self) -> None:
+            assert self.running is True
+            self.running = False
+            self.stop_called = True
+
+        async def shutdown(self) -> None:
+            assert self.running is False
+            self.shutdown_called = True
+
+    application = _StartedApplication()
+
+    class _FakeApplicationBuilder:
+        def token(self, _token: str) -> _FakeApplicationBuilder:
+            return self
+
+        def build(self) -> _StartedApplication:
+            return application
+
+    class _FakeApplicationFactory:
+        @staticmethod
+        def builder() -> _FakeApplicationBuilder:
+            return _FakeApplicationBuilder()
+
+    monkeypatch.setattr(telegram_module, "Application", _FakeApplicationFactory)
+    monkeypatch.setattr(telegram_module, "MessageHandler", _FakeMessageHandler)
+    monkeypatch.setattr(
+        telegram_module,
+        "filters",
+        SimpleNamespace(TEXT=_FakeFilter(), COMMAND=_FakeFilter()),
+    )
+
+    channel = TelegramChannel(TelegramConfig(bot_token="placeholder-token"))
+    result = await services_module._start_channel(
+        name="telegram",
+        channel=channel,
+        timeout_seconds=0.01,
+    )
+
+    assert result.active is False
+    assert result.diagnostic["reason_code"] == "channel.startup_timeout"
+    assert application.stop_called is True
+    assert application.shutdown_called is True
+    assert channel._application is None
+    assert channel.connected is False
+
+
+@pytest.mark.asyncio
+async def test_gh111_telegram_strict_disconnect_surfaces_cleanup_failure() -> None:
+    class _BrokenUpdater:
+        running = True
+
+        async def stop(self) -> None:
+            raise RuntimeError("telegram cleanup detail")
+
+    application = SimpleNamespace(updater=_BrokenUpdater())
+    channel = TelegramChannel(TelegramConfig(bot_token="placeholder-token"))
+    channel._application = application
+
+    with pytest.raises(RuntimeError, match="telegram cleanup detail"):
+        await channel.disconnect_strict()
+    assert channel._application is application
+
+
+@pytest.mark.asyncio
+async def test_gh111_matrix_strict_disconnect_surfaces_cleanup_failure() -> None:
+    class _BrokenClient:
+        async def close(self) -> None:
+            raise RuntimeError("matrix cleanup detail")
+
+    client = _BrokenClient()
+    channel = MatrixChannel(
+        MatrixConfig(
+            homeserver="https://matrix.example",
+            user_id="@bot:example",
+            access_token="placeholder-token",
+            room_id="!room:example",
+        )
+    )
+    channel._client = client
+
+    with pytest.raises(RuntimeError, match="matrix cleanup detail"):
+        await channel.disconnect_strict()
+    assert channel._client is client
+
+
+@pytest.mark.asyncio
+async def test_gh111_discord_strict_disconnect_surfaces_cleanup_failure() -> None:
+    class _BrokenClient:
+        async def close(self) -> None:
+            raise RuntimeError("discord cleanup detail")
+
+    client = _BrokenClient()
+    channel = DiscordChannel(DiscordConfig(bot_token="placeholder-token"))
+    channel._client = client
+
+    with pytest.raises(RuntimeError, match="discord cleanup detail"):
+        await channel.disconnect_strict()
+    assert channel._client is client
+
+
+@pytest.mark.asyncio
+async def test_gh111_slack_strict_disconnect_surfaces_cleanup_failure() -> None:
+    class _BrokenHandler:
+        async def close_async(self) -> None:
+            raise RuntimeError("slack cleanup detail")
+
+    handler = _BrokenHandler()
+    channel = SlackChannel(
+        SlackConfig(
+            bot_token="placeholder-bot-token",
+            app_token="placeholder-app-token",
+        )
+    )
+    channel._handler = handler
+
+    with pytest.raises(RuntimeError, match="slack cleanup detail"):
+        await channel.disconnect_strict()
+    assert channel._handler is handler
+
+
+@pytest.mark.asyncio
 async def test_matrix_channel_fallback_and_workspace_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

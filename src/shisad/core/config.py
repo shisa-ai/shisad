@@ -270,6 +270,11 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Startup timeout for the control-plane sidecar readiness probe.",
     )
+    channel_startup_timeout_seconds: float = Field(
+        default=15.0,
+        ge=0.1,
+        description="Per-channel startup and failed-start cleanup timeout.",
+    )
     checkpoint_trigger: Literal[
         "before_side_effects",
         "before_any_tool",

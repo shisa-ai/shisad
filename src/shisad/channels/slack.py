@@ -138,6 +138,27 @@ class SlackChannel(InMemoryChannel):
         self._app = None
         await super().disconnect()
 
+    async def disconnect_strict(self) -> None:
+        """Disconnect a failed startup while surfacing incomplete cleanup."""
+        handler_task = self._handler_task
+        if handler_task is not None:
+            handler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handler_task
+
+        handler = self._handler
+        if handler is not None:
+            close = getattr(handler, "close_async", None)
+            if callable(close):
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+
+        self._handler_task = None
+        self._handler = None
+        self._app = None
+        await super().disconnect()
+
     async def send(
         self,
         message: str,

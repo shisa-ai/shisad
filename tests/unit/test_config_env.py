@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from shisad.core.config import DaemonConfig
 
 
@@ -63,6 +66,21 @@ def test_gh50_default_socket_uses_xdg_runtime_dir(
     config = DaemonConfig(data_dir=tmp_path / "data")
 
     assert config.socket_path == runtime_dir / "shisad" / "control.sock"
+
+
+def test_gh111_channel_startup_timeout_default_env_and_lower_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_CHANNEL_STARTUP_TIMEOUT_SECONDS", raising=False)
+    assert DaemonConfig(data_dir=tmp_path / "default").channel_startup_timeout_seconds == 15.0
+
+    monkeypatch.setenv("SHISAD_CHANNEL_STARTUP_TIMEOUT_SECONDS", "2.5")
+    assert DaemonConfig(data_dir=tmp_path / "override").channel_startup_timeout_seconds == 2.5
+
+    monkeypatch.setenv("SHISAD_CHANNEL_STARTUP_TIMEOUT_SECONDS", "0.09")
+    with pytest.raises(ValidationError):
+        DaemonConfig(data_dir=tmp_path / "invalid")
 
 
 def test_gh50_default_socket_ignores_relative_xdg_runtime_dir(

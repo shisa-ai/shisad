@@ -446,6 +446,27 @@ class DiscordChannel(InMemoryChannel):
         self._pending_interactions.clear()
         await super().disconnect()
 
+    async def disconnect_strict(self) -> None:
+        """Disconnect a failed startup while surfacing incomplete cleanup."""
+        client = self._client
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+
+        client_task = self._client_task
+        if client_task is not None:
+            client_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await client_task
+
+        self._client_task = None
+        self._client = None
+        self._pending_interactions.clear()
+        await super().disconnect()
+
     async def send(
         self,
         message: str,

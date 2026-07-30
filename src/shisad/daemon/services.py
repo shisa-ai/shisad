@@ -558,6 +558,14 @@ def _build_realitycheck_toolkit(
     return _LazyRealityCheckToolkit(config=config, allowed_domains=allowed_domains)
 
 
+@dataclass(frozen=True, slots=True)
+class _ChannelStartupResult:
+    """Result of the daemon-owned optional-channel startup boundary."""
+
+    active: bool
+    diagnostic: dict[str, Any]
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -585,6 +593,7 @@ class DaemonServices:
     channel_ingress: ChannelIngressProcessor
     identity_map: ChannelIdentityMap
     channels: dict[str, Channel]
+    channel_startup_status: dict[str, dict[str, Any]]
     delivery: ChannelDeliveryService
     approval_web: ApprovalWebService
     pending_action_store: PendingActionStore
@@ -733,6 +742,14 @@ class DaemonServices:
         discord_channel: DiscordChannel | None = None
         telegram_channel: TelegramChannel | None = None
         slack_channel: SlackChannel | None = None
+        channel_startup_status: dict[str, dict[str, Any]] = {
+            name: {
+                "status": "disabled",
+                "reason_code": "",
+                "timeout_seconds": config.channel_startup_timeout_seconds,
+            }
+            for name in ("matrix", "discord", "telegram", "slack")
+        }
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         control_plane_sidecar: ControlPlaneSidecarHandle | None = None
         mcp_manager: McpClientManager | None = None
@@ -824,9 +841,16 @@ class DaemonServices:
                 )
             channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
-            matrix_channel = await _build_matrix_channel(config)
+            matrix_channel = _build_matrix_channel(config)
             if matrix_channel is not None:
-                channels["matrix"] = matrix_channel
+                startup_result = await _start_channel(
+                    name="matrix",
+                    channel=matrix_channel,
+                    timeout_seconds=config.channel_startup_timeout_seconds,
+                )
+                channel_startup_status["matrix"] = startup_result.diagnostic
+                if startup_result.active:
+                    channels["matrix"] = matrix_channel
                 for user_id in config.matrix_trusted_users:
                     if user_id.strip():
                         identity_map.allow_identity(
@@ -834,12 +858,19 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            discord_channel = await _build_discord_channel(
+            discord_channel = _build_discord_channel(
                 config,
                 replay_state_store=channel_state_store,
             )
             if discord_channel is not None:
-                channels["discord"] = discord_channel
+                startup_result = await _start_channel(
+                    name="discord",
+                    channel=discord_channel,
+                    timeout_seconds=config.channel_startup_timeout_seconds,
+                )
+                channel_startup_status["discord"] = startup_result.diagnostic
+                if startup_result.active:
+                    channels["discord"] = discord_channel
                 for user_id in config.discord_trusted_users:
                     if user_id.strip():
                         identity_map.allow_identity(
@@ -847,9 +878,16 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            telegram_channel = await _build_telegram_channel(config)
+            telegram_channel = _build_telegram_channel(config)
             if telegram_channel is not None:
-                channels["telegram"] = telegram_channel
+                startup_result = await _start_channel(
+                    name="telegram",
+                    channel=telegram_channel,
+                    timeout_seconds=config.channel_startup_timeout_seconds,
+                )
+                channel_startup_status["telegram"] = startup_result.diagnostic
+                if startup_result.active:
+                    channels["telegram"] = telegram_channel
                 for user_id in config.telegram_trusted_users:
                     if user_id.strip():
                         identity_map.allow_identity(
@@ -857,9 +895,16 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            slack_channel = await _build_slack_channel(config)
+            slack_channel = _build_slack_channel(config)
             if slack_channel is not None:
-                channels["slack"] = slack_channel
+                startup_result = await _start_channel(
+                    name="slack",
+                    channel=slack_channel,
+                    timeout_seconds=config.channel_startup_timeout_seconds,
+                )
+                channel_startup_status["slack"] = startup_result.diagnostic
+                if startup_result.active:
+                    channels["slack"] = slack_channel
                 for user_id in config.slack_trusted_users:
                     if user_id.strip():
                         identity_map.allow_identity(
@@ -1129,6 +1174,7 @@ class DaemonServices:
                 channel_ingress=channel_ingress,
                 identity_map=identity_map,
                 channels=channels,
+                channel_startup_status=channel_startup_status,
                 delivery=delivery,
                 approval_web=approval_web,
                 pending_action_store=pending_action_store,
@@ -1541,7 +1587,112 @@ class DaemonServices:
                 delivery.close()
 
 
-async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
+async def _cleanup_failed_channel_startup(
+    *,
+    name: str,
+    channel: Channel,
+    timeout_seconds: float,
+) -> None:
+    strict_disconnect = getattr(channel, "disconnect_strict", None)
+    disconnect = strict_disconnect if callable(strict_disconnect) else channel.disconnect
+    try:
+        await asyncio.wait_for(disconnect(), timeout=timeout_seconds)
+    except TimeoutError:
+        raise RuntimeError(f"{name} channel startup cleanup timed out") from None
+    except Exception as exc:
+        raise RuntimeError(
+            f"{name} channel startup cleanup failed ({_safe_exception_type(exc)})"
+        ) from None
+
+
+def _safe_exception_type(exc: Exception) -> str:
+    """Project an exception into the finite public startup diagnostic vocabulary."""
+    if isinstance(exc, OSError):
+        return "OSError"
+    if isinstance(exc, ValueError):
+        return "ValueError"
+    if isinstance(exc, RuntimeError):
+        return "RuntimeError"
+    if isinstance(exc, TypeError):
+        return "TypeError"
+    return "Exception"
+
+
+async def _start_channel(
+    *,
+    name: str,
+    channel: Channel,
+    timeout_seconds: float,
+) -> _ChannelStartupResult:
+    """Connect one optional channel without letting it strand daemon startup."""
+    try:
+        await asyncio.wait_for(channel.connect(), timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        try:
+            await _cleanup_failed_channel_startup(
+                name=name,
+                channel=channel,
+                timeout_seconds=timeout_seconds,
+            )
+        except RuntimeError:
+            logger.error(
+                "Channel startup cancellation cleanup failed (channel=%s)",
+                name,
+            )
+        raise
+    except TimeoutError:
+        await _cleanup_failed_channel_startup(
+            name=name,
+            channel=channel,
+            timeout_seconds=timeout_seconds,
+        )
+        logger.warning(
+            "Channel degraded at startup "
+            "(channel=%s reason_code=channel.startup_timeout timeout_seconds=%s)",
+            name,
+            timeout_seconds,
+        )
+        return _ChannelStartupResult(
+            active=False,
+            diagnostic={
+                "status": "degraded",
+                "reason_code": "channel.startup_timeout",
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+    except Exception as exc:
+        await _cleanup_failed_channel_startup(
+            name=name,
+            channel=channel,
+            timeout_seconds=timeout_seconds,
+        )
+        error_type = _safe_exception_type(exc)
+        logger.warning(
+            "Channel degraded at startup "
+            "(channel=%s reason_code=channel.startup_error error_type=%s)",
+            name,
+            error_type,
+        )
+        return _ChannelStartupResult(
+            active=False,
+            diagnostic={
+                "status": "degraded",
+                "reason_code": "channel.startup_error",
+                "timeout_seconds": timeout_seconds,
+                "error_type": error_type,
+            },
+        )
+    return _ChannelStartupResult(
+        active=True,
+        diagnostic={
+            "status": "ready",
+            "reason_code": "",
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+
+
+def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     if not config.matrix_enabled:
         return None
     from shisad.channels.matrix import MatrixChannel, MatrixConfig
@@ -1568,11 +1719,10 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
             trusted_users=set(config.matrix_trusted_users),
         )
     )
-    await matrix_channel.connect()
     return matrix_channel
 
 
-async def _build_discord_channel(
+def _build_discord_channel(
     config: DaemonConfig,
     *,
     replay_state_store: ChannelStateStore,
@@ -1595,11 +1745,10 @@ async def _build_discord_channel(
         ),
         replay_state_store=replay_state_store,
     )
-    await channel.connect()
     return channel
 
 
-async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
+def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
     if not config.telegram_enabled:
         return None
     from shisad.channels.telegram import TelegramChannel, TelegramConfig
@@ -1616,11 +1765,10 @@ async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | Non
             trusted_users=set(config.telegram_trusted_users),
         )
     )
-    await channel.connect()
     return channel
 
 
-async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
+def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
     if not config.slack_enabled:
         return None
     from shisad.channels.slack import SlackChannel, SlackConfig
@@ -1643,7 +1791,6 @@ async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
             trusted_users=set(config.slack_trusted_users),
         )
     )
-    await channel.connect()
     return channel
 
 

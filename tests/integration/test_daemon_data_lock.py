@@ -10,6 +10,8 @@ import pytest
 from filelock import FileLock, SoftFileLock, Timeout
 
 import shisad.daemon.services as services_module
+from shisad.channels.base import InMemoryChannel
+from shisad.channels.telegram import TelegramChannel
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
@@ -188,3 +190,88 @@ async def test_partial_startup_failure_releases_data_root_lock(
         assert (await client.call("daemon.status"))["status"] == "running"
     finally:
         await _stop(task, client)
+
+
+@pytest.mark.asyncio
+async def test_gh111_telegram_timeout_starts_degraded_and_releases_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    connect_cancelled = asyncio.Event()
+
+    async def _blocked_connect(channel: TelegramChannel) -> None:
+        await InMemoryChannel.connect(channel)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            connect_cancelled.set()
+
+    monkeypatch.setattr(TelegramChannel, "connect", _blocked_connect)
+    config = _config(
+        tmp_path,
+        root="g",
+        socket_name="g.sock",
+        telegram_enabled=True,
+        telegram_bot_token="placeholder-not-a-real-token",
+        channel_startup_timeout_seconds=0.1,
+    )
+    task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await wait_for_socket(config.socket_path)
+        await client.connect()
+        status = await client.call("daemon.status")
+        assert status["status"] == "running"
+        assert status["channels"]["telegram"] == {
+            "enabled": True,
+            "available": True,
+            "connected": False,
+            "startup": {
+                "status": "degraded",
+                "reason_code": "channel.startup_timeout",
+                "timeout_seconds": 0.1,
+            },
+        }
+        assert connect_cancelled.is_set()
+    finally:
+        await _stop(task, client)
+
+    probe = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+    probe.acquire(timeout=0)
+    probe.release()
+
+
+@pytest.mark.asyncio
+async def test_gh111_uncleanable_channel_fails_bounded_and_releases_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+
+    async def _blocked_connect(channel: TelegramChannel) -> None:
+        await InMemoryChannel.connect(channel)
+        await asyncio.Event().wait()
+
+    async def _blocked_disconnect(_channel: TelegramChannel) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(TelegramChannel, "connect", _blocked_connect)
+    monkeypatch.setattr(TelegramChannel, "disconnect_strict", _blocked_disconnect)
+    config = _config(
+        tmp_path,
+        root="u",
+        socket_name="u.sock",
+        telegram_enabled=True,
+        telegram_bot_token="placeholder-not-a-real-token",
+        channel_startup_timeout_seconds=0.1,
+    )
+
+    with pytest.raises(RuntimeError, match="telegram channel startup cleanup timed out"):
+        await asyncio.wait_for(run_daemon(config), timeout=1.0)
+
+    assert config.socket_path.exists() is False
+    probe = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+    probe.acquire(timeout=0)
+    probe.release()

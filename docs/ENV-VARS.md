@@ -127,6 +127,7 @@ component-scoped credentials documented above.
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CONTROL_PLANE_STARTUP_TIMEOUT_SECONDS` | Readiness timeout for the isolated control-plane sidecar; minimum `0.1`, default `15.0` seconds |
+| `SHISAD_CHANNEL_STARTUP_TIMEOUT_SECONDS` | Per-channel startup and failed-start cleanup timeout; minimum `0.1`, default `15.0` seconds. A timed-out optional channel is excluded from active routing while the core daemon continues when cleanup succeeds |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
 | `SHISAD_UI_THEME` | Built-in renderer palette: `shisa-dark`, `shisa-light`, or `shisa-high-contrast` |
 | `SHISAD_REDUCE_MOTION` | Disable optional UI motion while retaining visible status updates |

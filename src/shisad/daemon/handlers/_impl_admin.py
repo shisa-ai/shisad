@@ -1543,6 +1543,20 @@ class AdminImplMixin(HandlerMixinBase):
             live=False,
             timeout_seconds=3.0,
         )
+        channel_startup_status = getattr(self._services, "channel_startup_status", {})
+
+        def _channel_startup(name: str, *, enabled: bool) -> dict[str, Any]:
+            raw = channel_startup_status.get(name)
+            if isinstance(raw, Mapping):
+                return dict(raw)
+            return {
+                "status": "unavailable" if enabled else "disabled",
+                "reason_code": (
+                    "channel.startup_status_unavailable" if enabled else ""
+                ),
+                "timeout_seconds": self._config.channel_startup_timeout_seconds,
+            }
+
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
@@ -1570,6 +1584,10 @@ class AdminImplMixin(HandlerMixinBase):
                     "e2ee_enabled": (
                         self._matrix_channel.e2ee_enabled if self._matrix_channel else False
                     ),
+                    "startup": _channel_startup(
+                        "matrix",
+                        enabled=self._config.matrix_enabled,
+                    ),
                 },
                 "discord": {
                     "enabled": self._config.discord_enabled,
@@ -1578,6 +1596,10 @@ class AdminImplMixin(HandlerMixinBase):
                     ),
                     "connected": (
                         self._discord_channel.connected if self._discord_channel else False
+                    ),
+                    "startup": _channel_startup(
+                        "discord",
+                        enabled=self._config.discord_enabled,
                     ),
                 },
                 "telegram": {
@@ -1588,11 +1610,19 @@ class AdminImplMixin(HandlerMixinBase):
                     "connected": (
                         self._telegram_channel.connected if self._telegram_channel else False
                     ),
+                    "startup": _channel_startup(
+                        "telegram",
+                        enabled=self._config.telegram_enabled,
+                    ),
                 },
                 "slack": {
                     "enabled": self._config.slack_enabled,
                     "available": self._slack_channel.available if self._slack_channel else False,
                     "connected": self._slack_channel.connected if self._slack_channel else False,
+                    "startup": _channel_startup(
+                        "slack",
+                        enabled=self._config.slack_enabled,
+                    ),
                 },
             },
             "delivery": self._delivery.health_status(),

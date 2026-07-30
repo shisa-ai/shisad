@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-22*
+*Updated: 2026-07-30*
 *Status: Active*
 
 ## Goal
@@ -412,6 +412,11 @@ TOTP entry remain deferred to `v0.8.0`.
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
   v0.9 work. Container registry publication remains future work
+- v0.8.2 development starts with the post-v0.8.1 issue burn-down. Its
+  reliability lane includes bounded optional-channel startup: a connector
+  timeout degrades that connector and preserves the core daemon when cleanup
+  succeeds, while unsafe cleanup failure stops startup and releases data-root
+  ownership
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,

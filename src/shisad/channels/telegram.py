@@ -113,14 +113,13 @@ class TelegramChannel(InMemoryChannel):
         if message_handler is not None and filters_module is not None:
             handler = message_handler(filters_module.TEXT & ~filters_module.COMMAND, _on_message)
             self._application.add_handler(handler)
-        with contextlib.suppress(OSError, RuntimeError, ValueError):
-            await self._application.initialize()
-            await self._application.start()
-            updater = getattr(self._application, "updater", None)
-            if updater is not None:
-                start_polling = getattr(updater, "start_polling", None)
-                if callable(start_polling):
-                    await start_polling()
+        await self._application.initialize()
+        await self._application.start()
+        updater = getattr(self._application, "updater", None)
+        if updater is not None:
+            start_polling = getattr(updater, "start_polling", None)
+            if callable(start_polling):
+                await start_polling()
 
     async def disconnect(self) -> None:
         if self._application is not None:
@@ -140,6 +139,31 @@ class TelegramChannel(InMemoryChannel):
             if callable(shutdown):
                 with contextlib.suppress(OSError, RuntimeError, ValueError):
                     await shutdown()
+        self._application = None
+        await super().disconnect()
+
+    async def disconnect_strict(self) -> None:
+        """Disconnect a failed startup while surfacing incomplete cleanup."""
+        application = self._application
+        if application is not None:
+            updater = getattr(application, "updater", None)
+            if updater is not None and getattr(updater, "running", False):
+                stop_polling = getattr(updater, "stop", None)
+                if callable(stop_polling):
+                    result = stop_polling()
+                    if asyncio.iscoroutine(result):
+                        await result
+            if getattr(application, "running", False):
+                stop = getattr(application, "stop", None)
+                if callable(stop):
+                    result = stop()
+                    if asyncio.iscoroutine(result):
+                        await result
+            shutdown = getattr(application, "shutdown", None)
+            if callable(shutdown):
+                result = shutdown()
+                if asyncio.iscoroutine(result):
+                    await result
         self._application = None
         await super().disconnect()
 
