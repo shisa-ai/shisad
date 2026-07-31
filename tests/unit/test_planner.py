@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from shisad.core.context import ContextScaffold, ContextScaffoldEntry
+from shisad.core.context_budget import assess_request_capacity
 from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
@@ -17,6 +19,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
+from shisad.security.spotlight import build_planner_input_v2
 
 
 class StaticProvider:
@@ -58,7 +61,9 @@ class RecordingPEP:
 
 
 @pytest.mark.asyncio
-async def test_i2_irreducible_context_capacity_fails_before_provider_call() -> None:
+async def test_i2_irreducible_context_capacity_fails_before_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from shisad.core.providers.base import ProviderContextCapacityError
 
     registry = _make_registry()
@@ -87,15 +92,49 @@ async def test_i2_irreducible_context_capacity_fails_before_provider_call() -> N
             },
         }
     ]
+    observed: dict[str, Any] = {}
+
+    def _recording_assessment(**kwargs: Any):
+        observed.update(kwargs)
+        return assess_request_capacity(**kwargs)
+
+    monkeypatch.setattr("shisad.core.planner.assess_request_capacity", _recording_assessment)
+    planner_input = build_planner_input_v2(
+        trusted_instructions="required planner safety sentinel",
+        user_goal="authenticated current goal sentinel " * 300,
+        untrusted_content="",
+        scaffold=ContextScaffold(
+            session_id="s-i2-r2",
+            trusted_frontmatter="trust_level=trusted\nsecurity_frontmatter=retained",
+            untrusted_entries=[
+                ContextScaffoldEntry(
+                    entry_id="current_turn",
+                    content="tainted current-turn sentinel",
+                    source_taint_labels=[TaintLabel.UNTRUSTED.value],
+                )
+            ],
+        ),
+        deterministic=True,
+        delimiter_seed="i2-r2",
+    )
 
     with pytest.raises(ProviderContextCapacityError) as caught:
         await planner.propose(
-            "authenticated current goal sentinel " * 300,
+            planner_input,
             PolicyContext(capabilities={Capability.FILE_READ}),
             tools=tools,
         )
 
     assert provider.calls == 0
+    observed_messages = observed["messages"]
+    assert observed_messages[0].role == "system"
+    assert "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in observed_messages[0].content
+    observed_payload = observed_messages[-1].content.replace("^", "")
+    assert "required planner safety sentinel" in observed_payload
+    assert "authenticated current goal sentinel" in observed_payload
+    assert "tainted current-turn sentinel" in observed_payload
+    assert "security_frontmatter=retained" in observed_payload
+    assert observed["tools"] == tools
     assert caught.value.context_window_tokens == 512
     assert caught.value.estimated_input_tokens > 384
     user_message = caught.value.user_message()
