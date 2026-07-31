@@ -3137,6 +3137,25 @@ async def test_i2_unknown_limit_provider_capacity_error_is_terminal(
     assert coded_error.context_window_tokens == 16_384
     assert coded_error.reported_input_tokens == 17_514
 
+    zero_padded_error = provider_context_capacity_error_from_http(
+        status=400,
+        model_id="custom/model-with-unknown-window",
+        details=json.dumps(
+            {
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": (
+                        "Request exceeds maximum context length: 000016384 tokens; "
+                        "input is 000017514 tokens."
+                    ),
+                }
+            }
+        ),
+    )
+    assert zero_padded_error is not None
+    assert zero_padded_error.context_window_tokens == 16_384
+    assert zero_padded_error.reported_input_tokens == 17_514
+
     huge_digits = "9" * 10_000
     bounded_error = provider_context_capacity_error_from_http(
         status=400,

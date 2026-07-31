@@ -11266,8 +11266,7 @@ class SessionImplMixin(HandlerMixinBase):
         if not context_scaffold_degraded and context_scaffold is not None:
             try:
                 encode_untrusted = (
-                    bool(context_scaffold.untrusted_entries)
-                    and firewall_result.risk_score >= 0.7
+                    bool(context_scaffold.untrusted_entries) and firewall_result.risk_score >= 0.7
                 )
 
                 def _render_scaffold(candidate: ContextScaffold) -> str:
@@ -14360,9 +14359,7 @@ class SessionImplMixin(HandlerMixinBase):
                 exc.estimated_input_tokens or exc.reported_input_tokens,
             )
             capacity_result = _planner_context_capacity_result(exc)
-            return PostToolSynthesisResult(
-                response_text=capacity_result.output.assistant_response
-            )
+            return PostToolSynthesisResult(response_text=capacity_result.output.assistant_response)
         except PlannerOutputError:
             logger.warning(
                 "Post-tool synthesis planner output invalid for session %s; "
@@ -14900,7 +14897,8 @@ class SessionImplMixin(HandlerMixinBase):
             execution.executed_tool_outputs,
         )
         should_synthesize_tool_response = (
-            should_synthesize_initial_tool_response or execution.force_post_tool_synthesis
+            planner_dispatch.planner_failure_code != "planner_context_capacity_exceeded"
+            and (should_synthesize_initial_tool_response or execution.force_post_tool_synthesis)
         )
         post_tool_synthesis_result = PostToolSynthesisResult()
         pending_sibling_result_content = ""

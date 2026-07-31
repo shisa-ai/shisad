@@ -31,9 +31,11 @@ boundaries rather than truncating the request blindly.
 2. For a known/configured window, the planner assesses the complete outbound
    request: composed system messages, rendered user/context messages, enabled
    tool schemas, protocol framing, and the output reservation. The estimate is
-   deterministic and upper-biased for ordinary text, with worst-case byte
-   treatment for non-ASCII text and opaque alphanumeric/punctuation runs. It
-   is an admission boundary, not a claim to reproduce every provider tokenizer
+   deterministic and upper-biased for ordinary text. It combines a byte
+   baseline with structural code-point accounting for ordinary non-ASCII text,
+   per-byte treatment for symbols and other uncommon code points, and
+   worst-case treatment for opaque alphanumeric/punctuation shapes. It is an
+   admission boundary, not a claim to reproduce every provider tokenizer
    exactly.
 3. When optional context makes the request exceed the input budget, the
    runtime removes complete typed context entries in a deterministic order:

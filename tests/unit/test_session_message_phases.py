@@ -4733,6 +4733,31 @@ async def test_t1_finalize_response_updates_structured_plan_step_state() -> None
 
 
 @pytest.mark.asyncio
+async def test_i2_finalize_preserves_pending_continuation_capacity_result() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("must not replace the capacity result")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content="confirmed result",
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="Request too large for the 16384-token context window.",
+    )
+    execution.force_post_tool_synthesis = True
+    execution.planner_dispatch.planner_failure_code = "planner_context_capacity_exceeded"
+    response = await SessionImplMixin._finalize_response(harness, execution)
+    assert "16384-token context window" in response["response"]
+    assert response["planner_error"] == "planner_context_capacity_exceeded"
+    assert synthesis.calls == []
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner(

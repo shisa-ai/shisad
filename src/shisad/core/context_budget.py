@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
+from unicodedata import category as unicode_category
 
 from shisad.core.context import ContextScaffold, ContextScaffoldEntry
 from shisad.core.providers.base import Message
@@ -13,7 +14,6 @@ from shisad.core.providers.base import Message
 _BASELINE_TOKEN_NUMERATOR = 4
 _BASELINE_TOKEN_DENOMINATOR = 11
 _OPAQUE_ALNUM_RUN_MIN_BYTES = 24
-_OPAQUE_PUNCTUATION_RUN_MIN_BYTES = 8
 _REQUEST_FRAMING_TOKENS = 8
 _MESSAGE_FRAMING_TOKENS = 6
 _TOOL_FRAMING_TOKENS = 8
@@ -78,7 +78,7 @@ def _estimate_serialized_tokens(serialized: str) -> int:
         if not character.isascii():
             byte_count = len(character.encode("utf-8"))
             risky_bytes += byte_count
-            risky_tokens += byte_count
+            risky_tokens += 1 if unicode_category(character)[0] in {"L", "M", "N"} else byte_count
             index += 1
             continue
         if character.isalnum():
@@ -89,9 +89,8 @@ def _estimate_serialized_tokens(serialized: str) -> int:
                     break
                 end += 1
             run_length = end - index
-            if run_length >= _OPAQUE_ALNUM_RUN_MIN_BYTES:
-                risky_bytes += run_length
-                risky_tokens += run_length
+            risky_bytes += run_length
+            risky_tokens += run_length if run_length >= _OPAQUE_ALNUM_RUN_MIN_BYTES else 1
             index = end
             continue
         if not character.isspace():
@@ -102,17 +101,18 @@ def _estimate_serialized_tokens(serialized: str) -> int:
                     break
                 end += 1
             run_length = end - index
-            if run_length >= _OPAQUE_PUNCTUATION_RUN_MIN_BYTES:
-                risky_bytes += run_length
-                risky_tokens += run_length
+            risky_bytes += run_length
+            risky_tokens += run_length
             index = end
             continue
         index += 1
 
     ordinary_bytes = max(0, encoded_bytes - risky_bytes)
-    risk_adjusted = risky_tokens + (
-        ordinary_bytes * _BASELINE_TOKEN_NUMERATOR + _BASELINE_TOKEN_DENOMINATOR - 1
-    ) // _BASELINE_TOKEN_DENOMINATOR
+    risk_adjusted = (
+        risky_tokens
+        + (ordinary_bytes * _BASELINE_TOKEN_NUMERATOR + _BASELINE_TOKEN_DENOMINATOR - 1)
+        // _BASELINE_TOKEN_DENOMINATOR
+    )
     return max(1, baseline, risk_adjusted)
 
 
@@ -135,9 +135,9 @@ def estimate_request_tokens(
         separators=(",", ":"),
         sort_keys=True,
     )
-    payload_estimate = _estimate_serialized_tokens(
-        message_payload
-    ) + _estimate_serialized_tokens(tool_payload)
+    payload_estimate = _estimate_serialized_tokens(message_payload) + _estimate_serialized_tokens(
+        tool_payload
+    )
     framing = (
         _REQUEST_FRAMING_TOKENS
         + len(messages) * _MESSAGE_FRAMING_TOKENS
@@ -190,9 +190,7 @@ def _without_category(
     category: str,
     prefixes: tuple[str, ...],
 ) -> tuple[ContextScaffold, bool]:
-    internal = [
-        entry for entry in scaffold.internal_entries if not _entry_matches(entry, prefixes)
-    ]
+    internal = [entry for entry in scaffold.internal_entries if not _entry_matches(entry, prefixes)]
     untrusted = [
         entry for entry in scaffold.untrusted_entries if not _entry_matches(entry, prefixes)
     ]

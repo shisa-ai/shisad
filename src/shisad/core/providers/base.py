@@ -140,9 +140,12 @@ class ProviderContextCapacityError(RuntimeError):
 
 
 def _bounded_provider_token_count(raw: str | None, *, maximum: int) -> int | None:
-    if raw is None or not raw or len(raw) > len(str(maximum)):
+    if raw is None or not raw:
         return None
-    value = int(raw)
+    bounded_digits = raw.lstrip("0") or "0"
+    if len(bounded_digits) > len(str(maximum)):
+        return None
+    value = int(bounded_digits)
     if value < 1 or value > maximum:
         return None
     return value

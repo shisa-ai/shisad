@@ -326,6 +326,7 @@ async def test_i2_known_context_budget_under_at_over_boundary() -> None:
         ("!" * 256, 256),
         ("🙂" * 64, 256),
         ("a" * 256, 256),
+        (",".join(str(index % 10) for index in range(128)), 255),
     ):
         hostile = assess_request_capacity(
             messages=[Message(role="user", content=hostile_text)],
@@ -334,6 +335,14 @@ async def test_i2_known_context_budget_under_at_over_boundary() -> None:
             output_reserve_tokens=128,
         )
         assert hostile.estimated_input_tokens >= minimum_estimate
+
+    japanese = assess_request_capacity(
+        messages=[Message(role="user", content="日本語の長い会話です。" * 32)],
+        tools=[],
+        context_window_tokens=None,
+        output_reserve_tokens=128,
+    )
+    assert japanese.estimated_input_tokens < 640
 
 
 def test_i2_capacity_projection_is_actionable_and_bounded() -> None:
