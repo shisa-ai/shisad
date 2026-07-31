@@ -1728,7 +1728,7 @@ async def test_gh111_all_channel_builders_use_bounded_startup_owner(
         **{enabled_field: True},
     )
 
-    services = await DaemonServices.build(config)
+    services = await _build_services(config)
     try:
         assert getattr(services, service_field) is channel
         assert channel_name not in services.channels
@@ -2248,7 +2248,7 @@ def test_gh44_browser_runtime_note_names_node_version_requirement() -> None:
     assert "web.search/web.fetch" in note
 
 
-async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:
+async def _build_services(config: DaemonConfig) -> DaemonServices:
     return await DaemonServices.build(config)
 
 
@@ -2291,7 +2291,7 @@ async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
         web_allowed_domains=["localhost"],
         browser_allowed_domains=[],
     )
-    services = await _build_browser_registry_services(config)
+    services = await _build_services(config)
     try:
         assert services.browser_status["status"] == "ok"
         navigate_tool = services.registry.get_tool(ToolName("browser.navigate"))
@@ -2324,7 +2324,7 @@ async def test_gh47_browser_health_uses_policy_egress_fallback_scope(
         web_allowed_domains=[],
         browser_allowed_domains=[],
     )
-    services = await _build_browser_registry_services(config)
+    services = await _build_services(config)
     try:
         assert services.browser_status["status"] == "misconfigured"
         assert "*.browser.example" in services.browser_status["allowed_domains"]
@@ -2378,7 +2378,7 @@ async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
         web_allowed_domains=["localhost"],
     )
 
-    services = await _build_browser_registry_services(config)
+    services = await _build_services(config)
     try:
         assert services.browser_status["status"] == "misconfigured"
         assert "browser_command_unconfigured" in services.browser_status["problems"]

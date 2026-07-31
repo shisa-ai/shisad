@@ -86,6 +86,11 @@ async def _stop(task: asyncio.Task[None], client: ControlClient) -> None:
     await asyncio.wait_for(task, timeout=5)
 
 
+def _spawn_daemon(config: DaemonConfig) -> asyncio.Task[None]:
+    """Start a daemon task through one visible integration-test ownership seam."""
+    return asyncio.create_task(run_daemon(config))
+
+
 @pytest.mark.asyncio
 async def test_same_data_root_loser_fails_before_endpoint_or_store_mutation(
     tmp_path: Path,
@@ -94,7 +99,7 @@ async def test_same_data_root_loser_fails_before_endpoint_or_store_mutation(
     clear_remote_provider_env(monkeypatch)
     first_config = _config(tmp_path, root="shared", socket_name="first.sock")
     loser_config = _config(tmp_path, root="shared", socket_name="loser.sock")
-    first_task = asyncio.create_task(run_daemon(first_config))
+    first_task = _spawn_daemon(first_config)
     first_client = ControlClient(first_config.socket_path)
 
     try:
@@ -124,7 +129,7 @@ async def test_same_data_root_loser_fails_before_endpoint_or_store_mutation(
     lock_artifact = first_config.data_dir / ".shisad.lock"
     assert lock_artifact.exists()
 
-    restart_task = asyncio.create_task(run_daemon(loser_config))
+    restart_task = _spawn_daemon(loser_config)
     restart_client = ControlClient(loser_config.socket_path)
     try:
         await wait_for_socket(loser_config.socket_path)
@@ -142,8 +147,8 @@ async def test_disjoint_data_roots_with_disjoint_endpoints_run_concurrently(
     clear_remote_provider_env(monkeypatch)
     first_config = _config(tmp_path, root="one", socket_name="one.sock")
     second_config = _config(tmp_path, root="two", socket_name="two.sock")
-    first_task = asyncio.create_task(run_daemon(first_config))
-    second_task = asyncio.create_task(run_daemon(second_config))
+    first_task = _spawn_daemon(first_config)
+    second_task = _spawn_daemon(second_config)
     first_client = ControlClient(first_config.socket_path)
     second_client = ControlClient(second_config.socket_path)
 
@@ -182,7 +187,7 @@ async def test_partial_startup_failure_releases_data_root_lock(
         await run_daemon(broken)
 
     healthy = _config(tmp_path, root="retryable", socket_name="healthy.sock")
-    task = asyncio.create_task(run_daemon(healthy))
+    task = _spawn_daemon(healthy)
     client = ControlClient(healthy.socket_path)
     try:
         await wait_for_socket(healthy.socket_path)
@@ -208,6 +213,7 @@ async def test_gh111_telegram_timeout_starts_degraded_and_releases_lock(
             connect_cancelled.set()
 
     monkeypatch.setattr(TelegramChannel, "connect", _blocked_connect)
+    monkeypatch.setattr(TelegramChannel, "available", property(lambda _channel: True))
     config = _config(
         tmp_path,
         root="g",
@@ -216,7 +222,7 @@ async def test_gh111_telegram_timeout_starts_degraded_and_releases_lock(
         telegram_bot_token="placeholder-not-a-real-token",
         channel_startup_timeout_seconds=0.1,
     )
-    task = asyncio.create_task(run_daemon(config))
+    task = _spawn_daemon(config)
     client = ControlClient(config.socket_path)
 
     try:
