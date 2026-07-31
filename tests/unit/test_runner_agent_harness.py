@@ -66,6 +66,66 @@ def test_runner_uv_calls_are_lock_and_interpreter_isolated() -> None:
         assert text.count(expected_prefix) == occurrences, f"{path} has an unisolated uv run call"
 
 
+def test_gh100_source_checkout_sync_is_lock_and_config_isolated(tmp_path: Path) -> None:
+    """Documented source setup must ignore discovered config and consume the repo lock."""
+    canonical_command = "uv --no-config sync --frozen --group dev --extra chat"
+    docs = (
+        Path("README.md"),
+        Path("docs/DEPLOY.md"),
+        Path("runner/README.md"),
+        Path("runner/RUNBOOK.md"),
+        Path("runner/SKILL.md"),
+    )
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        bare_sync_lines = [
+            line.strip()
+            for line in text.splitlines()
+            if "uv sync " in line
+            and not line.strip().startswith("**`uv sync --extra security-runtime` fails:**")
+        ]
+        assert bare_sync_lines == [], f"{path} has ambient-config-sensitive sync commands"
+    for path in (Path("runner/README.md"), Path("runner/RUNBOOK.md"), Path("runner/SKILL.md")):
+        assert canonical_command in path.read_text(encoding="utf-8")
+
+    config_home = tmp_path / "config"
+    uv_config_dir = config_home / "uv"
+    uv_config_dir.mkdir(parents=True)
+    (uv_config_dir / "uv.toml").write_text(
+        'exclude-newer = "2026-05-20T00:00:00Z"\nno-build = true\n',
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(config_home)
+    env.pop("UV_CONFIG_FILE", None)
+    env.pop("UV_EXCLUDE_NEWER", None)
+    env.pop("UV_NO_BUILD", None)
+    lock_path = Path("uv.lock")
+    lock_before = lock_path.read_bytes()
+
+    result = subprocess.run(
+        [
+            "uv",
+            "--no-config",
+            "sync",
+            "--frozen",
+            "--group",
+            "dev",
+            "--extra",
+            "chat",
+            "--dry-run",
+            "--python",
+            "3.12",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert lock_path.read_bytes() == lock_before
+
+
 def test_gh50_manual_socket_docs_require_absolute_xdg_runtime_dir() -> None:
     snippet_paths = [
         Path("README.md"),

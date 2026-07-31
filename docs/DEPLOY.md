@@ -112,11 +112,19 @@ Install dependencies:
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --group dev --group channels-runtime
+uv --no-config sync --frozen --group dev --group channels-runtime
 ```
 
-`uv sync` creates and uses the repo `.venv`. To install this checkout into an
-already-active conda/mamba env instead:
+This creates and uses the repo `.venv`. `--no-config --frozen` consumes the
+repository's reviewed lock instead of silently replacing it with discovered
+user/system uv config. Explicit `UV_*` environment variables and command-line
+overrides remain caller-owned and should be cleared when they conflict with
+this setup path. An environment that intentionally applies a different
+package-age cutoff must admit every security floor in `pyproject.toml`; do not
+lower those floors or narrow supported Python versions to make a stale package
+universe resolve.
+
+To install this checkout into an already-active conda/mamba env instead:
 
 ```bash
 mamba install -y -c conda-forge uv
@@ -133,7 +141,7 @@ YARA-backed content scanning is included in the base install through
 from a source checkout, include the security runtime dependency group:
 
 ```bash
-uv sync --group security-runtime --group dev --group channels-runtime
+uv --no-config sync --frozen --group security-runtime --group dev --group channels-runtime
 ```
 
 For package installs, use the first-class PromptGuard extra, for example
@@ -147,11 +155,11 @@ specialized installs.
 Optional groups:
 
 ```bash
-uv sync --group security-runtime    # Local ONNX PromptGuard runtime checks
-uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
-uv sync --group interop             # MCP client runtime
-uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
-uv sync --group coverage            # pytest-cov
+uv --no-config sync --frozen --group security-runtime    # Local ONNX PromptGuard checks
+uv --no-config sync --frozen --group security-build      # Model-pack build tooling
+uv --no-config sync --frozen --group interop             # MCP client runtime
+uv --no-config sync --frozen --group channels-runtime    # Matrix/Discord/Telegram/Slack
+uv --no-config sync --frozen --group coverage            # pytest-cov
 ```
 
 `security-build` is only needed for PromptGuard model export/download/build
@@ -438,7 +446,7 @@ can interact with the daemon.
 libraries. For a source checkout, install the matching dependency group:
 
 ```bash
-uv sync --group channels-runtime
+uv --no-config sync --frozen --group channels-runtime
 ```
 
 ### Discord
@@ -712,16 +720,19 @@ sudo apt install --no-install-recommends -y ufw fail2ban
 Create a policy file (copy `runner/policy.default.yaml` as a starting point) and restart the daemon.
 
 **`doctor.check` reports `<channel>_dependency_missing`:**
-Install `shisad[assistant]`, or run `uv sync --group channels-runtime` in a
-source checkout. A dependency being installed does not enable a channel;
-verify its token and `SHISAD_<CHANNEL>_ENABLED` setting separately.
+Install `shisad[assistant]`, or run
+`uv --no-config sync --frozen --group channels-runtime` in a source checkout.
+A dependency being installed does not enable a channel; verify its token and
+`SHISAD_<CHANNEL>_ENABLED` setting separately.
 
 **`uv sync --extra security-runtime` fails:**
 `security-runtime` is a dependency group, not an optional extra. Use
-`uv sync --group security-runtime` or the combined source-checkout command
-`uv sync --group security-runtime --group dev --group channels-runtime`. For
-package installs, use `uv pip install 'shisad[promptguard]'` or combine it with
-the consumer profile as `shisad[assistant,promptguard]`.
+`uv --no-config sync --frozen --group security-runtime` or the combined
+source-checkout command
+`uv --no-config sync --frozen --group security-runtime --group dev
+--group channels-runtime`. For package installs, use
+`uv pip install 'shisad[promptguard]'` or combine it with the consumer profile
+as `shisad[assistant,promptguard]`.
 
 **Startup logs say PyTorch was not found:**
 This is expected when only `security-runtime` is installed. The daemon runtime
@@ -746,9 +757,9 @@ This is the expected confirmation gate. Rerun with `--confirm`.
 
 **`session.message` fails with planner parse errors:**
 Ensure you are on the latest installed artifact (or run
-`uv sync --group dev --group channels-runtime` in a source checkout), restart
-the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible
-endpoint that supports JSON response formatting.
+`uv --no-config sync --frozen --group dev --group channels-runtime` in a source
+checkout), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an
+OpenAI-compatible endpoint that supports JSON response formatting.
 
 **Env values with JSON lists cause `SettingsError`:**
 If the env file is shell-sourced, switch list fields to comma-separated values,

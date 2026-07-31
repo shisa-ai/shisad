@@ -23,7 +23,7 @@ Dependency setup:
 
 ```bash
 # Standard uv-managed repo .venv:
-uv sync --group dev --extra chat
+uv --no-config sync --frozen --group dev --extra chat
 
 # Existing conda/mamba env:
 mamba install -y -c conda-forge uv
@@ -33,6 +33,11 @@ uv pip install --python "$CONDA_PREFIX/bin/python" \
   -r /tmp/shisad-requirements.txt --strict
 uv pip install --python "$CONDA_PREFIX/bin/python" -e .
 ```
+
+The standard command deliberately ignores discovered user/system uv config and
+consumes the reviewed repository lock. Explicit `UV_*` variables or CLI
+overrides remain caller-owned. Organization-owned package-age or no-build
+policy must be reconciled with the lock's security floors separately.
 
 Talk to the daemon:
 

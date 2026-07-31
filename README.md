@@ -119,7 +119,7 @@ Use a source checkout for development and test groups:
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --group dev --group channels-runtime
+uv --no-config sync --frozen --group dev --group channels-runtime
 ```
 
 YARA-backed content scanning is included in the base install through
@@ -127,8 +127,16 @@ YARA-backed content scanning is included in the base install through
 add the security runtime dependency group:
 
 ```bash
-uv sync --group security-runtime --group dev --extra chat
+uv --no-config sync --frozen --group security-runtime --group dev --extra chat
 ```
+
+`--no-config --frozen` makes source setup consume the repository's reviewed
+lock instead of silently replacing it with discovered user/system uv config.
+Explicit `UV_*` environment variables and command-line overrides remain
+caller-owned and should be cleared when they conflict with this setup path.
+If your environment intentionally enforces a different package-age cutoff, it
+must admit every security floor in `pyproject.toml`; do not lower those floors
+or narrow supported Python versions to make a stale package universe resolve.
 
 For package installs, use the first-class PromptGuard extra, for example
 `uv pip install 'shisad[promptguard]'`. `security-runtime` is a uv dependency

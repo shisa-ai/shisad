@@ -15,13 +15,15 @@ For current public operator guidance, see:
 
 - You are in the `shisad` repo root.
 - Python deps are installed. The standard source-checkout path is
-  `uv sync --group dev --extra chat`, which uses the repo `.venv`.
+  `uv --no-config sync --frozen --group dev --extra chat`, which uses the repo
+  `.venv` and the reviewed lock without discovered user/system uv config.
+  Explicit `UV_*` variables and CLI overrides remain caller-owned.
   For an existing conda/mamba env, install `uv` in that env, then run
   `uv export --frozen --format requirements.txt --group dev --extra chat`
   and `uv pip install --python "$CONDA_PREFIX/bin/python" -r <requirements>
   --strict`, followed by an editable install of the checkout.
   For local PromptGuard/YARA runtime checks, use
-  `uv sync --group security-runtime --group dev --extra chat`.
+  `uv --no-config sync --frozen --group security-runtime --group dev --extra chat`.
   `security-runtime` is a dependency group, not an extra; `chat` is the extra.
 - If you want live remote planner calls, the right API key is set for your
   preset (see *Credentials* below).

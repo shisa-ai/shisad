@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-07-28 (v0.8.1)*
+*Updated: 2026-07-30 (GH #100 source-checkout isolation)*
 *Status: In Progress*  
 *Snapshot basis: code/dependency and workflow state in the v0.8.1 release published on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
 
@@ -38,6 +38,65 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-07-30 — GH #100 managed-environment source checkout
+
+- Reproduction:
+  - `uv --no-config sync --group dev --extra chat --dry-run --python 3.12
+    --exclude-newer 2026-05-20T00:00:00Z --no-build` reproduces the reported
+    unsatisfiable `cryptography>=48.0.1,<49` split.
+  - A Python-3.12-only `uv pip compile` under the same cutoff also fails on
+    `cryptography`, proving that uv's newer-Python hint is not the root cause.
+  - `cryptography 48.0.1` was uploaded on 2026-06-09, after the environment's
+    fixed 2026-05-20 cutoff. Versions before 48.0.1 are affected by
+    [GHSA-537c-gmf6-5ccf](https://github.com/pyca/cryptography/security/advisories/GHSA-537c-gmf6-5ccf),
+    so lowering the direct minimum would restore a known vulnerable wheel.
+- Accepted contract:
+  - documented source-checkout setup commands use the repository's committed,
+    hash-locked resolution with `uv --no-config sync --frozen`;
+  - stale discovered user/system uv config cannot silently replace that
+    repository-owned setup posture; explicit `UV_*` variables and CLI
+    overrides remain caller-owned;
+  - supported Python metadata and the patched cryptography floor remain
+    unchanged;
+  - users intentionally evaluating a different package-age universe must move
+    their cutoff past every required security floor rather than weakening the
+    project.
+- Affected files:
+  - setup documentation: `README.md`, `docs/DEPLOY.md`, `runner/README.md`,
+    `runner/RUNBOOK.md`, and `runner/SKILL.md`;
+  - contract/evidence: this audit and
+    `tests/unit/test_runner_agent_harness.py`;
+  - production files, `pyproject.toml`, and `uv.lock`: none.
+- Pre-analysis:
+  - product implication: managed development environments must remain usable
+    without trading away the patched dependency baseline;
+  - threat hotspots: discovered resolver config overriding the committed lock,
+    stale package-age cutoffs, global no-build config in a source checkout,
+    explicit caller overrides, and misleading Python-version narrowing;
+  - runtime wiring: none; the shipped daemon is unchanged. The live path is
+    the documented source-checkout command and uv's frozen lock consumption;
+  - refactor selection: none. This is a docs/contract-test unit with no
+    opportunistic production-file overlap;
+  - validation: red-first documentation/command contract test, exact Python
+    3.12 hostile-config dry run with lock immutability, Python 3.13 best-effort
+    frozen dry run, Ruff for the changed test, and lockfile integrity check;
+  - likely deferral: general compatibility with arbitrary organization-owned
+    uv policies remains external to this repository.
+- Outcome:
+  - all documented source-checkout sync commands now consume the frozen lock
+    without discovered uv config; the quoted invalid troubleshooting command
+    remains only as the failure being diagnosed;
+  - `pyproject.toml` and `uv.lock` are unchanged, so the supported-Python
+    contract and patched dependency floor remain intact;
+  - the red-first `GH100-R1` node initially failed on the ambient-config-
+    sensitive commands, then passed as `1 passed`; the owning
+    `tests/unit/test_runner_agent_harness.py` file passed all `23` tests;
+  - Ruff passed for the changed test, `uv --no-config lock --check` resolved
+    all `134` packages, and frozen dry-runs passed on installed Python 3.12 and
+    best-effort Python 3.13;
+  - independent read-only review reported no remaining findings against the
+    accepted contract.
 
 ### 2026-07-28 — v0.8.1 ReleaseClose dependency remediation
 
