@@ -4243,7 +4243,9 @@ def _finalize_execution_result(
     pending_confirmation: int = 0,
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
+    provider_response_content: str | None = None,
     provider_response_trusted_origin: str = "",
+    finalization_messages_sent: tuple[Message, ...] = (),
     rejected: int = 0,
     rejection_reasons_for_user: list[str] | None = None,
     origin_turn_id: str = "",
@@ -4287,7 +4289,12 @@ def _finalize_execution_result(
             attempts=1,
             provider_response=(
                 ProviderResponse(
-                    message=Message(role="assistant", content=assistant_response),
+                    message=Message(
+                        role="assistant",
+                        content=provider_response_content
+                        if provider_response_content is not None
+                        else assistant_response,
+                    ),
                     model=provider_response_model,
                     finish_reason="error",
                     usage={},
@@ -4297,6 +4304,7 @@ def _finalize_execution_result(
                 else None
             ),
             messages_sent=(),
+            finalization_messages_sent=finalization_messages_sent,
         ),
         planner_failure_code="",
         trace_t0=0.0,
@@ -4562,6 +4570,7 @@ class _PostToolSynthesisPlanner:
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: str | None = None,
         pep: PEP | None = None,
+        finalize_response: bool = True,
     ) -> PlannerResult:
         self.calls.append(
             {
@@ -4570,6 +4579,7 @@ class _PostToolSynthesisPlanner:
                 "tools": tools,
                 "persona_tone_override": persona_tone_override,
                 "pep": pep,
+                "finalize_response": finalize_response,
             }
         )
         return PlannerResult(
@@ -4593,6 +4603,7 @@ class _PostToolSynthesisPlanner:
         pep: PEP,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: str | None = None,
+        finalize_response: bool = True,
     ) -> PlannerResult:
         return await self.propose(
             user_content,
@@ -4600,6 +4611,7 @@ class _PostToolSynthesisPlanner:
             tools=tools,
             persona_tone_override=persona_tone_override,
             pep=pep,
+            finalize_response=finalize_response,
         )
 
 
@@ -4612,6 +4624,7 @@ class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: str | None = None,
         pep: PEP | None = None,
+        finalize_response: bool = True,
     ) -> PlannerResult:
         cleaned = user_content.replace("^", "")
         recovery_policy = ""
@@ -4637,6 +4650,7 @@ class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
             tools=tools,
             persona_tone_override=persona_tone_override,
             pep=pep,
+            finalize_response=finalize_response,
         )
 
 
@@ -4646,6 +4660,38 @@ class _RecordingTraceRecorder:
 
     def record(self, turn: Any) -> None:
         self.turns.append(turn)
+
+
+@pytest.mark.asyncio
+async def test_i3a_trace_separates_preliminary_and_typed_finalization_phases() -> None:
+    harness = _FinalizeEvidenceHarness()
+    recorder = _RecordingTraceRecorder()
+    harness._trace_recorder = recorder
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="こんにちは (konnichiwa) means hello.",
+        content="How do you say hello in Japanese?",
+        provider_response_model="remote-test",
+        provider_response_content="IGNORED-FINALIZER-CONTENT",
+        finalization_messages_sent=(
+            Message(role="system", content="Return only the typed final answer."),
+            Message(role="user", content="PRELIMINARY-DRAFT-SENTINEL"),
+        ),
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "こんにちは (konnichiwa) means hello."
+    assert len(recorder.turns) == 1
+    trace = recorder.turns[0]
+    assert trace.llm_response == "IGNORED-FINALIZER-CONTENT"
+    assert any(
+        message.content == "CONVERSATION FINALIZATION TRACE PHASE"
+        for message in trace.messages_sent
+    )
+    assert any("PRELIMINARY-DRAFT-SENTINEL" in message.content for message in trace.messages_sent)
+    assert "IGNORED-FINALIZER-CONTENT" not in response["response"]
 
 
 @pytest.mark.asyncio
@@ -4805,6 +4851,7 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     assert len(synthesis.calls) == 1
     call = synthesis.calls[0]
     assert call["tools"] == []
+    assert call["finalize_response"] is False
     assert "same turn's tool outputs" in call["user_content"]
     assert "tool_output_count=1" in call["user_content"]
     assert "EVIDENCE_START" in call["user_content"]

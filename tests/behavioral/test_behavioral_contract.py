@@ -298,7 +298,7 @@ def _extract_browser_url(goal: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-async def _stub_complete(
+async def _stub_complete_unmarked(
     self: LocalPlannerProvider,
     messages: list[Message],
     tools: list[dict[str, Any]] | None = None,
@@ -1024,6 +1024,15 @@ async def _stub_complete(
     )
 
 
+async def _stub_complete(
+    self: LocalPlannerProvider,
+    messages: list[Message],
+    tools: list[dict[str, Any]] | None = None,
+) -> ProviderResponse:
+    response = await _stub_complete_unmarked(self, messages, tools)
+    return response.model_copy(update={"trusted_origin": "local-fallback"})
+
+
 def _force_deterministic_local_planner(
     *,
     monkeypatch: pytest.MonkeyPatch,
@@ -1557,6 +1566,117 @@ async def test_contract_hello_responds_without_lockdown(contract_harness: Contra
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_i3a_reported_japanese_prompts_return_typed_final_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[Message], list[dict[str, Any]] | None]] = []
+
+    async def _remote_response_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        _ = self
+        calls.append((list(messages), tools))
+        tool_names = [
+            str(tool.get("function", {}).get("name", ""))
+            for tool in (tools or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        ]
+        combined = "\n".join(message.content for message in messages).replace("^", "")
+        if tool_names == ["respond_to_user"]:
+            answer = (
+                "こんにちは (konnichiwa) is a standard way to say hello in Japanese."
+                if "How do you say hello in Japanese?" in combined
+                else (
+                    "は (wa) marks the topic, while が (ga) commonly marks the "
+                    "grammatical subject or emphasizes who or what does something."
+                )
+            )
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="FINALIZER-INTERNAL-CONTENT",
+                    tool_calls=[
+                        _tool_call(
+                            "respond_to_user",
+                            {"final_answer": answer},
+                            call_id="final",
+                        )
+                    ],
+                ),
+                model="behavioral-remote-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="",
+            )
+        goal = _extract_user_goal(combined)
+        draft = (
+            "DATA EVIDENCE: choose retrieve_rag and explain the tool-selection plan."
+            if "hello in Japanese" in goal
+            else "PLANNER-DRAFT: resolve は versus わ, then plan an answer about wa and ga."
+        )
+        return ProviderResponse(
+            message=Message(role="assistant", content=draft),
+            model="behavioral-remote-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="",
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _remote_response_complete,
+            raising=True,
+        )
+        cases = (
+            (
+                "What is the difference between wa and ga in Japanese?",
+                ("は", "が", "topic", "subject"),
+            ),
+            (
+                "How do you say hello in Japanese?",
+                ("こんにちは", "hello"),
+            ),
+        )
+        for prompt, expected_fragments in cases:
+            sid = await _create_session(harness.client)
+            reply = await harness.client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "channel": "cli",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                    "content": prompt,
+                },
+            )
+            response = str(reply.get("response", ""))
+            for fragment in expected_fragments:
+                assert fragment.lower() in response.lower()
+            assert "DATA EVIDENCE" not in response
+            assert "retrieve_rag" not in response
+            assert "PLANNER-DRAFT" not in response
+            assert "FINALIZER-INTERNAL-CONTENT" not in response
+            assert reply.get("lockdown_level") == "normal"
+            assert int(reply.get("blocked_actions", 0)) == 0
+            assert int(reply.get("confirmation_required_actions", 0)) == 0
+            assert int(reply.get("executed_actions", 0)) == 0
+
+    finalizer_calls = [
+        tools
+        for _messages, tools in calls
+        if tools
+        and len(tools) == 1
+        and tools[0].get("function", {}).get("name") == "respond_to_user"
+    ]
+    assert len(finalizer_calls) == 2
 
 
 @pytest.mark.asyncio

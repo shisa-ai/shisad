@@ -3551,6 +3551,7 @@ def _rewrite_plain_greeting_planner_result(
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
+        finalization_messages_sent=planner_result.finalization_messages_sent,
     )
 
 
@@ -3604,6 +3605,7 @@ def _bind_structured_similar_file_recovery(
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
+        finalization_messages_sent=planner_result.finalization_messages_sent,
     )
 
 
@@ -14341,6 +14343,7 @@ class SessionImplMixin(HandlerMixinBase):
                     pep=self._pep_for_current_policy(),
                     tools=[],
                     persona_tone_override=planner_context.assistant_tone_override,
+                    finalize_response=False,
                 ),
                 timeout=_POST_TOOL_SYNTHESIS_TIMEOUT_SEC,
             )
@@ -14611,6 +14614,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pep=self._pep_for_current_policy(),
                 tools=planner_tools_payload,
                 persona_tone_override=None,
+                finalize_response=False,
             )
         except ProviderContextCapacityError as exc:
             planner_failure_code = "planner_context_capacity_exceeded"
@@ -14660,6 +14664,7 @@ class SessionImplMixin(HandlerMixinBase):
                 attempts=planner_result.attempts,
                 provider_response=planner_result.provider_response,
                 messages_sent=planner_result.messages_sent,
+                finalization_messages_sent=planner_result.finalization_messages_sent,
             )
             return SessionMessageExecutionResult(
                 planner_dispatch=dispatch,
@@ -15493,6 +15498,20 @@ class SessionImplMixin(HandlerMixinBase):
                     if planner_dispatch.planner_result.messages_sent
                     else []
                 )
+                if planner_dispatch.planner_result.finalization_messages_sent:
+                    trace_messages.append(
+                        TraceMessage(
+                            role="system",
+                            content="CONVERSATION FINALIZATION TRACE PHASE",
+                        )
+                    )
+                    trace_messages.extend(
+                        _redact_sensitive_browser_trace_message(
+                            message,
+                            sensitive_browser_values,
+                        )
+                        for message in (planner_dispatch.planner_result.finalization_messages_sent)
+                    )
                 if post_tool_synthesis_result.messages_sent:
                     trace_messages.append(
                         TraceMessage(
@@ -16098,6 +16117,7 @@ class SessionImplMixin(HandlerMixinBase):
                     context,
                     pep=self._pep_for_current_policy(),
                     tools=[],
+                    finalize_response=False,
                 ),
                 timeout=_TASK_CLOSE_GATE_TIMEOUT_SEC,
             )
