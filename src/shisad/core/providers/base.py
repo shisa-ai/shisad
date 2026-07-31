@@ -13,6 +13,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import re
 import socket
 from typing import Any, Protocol
 from urllib import error, request
@@ -35,6 +36,25 @@ from shisad.security.network_address import (
 logger = logging.getLogger(__name__)
 _PROVIDER_REDIRECT_CODES: set[int] = {301, 302, 303, 307, 308}
 _PROVIDER_MAX_REDIRECTS = 5
+_CONTEXT_LENGTH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\bthe input \((?P<input>[0-9]+) tokens\) is longer than the "
+        r"model(?:'s|\u2019s) context length \((?P<window>[0-9]+) tokens\)",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmaximum context length is (?P<window>[0-9]+) tokens\. "
+        r"however, (?:your messages|this request) resulted in (?P<input>[0-9]+) tokens\b",
+        flags=re.IGNORECASE,
+    ),
+)
+_CONTEXT_LENGTH_ERROR_CODES = frozenset(
+    {
+        "context_length_exceeded",
+        "context_window_exceeded",
+        "prompt_too_long",
+    }
+)
 
 
 # --- Provider protocol ---
@@ -57,6 +77,102 @@ class ProviderResponse(BaseModel):
     finish_reason: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
     trusted_origin: str = Field(default="", exclude=True)
+
+
+class ProviderContextCapacityError(RuntimeError):
+    """Safe typed failure for a planner request that exceeds model capacity."""
+
+    def __init__(
+        self,
+        *,
+        context_window_tokens: int,
+        model_id: str = "",
+        output_reserve_tokens: int = 0,
+        estimated_input_tokens: int | None = None,
+        reported_input_tokens: int | None = None,
+        source: str = "provider",
+    ) -> None:
+        self.context_window_tokens = int(context_window_tokens)
+        self.model_id = model_id
+        self.output_reserve_tokens = int(output_reserve_tokens)
+        self.estimated_input_tokens = estimated_input_tokens
+        self.reported_input_tokens = reported_input_tokens
+        self.source = source
+        input_tokens = estimated_input_tokens or reported_input_tokens
+        input_fragment = f", input_tokens={input_tokens}" if input_tokens is not None else ""
+        super().__init__(
+            "Planner request exceeds model context capacity "
+            f"(context_window_tokens={self.context_window_tokens}{input_fragment})"
+        )
+
+    def user_message(self) -> str:
+        """Return actionable text without exposing provider response details."""
+
+        return (
+            "This request is too large for the configured "
+            f"{self.context_window_tokens}-token context window. "
+            "Please shorten the conversation or request, or select a larger-context model."
+        )
+
+
+def provider_context_capacity_error_from_http(
+    *,
+    status: int,
+    model_id: str,
+    details: str,
+) -> ProviderContextCapacityError | None:
+    """Classify bounded machine-generated HTTP capacity errors."""
+
+    if status != 400:
+        return None
+    message = ""
+    error_code = ""
+    try:
+        parsed = json.loads(details)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        candidate: Any = parsed.get("error", parsed)
+        if isinstance(candidate, dict):
+            message_value = candidate.get("message")
+            code_value = candidate.get("code")
+            if isinstance(message_value, str):
+                message = message_value.strip()
+            if isinstance(code_value, str):
+                error_code = code_value.strip().lower()
+        elif isinstance(candidate, str):
+            message = candidate.strip()
+    if not message:
+        return None
+
+    reported_input: int | None = None
+    context_window: int | None = None
+    for pattern in _CONTEXT_LENGTH_PATTERNS:
+        match = pattern.search(message)
+        if match is not None:
+            reported_input = int(match.group("input"))
+            context_window = int(match.group("window"))
+            break
+    if context_window is None:
+        if error_code not in _CONTEXT_LENGTH_ERROR_CODES:
+            return None
+        window_match = re.search(
+            r"\b(?:maximum )?context length(?: is|:) ([0-9]+) tokens\b",
+            message,
+        )
+        input_match = re.search(r"\b(?:input|messages|request).*?([0-9]+) tokens\b", message)
+        if window_match is None:
+            return None
+        context_window = int(window_match.group(1))
+        if input_match is not None:
+            reported_input = int(input_match.group(1))
+
+    return ProviderContextCapacityError(
+        context_window_tokens=context_window,
+        model_id=model_id,
+        reported_input_tokens=reported_input,
+        source="provider_http",
+    )
 
 
 class EmbeddingResponse(BaseModel):
@@ -290,6 +406,13 @@ class OpenAICompatibleProvider:
                     active_url = redirected_url
                     continue
                 details = _read_http_error_details(exc)
+                capacity_error = provider_context_capacity_error_from_http(
+                    status=exc.code,
+                    model_id=self._model_id,
+                    details=details,
+                )
+                if capacity_error is not None:
+                    raise capacity_error from exc
                 raise RuntimeError(
                     f"Provider HTTP error {exc.code} for {active_url}: {details[:300]}"
                 ) from exc

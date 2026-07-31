@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AuthMode(StrEnum):
@@ -49,6 +49,30 @@ class ProviderCapabilities(BaseModel):
         default=False,
         description="Provider supports response-format JSON schema style structured output.",
     )
+    context_window_tokens: int | None = Field(
+        default=None,
+        ge=256,
+        le=4_194_304,
+        description=(
+            "Known total context window for preflight assessment; unknown custom models "
+            "remain unset."
+        ),
+    )
+    output_reserve_tokens: int = Field(
+        default=1024,
+        ge=1,
+        le=65_536,
+        description="Tokens reserved for provider output before assessing planner input.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_context_reserve(self) -> ProviderCapabilities:
+        if (
+            self.context_window_tokens is not None
+            and self.output_reserve_tokens >= self.context_window_tokens
+        ):
+            raise ValueError("output_reserve_tokens must be smaller than context_window_tokens")
+        return self
 
     model_config = ConfigDict(frozen=True)
 

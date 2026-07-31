@@ -11,6 +11,7 @@ from shisad.core.providers.base import (
     EmbeddingResponse,
     Message,
     OpenAICompatibleProvider,
+    ProviderContextCapacityError,
     ProviderResponse,
 )
 from shisad.core.providers.capabilities import AuthMode, EndpointFamily
@@ -206,6 +207,14 @@ class RoutedOpenAIProvider:
 
         try:
             return await self._planner_provider.complete(messages, tools)
+        except ProviderContextCapacityError as exc:
+            logger.warning(
+                "Remote planner request exceeded provider context capacity "
+                "(context_window_tokens=%s, input_tokens=%s)",
+                exc.context_window_tokens,
+                exc.reported_input_tokens or exc.estimated_input_tokens,
+            )
+            raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if self._fallback is None:
                 raise

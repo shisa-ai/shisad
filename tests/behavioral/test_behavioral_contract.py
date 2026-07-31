@@ -1259,6 +1259,7 @@ async def _contract_harness_context(
     browser_enabled: bool | None = None,
     browser_allowed_domains: list[str] | None = None,
     policy_extra_lines: list[str] | None = None,
+    context_window: int = 1,
 ) -> AsyncIterator[ContractHarness]:
     server: ThreadingHTTPServer | None = None
     thread: threading.Thread | None = None
@@ -1313,7 +1314,7 @@ async def _contract_harness_context(
             policy_text=policy_text,
             config_kwargs={
                 "log_level": "WARNING",
-                "context_window": 1,
+                "context_window": context_window,
                 "web_search_enabled": True,
                 "web_search_backend_url": backend_url,
                 "web_allowed_domains": ["127.0.0.1", "localhost"],
@@ -1555,6 +1556,112 @@ async def test_contract_hello_responds_without_lockdown(contract_harness: Contra
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_i2_long_session_compacts_optional_context_and_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SHISAD_MODEL_PLANNER_CAPABILITIES",
+        json.dumps(
+            {
+                "context_window_tokens": 12_500,
+                "output_reserve_tokens": 512,
+            }
+        ),
+    )
+
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        context_window=24,
+    ) as harness:
+        recorded: list[tuple[list[Message], list[dict[str, Any]] | None]] = []
+        deterministic_complete = LocalPlannerProvider.complete
+
+        async def _recording_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            recorded.append((list(messages), tools))
+            return await deterministic_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _recording_complete)
+        sid = await _create_session(harness.client)
+        for index in range(8):
+            await harness.client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "channel": "cli",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                    "content": f"history-{index} " + ("optional context " * 60),
+                },
+            )
+
+        reply = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello capacity-current-goal-sentinel",
+            },
+        )
+        planner_calls = [
+            call
+            for call in recorded
+            if call[0] and "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in call[0][0].content
+        ]
+        messages, tools = planner_calls[-1]
+        provider_calls_before_capacity_failure = len(planner_calls)
+        oversized_reply = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "irreducible protected current goal " * 1_000,
+            },
+        )
+        anomaly_audit = await harness.client.call(
+            "audit.query",
+            {
+                "event_type": "AnomalyReported",
+                "session_id": sid,
+                "limit": 20,
+            },
+        )
+
+    assert "hello" in str(reply.get("response", "")).lower()
+    assert reply.get("lockdown_level") == "normal"
+    planner_input = messages[-1].content.replace("^", "")
+    assert "capacity-current-goal-sentinel" in planner_input
+    assert "context_capacity_compacted=true" in planner_input
+    assert "context_capacity_omitted=history" in planner_input
+    assert "history-0" not in planner_input
+    assert "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in messages[0].content
+    assert tools
+    assert "too large" in str(oversized_reply.get("response", "")).lower()
+    assert "shorten" in str(oversized_reply.get("response", "")).lower()
+    assert oversized_reply.get("lockdown_level") == "normal"
+    assert (
+        len(
+            [
+                call
+                for call in recorded
+                if call[0] and "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in call[0][0].content
+            ]
+        )
+        == provider_calls_before_capacity_failure
+    )
+    assert anomaly_audit.get("events") == []
 
 
 @pytest.mark.parametrize("component", ["scheduler", "skills", "selfmod", "evidence"])

@@ -143,6 +143,14 @@ _DEFAULT_ENDPOINT_BY_COMPONENT: dict[ModelComponent, EndpointFamily] = {
     ModelComponent.MONITOR: EndpointFamily.CHAT_COMPLETIONS,
 }
 
+_KNOWN_CONTEXT_WINDOWS: dict[tuple[ProviderPreset, ModelComponent, str], int] = {
+    (
+        ProviderPreset.SHISA_DEFAULT,
+        ModelComponent.PLANNER,
+        "shisa-ai/shisa-v2.1-unphi4-14b",
+    ): 16_384,
+}
+
 
 def provider_preset_label(route: ModelRoute) -> str:
     default_base_url = _PRESET_BASE_URLS.get(route.provider_preset, "").rstrip("/")
@@ -237,6 +245,15 @@ class ModelRouter:
             api_key=api_key,
             api_key_source=api_key_source,
         )
+        known_context_window = _KNOWN_CONTEXT_WINDOWS.get((preset, component, model_id))
+        if (
+            remote_enabled
+            and known_context_window is not None
+            and "context_window_tokens" not in capabilities.model_fields_set
+        ):
+            capabilities = capabilities.model_copy(
+                update={"context_window_tokens": known_context_window}
+            )
 
         endpoint_family_override = getattr(self._config, f"{prefix}_endpoint_family")
         endpoint_family = endpoint_family_override or _DEFAULT_ENDPOINT_BY_COMPONENT[component]

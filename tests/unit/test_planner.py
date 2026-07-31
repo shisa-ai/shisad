@@ -57,6 +57,55 @@ class RecordingPEP:
         return self._pep.evaluate(tool_name, arguments, context)
 
 
+@pytest.mark.asyncio
+async def test_i2_irreducible_context_capacity_fails_before_provider_call() -> None:
+    from shisad.core.providers.base import ProviderContextCapacityError
+
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider([Message(role="assistant", content="must not be called")])
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=2,
+        capabilities=ProviderCapabilities(
+            context_window_tokens=512,
+            output_reserve_tokens=128,
+        ),
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "required schema sentinel",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            },
+        }
+    ]
+
+    with pytest.raises(ProviderContextCapacityError) as caught:
+        await planner.propose(
+            "authenticated current goal sentinel " * 300,
+            PolicyContext(capabilities={Capability.FILE_READ}),
+            tools=tools,
+        )
+
+    assert provider.calls == 0
+    assert caught.value.context_window_tokens == 512
+    assert caught.value.estimated_input_tokens > 384
+    user_message = caught.value.user_message()
+    assert "512-token context window" in user_message
+    assert "shorten" in user_message.lower()
+    assert "larger-context model" in user_message.lower()
+    assert "HTTP 400" not in user_message
+    assert "https://" not in user_message
+
+
 def _make_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(

@@ -11,7 +11,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.providers.base import Message, ModelProvider, ProviderResponse
+from shisad.core.context_budget import RequestCapacityAssessment, assess_request_capacity
+from shisad.core.providers.base import (
+    Message,
+    ModelProvider,
+    ProviderContextCapacityError,
+    ProviderResponse,
+)
 from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
@@ -262,6 +268,29 @@ class Planner:
             self._validation_tool_names.reset(validation_token)
             self._pep_override.reset(token)
 
+    def assess_request_capacity(
+        self,
+        user_content: str,
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        persona_tone_override: PersonaTone | None = None,
+    ) -> RequestCapacityAssessment:
+        """Assess the exact initial planner request against known route capacity."""
+
+        system_prompt = self._compose_system_prompt(
+            persona_tone_override=persona_tone_override,
+            tools=tools,
+        )
+        return assess_request_capacity(
+            messages=[
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=user_content),
+            ],
+            tools=tools,
+            context_window_tokens=self._capabilities.context_window_tokens,
+            output_reserve_tokens=self._capabilities.output_reserve_tokens,
+        )
+
     async def propose(
         self,
         user_content: str,
@@ -283,6 +312,19 @@ class Planner:
         ]
 
         for attempt in range(self._max_retries + 1):
+            capacity = assess_request_capacity(
+                messages=messages,
+                tools=tools,
+                context_window_tokens=self._capabilities.context_window_tokens,
+                output_reserve_tokens=self._capabilities.output_reserve_tokens,
+            )
+            if not capacity.fits and capacity.context_window_tokens is not None:
+                raise ProviderContextCapacityError(
+                    context_window_tokens=capacity.context_window_tokens,
+                    output_reserve_tokens=capacity.output_reserve_tokens,
+                    estimated_input_tokens=capacity.estimated_input_tokens,
+                    source="planner_preflight",
+                )
             response = await self._provider.complete(messages, tools)
             try:
                 output = self._parse_provider_output(

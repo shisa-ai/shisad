@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-30*
+*Updated: 2026-07-31*
 *Status: Active*
 
 ## Goal
@@ -416,7 +416,9 @@ TOTP entry remain deferred to `v0.8.0`.
   reliability lane includes bounded optional-channel startup: a connector
   timeout degrades that connector and preserves the core daemon when cleanup
   succeeds, while unsafe cleanup failure stops startup and releases data-root
-  ownership
+  ownership. The planner reliability lane also adds capacity-aware optional
+  context compaction for known model windows and terminal, actionable handling
+  when a protected request or provider-reported request cannot fit
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,

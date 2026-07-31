@@ -44,6 +44,7 @@ from shisad.core.context import (
     build_conversation_episodes,
     compress_episodes_to_budget,
 )
+from shisad.core.context_budget import compact_context_scaffold
 from shisad.core.events import (
     AnomalyReported,
     BrowserNavigationURLSelected,
@@ -84,6 +85,7 @@ from shisad.core.planner import (
     PlannerOutputError,
     PlannerResult,
 )
+from shisad.core.providers.base import ProviderContextCapacityError
 from shisad.core.session import Session, SessionRehydrateError
 from shisad.core.session_archive import SessionArchiveError
 from shisad.core.tools.names import (
@@ -11249,18 +11251,39 @@ class SessionImplMixin(HandlerMixinBase):
                 exc_info=True,
             )
 
+        assistant_tone_override = _normalize_assistant_tone(session.metadata.get("assistant_tone"))
         planner_input = ""
         if not context_scaffold_degraded and context_scaffold is not None:
             try:
-                planner_input = build_planner_input_v2(
-                    trusted_instructions=trusted_instructions,
-                    user_goal=firewall_result.sanitized_text,
-                    untrusted_content="",
-                    encode_untrusted=bool(context_scaffold.untrusted_entries)
-                    and firewall_result.risk_score >= 0.7,
-                    trusted_context=trusted_planner_context,
-                    scaffold=context_scaffold,
+                encode_untrusted = (
+                    bool(context_scaffold.untrusted_entries)
+                    and firewall_result.risk_score >= 0.7
                 )
+
+                def _render_scaffold(candidate: ContextScaffold) -> str:
+                    return build_planner_input_v2(
+                        trusted_instructions=trusted_instructions,
+                        user_goal=firewall_result.sanitized_text,
+                        untrusted_content="",
+                        encode_untrusted=encode_untrusted,
+                        trusted_context=trusted_planner_context,
+                        scaffold=candidate,
+                    )
+
+                capacity_assessor = getattr(self._planner, "assess_request_capacity", None)
+                if callable(capacity_assessor):
+                    compaction = compact_context_scaffold(
+                        context_scaffold,
+                        render=_render_scaffold,
+                        assess=lambda content: capacity_assessor(
+                            content,
+                            planner_tools_payload,
+                            persona_tone_override=assistant_tone_override,
+                        ),
+                    )
+                    planner_input = compaction.planner_input
+                else:
+                    planner_input = _render_scaffold(context_scaffold)
             except Exception as exc:
                 context_scaffold_degraded = True
                 context_scaffold_reason_codes.append("context_scaffold_render_failed")
@@ -11314,7 +11337,6 @@ class SessionImplMixin(HandlerMixinBase):
             session.metadata.pop(_CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY, None)
         self._session_manager.persist(sid)
 
-        assistant_tone_override = _normalize_assistant_tone(session.metadata.get("assistant_tone"))
         return SessionMessagePlannerContextResult(
             validated=validated,
             conversation_context=conversation_context,
@@ -11376,6 +11398,22 @@ class SessionImplMixin(HandlerMixinBase):
                         str(name) for name in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS
                     },
                 )
+        except ProviderContextCapacityError as exc:
+            planner_failure_code = "planner_context_capacity_exceeded"
+            logger.warning(
+                "Planner context capacity exceeded for session %s "
+                "(context_window_tokens=%s, input_tokens=%s)",
+                validated.sid,
+                exc.context_window_tokens,
+                exc.estimated_input_tokens or exc.reported_input_tokens,
+            )
+            planner_result = PlannerResult(
+                output=PlannerOutput(actions=[], assistant_response=exc.user_message()),
+                evaluated=[],
+                attempts=0,
+                provider_response=None,
+                messages_sent=(),
+            )
         except PlannerOutputError as exc:
             planner_failure_code = "planner_output_invalid"
             tainted_context = TaintLabel.UNTRUSTED in planner_context.context.taint_labels

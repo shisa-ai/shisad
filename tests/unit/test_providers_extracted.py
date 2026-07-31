@@ -3094,3 +3094,76 @@ async def test_gh38_routed_openai_provider_reports_provider_connection_error(
     assert "Could not reach the provider" in content
     assert "credentials" not in content.lower()
     assert "shisad doctor check --component provider" in content
+
+
+@pytest.mark.asyncio
+async def test_i2_unknown_limit_provider_capacity_error_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.core.providers.base import provider_context_capacity_error_from_http
+
+    raw_error = (
+        '{"object":"error","message":"The input (17514 tokens) is longer than '
+        'the model\'s context length (16384 tokens).","type":"BadRequestError",'
+        '"param":null,"code":400}'
+    )
+    capacity_error = provider_context_capacity_error_from_http(
+        status=400,
+        model_id="custom/model-with-unknown-window",
+        details=raw_error,
+    )
+    assert capacity_error is not None
+    assert capacity_error.reported_input_tokens == 17_514
+    assert capacity_error.context_window_tokens == 16_384
+    assert "api.shisa.ai" not in str(capacity_error)
+    assert raw_error not in str(capacity_error)
+
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_AUTH_MODE", "none")
+    monkeypatch.setenv(
+        "SHISAD_MODEL_PLANNER_MODEL_ID",
+        "custom/model-with-unknown-window",
+    )
+
+    class CapacityProvider:
+        calls = 0
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            self.calls += 1
+            raise capacity_error
+
+    class RecordingFallback(LocalPlannerProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+            *,
+            fallback_mode: str = "configuration",
+            fallback_error: str = "",
+        ) -> ProviderResponse:
+            _ = (messages, tools, fallback_mode, fallback_error)
+            self.calls += 1
+            return ProviderResponse(message=Message(role="assistant", content="unexpected"))
+
+    fallback = RecordingFallback()
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        fallback=fallback,
+    )
+    remote = CapacityProvider()
+    provider._planner_provider = remote
+
+    with pytest.raises(type(capacity_error)) as caught:
+        await provider.complete([Message(role="user", content="current goal")])
+
+    assert caught.value is capacity_error
+    assert remote.calls == 1
+    assert fallback.calls == 0

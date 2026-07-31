@@ -622,6 +622,20 @@ Monitor route:
 Notes:
 
 - `*_EXTRA_HEADERS`, `*_CAPABILITIES`, and `*_REQUEST_PARAMETERS` are JSON-object fields.
+- `*_CAPABILITIES` accepts `context_window_tokens` when the route's total
+  context capacity is known and `output_reserve_tokens` (default `1024`). The
+  exact remote `shisa_default` planner model resolves to a 16,384-token window
+  unless `context_window_tokens` is explicitly configured; custom model ids
+  remain unknown by default rather than inheriting a guessed limit.
+- For a planner route with a known window, shisad estimates the full outbound
+  request, including system instructions and tool schemas, and removes bounded
+  optional session-context categories when needed. Safety instructions, the
+  authenticated current goal, its tainted scaffold copy, trusted frontmatter,
+  and enabled tool schemas are retained. If that protected request still does
+  not fit, the turn returns an actionable capacity message without making a
+  provider call. Recognized provider-reported capacity failures are also
+  terminal and do not fall back to another planner with the same oversized
+  request.
 - Route-local `*_REMOTE_ENABLED` fields accept empty/unset to mean “inherit global”.
 - `SHISAD_MODEL_API_KEY` is the generic global override, but preset-native key envs are also recognized.
 - Ordinary `shisad doctor check --component provider` reports configuration

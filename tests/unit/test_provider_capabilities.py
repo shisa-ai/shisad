@@ -78,3 +78,38 @@ def test_m2_model_config_parses_request_parameters_from_env_json(
     assert config.planner_request_parameters.temperature == 0.25
     assert config.planner_request_parameters.max_tokens == 300
     assert config.planner_request_parameters.top_p == 0.9
+
+
+def test_i2_shisa_route_discovers_known_context_window() -> None:
+    shisa_route = ModelRouter(
+        ModelConfig(
+            planner_remote_enabled=True,
+            planner_auth_mode="none",
+            planner_provider_preset="shisa_default",
+        )
+    ).route_for(ModelComponent.PLANNER)
+    assert shisa_route.capabilities.context_window_tokens == 16_384
+    assert shisa_route.capabilities.output_reserve_tokens == 1_024
+
+    custom_route = ModelRouter(
+        ModelConfig(
+            planner_remote_enabled=True,
+            planner_auth_mode="none",
+            planner_model_id="custom/model-with-unknown-window",
+        )
+    ).route_for(ModelComponent.PLANNER)
+    assert custom_route.capabilities.context_window_tokens is None
+
+    explicit_route = ModelRouter(
+        ModelConfig(
+            planner_remote_enabled=True,
+            planner_auth_mode="none",
+            planner_model_id="custom/model-with-configured-window",
+            planner_capabilities=ProviderCapabilities(
+                context_window_tokens=32_768,
+                output_reserve_tokens=2_048,
+            ),
+        )
+    ).route_for(ModelComponent.PLANNER)
+    assert explicit_route.capabilities.context_window_tokens == 32_768
+    assert explicit_route.capabilities.output_reserve_tokens == 2_048

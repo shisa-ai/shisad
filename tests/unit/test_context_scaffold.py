@@ -14,6 +14,7 @@ from shisad.core.context import (
     ConversationEpisode,
     EpisodeSummary,
 )
+from shisad.core.providers.base import Message
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, SessionMode, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_session import (
@@ -132,6 +133,122 @@ def test_m3_cs5_build_planner_input_v2_deterministic_mode_is_stable() -> None:
         delimiter_seed="seed-2",
     )
     assert first == second
+
+
+def test_i2_known_context_budget_under_at_over_boundary() -> None:
+    from shisad.core.context_budget import (
+        assess_request_capacity,
+        compact_context_scaffold,
+    )
+
+    scaffold = ContextScaffold(
+        session_id="s-i2",
+        trusted_frontmatter="trust_level=trusted\nactive_capabilities=file_read",
+        internal_entries=[
+            ContextScaffoldEntry(
+                entry_id="episode:ep-old",
+                trust_level="SEMI_TRUSTED",
+                content="old episode " * 120,
+                provenance=["episode:ep-old"],
+            )
+        ],
+        untrusted_entries=[
+            ContextScaffoldEntry(
+                entry_id="current_turn",
+                trust_level="UNTRUSTED",
+                content="current goal sentinel",
+                provenance=["turn:current"],
+                source_taint_labels=[TaintLabel.UNTRUSTED.value],
+            ),
+            ContextScaffoldEntry(
+                entry_id="conversation_context",
+                trust_level="UNTRUSTED",
+                content="historical context " * 160,
+                provenance=["transcript:history"],
+                source_taint_labels=[TaintLabel.UNTRUSTED.value],
+            ),
+        ],
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "fs_read",
+                "description": "Read one file without dropping this schema.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }
+    ]
+
+    def _render(candidate: ContextScaffold) -> str:
+        return spotlight.build_planner_input_v2(
+            trusted_instructions="never drop safety instructions",
+            trusted_context="required runtime tool context",
+            user_goal="current goal sentinel",
+            untrusted_content="",
+            scaffold=candidate,
+            deterministic=True,
+            delimiter_seed="i2-boundary",
+        )
+
+    def _assessment(text: str, *, window: int | None):
+        return assess_request_capacity(
+            messages=[
+                Message(role="system", content="protected system prompt"),
+                Message(role="user", content=text),
+            ],
+            tools=tools,
+            context_window_tokens=window,
+            output_reserve_tokens=128,
+        )
+
+    full_input = _render(scaffold)
+    full_tokens = _assessment(full_input, window=None).estimated_input_tokens
+
+    under = compact_context_scaffold(
+        scaffold,
+        render=_render,
+        assess=lambda text: _assessment(text, window=full_tokens + 129),
+    )
+    at_boundary = compact_context_scaffold(
+        scaffold,
+        render=_render,
+        assess=lambda text: _assessment(text, window=full_tokens + 128),
+    )
+    assert under.planner_input == full_input
+    assert at_boundary.planner_input == full_input
+    assert under.omitted_categories == ()
+    assert at_boundary.omitted_categories == ()
+
+    protected_scaffold = scaffold.model_copy(
+        update={
+            "trusted_frontmatter": (
+                f"{scaffold.trusted_frontmatter}\n"
+                "context_capacity_compacted=true\n"
+                "context_capacity_omitted=history"
+            ),
+            "internal_entries": [],
+            "untrusted_entries": [scaffold.untrusted_entries[0]],
+        },
+        deep=True,
+    )
+    protected_tokens = _assessment(_render(protected_scaffold), window=None).estimated_input_tokens
+    over = compact_context_scaffold(
+        scaffold,
+        render=_render,
+        assess=lambda text: _assessment(text, window=protected_tokens + 128),
+    )
+
+    assert over.assessment.fits is True
+    assert over.omitted_categories == ("history",)
+    assert "current goal sentinel" in over.planner_input.replace("^", "")
+    assert "never drop safety instructions" in over.planner_input
+    assert "historical context" not in over.planner_input.replace("^", "")
+    assert "context_capacity_compacted=true" in over.planner_input
 
 
 def test_m3_cs4_build_planner_context_scaffold_keeps_memory_untrusted() -> None:
