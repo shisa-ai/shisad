@@ -418,7 +418,10 @@ TOTP entry remain deferred to `v0.8.0`.
   succeeds, while unsafe cleanup failure stops startup and releases data-root
   ownership. The planner reliability lane also adds capacity-aware optional
   context compaction for known model windows and terminal, actionable handling
-  when a protected request or provider-reported request cannot fit
+  when a protected request or provider-reported request cannot fit. The next
+  response-finality unit treats remote no-action planner prose as a preliminary
+  draft and exposes only a typed model-produced final answer on native-tool-call
+  routes; it does not add a daemon prose classifier.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
