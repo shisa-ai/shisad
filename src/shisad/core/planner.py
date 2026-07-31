@@ -301,6 +301,10 @@ class Planner:
             f"shisad_planner_validation_tool_names_{id(self)}",
             default=frozenset(),
         )
+        self._response_finalization_enabled: ContextVar[bool] = ContextVar(
+            f"shisad_planner_response_finalization_{id(self)}",
+            default=False,
+        )
         # Keep direct-constructor default lenient for backwards-compatible test/tooling
         # callers; daemon runtime wiring sets this from model config (default enabled).
         self._schema_strict_mode = bool(schema_strict_mode)
@@ -332,22 +336,22 @@ class Planner:
 
         token = self._pep_override.set(pep)
         validation_token = self._validation_tool_names.set(frozenset(validation_tool_names or ()))
+        finalization_token = self._response_finalization_enabled.set(finalize_response)
         try:
             if persona_tone_override is None:
                 return await self.propose(
                     user_content,
                     context,
                     tools=tools,
-                    finalize_response=finalize_response,
                 )
             return await self.propose(
                 user_content,
                 context,
                 tools=tools,
                 persona_tone_override=persona_tone_override,
-                finalize_response=finalize_response,
             )
         finally:
+            self._response_finalization_enabled.reset(finalization_token)
             self._validation_tool_names.reset(validation_token)
             self._pep_override.reset(token)
 
@@ -381,7 +385,6 @@ class Planner:
         *,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: PersonaTone | None = None,
-        finalize_response: bool = False,
     ) -> PlannerResult:
         """Generate tool proposals and evaluate all proposals via PEP."""
         evaluator = self._pep_override.get() or self._pep
@@ -439,7 +442,7 @@ class Planner:
             if self._should_finalize_response(
                 output=output,
                 response=response,
-                enabled=finalize_response,
+                enabled=self._response_finalization_enabled.get(),
             ):
                 (
                     final_answer,

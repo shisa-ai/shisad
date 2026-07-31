@@ -207,9 +207,10 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
         }
     ]
 
-    result = await planner.propose(
+    result = await planner.propose_with_pep(
         "How do you say hello in Japanese?",
         PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
         tools=runtime_tools,
         finalize_response=True,
     )
@@ -279,9 +280,10 @@ async def test_i3a_finalizer_retries_invalid_envelopes_without_leaking_draft() -
     )
     planner = Planner(provider, pep, max_retries=2)
 
-    result = await planner.propose(
+    result = await planner.propose_with_pep(
         "answer directly",
         PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
         finalize_response=True,
     )
 
@@ -316,9 +318,10 @@ async def test_i3a_finalizer_retries_invalid_envelopes_without_leaking_draft() -
     exhausted_planner = Planner(exhausted_provider, pep, max_retries=1)
 
     with pytest.raises(PlannerOutputError, match="typed final answer") as exhausted:
-        await exhausted_planner.propose(
+        await exhausted_planner.propose_with_pep(
             "answer directly",
             PolicyContext(capabilities={Capability.FILE_READ}),
+            pep=pep,
             finalize_response=True,
         )
 
@@ -411,9 +414,10 @@ async def test_i3a_finalization_schema_is_fresh_per_request() -> None:
     )
     planner = Planner(provider, pep, max_retries=0)
 
-    first = await planner.propose(
+    first = await planner.propose_with_pep(
         "first request",
         PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
         finalize_response=True,
     )
     assert first.output.assistant_response == "first answer"
@@ -421,9 +425,10 @@ async def test_i3a_finalization_schema_is_fresh_per_request() -> None:
     assert first_tools is not None
     first_tools[0]["function"]["name"] = "provider-mutated-name"
 
-    second = await planner.propose(
+    second = await planner.propose_with_pep(
         "second request",
         PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
         finalize_response=True,
     )
 
@@ -538,9 +543,10 @@ async def test_i3a_finalization_capacity_failure_is_terminal() -> None:
     )
 
     with pytest.raises(ProviderContextCapacityError) as caught:
-        await planner.propose(
+        await planner.propose_with_pep(
             "hello",
             PolicyContext(capabilities={Capability.FILE_READ}),
+            pep=pep,
             finalize_response=True,
         )
 
