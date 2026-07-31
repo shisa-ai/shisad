@@ -27,7 +27,7 @@ class StaticProvider:
         self,
         responses: list[Message],
         *,
-        trusted_origin: str = "local-fallback",
+        trusted_origin: str = "",
     ) -> None:
         self._responses = responses
         self._trusted_origin = trusted_origin
@@ -187,6 +187,9 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
         provider,
         pep,
         max_retries=1,
+        system_prompt="SAFETY-SENTINEL",
+        persona_tone="strict",
+        custom_persona_text="CUSTOM-PERSONA-SENTINEL",
         capabilities=ProviderCapabilities(supports_tool_calls=True),
     )
     runtime_tools = [
@@ -208,6 +211,7 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
         "How do you say hello in Japanese?",
         PolicyContext(capabilities={Capability.FILE_READ}),
         tools=runtime_tools,
+        finalize_response=True,
     )
 
     assert provider.calls == 2
@@ -226,6 +230,9 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
     finalizer_payload = "\n".join(message.content for message in provider.messages[1])
     assert "How do you say hello in Japanese?" in finalizer_payload
     assert "PRELIMINARY-DRAFT" in finalizer_payload
+    assert "SAFETY-SENTINEL" in provider.messages[1][0].content
+    assert "PERSONA STYLE INSTRUCTIONS (tone=strict)" in provider.messages[1][0].content
+    assert "CUSTOM-PERSONA-SENTINEL" in provider.messages[1][0].content
     assert result.provider_response is not None
     assert result.provider_response.message.content == "FINALIZER-CONTENT-MUST-NOT-LEAK"
     assert result.finalization_messages_sent == tuple(provider.messages[1])
@@ -275,6 +282,7 @@ async def test_i3a_finalizer_retries_invalid_envelopes_without_leaking_draft() -
     result = await planner.propose(
         "answer directly",
         PolicyContext(capabilities={Capability.FILE_READ}),
+        finalize_response=True,
     )
 
     assert provider.calls == 4
@@ -307,13 +315,20 @@ async def test_i3a_finalizer_retries_invalid_envelopes_without_leaking_draft() -
     )
     exhausted_planner = Planner(exhausted_provider, pep, max_retries=1)
 
-    with pytest.raises(PlannerOutputError, match="typed final answer"):
+    with pytest.raises(PlannerOutputError, match="typed final answer") as exhausted:
         await exhausted_planner.propose(
             "answer directly",
             PolicyContext(capabilities={Capability.FILE_READ}),
+            finalize_response=True,
         )
 
     assert exhausted_provider.calls == 3
+    assert exhausted.value.messages_sent
+    assert exhausted.value.finalization_messages_sent
+    assert any(
+        "EXHAUSTED-DRAFT" in message.content
+        for message in exhausted.value.finalization_messages_sent
+    )
 
 
 @pytest.mark.parametrize(
@@ -376,6 +391,49 @@ def test_i3a_typed_final_answer_parser_rejects_non_contract_envelopes(
 
 
 @pytest.mark.asyncio
+async def test_i3a_finalization_schema_is_fresh_per_request() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            Message(role="assistant", content="first draft"),
+            Message(
+                role="assistant",
+                tool_calls=[_i3a_final_answer_call("first answer", call_id="first")],
+            ),
+            Message(role="assistant", content="second draft"),
+            Message(
+                role="assistant",
+                tool_calls=[_i3a_final_answer_call("second answer", call_id="second")],
+            ),
+        ],
+        trusted_origin="",
+    )
+    planner = Planner(provider, pep, max_retries=0)
+
+    first = await planner.propose(
+        "first request",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        finalize_response=True,
+    )
+    assert first.output.assistant_response == "first answer"
+    first_tools = provider.tools[1]
+    assert first_tools is not None
+    first_tools[0]["function"]["name"] = "provider-mutated-name"
+
+    second = await planner.propose(
+        "second request",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        finalize_response=True,
+    )
+
+    assert second.output.assistant_response == "second answer"
+    second_tools = provider.tools[3]
+    assert second_tools is not None
+    assert second_tools[0]["function"]["name"] == "respond_to_user"
+
+
+@pytest.mark.asyncio
 async def test_i3a_action_and_local_fallback_paths_do_not_finalize() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
@@ -419,7 +477,10 @@ async def test_i3a_action_and_local_fallback_paths_do_not_finalize() -> None:
     assert len(action_result.output.actions) == 1
     assert action_result.finalization_messages_sent == ()
 
-    local_provider = StaticProvider([Message(role="assistant", content="Local answer.")])
+    local_provider = StaticProvider(
+        [Message(role="assistant", content="Local answer.")],
+        trusted_origin="local-fallback",
+    )
     local_planner = Planner(local_provider, pep, max_retries=1)
     local_result = await local_planner.propose(
         "answer locally",
@@ -480,10 +541,37 @@ async def test_i3a_finalization_capacity_failure_is_terminal() -> None:
         await planner.propose(
             "hello",
             PolicyContext(capabilities={Capability.FILE_READ}),
+            finalize_response=True,
         )
 
     assert provider.calls == 1
     assert caught.value.source == "planner_finalization_preflight"
+    assert caught.value.messages_sent
+    assert caught.value.finalization_messages_sent
+    assert any(
+        "opaque preliminary draft" in message.content
+        for message in caught.value.finalization_messages_sent
+    )
+
+
+@pytest.mark.asyncio
+async def test_i3a_general_planner_api_requires_explicit_response_finalization() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [Message(role="assistant", content="Existing library response.")],
+        trusted_origin="",
+    )
+    planner = Planner(provider, pep, max_retries=0)
+
+    result = await planner.propose(
+        "library caller",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert provider.calls == 1
+    assert result.output.assistant_response == "Existing library response."
+    assert result.finalization_messages_sent == ()
 
 
 def _make_registry() -> ToolRegistry:

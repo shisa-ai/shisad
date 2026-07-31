@@ -158,24 +158,33 @@ RESPONSE_FINALIZATION_REPAIR_PROMPT = (
     "containing only one non-empty string field named final_answer."
 )
 
-RESPONSE_FINALIZATION_TOOL: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "respond_to_user",
-        "description": "Return the complete user-visible answer for this conversation turn.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "final_answer": {
-                    "type": "string",
-                    "description": "The complete answer to show to the user.",
-                }
+
+def _response_finalization_tools() -> list[dict[str, Any]]:
+    """Build a fresh synthetic response schema for each provider request."""
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "respond_to_user",
+                "description": (
+                    "Return the complete user-visible answer for this conversation turn."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "final_answer": {
+                            "type": "string",
+                            "description": "The complete answer to show to the user.",
+                        }
+                    },
+                    "required": ["final_answer"],
+                    "additionalProperties": False,
+                },
             },
-            "required": ["final_answer"],
-            "additionalProperties": False,
-        },
-    },
-}
+        }
+    ]
+
 
 _CONTENT_TOOL_CALL_PATTERN = re.compile(
     r"<tool_call>\s*(.*?)\s*</tool_call>",
@@ -205,6 +214,39 @@ class PlannerOutput(BaseModel):
 
 class PlannerOutputError(ValueError):
     """Raised when planner output cannot be validated."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        messages_sent: tuple[Message, ...] = (),
+        finalization_messages_sent: tuple[Message, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.messages_sent = messages_sent
+        self.finalization_messages_sent = finalization_messages_sent
+
+
+class PlannerFinalizationCapacityError(ProviderContextCapacityError):
+    """Capacity failure retaining both planner request phases for tracing."""
+
+    def __init__(
+        self,
+        *,
+        context_window_tokens: int,
+        output_reserve_tokens: int,
+        estimated_input_tokens: int,
+        messages_sent: tuple[Message, ...],
+        finalization_messages_sent: tuple[Message, ...],
+    ) -> None:
+        super().__init__(
+            context_window_tokens=context_window_tokens,
+            output_reserve_tokens=output_reserve_tokens,
+            estimated_input_tokens=estimated_input_tokens,
+            source="planner_finalization_preflight",
+        )
+        self.messages_sent = messages_sent
+        self.finalization_messages_sent = finalization_messages_sent
 
 
 @dataclass(frozen=True)
@@ -284,7 +326,7 @@ class Planner:
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: PersonaTone | None = None,
         validation_tool_names: set[str] | None = None,
-        finalize_response: bool = True,
+        finalize_response: bool = False,
     ) -> PlannerResult:
         """Propose with a concurrency-local evaluator while preserving the base API."""
 
@@ -339,7 +381,7 @@ class Planner:
         *,
         tools: list[dict[str, Any]] | None = None,
         persona_tone_override: PersonaTone | None = None,
-        finalize_response: bool = True,
+        finalize_response: bool = False,
     ) -> PlannerResult:
         """Generate tool proposals and evaluate all proposals via PEP."""
         evaluator = self._pep_override.get() or self._pep
@@ -404,8 +446,10 @@ class Planner:
                     response,
                     finalization_messages,
                 ) = await self._finalize_remote_response(
+                    original_system_prompt=system_prompt,
                     original_planner_context=user_content,
                     preliminary_draft=output.assistant_response,
+                    messages_sent=tuple(messages),
                 )
                 output = PlannerOutput(actions=[], assistant_response=final_answer)
 
@@ -448,10 +492,12 @@ class Planner:
     async def _finalize_remote_response(
         self,
         *,
+        original_system_prompt: str,
         original_planner_context: str,
         preliminary_draft: str,
+        messages_sent: tuple[Message, ...],
     ) -> tuple[str, ProviderResponse, tuple[Message, ...]]:
-        finalization_tools = [RESPONSE_FINALIZATION_TOOL]
+        finalization_tools = _response_finalization_tools()
         payload = json.dumps(
             {
                 "original_planner_context": original_planner_context,
@@ -461,7 +507,14 @@ class Planner:
             sort_keys=True,
         )
         messages = [
-            Message(role="system", content=RESPONSE_FINALIZATION_SYSTEM_PROMPT),
+            Message(
+                role="system",
+                content=(
+                    f"{original_system_prompt}\n\n"
+                    "RESPONSE FINALIZATION PHASE\n"
+                    f"{RESPONSE_FINALIZATION_SYSTEM_PROMPT}"
+                ),
+            ),
             Message(role="user", content=payload),
         ]
 
@@ -473,11 +526,12 @@ class Planner:
                 output_reserve_tokens=self._capabilities.output_reserve_tokens,
             )
             if not capacity.fits and capacity.context_window_tokens is not None:
-                raise ProviderContextCapacityError(
+                raise PlannerFinalizationCapacityError(
                     context_window_tokens=capacity.context_window_tokens,
                     output_reserve_tokens=capacity.output_reserve_tokens,
                     estimated_input_tokens=capacity.estimated_input_tokens,
-                    source="planner_finalization_preflight",
+                    messages_sent=messages_sent,
+                    finalization_messages_sent=tuple(messages),
                 )
             response = await self._provider.complete(messages, finalization_tools)
             try:
@@ -486,7 +540,9 @@ class Planner:
                 logger.warning("Planner response finalization was invalid: %s", exc)
                 if attempt >= self._max_retries:
                     raise PlannerOutputError(
-                        "Planner response finalization did not produce a typed final answer"
+                        "Planner response finalization did not produce a typed final answer",
+                        messages_sent=messages_sent,
+                        finalization_messages_sent=tuple(messages),
                     ) from exc
                 messages.append(Message(role="assistant", content=response.message.content))
                 messages.append(Message(role="user", content=RESPONSE_FINALIZATION_REPAIR_PROMPT))

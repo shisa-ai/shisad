@@ -736,7 +736,8 @@ def _planner_context_capacity_result(exc: ProviderContextCapacityError) -> Plann
         evaluated=[],
         attempts=0,
         provider_response=None,
-        messages_sent=(),
+        messages_sent=tuple(getattr(exc, "messages_sent", ())),
+        finalization_messages_sent=tuple(getattr(exc, "finalization_messages_sent", ())),
     )
 
 
@@ -3528,6 +3529,8 @@ def _rewrite_plain_greeting_planner_result(
     user_text: str,
     planner_result: PlannerResult,
 ) -> PlannerResult:
+    if planner_result.finalization_messages_sent:
+        return planner_result
     if str(planner_result.output.assistant_response or "").startswith(
         "[PLANNER FALLBACK: CONFIGURATION]"
     ):
@@ -11397,6 +11400,7 @@ class SessionImplMixin(HandlerMixinBase):
                     validation_tool_names={
                         str(name) for name in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS
                     },
+                    finalize_response=True,
                 )
             else:
                 planner_result = await self._planner.propose_with_pep(
@@ -11408,6 +11412,7 @@ class SessionImplMixin(HandlerMixinBase):
                     validation_tool_names={
                         str(name) for name in _RUNTIME_GATED_POLICY_ALLOWLIST_EXCEPTIONS
                     },
+                    finalize_response=True,
                 )
         except ProviderContextCapacityError as exc:
             planner_failure_code = "planner_context_capacity_exceeded"
@@ -11454,7 +11459,8 @@ class SessionImplMixin(HandlerMixinBase):
                 evaluated=[],
                 attempts=0,
                 provider_response=None,
-                messages_sent=(),
+                messages_sent=tuple(getattr(exc, "messages_sent", ())),
+                finalization_messages_sent=tuple(getattr(exc, "finalization_messages_sent", ())),
             )
 
         if not planner_failure_code:
@@ -15242,15 +15248,16 @@ class SessionImplMixin(HandlerMixinBase):
                 f"{response_text}\n\n{proposal_note}" if response_text.strip() else proposal_note
             )
         pre_internal_coercion_response_text = response_text
-        response_text = _coerce_internal_tool_narration_response_text(
-            response_text=response_text,
-            user_text=validated.firewall_result.sanitized_text,
-            risk_factors=validated.firewall_result.risk_factors,
-            rejected=execution.rejected,
-            pending_confirmation=execution.pending_confirmation,
-            executed_tool_outputs=len(execution.executed_tool_outputs),
-            tool_output_summary=tool_output_summary,
-        )
+        if not planner_dispatch.planner_result.finalization_messages_sent:
+            response_text = _coerce_internal_tool_narration_response_text(
+                response_text=response_text,
+                user_text=validated.firewall_result.sanitized_text,
+                risk_factors=validated.firewall_result.risk_factors,
+                rejected=execution.rejected,
+                pending_confirmation=execution.pending_confirmation,
+                executed_tool_outputs=len(execution.executed_tool_outputs),
+                tool_output_summary=tool_output_summary,
+            )
         if response_text != pre_internal_coercion_response_text:
             protected_tool_output_start = None
             protected_tool_output_end = None

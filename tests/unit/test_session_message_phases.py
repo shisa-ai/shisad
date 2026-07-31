@@ -33,6 +33,7 @@ from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
     PlannerOutput,
+    PlannerOutputError,
     PlannerResult,
 )
 from shisad.core.providers.base import Message, ProviderResponse
@@ -3909,6 +3910,7 @@ class _DispatchPassThroughHarness(SessionImplMixin):
         self._pep = SimpleNamespace(evaluate=self._evaluate)
         self._pep.for_policy = lambda _policy: self._pep
         self._policy_loader = SimpleNamespace(policy=object())
+        self.propose_kwargs: dict[str, object] = {}
         proposal = ActionProposal(
             action_id="planner-todo",
             tool_name=ToolName("todo.create"),
@@ -3936,7 +3938,8 @@ class _DispatchPassThroughHarness(SessionImplMixin):
     async def _noop_publish(self, _event: object) -> None:
         return None
 
-    async def _propose(self, *_args: object, **_kwargs: object) -> PlannerResult:
+    async def _propose(self, *_args: object, **kwargs: object) -> PlannerResult:
+        self.propose_kwargs = dict(kwargs)
         return self.planner_result
 
     def _evaluate(
@@ -3953,9 +3956,7 @@ class _DispatchPassThroughHarness(SessionImplMixin):
         )
 
 
-@pytest.mark.asyncio
-async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrite() -> None:
-    harness = _DispatchPassThroughHarness()
+def _dispatch_pass_through_planner_context() -> SessionMessagePlannerContextResult:
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": "add todo: raw-secret"}
     )
@@ -3963,7 +3964,7 @@ async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrit
         sanitized_text="add todo: safe-title",
         original_hash="0" * 64,
     )
-    planner_context = SessionMessagePlannerContextResult(
+    return SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
         transcript_context_taints=set(),
@@ -3985,6 +3986,12 @@ async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrit
         assistant_tone_override=None,
     )
 
+
+@pytest.mark.asyncio
+async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrite() -> None:
+    harness = _DispatchPassThroughHarness()
+    planner_context = _dispatch_pass_through_planner_context()
+
     dispatch = await SessionImplMixin._dispatch_to_planner(harness, planner_context)
 
     assert dispatch.planner_result is harness.planner_result
@@ -3992,6 +3999,53 @@ async def test_f13b_dispatch_preserves_typed_planner_result_without_prose_rewrit
     proposal = dispatch.planner_result.evaluated[0].proposal
     assert proposal.tool_name == ToolName("todo.create")
     assert proposal.arguments == {"title": "safe-title"}
+    assert harness.propose_kwargs["finalize_response"] is True
+
+
+@pytest.mark.asyncio
+async def test_i3a_dispatch_preserves_finalization_failure_trace_phases() -> None:
+    harness = _DispatchPassThroughHarness()
+    initial_messages = (Message(role="user", content="ORIGINAL-REQUEST-PHASE"),)
+    finalization_messages = (Message(role="system", content="FINALIZATION-REQUEST-PHASE"),)
+
+    async def _raise_finalization_failure(
+        *_args: object,
+        **_kwargs: object,
+    ) -> PlannerResult:
+        raise PlannerOutputError(
+            "typed final answer missing",
+            messages_sent=initial_messages,
+            finalization_messages_sent=finalization_messages,
+        )
+
+    harness._planner = SimpleNamespace(propose_with_pep=_raise_finalization_failure)
+
+    dispatch = await SessionImplMixin._dispatch_to_planner(
+        harness,
+        _dispatch_pass_through_planner_context(),
+    )
+
+    assert dispatch.planner_failure_code == "planner_output_invalid"
+    assert dispatch.planner_result.messages_sent == initial_messages
+    assert dispatch.planner_result.finalization_messages_sent == finalization_messages
+
+    finalize_harness = _FinalizeEvidenceHarness()
+    finalize_harness._evidence_store = None
+    recorder = _RecordingTraceRecorder()
+    finalize_harness._trace_recorder = recorder
+    response = await SessionImplMixin._finalize_response(
+        finalize_harness,
+        SessionMessageExecutionResult(planner_dispatch=dispatch),
+    )
+
+    assert response["planner_error"] == "planner_output_invalid"
+    assert len(recorder.turns) == 1
+    traced_messages = recorder.turns[0].messages_sent
+    assert any(message.content == "ORIGINAL-REQUEST-PHASE" for message in traced_messages)
+    assert any(
+        message.content == "CONVERSATION FINALIZATION TRACE PHASE" for message in traced_messages
+    )
+    assert any(message.content == "FINALIZATION-REQUEST-PHASE" for message in traced_messages)
 
 
 class _ExplicitMemoryIngressHarness(SessionImplMixin):
@@ -4692,6 +4746,44 @@ async def test_i3a_trace_separates_preliminary_and_typed_finalization_phases() -
     )
     assert any("PRELIMINARY-DRAFT-SENTINEL" in message.content for message in trace.messages_sent)
     assert "IGNORED-FINALIZER-CONTENT" not in response["response"]
+
+
+@pytest.mark.asyncio
+async def test_i3a_typed_final_answer_bypasses_legacy_response_rewrites() -> None:
+    typed_phase = (Message(role="system", content="FINALIZATION-REQUEST-PHASE"),)
+    greeting_result = PlannerResult(
+        output=PlannerOutput(
+            actions=[],
+            assistant_response="Salutations, astronaut. This is the typed answer.",
+        ),
+        evaluated=[],
+        attempts=1,
+        finalization_messages_sent=typed_phase,
+    )
+
+    rewritten = impl_session._rewrite_plain_greeting_planner_result(
+        user_text="hello",
+        planner_result=greeting_result,
+    )
+
+    assert rewritten.output.assistant_response == greeting_result.output.assistant_response
+
+    harness = _FinalizeEvidenceHarness()
+    harness._evidence_store = None
+    typed_answer = (
+        "No tool call is needed. This wording is the requested explanation, "
+        "not internal planner narration."
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response=typed_answer,
+        content="Explain the phrase 'no tool call is needed'.",
+        finalization_messages_sent=typed_phase,
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == typed_answer
 
 
 @pytest.mark.asyncio
