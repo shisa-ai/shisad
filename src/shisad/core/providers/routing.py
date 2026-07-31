@@ -249,10 +249,14 @@ class ModelRouter:
         if (
             remote_enabled
             and known_context_window is not None
+            and base_url.rstrip("/") == _PRESET_BASE_URLS[preset].rstrip("/")
             and "context_window_tokens" not in capabilities.model_fields_set
         ):
-            capabilities = capabilities.model_copy(
-                update={"context_window_tokens": known_context_window}
+            capabilities = ProviderCapabilities.model_validate(
+                {
+                    **capabilities.model_dump(),
+                    "context_window_tokens": known_context_window,
+                }
             )
 
         endpoint_family_override = getattr(self._config, f"{prefix}_endpoint_family")

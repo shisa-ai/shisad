@@ -55,6 +55,24 @@ _CONTEXT_LENGTH_ERROR_CODES = frozenset(
         "prompt_too_long",
     }
 )
+_PROVIDER_CONTEXT_WINDOW_MAX_TOKENS = 4_194_304
+_PROVIDER_REPORTED_INPUT_MAX_TOKENS = 16_777_216
+_CONTEXT_WINDOW_FACT_PATTERN = re.compile(
+    r"\b(?:maximum )?context (?:length|window)(?: is| of|:)?\s*\(?"
+    r"(?P<window>[0-9]+) tokens\b",
+    flags=re.IGNORECASE,
+)
+_CONTEXT_INPUT_FACT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:input|messages|request)(?:\s+(?:has|contains|is|resulted in)|:)?\s*\(?"
+        r"(?P<input>[0-9]+) tokens\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<input>[0-9]+) input tokens\b",
+        flags=re.IGNORECASE,
+    ),
+)
 
 
 # --- Provider protocol ---
@@ -85,14 +103,16 @@ class ProviderContextCapacityError(RuntimeError):
     def __init__(
         self,
         *,
-        context_window_tokens: int,
+        context_window_tokens: int | None,
         model_id: str = "",
         output_reserve_tokens: int = 0,
         estimated_input_tokens: int | None = None,
         reported_input_tokens: int | None = None,
         source: str = "provider",
     ) -> None:
-        self.context_window_tokens = int(context_window_tokens)
+        self.context_window_tokens = (
+            int(context_window_tokens) if context_window_tokens is not None else None
+        )
         self.model_id = model_id
         self.output_reserve_tokens = int(output_reserve_tokens)
         self.estimated_input_tokens = estimated_input_tokens
@@ -108,11 +128,24 @@ class ProviderContextCapacityError(RuntimeError):
     def user_message(self) -> str:
         """Return actionable text without exposing provider response details."""
 
+        window = (
+            f"the configured {self.context_window_tokens}-token context window"
+            if self.context_window_tokens is not None
+            else "the provider's context window"
+        )
         return (
-            "This request is too large for the configured "
-            f"{self.context_window_tokens}-token context window. "
+            f"This request is too large for {window}. "
             "Please shorten the conversation or request, or select a larger-context model."
         )
+
+
+def _bounded_provider_token_count(raw: str | None, *, maximum: int) -> int | None:
+    if raw is None or not raw or len(raw) > len(str(maximum)):
+        return None
+    value = int(raw)
+    if value < 1 or value > maximum:
+        return None
+    return value
 
 
 def provider_context_capacity_error_from_http(
@@ -145,27 +178,34 @@ def provider_context_capacity_error_from_http(
     if not message:
         return None
 
-    reported_input: int | None = None
-    context_window: int | None = None
+    reported_input_raw: str | None = None
+    context_window_raw: str | None = None
     for pattern in _CONTEXT_LENGTH_PATTERNS:
         match = pattern.search(message)
         if match is not None:
-            reported_input = int(match.group("input"))
-            context_window = int(match.group("window"))
+            reported_input_raw = match.group("input")
+            context_window_raw = match.group("window")
             break
-    if context_window is None:
+    if context_window_raw is None:
         if error_code not in _CONTEXT_LENGTH_ERROR_CODES:
             return None
-        window_match = re.search(
-            r"\b(?:maximum )?context length(?: is|:) ([0-9]+) tokens\b",
-            message,
-        )
-        input_match = re.search(r"\b(?:input|messages|request).*?([0-9]+) tokens\b", message)
-        if window_match is None:
-            return None
-        context_window = int(window_match.group(1))
-        if input_match is not None:
-            reported_input = int(input_match.group(1))
+        window_match = _CONTEXT_WINDOW_FACT_PATTERN.search(message)
+        if window_match is not None:
+            context_window_raw = window_match.group("window")
+        for input_pattern in _CONTEXT_INPUT_FACT_PATTERNS:
+            input_match = input_pattern.search(message)
+            if input_match is not None:
+                reported_input_raw = input_match.group("input")
+                break
+
+    context_window = _bounded_provider_token_count(
+        context_window_raw,
+        maximum=_PROVIDER_CONTEXT_WINDOW_MAX_TOKENS,
+    )
+    reported_input = _bounded_provider_token_count(
+        reported_input_raw,
+        maximum=_PROVIDER_REPORTED_INPUT_MAX_TOKENS,
+    )
 
     return ProviderContextCapacityError(
         context_window_tokens=context_window,

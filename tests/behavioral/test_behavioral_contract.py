@@ -35,6 +35,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.config import DaemonConfig
+from shisad.core.context_budget import assess_request_capacity
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.executors.sandbox import SandboxConfig, SandboxOrchestrator, SandboxResult
@@ -1567,7 +1568,7 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
         "SHISAD_MODEL_PLANNER_CAPABILITIES",
         json.dumps(
             {
-                "context_window_tokens": 12_500,
+                "context_window_tokens": 13_420,
                 "output_reserve_tokens": 512,
             }
         ),
@@ -1591,7 +1592,7 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
 
         monkeypatch.setattr(LocalPlannerProvider, "complete", _recording_complete)
         sid = await _create_session(harness.client)
-        for index in range(8):
+        for index in range(16):
             await harness.client.call(
                 "session.message",
                 {
@@ -1603,6 +1604,13 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
                 },
             )
 
+        planner_calls_before_final = len(
+            [
+                call
+                for call in recorded
+                if call[0] and "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in call[0][0].content
+            ]
+        )
         reply = await harness.client.call(
             "session.message",
             {
@@ -1619,6 +1627,7 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
             if call[0] and "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in call[0][0].content
         ]
         messages, tools = planner_calls[-1]
+        assert len(planner_calls) == planner_calls_before_final + 1
         provider_calls_before_capacity_failure = len(planner_calls)
         oversized_reply = await harness.client.call(
             "session.message",
@@ -1643,9 +1652,19 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
     assert reply.get("lockdown_level") == "normal"
     planner_input = messages[-1].content.replace("^", "")
     assert "capacity-current-goal-sentinel" in planner_input
-    assert "context_capacity_compacted=true" in planner_input
+    observed_estimate = assess_request_capacity(
+        messages=messages,
+        tools=tools,
+        context_window_tokens=None,
+        output_reserve_tokens=512,
+    ).estimated_input_tokens
+    assert "context_capacity_compacted=true" in planner_input, (
+        f"final estimated input={observed_estimate}"
+    )
     assert "context_capacity_omitted=history" in planner_input
     assert "history-0" not in planner_input
+    assert f"session_id={sid}" in planner_input
+    assert "trust_level=trusted" in planner_input
     assert "NON-NEGOTIABLE SAFETY INSTRUCTIONS" in messages[0].content
     assert tools
     assert "too large" in str(oversized_reply.get("response", "")).lower()

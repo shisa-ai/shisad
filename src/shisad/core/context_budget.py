@@ -10,7 +10,10 @@ from typing import Any
 from shisad.core.context import ContextScaffold, ContextScaffoldEntry
 from shisad.core.providers.base import Message
 
-_BYTES_PER_ESTIMATED_TOKEN = 3
+_BASELINE_TOKEN_NUMERATOR = 4
+_BASELINE_TOKEN_DENOMINATOR = 11
+_OPAQUE_ALNUM_RUN_MIN_BYTES = 24
+_OPAQUE_PUNCTUATION_RUN_MIN_BYTES = 8
 _REQUEST_FRAMING_TOKENS = 8
 _MESSAGE_FRAMING_TOKENS = 6
 _TOOL_FRAMING_TOKENS = 8
@@ -60,6 +63,59 @@ def _serialized_messages(messages: Sequence[Message]) -> list[dict[str, object]]
     return payload
 
 
+def _estimate_serialized_tokens(serialized: str) -> int:
+    """Return an upper-biased estimate for ordinary and byte-fallback text."""
+
+    encoded_bytes = len(serialized.encode("utf-8"))
+    baseline = (
+        encoded_bytes * _BASELINE_TOKEN_NUMERATOR + _BASELINE_TOKEN_DENOMINATOR - 1
+    ) // _BASELINE_TOKEN_DENOMINATOR
+    risky_bytes = 0
+    risky_tokens = 0
+    index = 0
+    while index < len(serialized):
+        character = serialized[index]
+        if not character.isascii():
+            byte_count = len(character.encode("utf-8"))
+            risky_bytes += byte_count
+            risky_tokens += byte_count
+            index += 1
+            continue
+        if character.isalnum():
+            end = index + 1
+            while end < len(serialized):
+                candidate = serialized[end]
+                if not candidate.isascii() or not candidate.isalnum():
+                    break
+                end += 1
+            run_length = end - index
+            if run_length >= _OPAQUE_ALNUM_RUN_MIN_BYTES:
+                risky_bytes += run_length
+                risky_tokens += run_length
+            index = end
+            continue
+        if not character.isspace():
+            end = index + 1
+            while end < len(serialized):
+                candidate = serialized[end]
+                if not candidate.isascii() or candidate.isalnum() or candidate.isspace():
+                    break
+                end += 1
+            run_length = end - index
+            if run_length >= _OPAQUE_PUNCTUATION_RUN_MIN_BYTES:
+                risky_bytes += run_length
+                risky_tokens += run_length
+            index = end
+            continue
+        index += 1
+
+    ordinary_bytes = max(0, encoded_bytes - risky_bytes)
+    risk_adjusted = risky_tokens + (
+        ordinary_bytes * _BASELINE_TOKEN_NUMERATOR + _BASELINE_TOKEN_DENOMINATOR - 1
+    ) // _BASELINE_TOKEN_DENOMINATOR
+    return max(1, baseline, risk_adjusted)
+
+
 def estimate_request_tokens(
     *,
     messages: Sequence[Message],
@@ -72,20 +128,22 @@ def estimate_request_tokens(
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8")
+    )
     tool_payload = json.dumps(
         list(tools or ()),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8")
-    byte_estimate = (len(message_payload) + len(tool_payload) + 2) // _BYTES_PER_ESTIMATED_TOKEN
+    )
+    payload_estimate = _estimate_serialized_tokens(
+        message_payload
+    ) + _estimate_serialized_tokens(tool_payload)
     framing = (
         _REQUEST_FRAMING_TOKENS
         + len(messages) * _MESSAGE_FRAMING_TOKENS
         + len(tools or ()) * _TOOL_FRAMING_TOKENS
     )
-    return max(1, byte_estimate + framing)
+    return max(1, payload_estimate + framing)
 
 
 def assess_request_capacity(

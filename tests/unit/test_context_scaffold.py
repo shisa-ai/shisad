@@ -14,12 +14,18 @@ from shisad.core.context import (
     ConversationEpisode,
     EpisodeSummary,
 )
-from shisad.core.providers.base import Message
+from shisad.core.providers.base import (
+    Message,
+    ProviderContextCapacityError,
+    ProviderResponse,
+)
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, SessionMode, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
     _build_active_attention_context,
     _build_planner_context_scaffold,
+    _planner_context_capacity_result,
     _serialize_tool_outputs,
     should_delegate_to_task,
 )
@@ -135,7 +141,8 @@ def test_m3_cs5_build_planner_input_v2_deterministic_mode_is_stable() -> None:
     assert first == second
 
 
-def test_i2_known_context_budget_under_at_over_boundary() -> None:
+@pytest.mark.asyncio
+async def test_i2_known_context_budget_under_at_over_boundary() -> None:
     from shisad.core.context_budget import (
         assess_request_capacity,
         compact_context_scaffold,
@@ -150,7 +157,19 @@ def test_i2_known_context_budget_under_at_over_boundary() -> None:
                 trust_level="SEMI_TRUSTED",
                 content="old episode " * 120,
                 provenance=["episode:ep-old"],
-            )
+            ),
+            ContextScaffoldEntry(
+                entry_id="same_scope_memory_context",
+                trust_level="SEMI_TRUSTED",
+                content="same scope optional " * 120,
+                provenance=["memory:same-scope"],
+            ),
+            ContextScaffoldEntry(
+                entry_id="task-title:task-old",
+                trust_level="SEMI_TRUSTED",
+                content="task details optional " * 120,
+                provenance=["task:old"],
+            ),
         ],
         untrusted_entries=[
             ContextScaffoldEntry(
@@ -165,6 +184,27 @@ def test_i2_known_context_budget_under_at_over_boundary() -> None:
                 trust_level="UNTRUSTED",
                 content="historical context " * 160,
                 provenance=["transcript:history"],
+                source_taint_labels=[TaintLabel.UNTRUSTED.value],
+            ),
+            ContextScaffoldEntry(
+                entry_id="thread_resume_context",
+                trust_level="UNTRUSTED",
+                content="thread resume optional " * 120,
+                provenance=["memory:thread-resume"],
+                source_taint_labels=[TaintLabel.UNTRUSTED.value],
+            ),
+            ContextScaffoldEntry(
+                entry_id="active_attention_context",
+                trust_level="UNTRUSTED",
+                content="active attention optional " * 120,
+                provenance=["memory:active-attention"],
+                source_taint_labels=[TaintLabel.UNTRUSTED.value],
+            ),
+            ContextScaffoldEntry(
+                entry_id="memory_context",
+                trust_level="UNTRUSTED",
+                content="retrieved memory optional " * 120,
+                provenance=["memory:retrieval"],
                 source_taint_labels=[TaintLabel.UNTRUSTED.value],
             ),
         ],
@@ -229,7 +269,8 @@ def test_i2_known_context_budget_under_at_over_boundary() -> None:
             "trusted_frontmatter": (
                 f"{scaffold.trusted_frontmatter}\n"
                 "context_capacity_compacted=true\n"
-                "context_capacity_omitted=history"
+                "context_capacity_omitted="
+                "history,thread_attention,retrieved_memory,remaining_optional"
             ),
             "internal_entries": [],
             "untrusted_entries": [scaffold.untrusted_entries[0]],
@@ -244,11 +285,113 @@ def test_i2_known_context_budget_under_at_over_boundary() -> None:
     )
 
     assert over.assessment.fits is True
-    assert over.omitted_categories == ("history",)
+    assert over.omitted_categories == (
+        "history",
+        "thread_attention",
+        "retrieved_memory",
+        "remaining_optional",
+    )
     assert "current goal sentinel" in over.planner_input.replace("^", "")
     assert "never drop safety instructions" in over.planner_input
     assert "historical context" not in over.planner_input.replace("^", "")
     assert "context_capacity_compacted=true" in over.planner_input
+    assert "trust_level=trusted" in over.planner_input
+    assert "active_capabilities=file_read" in over.planner_input
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[Message], list[dict[str, object]]]] = []
+
+        async def complete(
+            self,
+            messages: list[Message],
+            provider_tools: list[dict[str, object]],
+        ) -> ProviderResponse:
+            self.calls.append((messages, provider_tools))
+            return ProviderResponse(message=Message(role="assistant", content="ok"))
+
+    provider = RecordingProvider()
+    for candidate in (under, at_boundary, over):
+        assert candidate.assessment.fits is True
+        await provider.complete(
+            [Message(role="user", content=candidate.planner_input)],
+            tools,
+        )
+    assert len(provider.calls) == 3
+    assert provider.calls[0][0][-1].content == full_input
+    assert provider.calls[1][0][-1].content == full_input
+    assert provider.calls[2][1] == tools
+
+    for hostile_text, minimum_estimate in (
+        ("!" * 256, 256),
+        ("🙂" * 64, 256),
+        ("a" * 256, 256),
+    ):
+        hostile = assess_request_capacity(
+            messages=[Message(role="user", content=hostile_text)],
+            tools=[],
+            context_window_tokens=None,
+            output_reserve_tokens=128,
+        )
+        assert hostile.estimated_input_tokens >= minimum_estimate
+
+
+def test_i2_capacity_projection_is_actionable_and_bounded() -> None:
+    result = _planner_context_capacity_result(
+        ProviderContextCapacityError(
+            context_window_tokens=None,
+            reported_input_tokens=None,
+            source="provider_http",
+        )
+    )
+
+    assert result.attempts == 0
+    assert result.output.actions == []
+    assert "provider's context window" in result.output.assistant_response
+    assert "shorten" in result.output.assistant_response.lower()
+    assert "http" not in result.output.assistant_response.lower()
+
+
+@pytest.mark.asyncio
+async def test_i2_post_tool_synthesis_projects_capacity_error() -> None:
+    capacity_error = ProviderContextCapacityError(
+        context_window_tokens=16_384,
+        estimated_input_tokens=17_514,
+    )
+
+    class CapacityPlanner:
+        async def propose_with_pep(self, *_args: object, **_kwargs: object) -> None:
+            raise capacity_error
+
+    validated = SimpleNamespace(
+        firewall_result=SimpleNamespace(sanitized_text="current goal"),
+        sid=SessionId("s-i2"),
+        workspace_id=WorkspaceId("w-i2"),
+        user_id=UserId("u-i2"),
+        trust_level="trusted",
+    )
+    harness = SimpleNamespace(
+        _planner=CapacityPlanner(),
+        _pep_for_current_policy=lambda: object(),
+    )
+    execution = SimpleNamespace(
+        planner_dispatch=SimpleNamespace(
+            planner_context=SimpleNamespace(
+                validated=validated,
+                assistant_tone_override=None,
+            )
+        )
+    )
+
+    result = await SessionImplMixin._synthesize_post_tool_response(
+        harness,
+        execution=execution,
+        serialized_tool_outputs=[],
+        tool_output_summary="oversized tool evidence",
+    )
+
+    assert "16384-token context window" in result.response_text
+    assert "shorten" in result.response_text.lower()
 
 
 def test_m3_cs4_build_planner_context_scaffold_keeps_memory_untrusted() -> None:

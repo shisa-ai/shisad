@@ -80,7 +80,17 @@ def test_m2_model_config_parses_request_parameters_from_env_json(
     assert config.planner_request_parameters.top_p == 0.9
 
 
-def test_i2_shisa_route_discovers_known_context_window() -> None:
+def test_i2_shisa_route_discovers_known_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key_name in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "SHISA_API_KEY",
+    ):
+        monkeypatch.delenv(key_name, raising=False)
     shisa_route = ModelRouter(
         ModelConfig(
             planner_remote_enabled=True,
@@ -100,6 +110,23 @@ def test_i2_shisa_route_discovers_known_context_window() -> None:
     ).route_for(ModelComponent.PLANNER)
     assert custom_route.capabilities.context_window_tokens is None
 
+    for endpoint_override, preset_override in (
+        ({"base_url": "https://custom.example/v1"}, {}),
+        (
+            {"planner_base_url": "https://custom.example/v1"},
+            {"planner_provider_preset": "shisa_default"},
+        ),
+    ):
+        overridden_route = ModelRouter(
+            ModelConfig(
+                planner_remote_enabled=True,
+                planner_auth_mode="none",
+                **preset_override,
+                **endpoint_override,
+            )
+        ).route_for(ModelComponent.PLANNER)
+        assert overridden_route.capabilities.context_window_tokens is None
+
     explicit_route = ModelRouter(
         ModelConfig(
             planner_remote_enabled=True,
@@ -113,3 +140,13 @@ def test_i2_shisa_route_discovers_known_context_window() -> None:
     ).route_for(ModelComponent.PLANNER)
     assert explicit_route.capabilities.context_window_tokens == 32_768
     assert explicit_route.capabilities.output_reserve_tokens == 2_048
+
+    with pytest.raises(ValueError, match="output_reserve_tokens must be smaller"):
+        ModelRouter(
+            ModelConfig(
+                planner_remote_enabled=True,
+                planner_auth_mode="none",
+                planner_provider_preset="shisa_default",
+                planner_capabilities=ProviderCapabilities(output_reserve_tokens=20_000),
+            )
+        )

@@ -3118,6 +3118,44 @@ async def test_i2_unknown_limit_provider_capacity_error_is_terminal(
     assert "api.shisa.ai" not in str(capacity_error)
     assert raw_error not in str(capacity_error)
 
+    coded_error = provider_context_capacity_error_from_http(
+        status=400,
+        model_id="custom/model-with-unknown-window",
+        details=json.dumps(
+            {
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": (
+                        "Request exceeds maximum context length: 16384 tokens; "
+                        "input is 17514 tokens."
+                    ),
+                }
+            }
+        ),
+    )
+    assert coded_error is not None
+    assert coded_error.context_window_tokens == 16_384
+    assert coded_error.reported_input_tokens == 17_514
+
+    huge_digits = "9" * 10_000
+    bounded_error = provider_context_capacity_error_from_http(
+        status=400,
+        model_id="custom/model-with-unknown-window",
+        details=json.dumps(
+            {
+                "message": (
+                    f"The input ({huge_digits} tokens) is longer than the model's "
+                    f"context length ({huge_digits} tokens)."
+                )
+            }
+        ),
+    )
+    assert bounded_error is not None
+    assert bounded_error.context_window_tokens is None
+    assert bounded_error.reported_input_tokens is None
+    assert len(str(bounded_error)) < 200
+    assert len(bounded_error.user_message()) < 200
+
     monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_AUTH_MODE", "none")
     monkeypatch.setenv(

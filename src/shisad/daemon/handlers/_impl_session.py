@@ -730,6 +730,16 @@ class PostToolSynthesisResult:
     provider_response: Any | None = None
 
 
+def _planner_context_capacity_result(exc: ProviderContextCapacityError) -> PlannerResult:
+    return PlannerResult(
+        output=PlannerOutput(actions=[], assistant_response=exc.user_message()),
+        evaluated=[],
+        attempts=0,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TaskSessionRequest:
     task_description: str
@@ -11407,13 +11417,7 @@ class SessionImplMixin(HandlerMixinBase):
                 exc.context_window_tokens,
                 exc.estimated_input_tokens or exc.reported_input_tokens,
             )
-            planner_result = PlannerResult(
-                output=PlannerOutput(actions=[], assistant_response=exc.user_message()),
-                evaluated=[],
-                attempts=0,
-                provider_response=None,
-                messages_sent=(),
-            )
+            planner_result = _planner_context_capacity_result(exc)
         except PlannerOutputError as exc:
             planner_failure_code = "planner_output_invalid"
             tainted_context = TaintLabel.UNTRUSTED in planner_context.context.taint_labels
@@ -14347,6 +14351,18 @@ class SessionImplMixin(HandlerMixinBase):
                 validated.sid,
             )
             return PostToolSynthesisResult()
+        except ProviderContextCapacityError as exc:
+            logger.warning(
+                "Post-tool synthesis exceeded planner context capacity for session %s "
+                "(context_window_tokens=%s, input_tokens=%s)",
+                validated.sid,
+                exc.context_window_tokens,
+                exc.estimated_input_tokens or exc.reported_input_tokens,
+            )
+            capacity_result = _planner_context_capacity_result(exc)
+            return PostToolSynthesisResult(
+                response_text=capacity_result.output.assistant_response
+            )
         except PlannerOutputError:
             logger.warning(
                 "Post-tool synthesis planner output invalid for session %s; "
@@ -14590,6 +14606,7 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_tone_override=None,
             plan_step_id=plan_step_id,
         )
+        planner_failure_code = ""
         try:
             planner_result = await planner.propose_with_pep(
                 planner_input,
@@ -14598,6 +14615,16 @@ class SessionImplMixin(HandlerMixinBase):
                 tools=planner_tools_payload,
                 persona_tone_override=None,
             )
+        except ProviderContextCapacityError as exc:
+            planner_failure_code = "planner_context_capacity_exceeded"
+            logger.warning(
+                "Pending-action continuation exceeded planner context capacity for session %s "
+                "(context_window_tokens=%s, input_tokens=%s)",
+                sid,
+                exc.context_window_tokens,
+                exc.estimated_input_tokens or exc.reported_input_tokens,
+            )
+            planner_result = _planner_context_capacity_result(exc)
         except PlannerOutputError:
             logger.warning(
                 "Pending-action continuation planner output invalid for session %s",
@@ -14616,7 +14643,7 @@ class SessionImplMixin(HandlerMixinBase):
         dispatch = SessionMessagePlannerDispatchResult(
             planner_context=planner_context,
             planner_result=planner_result,
-            planner_failure_code="",
+            planner_failure_code=planner_failure_code,
             trace_t0=time.monotonic(),
             delegation_advisory=TaskDelegationRecommendation(
                 delegate=False,

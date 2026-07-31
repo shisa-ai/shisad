@@ -25,14 +25,16 @@ boundaries rather than truncating the request blindly.
 
 1. Planner route capabilities may declare `context_window_tokens` and an
    `output_reserve_tokens` value. The exact shipped default Shisa planner
-   preset/model resolves to its known 16,384-token window when remote routing
-   is enabled. Explicit capability configuration wins. Unrecognized models do
-   not inherit a guessed window.
+   preset/endpoint/model resolves to its known 16,384-token window when remote
+   routing is enabled. Explicit capability configuration wins. Overridden
+   endpoints and unrecognized models do not inherit a guessed window.
 2. For a known/configured window, the planner assesses the complete outbound
    request: composed system messages, rendered user/context messages, enabled
    tool schemas, protocol framing, and the output reservation. The estimate is
-   deterministic and conservative; it is an admission boundary, not a claim
-   to reproduce every provider tokenizer exactly.
+   deterministic and upper-biased for ordinary text, with worst-case byte
+   treatment for non-ASCII text and opaque alphanumeric/punctuation runs. It
+   is an admission boundary, not a claim to reproduce every provider tokenizer
+   exactly.
 3. When optional context makes the request exceed the input budget, the
    runtime removes complete typed context entries in a deterministic order:
    conversation history and episode summaries first, then thread-resume and
