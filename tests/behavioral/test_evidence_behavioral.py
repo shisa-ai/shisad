@@ -169,6 +169,7 @@ async def _evidence_stub_complete(
             model="behavioral-evidence-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     if goal_lower.startswith("read evidence "):
@@ -211,6 +212,7 @@ async def _evidence_stub_complete(
             model="behavioral-evidence-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     return ProviderResponse(
@@ -218,6 +220,7 @@ async def _evidence_stub_complete(
         model="behavioral-evidence-stub",
         finish_reason="stop",
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        trusted_origin="local-fallback",
     )
 
 
