@@ -228,12 +228,20 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
     assert finalizer_tools[0]["function"]["name"] == "respond_to_user"
     assert set(finalizer_tools[0]["function"]["parameters"]["properties"]) == {"final_answer"}
     assert finalizer_tools[0]["function"]["parameters"]["additionalProperties"] is False
+    assert (
+        "Do not include tool or response-process commentary"
+        in finalizer_tools[0]["function"]["parameters"]["properties"]["final_answer"]["description"]
+    )
     finalizer_payload = "\n".join(message.content for message in provider.messages[1])
     assert "How do you say hello in Japanese?" in finalizer_payload
     assert "PRELIMINARY-DRAFT" in finalizer_payload
     assert "SAFETY-SENTINEL" in provider.messages[1][0].content
     assert "PERSONA STYLE INSTRUCTIONS (tone=strict)" in provider.messages[1][0].content
     assert "CUSTOM-PERSONA-SENTINEL" in provider.messages[1][0].content
+    assert (
+        "Do not mention whether tools are available, used, needed, or unnecessary"
+        in provider.messages[1][0].content
+    )
     assert result.provider_response is not None
     assert result.provider_response.message.content == "FINALIZER-CONTENT-MUST-NOT-LEAK"
     assert result.finalization_messages_sent == tuple(provider.messages[1])
