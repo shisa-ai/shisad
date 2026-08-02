@@ -8143,6 +8143,7 @@ async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     async with _contract_harness_context(tmp_path, monkeypatch) as harness:
