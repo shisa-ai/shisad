@@ -1910,6 +1910,7 @@ async def test_f15_session_route_uses_policy_loaded_after_supported_reload(
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     monkeypatch.setattr(
@@ -2881,7 +2882,7 @@ async def test_contract_repaired_unknown_tool_call_can_return_safe_direct_answer
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
         nonlocal attempts
-        _ = (self, tools)
+        _ = self
         if (
             messages
             and messages[0].role == "system"
@@ -2894,6 +2895,27 @@ async def test_contract_repaired_unknown_tool_call_can_return_safe_direct_answer
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             )
         attempts += 1
+        if (
+            tools
+            and len(tools) == 1
+            and tools[0].get("function", {}).get("name") == "respond_to_user"
+        ):
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="FINALIZER-INTERNAL-CONTENT",
+                    tool_calls=[
+                        _tool_call(
+                            "respond_to_user",
+                            {"final_answer": "Hello."},
+                            call_id="t-final-answer",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
         if attempts == 1:
             return ProviderResponse(
                 message=Message(
@@ -2925,12 +2947,12 @@ async def test_contract_repaired_unknown_tool_call_can_return_safe_direct_answer
             {"session_id": sid, "content": "hello"},
         )
 
-    assert attempts == 2
+    assert attempts == 3
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert reply.get("planner_error") == ""
-    assert str(reply.get("response", "")).strip()
+    assert str(reply.get("response", "")).strip() == "Hello."
 
 
 @pytest.mark.asyncio
