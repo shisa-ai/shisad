@@ -344,6 +344,7 @@ async def test_command_chat_pending_free_form_turn_reaches_planner(
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     async with _contract_harness_context(tmp_path, monkeypatch) as harness:
@@ -402,6 +403,7 @@ async def test_command_chat_action_resolve_hidden_without_surfaced_pending_actio
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     async with _contract_harness_context(tmp_path, monkeypatch) as harness:
