@@ -89,6 +89,7 @@ def _install_lockdown_resume_planner(
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     monkeypatch.setattr(
@@ -182,6 +183,7 @@ def _install_gh31_recovery_prompt_then_resume_planner(
                 model="behavioral-stub",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="local-fallback",
             )
         assert tool_names & _LOCKDOWN_RESUME_TOOL_NAMES
         return ProviderResponse(
@@ -775,6 +777,7 @@ async def test_gh31_archive_imported_structural_notice_not_replayed_to_planner(
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     _install_lockdown_resume_planner(
