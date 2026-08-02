@@ -248,6 +248,68 @@ async def test_i3a_remote_no_action_response_uses_typed_final_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_i3b_finalizer_includes_evidence_prior_grounding_contract() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content="PRELIMINARY-PRIOR: add an unsupported category.",
+            ),
+            Message(
+                role="assistant",
+                content="FINALIZER-CONTENT-MUST-NOT-LEAK",
+                tool_calls=[
+                    _i3a_final_answer_call(
+                        "The supplied note marks the second option as the recommendation."
+                    )
+                ],
+            ),
+        ],
+        trusted_origin="",
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=1,
+        system_prompt="SAFETY-SENTINEL",
+        capabilities=ProviderCapabilities(supports_tool_calls=True),
+    )
+    rendered_context = (
+        "=== TRUSTED SAME-SESSION USER CONTEXT (TRUSTED) ===\n"
+        "- user: Red Lantern is marked as the recommendation.\n"
+        "=== END TRUSTED SAME-SESSION USER CONTEXT ===\n\n"
+        "=== USER REQUEST ===\n"
+        "Which option did I recommend?\n\n"
+        "=== END PAYLOAD ==="
+    )
+
+    result = await planner.propose_with_pep(
+        rendered_context,
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        pep=pep,
+        tools=[],
+        finalize_response=True,
+    )
+
+    assert result.output.assistant_response.startswith("The supplied note")
+    assert provider.calls == 2
+    finalizer_system = provider.messages[1][0].content
+    assert "EVIDENCE AND PRIOR KNOWLEDGE GROUNDING" in finalizer_system
+    assert "general/background knowledge" in finalizer_system
+    assert "Red Lantern is marked as the recommendation" in provider.messages[1][1].content
+    assert "PRELIMINARY-PRIOR" in provider.messages[1][1].content
+    finalizer_tools = provider.tools[1]
+    assert finalizer_tools is not None
+    assert set(finalizer_tools[0]["function"]["parameters"]["properties"]) == {"final_answer"}
+    assert (
+        "general/background knowledge"
+        in finalizer_tools[0]["function"]["parameters"]["properties"]["final_answer"]["description"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_i3a_finalizer_retries_invalid_envelopes_without_leaking_draft() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
@@ -545,7 +607,7 @@ async def test_i3a_finalization_capacity_failure_is_terminal() -> None:
         system_prompt="short safety rule",
         capabilities=ProviderCapabilities(
             supports_tool_calls=True,
-            context_window_tokens=512,
+            context_window_tokens=1024,
             output_reserve_tokens=128,
         ),
     )

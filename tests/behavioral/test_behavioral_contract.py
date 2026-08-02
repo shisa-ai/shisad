@@ -1680,6 +1680,160 @@ async def test_i3a_reported_japanese_prompts_return_typed_final_answers(
 
 
 @pytest.mark.asyncio
+async def test_i3b_restaurant_followup_distinguishes_supplied_facts_from_model_prior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[Message], list[dict[str, Any]] | None]] = []
+
+    async def _grounding_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        _ = self
+        calls.append((list(messages), tools))
+        tool_names = [
+            str(tool.get("function", {}).get("name", ""))
+            for tool in (tools or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        ]
+        combined = "\n".join(message.content for message in messages).replace("^", "")
+        lowered = combined.lower()
+        is_general_prior_request = "using general knowledge" in lowered
+        is_recommendation_followup = "what is a good resturant to try" in lowered
+
+        if tool_names == ["respond_to_user"]:
+            grounding_contract_present = (
+                "EVIDENCE AND PRIOR KNOWLEDGE GROUNDING" in messages[0].content
+                and "general/background knowledge" in messages[0].content
+            )
+            if is_general_prior_request:
+                answer = (
+                    "Using general/background knowledge rather than your supplied list, "
+                    "Kaikaya by the Sea is commonly associated with seafood-focused "
+                    "Japanese cooking, but that detail was not verified from the "
+                    "information in this conversation."
+                    if grounding_contract_present
+                    else ("Based on your list, Kaikaya by the Sea is a modern seafood restaurant.")
+                )
+            elif is_recommendation_followup:
+                answer = (
+                    "From the information you provided, Kaikaya by the Sea is the "
+                    "restaurant marked as good to try. The list did not provide cuisine "
+                    "types, so no cuisine classification is established by this "
+                    "conversation."
+                    if grounding_contract_present
+                    else (
+                        "Based on your earlier list, Kaikaya by the Sea is a modern "
+                        "seafood restaurant. Uobei and Genki Sushi are conveyor-belt "
+                        "sushi, and Nabezo is a hot-pot restaurant."
+                    )
+                )
+            else:
+                answer = "I have the list and the supplied recommendation."
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="FINALIZER-GROUNDING-CONTENT",
+                    tool_calls=[
+                        _tool_call(
+                            "respond_to_user",
+                            {"final_answer": answer},
+                            call_id=f"grounded-final-{len(calls)}",
+                        )
+                    ],
+                ),
+                model="behavioral-remote-grounding-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="",
+            )
+
+        if is_general_prior_request:
+            draft = "Based on the list, all five cuisine categories are verified facts."
+        elif is_recommendation_followup:
+            draft = (
+                "Based on your list: Uobei and Genki are conveyor-belt sushi, Nabezo is "
+                "hot pot, and Kaikaya is modern seafood."
+            )
+        else:
+            draft = "I have the restaurant list and your recommendation."
+        return ProviderResponse(
+            message=Message(role="assistant", content=draft),
+            model="behavioral-remote-grounding-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="",
+        )
+
+    original_list = """5 Restaurants in Shibuya
+
+1. Uobei Shibuya Dogenzaka
+2. Nabezo Shibuya Koendori
+3. Kaikaya by the Sea
+4. Uoriki Kaisen Sushi Shibuya
+5. Genki Sushi Shibuya
+
+- Kaikaya by the Sea: this is a good restaurant to try out."""
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _grounding_complete, raising=True)
+        sid = await _create_session(harness.client)
+        replies = []
+        for content in (
+            original_list,
+            "what is a good resturant to try",
+            (
+                "Separately, using general knowledge rather than my list, what cuisine "
+                "is Kaikaya by the Sea associated with? Distinguish that from what I told you."
+            ),
+        ):
+            replies.append(
+                await harness.client.call(
+                    "session.message",
+                    {
+                        "session_id": sid,
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "ws1",
+                        "content": content,
+                    },
+                )
+            )
+
+    recommendation = str(replies[1].get("response", ""))
+    assert "Kaikaya by the Sea" in recommendation
+    assert "marked as good to try" in recommendation
+    assert "did not provide cuisine types" in recommendation
+    assert "conveyor-belt" not in recommendation.lower()
+    assert "hot-pot" not in recommendation.lower()
+    assert "modern seafood" not in recommendation.lower()
+
+    general_prior = str(replies[2].get("response", ""))
+    assert "general/background knowledge" in general_prior
+    assert "rather than your supplied list" in general_prior
+    assert "seafood" in general_prior.lower()
+    assert "not verified from the information in this conversation" in general_prior
+
+    for reply in replies:
+        assert reply.get("lockdown_level") == "normal"
+        assert int(reply.get("blocked_actions", 0)) == 0
+        assert int(reply.get("confirmation_required_actions", 0)) == 0
+        assert int(reply.get("executed_actions", 0)) == 0
+        assert "FINALIZER-GROUNDING-CONTENT" not in str(reply.get("response", ""))
+
+    finalizer_calls = [
+        tools
+        for _messages, tools in calls
+        if tools
+        and len(tools) == 1
+        and tools[0].get("function", {}).get("name") == "respond_to_user"
+    ]
+    assert len(finalizer_calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_i2_long_session_compacts_optional_context_and_answers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
