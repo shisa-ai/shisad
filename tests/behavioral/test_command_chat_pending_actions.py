@@ -233,6 +233,7 @@ async def test_f15_post_confirmation_synthesis_preserves_successful_sibling_resu
                 model="behavioral-stub",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="local-fallback",
             )
         return await _stub_complete(self, messages, tools)
 
