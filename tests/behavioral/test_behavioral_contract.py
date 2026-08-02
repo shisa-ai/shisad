@@ -5016,6 +5016,7 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
                         model="behavioral-stub",
                         finish_reason="stop",
                         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        trusted_origin="local-fallback",
                     )
             return await _stub_complete(self, messages, tools)
 
@@ -5106,6 +5107,7 @@ async def test_contract_stale_thread_resume_abstains_without_packet(
                     model="behavioral-stub",
                     finish_reason="stop",
                     usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    trusted_origin="local-fallback",
                 )
             return await _stub_complete(self, messages, tools)
 
@@ -5356,6 +5358,7 @@ async def test_contract_ambiguous_topic_resume_asks_for_clarification(
                         model="behavioral-stub",
                         finish_reason="stop",
                         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        trusted_origin="local-fallback",
                     )
             return await _stub_complete(self, messages, tools)
 
@@ -5679,6 +5682,7 @@ async def test_contract_insufficient_topic_resume_abstains_without_packet(
                         model="behavioral-stub",
                         finish_reason="stop",
                         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        trusted_origin="local-fallback",
                     )
             return await _stub_complete(self, messages, tools)
 
