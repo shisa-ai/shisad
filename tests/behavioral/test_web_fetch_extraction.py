@@ -109,6 +109,7 @@ async def _planner_stub_complete(
             model="gh28-fetch-extraction-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
     return ProviderResponse(
         message=Message(
@@ -182,6 +183,7 @@ async def _gh36_planner_stub_complete(
                 model="gh36-fetch-followup-stub",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="local-fallback",
             )
         return ProviderResponse(
             message=Message(
@@ -191,6 +193,7 @@ async def _gh36_planner_stub_complete(
             model="gh36-fetch-followup-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     if "reservation availability" in goal:
