@@ -73,6 +73,7 @@ async def _replay_complete(
             model="session-replay-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     if "latest news" in goal_lower:
@@ -116,6 +117,7 @@ async def _replay_complete(
         model="session-replay-stub",
         finish_reason="stop",
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        trusted_origin="local-fallback",
     )
 
 
