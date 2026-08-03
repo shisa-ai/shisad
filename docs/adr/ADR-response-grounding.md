@@ -43,10 +43,17 @@ rules:
    padded with unrelated prior classifications.
 5. When the user explicitly asks for general knowledge, the assistant remains
    useful and answers with the source distinction intact.
-6. Supplied facts are context, not an implicit request to persist, message,
+6. Supplied facts alone are not a request to call a runtime tool. A tool is used
+   only when it is necessary to answer an actual current request or the current
+   request asks for that action.
+7. Supplied facts are context, not an implicit request to persist, message,
    execute, or otherwise act on them. A side-effect tool requires the current
    user request to ask for that action; prior same-session context may provide
    parameters but does not independently authorize a new action.
+8. When the user explicitly asks for general/background knowledge rather than
+   verification or current information, the assistant answers directly from
+   model prior without substituting a runtime tool and states material
+   uncertainty.
 
 For remote native-tool-capable conversational responses, the existing
 `respond_to_user(final_answer)` protocol remains the structural output boundary.
@@ -74,9 +81,9 @@ protocol and provenance structure, while the LLM owns meaning.
 - Tool selection, PEP, confirmation, execution, post-tool synthesis, memory
   ownership, local fallback, and content-only provider paths keep their existing
   owners.
-- Explicit current-turn requests to save a note or take another action remain
-  functional; the grounding rule prevents facts alone from becoming an action
-  request.
+- Explicit current-turn requests to search, save a note, or take another action
+  remain functional; the grounding rule prevents facts alone from becoming a
+  tool request.
 - Response finalization still exposes no executable runtime tools and does not
   change the synthetic function name or field set.
 
@@ -89,7 +96,9 @@ Deterministic acceptance covers both directions:
 - an explicit request for general knowledge still receives a useful answer
   that distinguishes that prior from supplied evidence; and
 - supplying a factual list without asking to save it executes no action, while
-  an explicit note-save request still uses the existing note path.
+  an explicit note-save request still uses the existing note path; and
+- an explicit request for model prior does not become a search confirmation,
+  while an explicit search request still uses the existing web path.
 
 The reported restaurant journey is a golden test, not a production entity
 list. Live acceptance uses the shipped Shisa route because prompt wiring tests
