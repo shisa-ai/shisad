@@ -1685,6 +1685,7 @@ async def test_i3b_restaurant_followup_distinguishes_supplied_facts_from_model_p
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[list[Message], list[dict[str, Any]] | None]] = []
+    unrequested_note_emitted = False
 
     async def _grounding_complete(
         self: LocalPlannerProvider,
@@ -1692,6 +1693,7 @@ async def test_i3b_restaurant_followup_distinguishes_supplied_facts_from_model_p
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
         _ = self
+        nonlocal unrequested_note_emitted
         calls.append((list(messages), tools))
         tool_names = [
             str(tool.get("function", {}).get("name", ""))
@@ -1702,6 +1704,39 @@ async def test_i3b_restaurant_followup_distinguishes_supplied_facts_from_model_p
         lowered = combined.lower()
         is_general_prior_request = "using general knowledge" in lowered
         is_recommendation_followup = "what is a good resturant to try" in lowered
+        is_supplied_list = "5 restaurants in shibuya" in lowered
+        action_grounding_present = (
+            "not implicit requests to persist" in messages[0].content
+            and "current USER REQUEST asks for that action" in messages[0].content
+        )
+
+        if (
+            tool_names != ["respond_to_user"]
+            and is_supplied_list
+            and not action_grounding_present
+            and not unrequested_note_emitted
+        ):
+            unrequested_note_emitted = True
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="I will store the supplied recommendation for later.",
+                    tool_calls=[
+                        _tool_call(
+                            "note.create",
+                            {
+                                "key": "Shibuya Restaurants",
+                                "content": "Kaikaya by the Sea is a good restaurant to try out.",
+                            },
+                            call_id="unrequested-note-create",
+                        )
+                    ],
+                ),
+                model="behavioral-remote-grounding-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="",
+            )
 
         if tool_names == ["respond_to_user"]:
             grounding_contract_present = (

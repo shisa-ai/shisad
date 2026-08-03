@@ -298,6 +298,8 @@ async def test_i3b_finalizer_includes_evidence_prior_grounding_contract() -> Non
     finalizer_system = provider.messages[1][0].content
     assert "EVIDENCE AND PRIOR KNOWLEDGE GROUNDING" in finalizer_system
     assert "general/background knowledge" in finalizer_system
+    assert "not implicit requests to persist" in finalizer_system
+    assert "current USER REQUEST asks for that action" in finalizer_system
     assert "Red Lantern is marked as the recommendation" in provider.messages[1][1].content
     assert "PRELIMINARY-PRIOR" in provider.messages[1][1].content
     finalizer_tools = provider.tools[1]
