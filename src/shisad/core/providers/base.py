@@ -21,6 +21,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.failure_presentation import UserFacingFailure
 from shisad.core.providers.capabilities import RequestParameters
 from shisad.core.url_parsing import (
     URLDestination,
@@ -95,6 +96,7 @@ class ProviderResponse(BaseModel):
     finish_reason: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
     trusted_origin: str = Field(default="", exclude=True)
+    failure: UserFacingFailure | None = None
 
 
 class ProviderContextCapacityError(RuntimeError):

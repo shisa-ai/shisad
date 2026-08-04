@@ -3055,7 +3055,8 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
         assert int(reply.get("confirmation_required_actions", 0)) == 0
         assert reply.get("planner_error") == "planner_output_invalid"
         assert "planner_output_invalid" not in str(reply.get("response", ""))
-        assert "planner returned an invalid response" in str(reply.get("response", ""))
+        assert "response couldn't be processed" in str(reply.get("response", ""))
+        assert "planner" not in str(reply.get("response", "")).lower()
 
         responses = await harness.client.call(
             "audit.query",
@@ -3092,7 +3093,8 @@ async def test_contract_planner_validation_error_is_not_rewritten_as_greeting(
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert reply.get("planner_error") == "planner_output_invalid"
     assert "planner_output_invalid" not in response_text
-    assert "planner returned an invalid response" in response_text
+    assert "response couldn't be processed" in response_text
+    assert "planner" not in response_text.lower()
     assert "how can i help" not in response_text.lower()
 
 
@@ -9682,6 +9684,10 @@ async def test_contract_web_search_backend_unconfigured_is_actionable(
     payload = outputs["web.search"][0]
     assert payload.get("ok") is False
     assert payload.get("error") == "web_search_backend_unconfigured"
+    response_text = str(reply.get("response", ""))
+    assert "web search couldn't run because it isn't set up" in response_text.lower()
+    assert "set up web search, then retry your request" in response_text.lower()
+    assert "web_search_backend_unconfigured" not in response_text
 
 
 @pytest.mark.asyncio

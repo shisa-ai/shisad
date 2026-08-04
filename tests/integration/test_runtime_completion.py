@@ -424,7 +424,7 @@ async def test_v0_3_1_session_message_returns_official_planner_error_in_trusted_
         )
         response_text = str(reply["response"])
         assert "planner_output_invalid" not in response_text
-        assert "planner returned an invalid response" in response_text
+        assert "response couldn't be processed" in response_text
         assert "actions.0" not in response_text
         assert reply.get("trust_level") == "trusted"
     finally:
@@ -499,7 +499,7 @@ async def test_v0_3_1_session_message_limits_error_detail_in_untrusted_context(
             },
         )
         response_text = str(reply["response"]).lower()
-        assert "planner returned an invalid response" in response_text
+        assert "response couldn't be processed" in response_text
         assert "planner_output_invalid" not in response_text
         assert "actions.0" not in response_text
         assert "schema violation" not in response_text

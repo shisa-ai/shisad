@@ -456,6 +456,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         execute_success: bool = True,
         execution_error: str = "",
         execution_error_tool_output: bool = True,
+        execution_outcome_unknown: bool = False,
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -503,6 +504,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._execute_success = execute_success
         self._execution_error = execution_error
         self._execution_error_tool_output = execution_error_tool_output
+        self._execution_outcome_unknown = execution_outcome_unknown
         self.persist_calls = 0
         self._pep = PEP(
             initial_policy,
@@ -625,6 +627,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             )
         return SimpleNamespace(
             success=self._execute_success,
+            outcome_unknown=self._execution_outcome_unknown,
             checkpoint_id=None,
             tool_output=tool_output if (self._execute_success or self._execution_error) else None,
             error=self._execution_error if not self._execute_success else "",
@@ -7451,6 +7454,67 @@ async def test_gh47_confirmation_preserves_unstructured_execution_error(
     assert result["confirmed"] is False
     assert result["status_reason"] == "tool_unavailable"
     assert result["status_reason"] != "planner_action_resolve"
+
+
+@pytest.mark.asyncio
+async def test_i4_confirmed_backend_failure_has_typed_approval_and_execution_outcomes(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(
+        tmp_path,
+        execute_success=False,
+        execution_error="web_search_backend_unconfigured",
+    )
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.search")
+    pending.arguments = {"query": "latest news"}
+    pending.approval_envelope = _software_approval_envelope(tool_name=pending.tool_name)
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "failed"
+    assert result["status_reason"] == "web_search_backend_unconfigured"
+    assert result["failure"] == {
+        "code": "web_search_backend_unconfigured",
+        "summary": (
+            "Your approval was received, but web search couldn't run because it isn't set up."
+        ),
+        "retryable": False,
+        "safe_next_action": "Set up web search, then retry your request.",
+        "approval_outcome": "accepted",
+        "execution_outcome": "failed",
+        "partial_result": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_i4_confirmed_unknown_execution_outcome_does_not_mark_approval_failed(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(
+        tmp_path,
+        execute_success=False,
+        execution_error="idempotent_adapter_outcome_unknown",
+        execution_error_tool_output=False,
+        execution_outcome_unknown=True,
+    )
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "outcome_unknown"
+    assert result["failure"]["approval_outcome"] == "accepted"
+    assert result["failure"]["execution_outcome"] == "unknown"
+    assert result["failure"]["retryable"] is False
 
 
 @pytest.mark.asyncio

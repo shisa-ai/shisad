@@ -10,6 +10,10 @@ import shlex
 from collections.abc import Iterator
 from typing import Any
 
+from shisad.core.failure_presentation import (
+    planner_route_failure,
+    render_user_facing_failure,
+)
 from shisad.core.providers.base import EmbeddingResponse, Message, ProviderResponse
 from shisad.security.spotlight import LOCAL_TASK_CLOSE_GATE_SENTINEL
 
@@ -29,9 +33,6 @@ _TASK_CLOSE_GATE_SECTION_HEADERS = (
 )
 _TASK_CLOSE_GATE_SECTION_HEADER_SET = set(_TASK_CLOSE_GATE_SECTION_HEADERS)
 _PLANNER_FALLBACK_CONFIGURATION_PREFIX = "[PLANNER FALLBACK: CONFIGURATION]"
-_PLANNER_FALLBACK_ROUTE_ERROR_PREFIX = "[PLANNER FALLBACK: ROUTE ERROR]"
-_PROVIDER_HTTP_ERROR_RE = re.compile(r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b")
-_PROVIDER_RETRYABLE_HTTP_STATUSES = {408, 429}
 
 
 def _extract_marked_untrusted_payload(planner_input: str) -> str:
@@ -939,21 +940,8 @@ def _is_structured_task_close_gate_prompt(text: str) -> bool:
 
 def _planner_fallback_message(
     *,
-    fallback_mode: str,
     deterministic_tools_available: bool,
-    fallback_error: str = "",
 ) -> str:
-    if fallback_mode == "route_error":
-        prefix = _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX
-        intro = "Configured planner route failed."
-        detail = (
-            " Continuing with deterministic local fallback tools only."
-            if deterministic_tools_available
-            else " Conversational planning is unavailable until the planner route recovers."
-        )
-        guidance = _planner_route_error_guidance(fallback_error)
-        return f"{prefix} {intro}{detail}{guidance}"
-
     prefix = _PLANNER_FALLBACK_CONFIGURATION_PREFIX
     intro = "No language model configured."
     detail = (
@@ -967,40 +955,6 @@ def _planner_fallback_message(
         "`shisad doctor check --component provider`."
     )
     return f"{prefix} {intro}{detail}{guidance}"
-
-
-def _planner_route_error_guidance(fallback_error: str) -> str:
-    match = _PROVIDER_HTTP_ERROR_RE.search(fallback_error)
-    if match is not None:
-        status = int(match.group("status"))
-        if status in _PROVIDER_RETRYABLE_HTTP_STATUSES:
-            return (
-                f" The configured provider is temporarily unavailable or rate limited "
-                f"(HTTP {status}). This is usually a provider-side capacity or "
-                "rate-limit issue; retry in a few minutes. Run "
-                "`shisad doctor check --component provider` if it persists."
-            )
-        if 500 <= status <= 599:
-            return (
-                f" The configured provider is currently unavailable (HTTP {status}). "
-                "This is usually a provider-side capacity issue; retry in a few "
-                "minutes. Run `shisad doctor check --component provider` if it persists."
-            )
-        if 400 <= status <= 499:
-            return (
-                f" The provider route returned HTTP {status}. Check provider "
-                "connectivity or credentials, then run "
-                "`shisad doctor check --component provider`."
-            )
-    if fallback_error.startswith("Provider request failed"):
-        return (
-            " Could not reach the provider. Check your network, then run "
-            "`shisad doctor check --component provider` if it persists."
-        )
-    return (
-        " Check provider connectivity or credentials, then run "
-        "`shisad doctor check --component provider`."
-    )
 
 
 class LocalPlannerProvider:
@@ -1128,11 +1082,17 @@ class LocalPlannerProvider:
                     },
                 }
             )
-        assistant_content = _planner_fallback_message(
-            fallback_mode=fallback_mode,
-            deterministic_tools_available=bool(tool_calls),
-            fallback_error=fallback_error,
-        )
+        failure = None
+        if fallback_mode == "route_error":
+            failure = planner_route_failure(
+                diagnostic=fallback_error,
+                partial_result=bool(tool_calls),
+            )
+            assistant_content = render_user_facing_failure(failure)
+        else:
+            assistant_content = _planner_fallback_message(
+                deterministic_tools_available=bool(tool_calls),
+            )
         return ProviderResponse(
             message=Message(
                 role="assistant",
@@ -1143,6 +1103,7 @@ class LocalPlannerProvider:
             finish_reason="tool_calls" if tool_calls else "error",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             trusted_origin="local-fallback",
+            failure=failure,
         )
 
     async def embeddings(

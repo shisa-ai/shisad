@@ -77,6 +77,12 @@ from shisad.core.evidence import (
     _generate_safe_summary,
     format_evidence_stub,
 )
+from shisad.core.failure_presentation import (
+    UserFacingFailure,
+    execution_failure,
+    planner_output_failure,
+    render_user_facing_failure,
+)
 from shisad.core.planner import (
     PLANNER_CURRENT_TURN_TOOL_CALL_SOURCE,
     ActionProposal,
@@ -4472,6 +4478,13 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         return None
     search_errors = {_top_level_tool_summary_error(row) for row in search_entries}
     fs_read_summary = _fs_read_succeeded_summary(sections)
+    if "web_search_backend_unconfigured" in search_errors:
+        return _with_local_file_evidence(
+            render_user_facing_failure(
+                execution_failure(code="web_search_backend_unconfigured")
+            ),
+            fs_read_summary,
+        )
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
         "IP-literal, localhost, or .local/.internal/.lan backend hosts to the "
@@ -4479,12 +4492,6 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "hosts when that variable is unset), add any destinations you want "
         "preapproved, restart shisad, then retry"
     )
-    if "web_search_backend_unconfigured" in search_errors:
-        return _with_local_file_evidence(
-            "Web search is not configured for this daemon, so I can't search the web "
-            f"right now. {setup_hint}.",
-            fs_read_summary,
-        )
     if (
         "ip_literal_not_allowlisted" in search_errors
         or "local_destination_not_allowlisted" in search_errors
@@ -5203,10 +5210,8 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "grounded in the committed goal or a prior approved step."
         )
     if any(code == "planner_output_invalid" for code in codes):
-        return (
-            "I couldn't complete that request because the planner returned an invalid "
-            "response after repair attempts. Please retry; if it repeats, check the "
-            "configured planner route or use a simpler request."
+        return render_user_facing_failure(
+            planner_output_failure(diagnostic="planner_output_invalid")
         )
     if any(code == "resource:outside_workspace_root" for code in codes):
         return (
@@ -9589,6 +9594,17 @@ class SessionImplMixin(HandlerMixinBase):
                 or "failed"
             ).strip()
 
+        def _confirmation_result_failure_text(result: Mapping[str, Any]) -> str:
+            raw_failure = result.get("failure")
+            if raw_failure is None:
+                return ""
+            try:
+                failure = UserFacingFailure.model_validate(raw_failure)
+            except ValidationError:
+                logger.warning("Ignoring invalid action confirmation failure envelope")
+                return ""
+            return render_user_facing_failure(failure)
+
         async def _finalize_chat_confirmation_response(
             *,
             response_text: str,
@@ -10030,7 +10046,10 @@ class SessionImplMixin(HandlerMixinBase):
                     checkpoint_ids.append(checkpoint_id)
                 status = _confirmation_result_status_text(result, confirmed=confirmed)
                 confirmation_label = str(getattr(target_pending, "confirmation_id", "")).strip()
-                if confirmed:
+                failure_text = _confirmation_result_failure_text(result)
+                if failure_text:
+                    response_text = failure_text
+                elif confirmed:
                     response_text = (
                         f"confirmed {confirmation_label} ({target_pending.tool_name}): {status}"
                     )
@@ -10201,7 +10220,10 @@ class SessionImplMixin(HandlerMixinBase):
                         if checkpoint_id:
                             checkpoint_ids.append(checkpoint_id)
                         status = _confirmation_result_status_text(result, confirmed=confirmed)
-                        if confirmed:
+                        failure_text = _confirmation_result_failure_text(result)
+                        if failure_text:
+                            outcome_lines.append(failure_text)
+                        elif confirmed:
                             outcome_lines.append(
                                 f"confirmed {index + 1} ({pending.tool_name}): {status}"
                             )
@@ -11446,13 +11468,8 @@ class SessionImplMixin(HandlerMixinBase):
                     recommended_action="retry_request_or_review_model_route",
                 )
             )
-            fallback_response = (
-                (
-                    "I could not safely complete this request due to an internal planner "
-                    "validation error. Please retry."
-                )
-                if tainted_context
-                else "Assistant planner error (planner_output_invalid). Please retry your request."
+            fallback_response = render_user_facing_failure(
+                planner_output_failure(diagnostic=str(exc))
             )
             planner_result = PlannerResult(
                 output=PlannerOutput(actions=[], assistant_response=fallback_response),
@@ -14857,15 +14874,15 @@ class SessionImplMixin(HandlerMixinBase):
         response_text = planner_dispatch.planner_result.output.assistant_response
         initial_planner_response_text = response_text.strip()
         provider_response = planner_dispatch.planner_result.provider_response
-        trusted_local_fallback_notice = (
-            initial_planner_response_text
-            if (
-                provider_response is not None
-                and provider_response.trusted_origin == "local-fallback"
-                and initial_planner_response_text.startswith("[PLANNER FALLBACK:")
-            )
-            else ""
-        )
+        trusted_local_fallback_notice = ""
+        if provider_response is not None and provider_response.trusted_origin == "local-fallback":
+            provider_failure = getattr(provider_response, "failure", None)
+            if isinstance(provider_failure, UserFacingFailure):
+                trusted_local_fallback_notice = render_user_facing_failure(provider_failure)
+            elif initial_planner_response_text.startswith(
+                "[PLANNER FALLBACK: CONFIGURATION]"
+            ):
+                trusted_local_fallback_notice = initial_planner_response_text
         tool_output_summary = ""
         protected_tool_output_start: int | None = None
         protected_tool_output_end: int | None = None

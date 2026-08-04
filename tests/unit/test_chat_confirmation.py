@@ -1605,6 +1605,86 @@ async def test_discord_component_confirm_uses_supplied_decision_nonce(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_i4_discord_component_reports_accepted_approval_then_backend_failure(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="server-nonce",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "latest news"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        allowed_channel_principals=["alice"],
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    async def _fail_after_approval(params: dict[str, object]) -> dict[str, object]:
+        assert params["decision_nonce"] == "component-nonce"
+        pending.status = "failed"
+        pending.status_reason = "web_search_backend_unconfigured"
+        return {
+            "confirmed": False,
+            "confirmation_id": "c-1",
+            "status": "failed",
+            "status_reason": "web_search_backend_unconfigured",
+            "failure": {
+                "code": "web_search_backend_unconfigured",
+                "summary": (
+                    "Your approval was received, but web search couldn't run because it "
+                    "isn't set up."
+                ),
+                "retryable": False,
+                "safe_next_action": "Set up web search, then retry your request.",
+                "approval_outcome": "accepted",
+                "execution_outcome": "failed",
+                "partial_result": False,
+            },
+        }
+
+    harness.do_action_confirm = _fail_after_approval  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-1",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-1",
+            original_hash="0" * 64,
+        ),
+        channel_metadata={
+            "approval_interaction_type": "discord_component",
+            "approval_component_action": "confirm",
+            "approval_confirmation_id": "c-1",
+            "approval_decision_nonce": "component-nonce",
+        },
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert "Your approval was received" in response
+    assert "web search couldn't run because it isn't set up" in response
+    assert "Set up web search, then retry your request" in response
+    assert "confirmation failed" not in response.lower()
+    assert "web_search_backend_unconfigured" not in response
+
+
+@pytest.mark.asyncio
 async def test_discord_totp_modal_confirm_uses_supplied_decision_nonce(tmp_path) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(

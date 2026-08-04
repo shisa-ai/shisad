@@ -119,6 +119,7 @@ from shisad.core.config_file import (
     load_effective_config,
     render_config_template,
 )
+from shisad.core.failure_presentation import render_user_facing_failure
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
     load_private_key_from_path,
@@ -2635,6 +2636,8 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
 
 def _render_action_confirm_result(result: ActionConfirmResult) -> str:
     confirmation_id = sanitize_terminal_field(result.confirmation_id)
+    if result.failure is not None:
+        return f"Action {confirmation_id}\n{render_user_facing_failure(result.failure)}"
     if result.confirmed:
         status = sanitize_terminal_field(
             str(result.status or result.status_reason or result.reason or "").strip()

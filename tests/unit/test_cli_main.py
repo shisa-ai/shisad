@@ -5275,6 +5275,44 @@ def test_gh42_action_confirm_renderer_prefers_specific_failure_reason() -> None:
     )
 
 
+def test_i4_action_confirm_renderer_distinguishes_approval_from_execution_failure() -> None:
+    result = cli_main.ActionConfirmResult.model_validate(
+        {
+            "confirmed": False,
+            "confirmation_id": "c-1",
+            "status": "failed",
+            "status_reason": "web_search_backend_unconfigured",
+            "failure": {
+                "code": "web_search_backend_unconfigured",
+                "summary": (
+                    "Your approval was received, but web search couldn't run because it "
+                    "isn't set up."
+                ),
+                "retryable": False,
+                "safe_next_action": "Set up web search, then retry your request.",
+                "approval_outcome": "accepted",
+                "execution_outcome": "failed",
+                "partial_result": False,
+                "operator_diagnostics": "secret backend diagnostic",
+            },
+        }
+    )
+
+    rendered = cli_main._render_action_confirm_result(result)
+
+    assert rendered == (
+        "Action c-1\n"
+        "Your approval was received, but web search couldn't run because it isn't set up.\n\n"
+        "Set up web search, then retry your request."
+    )
+    assert "Confirmation failed" not in rendered
+    assert "web_search_backend_unconfigured" not in rendered
+    assert "secret backend diagnostic" not in rendered
+    raw = result.model_dump(mode="json")
+    assert raw["status_reason"] == "web_search_backend_unconfigured"
+    assert "operator_diagnostics" not in raw["failure"]
+
+
 def test_action_confirm_json_flag_preserves_machine_readable_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

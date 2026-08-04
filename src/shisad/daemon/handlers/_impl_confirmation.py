@@ -54,6 +54,7 @@ from shisad.core.events import (
     TwoFactorRevoked,
 )
 from shisad.core.evidence import ArtifactEndorsementState
+from shisad.core.failure_presentation import confirmed_execution_failure
 from shisad.core.pending_action import PendingActionRecord
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.schema import ToolRetryClass
@@ -3374,6 +3375,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "continuation_user_goal": str(getattr(pending, "continuation_user_goal", "")).strip(),
             "continuation_mode": str(getattr(pending, "continuation_mode", "")).strip(),
         }
+        if not success:
+            response["failure"] = confirmed_execution_failure(
+                code=terminal_reason,
+                execution_outcome="unknown" if outcome_unknown else "failed",
+                operator_diagnostics=execution_failure_reason or terminal_reason,
+            ).model_dump(mode="json")
         if task_cancel_reason == "max_runs_reached":
             response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "max_runs_reached"
         elif task_cancel_reason == "outcome_unknown":

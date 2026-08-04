@@ -2905,10 +2905,15 @@ async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconf
 
     response = await provider.complete([Message(role="user", content="hello")])
 
-    assert response.message.content.startswith(
-        "[PLANNER FALLBACK: ROUTE ERROR] Configured planner route failed."
+    assert response.message.content == (
+        "The model service is temporarily unavailable, so I couldn't complete this request.\n\n"
+        "Please try again in a few minutes."
     )
-    assert "shisad doctor check --component provider" in response.message.content
+    assert response.failure is not None
+    assert response.failure.retryable is True
+    assert response.failure.operator_diagnostics == "boom"
+    assert "operator_diagnostics" not in response.model_dump(mode="json")["failure"]
+    assert "shisad doctor check --component provider" not in response.message.content
     assert "No language model configured." not in response.message.content
 
 
@@ -2985,16 +2990,19 @@ async def test_gh38_routed_openai_provider_reports_provider_5xx_without_credenti
     response = await provider.complete([Message(role="user", content="hello")])
 
     content = response.message.content
-    assert content.startswith("[PLANNER FALLBACK: ROUTE ERROR]")
-    assert "HTTP 529" in content
-    assert "provider-side capacity issue" in content
+    assert content.startswith("The model service is temporarily unavailable")
+    assert "HTTP 529" not in content
+    assert "provider-side capacity issue" not in content
     assert "credentials" not in content.lower()
-    assert "shisad doctor check --component provider" in content
+    assert "shisad doctor check --component provider" not in content
+    assert response.failure is not None
+    assert response.failure.retryable is True
+    assert "Provider HTTP error 529" in response.failure.operator_diagnostics
 
 
 @pytest.mark.parametrize("status", [401, 403])
 @pytest.mark.asyncio
-async def test_gh38_routed_openai_provider_preserves_auth_guidance_for_auth_4xx(
+async def test_gh38_routed_openai_provider_reports_auth_4xx_without_credentials(
     monkeypatch: pytest.MonkeyPatch,
     status: int,
 ) -> None:
@@ -3020,10 +3028,14 @@ async def test_gh38_routed_openai_provider_preserves_auth_guidance_for_auth_4xx(
     response = await provider.complete([Message(role="user", content="hello")])
 
     content = response.message.content
-    assert f"HTTP {status}" in content
-    assert "credentials" in content.lower()
+    assert "configured model service needs attention" in content
+    assert f"HTTP {status}" not in content
+    assert "credentials" not in content.lower()
     assert "provider-side capacity" not in content
-    assert "shisad doctor check --component provider" in content
+    assert "shisad doctor check --component provider" not in content
+    assert response.failure is not None
+    assert response.failure.retryable is False
+    assert f"Provider HTTP error {status}" in response.failure.operator_diagnostics
 
 
 @pytest.mark.parametrize(
@@ -3058,11 +3070,14 @@ async def test_gh38_routed_openai_provider_reports_retryable_4xx_without_credent
     response = await provider.complete([Message(role="user", content="hello")])
 
     content = response.message.content
-    assert f"HTTP {status}" in content
+    assert f"HTTP {status}" not in content
     assert "temporarily unavailable" in content.lower()
-    assert "rate limit" in content.lower()
+    assert "rate limit" not in content.lower()
     assert "credentials" not in content.lower()
-    assert "shisad doctor check --component provider" in content
+    assert "shisad doctor check --component provider" not in content
+    assert response.failure is not None
+    assert response.failure.retryable is True
+    assert f"Provider HTTP error {status}" in response.failure.operator_diagnostics
 
 
 @pytest.mark.asyncio
@@ -3090,10 +3105,33 @@ async def test_gh38_routed_openai_provider_reports_provider_connection_error(
     response = await provider.complete([Message(role="user", content="hello")])
 
     content = response.message.content
-    assert content.startswith("[PLANNER FALLBACK: ROUTE ERROR]")
-    assert "Could not reach the provider" in content
+    assert content.startswith("The model service is temporarily unavailable")
+    assert "Could not reach the provider" not in content
     assert "credentials" not in content.lower()
-    assert "shisad doctor check --component provider" in content
+    assert "shisad doctor check --component provider" not in content
+    assert response.failure is not None
+    assert response.failure.retryable is True
+    assert "timed out" in response.failure.operator_diagnostics
+
+
+@pytest.mark.asyncio
+async def test_i4_route_failure_with_local_tool_marks_partial_result() -> None:
+    provider = LocalPlannerProvider()
+
+    response = await provider.complete(
+        [Message(role="user", content="run: echo hello")],
+        fallback_mode="route_error",
+        fallback_error=(
+            "Provider HTTP error 503 for https://planner.example.test/v1: unavailable"
+        ),
+    )
+
+    assert response.failure is not None
+    assert response.failure.partial_result is True
+    assert response.finish_reason == "tool_calls"
+    assert response.message.tool_calls
+    assert "only handle part of this request" in response.message.content
+    assert "HTTP 503" not in response.message.content
 
 
 @pytest.mark.asyncio

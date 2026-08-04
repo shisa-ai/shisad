@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from shisad.core.action_state import ActionLifecycleState
+from shisad.core.failure_presentation import UserFacingFailure
 from shisad.executors.sandbox import SandboxResult
 from shisad.memory.schema import MemoryEntryType
 
@@ -1991,6 +1992,7 @@ class ActionConfirmResult(BaseModel):
     approval_level: str | None = None
     approval_method: str | None = None
     tool_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    failure: UserFacingFailure | None = None
     persistence_status: Literal["healthy", "degraded"] = "healthy"
     persistence_reason: str = ""
     persistence_stage: str = ""

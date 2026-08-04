@@ -28,6 +28,7 @@ from shisad.core.action_state import (
 )
 from shisad.core.events import ToolRejected
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
+from shisad.core.failure_presentation import UserFacingFailure, planner_route_failure
 from shisad.core.plan_steps import PlanStepStore
 from shisad.core.planner import (
     ActionProposal,
@@ -4299,6 +4300,7 @@ def _finalize_execution_result(
     provider_response_model: str | None = None,
     provider_response_content: str | None = None,
     provider_response_trusted_origin: str = "",
+    provider_failure: UserFacingFailure | None = None,
     finalization_messages_sent: tuple[Message, ...] = (),
     rejected: int = 0,
     rejection_reasons_for_user: list[str] | None = None,
@@ -4353,6 +4355,7 @@ def _finalize_execution_result(
                     finish_reason="error",
                     usage={},
                     trusted_origin=provider_response_trusted_origin,
+                    failure=provider_failure,
                 )
                 if provider_response_model is not None
                 else None
@@ -8810,6 +8813,63 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
     assert "\n\n[PENDING CONFIRMATIONS]\n" in text
     assert "Action: shell.exec" in text
     assert "shisad action confirm c-1" in text
+
+
+@pytest.mark.asyncio
+async def test_i4_finalize_response_uses_typed_partial_route_failure_for_pending_action() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                "Action: shell.exec\n"
+                "Risk Level: HIGH\n"
+                "PARAMETERS:\n"
+                "  command: ['echo', 'hello']"
+            ),
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    raw_diagnostic = (
+        "[PLANNER FALLBACK: ROUTE ERROR] Configured planner route failed. "
+        "Provider HTTP error 400; check credentials and run "
+        "`shisad doctor check --component provider`."
+    )
+    failure = planner_route_failure(
+        diagnostic=raw_diagnostic,
+        partial_result=True,
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response=raw_diagnostic,
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+        provider_response_model="local-fallback",
+        provider_response_content=raw_diagnostic,
+        provider_response_trusted_origin="local-fallback",
+        provider_failure=failure,
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith(
+        "I could only handle part of this request because the configured model service "
+        "needs attention.\n\nCheck the model service setup, then try again."
+    )
+    assert "\n\n[PENDING CONFIRMATIONS]\n" in text
+    assert "Action: shell.exec" in text
+    assert "HTTP 400" not in text
+    assert "credentials" not in text.lower()
+    assert "doctor check" not in text
+    assert "PLANNER FALLBACK" not in text
 
 
 @pytest.mark.asyncio
