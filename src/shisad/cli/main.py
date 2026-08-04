@@ -2637,7 +2637,12 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
 def _render_action_confirm_result(result: ActionConfirmResult) -> str:
     confirmation_id = sanitize_terminal_field(result.confirmation_id)
     if result.failure is not None:
-        return f"Action {confirmation_id}\n{render_user_facing_failure(result.failure)}"
+        lines = [f"Action {confirmation_id}", render_user_facing_failure(result.failure)]
+        if result.checkpoint_id:
+            lines.append(
+                f"checkpoint={sanitize_terminal_field(result.checkpoint_id)}"
+            )
+        return "\n".join(lines)
     if result.confirmed:
         status = sanitize_terminal_field(
             str(result.status or result.status_reason or result.reason or "").strip()

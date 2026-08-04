@@ -3806,6 +3806,13 @@ def _pending_confirmation_text_after_prefixes(text: str) -> str:
         _, separator, pending_text = normalized.partition("\n\n")
         if separator:
             normalized = pending_text.lstrip()
+    header_offsets = [
+        offset + 2
+        for header in _PENDING_CONFIRMATIONS_HEADERS
+        if (offset := normalized.find(f"\n\n{header}")) >= 0
+    ]
+    if header_offsets:
+        normalized = normalized[min(header_offsets) :]
     return normalized
 
 
@@ -4736,9 +4743,8 @@ def _coerce_internal_tool_narration_response_text(
         return cleaned_response
     if not _response_exposes_structured_tool_syntax(response_text):
         return response_text
-    return (
-        "I could not produce a clean assistant response for that request because "
-        "the planner returned internal tool-call formatting. Please retry."
+    return render_user_facing_failure(
+        planner_output_failure(diagnostic="internal structured tool syntax")
     )
 
 
@@ -9933,7 +9939,11 @@ class SessionImplMixin(HandlerMixinBase):
 
         def _append_confirmed_tool_output_summary(text: str) -> str:
             summary = _summarize_tool_outputs_for_user_response(
-                confirmed_tool_outputs,
+                [
+                    item
+                    for item in confirmed_tool_outputs
+                    if bool(item.get("success", False))
+                ],
                 header="Confirmed action result",
                 include_page_title_metadata=True,
             )
@@ -10222,7 +10232,10 @@ class SessionImplMixin(HandlerMixinBase):
                         status = _confirmation_result_status_text(result, confirmed=confirmed)
                         failure_text = _confirmation_result_failure_text(result)
                         if failure_text:
-                            outcome_lines.append(failure_text)
+                            outcome_lines.append(
+                                f"action {index + 1} ({pending.tool_name}): "
+                                + " ".join(failure_text.split())
+                            )
                         elif confirmed:
                             outcome_lines.append(
                                 f"confirmed {index + 1} ({pending.tool_name}): {status}"

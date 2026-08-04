@@ -119,7 +119,7 @@ def execution_failure(
     *,
     code: str,
     approval_outcome: ApprovalOutcome = "not_applicable",
-    execution_outcome: Literal["failed", "unknown"] = "failed",
+    execution_outcome: Literal["succeeded", "failed", "unknown"] = "failed",
     operator_diagnostics: str = "",
 ) -> UserFacingFailure:
     """Map a finite execution result code to safe user semantics."""
@@ -127,7 +127,7 @@ def execution_failure(
     approved_prefix = "Your approval was received, but " if approval_outcome == "accepted" else ""
     if execution_outcome == "unknown":
         return UserFacingFailure(
-            code=code or "action_outcome_unknown",
+            code="action_outcome_unknown",
             summary=(
                 "Your approval was received, but I can't tell whether the action completed."
                 if approval_outcome == "accepted"
@@ -139,6 +139,21 @@ def execution_failure(
             ),
             approval_outcome=approval_outcome,
             execution_outcome="unknown",
+            operator_diagnostics=operator_diagnostics or code,
+        )
+
+    if code == "artifact_endorse_failed" and execution_outcome == "succeeded":
+        return UserFacingFailure(
+            code="action_followup_failed",
+            summary=(
+                "Your approval was received and the action ran, but follow-up processing "
+                "couldn't be completed."
+            ),
+            retryable=False,
+            safe_next_action="Review the result before retrying the action.",
+            approval_outcome=approval_outcome,
+            execution_outcome="succeeded",
+            partial_result=True,
             operator_diagnostics=operator_diagnostics or code,
         )
 
@@ -156,7 +171,7 @@ def execution_failure(
 
     subject = "the action" if approved_prefix else "The action"
     return UserFacingFailure(
-        code=code or "action_execution_failed",
+        code="action_execution_failed",
         summary=f"{approved_prefix}{subject} couldn't be completed.",
         retryable=False,
         safe_next_action="Review the action details or setup, then try again.",
@@ -169,7 +184,7 @@ def execution_failure(
 def confirmed_execution_failure(
     *,
     code: str,
-    execution_outcome: Literal["failed", "unknown"] = "failed",
+    execution_outcome: Literal["succeeded", "failed", "unknown"] = "failed",
     operator_diagnostics: str = "",
 ) -> UserFacingFailure:
     """Build a failure after valid user approval was accepted."""

@@ -2472,7 +2472,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 if state_view.lifecycle_state == "expired"
                 else f"already_{pending.status}"
             )
-            return {
+            response: dict[str, Any] = {
                 decision_field: False,
                 "confirmation_id": confirmation_id,
                 "reason": reason,
@@ -2480,6 +2480,25 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "status_reason": str(getattr(pending, "status_reason", "")),
                 "lifecycle_state": state_view.lifecycle_state,
             }
+            status_reason = str(getattr(pending, "status_reason", "")).strip()
+            if (
+                decision_field == "confirmed"
+                and pending.status in {"failed", "outcome_unknown"}
+                and getattr(pending, "confirmation_evidence", None) is not None
+                and bool(getattr(pending, "recovery_effect_invoked", False))
+            ):
+                response["failure"] = confirmed_execution_failure(
+                    code=status_reason,
+                    execution_outcome=(
+                        "unknown"
+                        if pending.status == "outcome_unknown"
+                        else "succeeded"
+                        if status_reason == "artifact_endorse_failed"
+                        else "failed"
+                    ),
+                    operator_diagnostics=status_reason,
+                ).model_dump(mode="json")
+            return response
         return self._expired_action_decision_response(
             pending,
             confirmation_id=confirmation_id,
@@ -3187,6 +3206,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise
         provider_operation_id = str(getattr(execution_result, "provider_operation_id", "")).strip()
         success = execution_result.success
+        action_execution_succeeded = success
         outcome_unknown = bool(getattr(execution_result, "outcome_unknown", False))
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
@@ -3378,7 +3398,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if not success:
             response["failure"] = confirmed_execution_failure(
                 code=terminal_reason,
-                execution_outcome="unknown" if outcome_unknown else "failed",
+                execution_outcome=(
+                    "unknown"
+                    if outcome_unknown
+                    else "succeeded"
+                    if promote_followup_reason and action_execution_succeeded
+                    else "failed"
+                ),
                 operator_diagnostics=execution_failure_reason or terminal_reason,
             ).model_dump(mode="json")
         if task_cancel_reason == "max_runs_reached":

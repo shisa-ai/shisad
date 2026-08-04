@@ -7454,6 +7454,7 @@ async def test_gh47_confirmation_preserves_unstructured_execution_error(
     assert result["confirmed"] is False
     assert result["status_reason"] == "tool_unavailable"
     assert result["status_reason"] != "planner_action_resolve"
+    assert result["failure"]["code"] == "action_execution_failed"
 
 
 @pytest.mark.asyncio
@@ -7515,6 +7516,35 @@ async def test_i4_confirmed_unknown_execution_outcome_does_not_mark_approval_fai
     assert result["failure"]["approval_outcome"] == "accepted"
     assert result["failure"]["execution_outcome"] == "unknown"
     assert result["failure"]["retryable"] is False
+    assert result["failure"]["code"] == "action_outcome_unknown"
+
+
+@pytest.mark.asyncio
+async def test_i4_terminal_confirmation_replay_preserves_semantic_failure(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(
+        tmp_path,
+        execute_success=False,
+        execution_error="web_search_backend_unconfigured",
+    )
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.search")
+    pending.arguments = {"query": "latest news"}
+    pending.approval_envelope = _software_approval_envelope(tool_name=pending.tool_name)
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    first_result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+    replay_result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert first_result["status"] == "failed"
+    assert replay_result["confirmed"] is False
+    assert replay_result["reason"] == "already_failed"
+    assert replay_result["failure"] == first_result["failure"]
+    assert "web_search_backend_unconfigured" not in replay_result["failure"]["summary"]
 
 
 @pytest.mark.asyncio
@@ -7563,6 +7593,18 @@ async def test_m4_endorsement_failure_rolls_back_promoted_transcript_entry(tmp_p
 
     assert result["confirmed"] is False
     assert result["status_reason"] == "artifact_endorse_failed"
+    assert result["failure"] == {
+        "code": "action_followup_failed",
+        "summary": (
+            "Your approval was received and the action ran, but follow-up processing "
+            "couldn't be completed."
+        ),
+        "retryable": False,
+        "safe_next_action": "Review the result before retrying the action.",
+        "approval_outcome": "accepted",
+        "execution_outcome": "succeeded",
+        "partial_result": True,
+    }
     assert harness._transcript_store.list_entries(SessionId("s-1")) == []
     endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
     assert endorsed is not None

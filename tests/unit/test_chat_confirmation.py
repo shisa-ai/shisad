@@ -1647,6 +1647,18 @@ async def test_i4_discord_component_reports_accepted_approval_then_backend_failu
                 "execution_outcome": "failed",
                 "partial_result": False,
             },
+            "tool_outputs": [
+                {
+                    "tool_name": "web.search",
+                    "success": False,
+                    "payload": {
+                        "ok": False,
+                        "query": "latest news",
+                        "error": "web_search_backend_unconfigured",
+                    },
+                    "taint_labels": [],
+                }
+            ],
         }
 
     harness.do_action_confirm = _fail_after_approval  # type: ignore[method-assign]
@@ -1682,6 +1694,100 @@ async def test_i4_discord_component_reports_accepted_approval_then_backend_failu
     assert "Set up web search, then retry your request" in response
     assert "confirmation failed" not in response.lower()
     assert "web_search_backend_unconfigured" not in response
+
+
+@pytest.mark.asyncio
+async def test_i4_batch_confirmation_keeps_failed_action_identity_and_safe_sibling_results(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending_specs = (
+        ("c-1", "fs.read", {"path": "README.md"}),
+        ("c-2", "web.search", {"query": "latest news"}),
+        ("c-3", "note.create", {"content": "remember this"}),
+    )
+    for confirmation_id, tool_name, arguments in pending_specs:
+        pending = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{confirmation_id}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName(tool_name),
+            arguments=arguments,
+            reason="manual",
+            capabilities={Capability.FILE_READ},
+            created_at=datetime.now(UTC),
+        )
+        harness._pending_actions[confirmation_id] = pending
+
+    async def _confirm_batch_item(params: dict[str, object]) -> dict[str, object]:
+        confirmation_id = str(params["confirmation_id"])
+        pending = harness._pending_actions[confirmation_id]
+        if confirmation_id == "c-2":
+            pending.status = "failed"
+            pending.status_reason = "web_search_backend_unconfigured"
+            return {
+                "confirmed": False,
+                "status": "failed",
+                "status_reason": "web_search_backend_unconfigured",
+                "failure": {
+                    "code": "web_search_backend_unconfigured",
+                    "summary": (
+                        "Your approval was received, but web search couldn't run because "
+                        "it isn't set up."
+                    ),
+                    "retryable": False,
+                    "safe_next_action": "Set up web search, then retry your request.",
+                    "approval_outcome": "accepted",
+                    "execution_outcome": "failed",
+                    "partial_result": False,
+                },
+                "tool_outputs": [
+                    {
+                        "tool_name": "web.search",
+                        "success": False,
+                        "payload": {"error": "web_search_backend_unconfigured"},
+                    }
+                ],
+            }
+        pending.status = "approved"
+        pending.status_reason = "approved"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [
+                {
+                    "tool_name": str(pending.tool_name),
+                    "success": True,
+                    "payload": {"ok": True},
+                }
+            ],
+        }
+
+    harness.do_action_confirm = _confirm_batch_item  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="yes to all",
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert "confirmed 1 (fs.read): approved" in response
+    assert "action 2 (web.search): Your approval was received" in response
+    assert "confirmed 3 (note.create): approved" in response
+    assert "web_search_backend_unconfigured" not in response
+    assert "Confirmed action result" in response
 
 
 @pytest.mark.asyncio

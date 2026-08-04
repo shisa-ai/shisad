@@ -97,6 +97,7 @@ def test_i4_unknown_confirmed_outcome_does_not_invite_unsafe_retry() -> None:
     )
 
     assert failure.retryable is False
+    assert failure.code == "action_outcome_unknown"
     assert failure.approval_outcome == "accepted"
     assert failure.execution_outcome == "unknown"
     assert render_user_facing_failure(failure) == (
@@ -114,12 +115,28 @@ def test_i4_generic_confirmed_failure_remains_safe_and_structural() -> None:
 
     assert failure.approval_outcome == "accepted"
     assert failure.execution_outcome == "failed"
+    assert failure.code == "action_execution_failed"
     assert render_user_facing_failure(failure) == (
         "Your approval was received, but the action couldn't be completed.\n\n"
         "Review the action details or setup, then try again."
     )
     assert "private adapter exception" not in render_user_facing_failure(failure)
     assert "operator_diagnostics" not in failure.model_dump(mode="json")
+
+
+def test_i4_post_execution_followup_failure_preserves_successful_execution() -> None:
+    failure = confirmed_execution_failure(
+        code="artifact_endorse_failed",
+        execution_outcome="succeeded",
+    )
+
+    assert failure.code == "action_followup_failed"
+    assert failure.execution_outcome == "succeeded"
+    assert failure.partial_result is True
+    assert render_user_facing_failure(failure) == (
+        "Your approval was received and the action ran, but follow-up processing "
+        "couldn't be completed.\n\nReview the result before retrying the action."
+    )
 
 
 def test_i4_renderer_supports_a_single_safe_summary() -> None:

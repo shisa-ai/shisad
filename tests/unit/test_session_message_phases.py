@@ -8818,6 +8818,11 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
 @pytest.mark.asyncio
 async def test_i4_finalize_response_uses_typed_partial_route_failure_for_pending_action() -> None:
     harness = _FinalizeEvidenceHarness()
+    transcript_entries: list[SimpleNamespace] = []
+    harness._transcript_store = SimpleNamespace(
+        append=lambda _sid, **kwargs: transcript_entries.append(SimpleNamespace(**kwargs)),
+        list_entries=lambda _sid: list(transcript_entries),
+    )
     harness._pending_actions = {
         "c-1": SimpleNamespace(
             confirmation_id="c-1",
@@ -8870,6 +8875,25 @@ async def test_i4_finalize_response_uses_typed_partial_route_failure_for_pending
     assert "credentials" not in text.lower()
     assert "doctor check" not in text
     assert "PLANNER FALLBACK" not in text
+    assert transcript_entries[-1].metadata.get("pending_confirmation_bridge") is True
+
+
+def test_i4_internal_tool_syntax_uses_generic_planner_failure() -> None:
+    response = impl_session._coerce_internal_tool_narration_response_text(
+        response_text="<tool_call>{\"name\": \"web.search\"}</tool_call>",
+        user_text="Summarize the current status.",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == (
+        "I couldn't complete this request because the response couldn't be processed.\n\n"
+        "Please try again."
+    )
+    assert "planner" not in response.lower()
+    assert "tool-call" not in response.lower()
 
 
 @pytest.mark.asyncio

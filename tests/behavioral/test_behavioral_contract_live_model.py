@@ -25,6 +25,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.failure_presentation import planner_route_failure
 from shisad.daemon.runner import run_daemon
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
@@ -168,11 +169,27 @@ async def _create_session(client: ControlClient) -> str:
 
 def _assert_not_local_fallback(text: str) -> None:
     normalized = text.strip()
-    if normalized.startswith("Safe summary:") or normalized.startswith("[PLANNER FALLBACK:"):
+    route_summaries = tuple(
+        planner_route_failure(diagnostic=diagnostic, partial_result=partial).summary
+        for diagnostic in ("Provider request failed", "Provider HTTP error 400")
+        for partial in (False, True)
+    )
+    if normalized.startswith(("Safe summary:", "[PLANNER FALLBACK:", *route_summaries)):
         raise AssertionError(
             "Planner appears to be using LocalPlannerProvider (fallback). "
             "Configure a live planner route and re-run."
         )
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "partial"),
+    [("Provider request failed", False), ("Provider HTTP error 400", True)],
+)
+def test_i4_live_guard_rejects_safe_route_failure(diagnostic: str, partial: bool) -> None:
+    failure = planner_route_failure(diagnostic=diagnostic, partial_result=partial)
+
+    with pytest.raises(AssertionError, match="LocalPlannerProvider"):
+        _assert_not_local_fallback(failure.summary)
 
 
 async def _call_live_turn_until_tools(

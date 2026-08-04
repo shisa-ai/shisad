@@ -5282,6 +5282,7 @@ def test_i4_action_confirm_renderer_distinguishes_approval_from_execution_failur
             "confirmation_id": "c-1",
             "status": "failed",
             "status_reason": "web_search_backend_unconfigured",
+            "checkpoint_id": "checkpoint-1",
             "failure": {
                 "code": "web_search_backend_unconfigured",
                 "summary": (
@@ -5303,7 +5304,8 @@ def test_i4_action_confirm_renderer_distinguishes_approval_from_execution_failur
     assert rendered == (
         "Action c-1\n"
         "Your approval was received, but web search couldn't run because it isn't set up.\n\n"
-        "Set up web search, then retry your request."
+        "Set up web search, then retry your request.\n"
+        "checkpoint=checkpoint-1"
     )
     assert "Confirmation failed" not in rendered
     assert "web_search_backend_unconfigured" not in rendered
