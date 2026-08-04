@@ -938,12 +938,27 @@ async def _stub_complete_unmarked(
         if "write" in goal_lower and "file" in goal_lower
         else None
     )
+    i5b_multi_confirmation_urls = (
+        re.findall(r"https?://[^\s]+", goal)
+        if "i5b multi confirmation delivery journey" in goal_lower
+        else []
+    )
+    i5b_multi_confirmation_calls = [
+        _tool_call(
+            "web.fetch",
+            {"url": url, "max_bytes": 65536},
+            call_id=f"t-i5b-pending-{index}",
+        )
+        for index, url in enumerate(i5b_multi_confirmation_urls, start=1)
+    ]
     unknown_probe_call = (
         _tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")
         if "unknown tool probe" in goal_lower
         else None
     )
-    if gh84_mixed_blocked_shell_call is not None:
+    if i5b_multi_confirmation_calls:
+        tool_calls.extend(i5b_multi_confirmation_calls)
+    elif gh84_mixed_blocked_shell_call is not None:
         tool_calls.extend(
             [
                 _tool_call(
@@ -9558,6 +9573,55 @@ async def test_i5a_discord_confirmation_is_compact_and_truthful_about_controls(
     assert str(pending_ids[0]) in response
     assert "Lifecycle:" not in response
     assert "PARAMETERS:" not in response
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_multi_confirmation_returns_one_safe_part_per_action(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(
+        contract_harness.client,
+        channel="discord",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "channel": "discord",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": (
+                "i5b multi confirmation delivery journey: fetch "
+                f"{contract_harness.web_search_backend_url}/one "
+                f"{contract_harness.web_search_backend_url}/two "
+                f"{contract_harness.web_search_backend_url}/three"
+            ),
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 3
+    pending_ids = reply.get("pending_confirmation_ids")
+    delivery = reply.get("delivery")
+    assert isinstance(delivery, dict)
+    parts = delivery.get("response_action_confirmation_parts")
+    assert isinstance(pending_ids, list)
+    assert isinstance(parts, list)
+    assert len(pending_ids) == len(parts) == 3
+    assert [part.get("confirmation_id") for part in parts] == pending_ids
+    for index, part in enumerate(parts, start=1):
+        content = str(part.get("content", ""))
+        assert f"/{('one', 'two', 'three')[index - 1]}" in content
+        assert all(
+            f"/{('one', 'two', 'three')[other - 1]}" not in content
+            for other in range(1, 4)
+            if other != index
+        )
+        assert "consensus:flag_vote:" not in content
+        assert "action_monitor:" not in content
 
 
 @pytest.mark.asyncio

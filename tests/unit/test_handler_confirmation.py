@@ -13,6 +13,7 @@ import pytest
 
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.delivery import CapabilityDeliveryIntent
+from shisad.channels.discord_components import parse_discord_approval_custom_id
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingEntry,
@@ -4410,6 +4411,58 @@ def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
     assert metadata["discord_component_confirmation_ids"] == [f"c-{index}" for index in range(12)]
     assert metadata["discord_approval_confirmation_ids"] == [f"c-{index}" for index in range(12)]
     assert metadata["discord_reject_confirmation_ids"] == [f"c-{index}" for index in range(12)]
+
+
+def test_i5b_discord_delivery_metadata_builds_one_part_per_visible_action() -> None:
+    harness = object.__new__(HandlerImplementation)
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending_actions: dict[str, PendingAction] = {}
+    pending_ids = [f"c-{index}" for index in range(13)]
+    for confirmation_id in pending_ids:
+        pending = _pending_action(nonce=f"nonce-{confirmation_id}")
+        pending.confirmation_id = confirmation_id
+        pending.decision_nonce = f"nonce-{confirmation_id}"
+        pending.delivery_target = delivery_target
+        pending.allowed_channel_principals = ["alice"]
+        pending_actions[confirmation_id] = pending
+    harness._pending_actions = pending_actions
+    harness._pending_selected_backend_available = lambda _pending: True
+
+    metadata = HandlerImplementation._discord_pending_delivery_metadata(
+        harness,
+        {
+            "pending_confirmation_ids": pending_ids,
+            "response_action_confirmation_ids": pending_ids,
+            "delivery": {
+                "discord_result_content": "Completed action result: prior action finished.",
+                "response_action_confirmation_parts": [
+                    {
+                        "confirmation_id": confirmation_id,
+                        "content": f"Review: {confirmation_id}",
+                        "fallback_content": f"ID: {confirmation_id}",
+                    }
+                    for confirmation_id in pending_ids
+                ],
+            },
+        },
+        principal_id="alice",
+        workspace_id="w-1",
+        delivery_target=delivery_target,
+    )
+
+    message_parts = metadata["discord_message_parts"]
+    assert message_parts[0] == {
+        "content": "Completed action result: prior action finished.",
+        "fallback_content": "Completed action result: prior action finished.",
+        "discord_components": [],
+    }
+    assert [part["confirmation_id"] for part in message_parts[1:]] == pending_ids
+    for confirmation_id, part in zip(pending_ids, message_parts[1:], strict=True):
+        custom_ids = [str(item["custom_id"]) for item in part["discord_components"]]
+        parsed = [parse_discord_approval_custom_id(custom_id) for custom_id in custom_ids]
+        assert len(custom_ids) == 2
+        assert all(item is not None for item in parsed)
+        assert all(item.confirmation_id == confirmation_id for item in parsed if item)
 
 
 def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability() -> None:

@@ -251,6 +251,8 @@ class _DiscordInteractionAckStub:
         self._store = store
         self.acknowledged: list[tuple[object, str]] = []
         self.discarded: list[object] = []
+        self.finalized: list[tuple[object, bool]] = []
+        self.fail_finalize = False
 
     async def acknowledge_reserved_interaction(
         self,
@@ -264,6 +266,17 @@ class _DiscordInteractionAckStub:
 
     def discard_pending_interaction(self, identity: object) -> None:
         self.discarded.append(identity)
+
+    async def finalize_reserved_interaction(
+        self,
+        identity: object,
+        *,
+        remove_controls: bool,
+    ) -> bool:
+        self.finalized.append((identity, remove_controls))
+        if self.fail_finalize:
+            raise OSError("interaction edit unavailable")
+        return remove_controls
 
 
 def _internal_reserved_payload(
@@ -350,6 +363,72 @@ async def test_f7a_discord_missing_code_feedback_is_reserved_ack_only(
     assert harness.calls == []
     assert first["delivery"]["attempted"] is True
     assert repeated["delivery"]["reason"] == "inbound_replay_blocked"
+    assert harness._services.channel_state_store.state_for(identity) == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_reserved_interaction_removes_only_terminal_controls(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    live = _gh92_pending_action(confirmation_id="c-live")
+    harness._pending_actions = {live.confirmation_id: live}
+    discord = _DiscordInteractionAckStub(harness._services.channel_state_store)
+    harness._discord_channel = discord
+
+    live_payload, live_identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-live",
+        extra_metadata={
+            "approval_interaction_type": "approval_component",
+            "approval_confirmation_id": live.confirmation_id,
+        },
+    )
+    terminal_payload, terminal_identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-terminal",
+        extra_metadata={
+            "approval_interaction_type": "approval_component",
+            "approval_confirmation_id": "c-terminal",
+        },
+    )
+
+    await harness.do_channel_ingest_reserved(live_payload)
+    await harness.do_channel_ingest_reserved(terminal_payload)
+
+    assert discord.finalized == [
+        (live_identity, False),
+        (terminal_identity, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_interaction_edit_failure_does_not_block_terminal_result(
+    tmp_path: Path,
+) -> None:
+    harness = _ReservedIngressHarness(tmp_path=tmp_path)
+    payload, identity = _internal_reserved_payload(
+        harness,
+        provider="discord",
+        event_kind="interaction",
+        event_id="interaction-edit-failure",
+        extra_metadata={
+            "approval_interaction_type": "approval_component",
+            "approval_confirmation_id": "c-terminal",
+        },
+    )
+    discord = _DiscordInteractionAckStub(harness._services.channel_state_store)
+    discord.fail_finalize = True
+    harness._discord_channel = discord
+
+    result = await harness.do_channel_ingest_reserved(payload)
+
+    assert result["response"] == "handled"
+    assert discord.finalized == [(identity, True)]
     assert harness._services.channel_state_store.state_for(identity) == "terminal"
 
 
@@ -751,6 +830,63 @@ async def test_gh92_unrelated_reply_never_carries_stale_action_controls(
     metadata = harness._delivery.calls[-1]["metadata"]
     assert isinstance(metadata, dict)
     assert metadata["discord_component_confirmation_ids"] == [pending.confirmation_id]
+
+
+@pytest.mark.asyncio
+async def test_i5b_channel_ingest_prepares_result_and_per_action_message_parts(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    harness._discord_channel = _DiscordChannelStub()
+    pending_ids = ["c-1", "c-2"]
+    pending_actions: dict[str, PendingAction] = {}
+    for confirmation_id in pending_ids:
+        pending = _gh92_pending_action(confirmation_id=confirmation_id)
+        pending.decision_nonce = f"nonce-{confirmation_id}"
+        pending_actions[confirmation_id] = pending
+    harness._pending_actions = pending_actions
+
+    async def _response(payload: dict[str, Any]) -> dict[str, Any]:
+        harness.message_payloads.append(dict(payload))
+        return {
+            "session_id": str(payload["session_id"]),
+            "response": "combined transcript response",
+            "pending_confirmation_ids": pending_ids,
+            "response_action_confirmation_ids": pending_ids,
+            "delivery": {
+                "discord_result_content": "Completed action result: c-0 finished.",
+                "response_action_confirmation_parts": [
+                    {
+                        "confirmation_id": confirmation_id,
+                        "content": f"Review: {confirmation_id}",
+                        "fallback_content": f"ID: {confirmation_id}",
+                    }
+                    for confirmation_id in pending_ids
+                ],
+            },
+        }
+
+    harness.do_session_message = _response  # type: ignore[method-assign]
+    await harness.do_channel_ingest(
+        {
+            "session_id": "sess-channel",
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-i5b-parts",
+                "content": "approve one and show what remains",
+            },
+        }
+    )
+
+    metadata = harness._delivery.calls[-1]["metadata"]
+    assert isinstance(metadata, dict)
+    parts = metadata["discord_message_parts"]
+    assert [part.get("confirmation_id", "") for part in parts] == ["", *pending_ids]
+    assert parts[0]["discord_components"] == []
+    assert [len(part["discord_components"]) for part in parts[1:]] == [2, 2]
 
 
 @pytest.mark.asyncio

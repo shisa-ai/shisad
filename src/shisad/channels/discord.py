@@ -48,6 +48,41 @@ _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
     OSError,
 )
 _DISCORD_DEFAULT_APPROVAL_ACK = "Approval response received."
+_DISCORD_MESSAGE_CONTENT_LIMIT = 2000
+
+
+def _chunk_discord_message(
+    message: str,
+    *,
+    max_length: int = _DISCORD_MESSAGE_CONTENT_LIMIT,
+) -> tuple[str, ...]:
+    """Split Discord content at stable boundaries without changing its bytes."""
+
+    if max_length <= 0:
+        raise ValueError("Discord message limit must be positive")
+    remaining = str(message)
+    chunks: list[str] = []
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+        window_end = max_length + 1
+        paragraph = remaining.rfind("\n\n", 0, window_end)
+        line = remaining.rfind("\n", 0, window_end)
+        whitespace = remaining.rfind(" ", 0, window_end)
+        if paragraph >= 0:
+            split_at = paragraph + 2
+        elif line >= 0:
+            split_at = line + 1
+        elif whitespace >= 0:
+            split_at = whitespace + 1
+        else:
+            split_at = max_length
+        if split_at <= 0 or split_at > max_length:
+            split_at = max_length
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return tuple(chunks)
 
 
 @dataclass(slots=True)
@@ -495,11 +530,25 @@ class DiscordChannel(InMemoryChannel):
                     if channel_obj is not None:
                         send = getattr(channel_obj, "send", None)
                         if callable(send):
-                            kwargs: dict[str, Any] = {}
-                            view = self._view_from_delivery_metadata(metadata or {})
-                            if view is not None:
-                                kwargs["view"] = view
-                            await send(message, **kwargs)
+                            message_parts = self._delivery_message_parts(
+                                message,
+                                metadata or {},
+                            )
+                            for native_content, fallback_content, part_metadata in message_parts:
+                                components = part_metadata.get("discord_components")
+                                has_components = isinstance(components, list) and bool(components)
+                                view = self._view_from_delivery_metadata(part_metadata)
+                                content = (
+                                    native_content
+                                    if view is not None or not has_components
+                                    else fallback_content
+                                )
+                                chunks = _chunk_discord_message(content)
+                                for index, chunk in enumerate(chunks):
+                                    kwargs: dict[str, Any] = {}
+                                    if view is not None and index == len(chunks) - 1:
+                                        kwargs["view"] = view
+                                    await send(chunk, **kwargs)
                             return
             raise RuntimeError("Discord could not resolve the delivery target")
         await super().send(message, target=target, metadata=metadata)
@@ -574,13 +623,28 @@ class DiscordChannel(InMemoryChannel):
     ) -> bool:
         """Acknowledge one transient Discord interaction after durable reservation."""
 
-        interaction = self._pending_interactions.pop(identity.key, None)
+        interaction = self._pending_interactions.get(identity.key)
         if interaction is None:
             return False
         return await self._acknowledge_approval_interaction(
             interaction,
             message=message or _DISCORD_DEFAULT_APPROVAL_ACK,
         )
+
+    async def finalize_reserved_interaction(
+        self,
+        identity: ReplayIdentity,
+        *,
+        remove_controls: bool,
+    ) -> bool:
+        """Release one transient interaction and remove only terminal controls."""
+
+        interaction = self._pending_interactions.pop(identity.key, None)
+        if interaction is None or not remove_controls:
+            return False
+        message = getattr(interaction, "message", None)
+        edit = getattr(message, "edit", None) if message is not None else None
+        return await _call_discord_response(edit, view=None)
 
     def discard_pending_interaction(self, identity: ReplayIdentity) -> None:
         """Discard a transient provider handle for an already-blocked replay."""
@@ -775,7 +839,43 @@ class DiscordChannel(InMemoryChannel):
             added_button = True
         return view if added_button else None
 
+    @staticmethod
+    def _delivery_message_parts(
+        message: str,
+        metadata: Mapping[str, Any],
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        raw_parts = metadata.get("discord_message_parts")
+        if not isinstance(raw_parts, list) or not raw_parts:
+            return [(message, message, dict(metadata))]
+        parts: list[tuple[str, str, dict[str, Any]]] = []
+        for raw_part in raw_parts:
+            if not isinstance(raw_part, Mapping):
+                return [(message, message, {})]
+            content = str(raw_part.get("content") or "")
+            fallback_content = str(raw_part.get("fallback_content") or content)
+            components = raw_part.get("discord_components", [])
+            if not content or not fallback_content or not isinstance(components, list):
+                return [(message, message, {})]
+            parts.append(
+                (
+                    content,
+                    fallback_content,
+                    {"discord_components": list(components)},
+                )
+            )
+        return parts
+
     def can_build_view_from_metadata(self, metadata: Mapping[str, Any]) -> bool:
+        raw_parts = metadata.get("discord_message_parts")
+        if isinstance(raw_parts, list) and raw_parts:
+            component_parts = [
+                part
+                for part in raw_parts
+                if isinstance(part, Mapping) and bool(part.get("discord_components"))
+            ]
+            return bool(component_parts) and all(
+                self._view_from_delivery_metadata(part) is not None for part in component_parts
+            )
         return self._view_from_delivery_metadata(metadata) is not None
 
     @staticmethod

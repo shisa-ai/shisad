@@ -1009,6 +1009,358 @@ async def test_discord_send_falls_back_to_text_when_component_view_is_invalid(
     assert sent == [("pending", {})]
 
 
+def test_i5b_discord_chunking_is_bounded_and_lossless() -> None:
+    from shisad.channels import discord as discord_module
+
+    message = ("a" * 1998) + "\n\n" + ("b" * 1990) + "\n" + ("c" * 1999) + " " + ("d" * 2001)
+
+    chunks = discord_module._chunk_discord_message(message)
+
+    assert "".join(chunks) == message
+    assert all(chunks)
+    assert all(len(chunk) <= 2000 for chunk in chunks)
+    assert chunks[0].endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_send_uses_one_owning_view_per_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+
+        def add_item(self, item: object) -> None:
+            self.items.append(item)
+
+    class _FakeButton:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    def _components(confirmation_id: str) -> list[dict[str, str]]:
+        return [
+            {
+                "type": "button",
+                "label": "Approve",
+                "style": "success",
+                "custom_id": discord_approval_custom_id(
+                    action="confirm",
+                    confirmation_id=confirmation_id,
+                    decision_nonce=f"nonce-{confirmation_id}",
+                ),
+            },
+            {
+                "type": "button",
+                "label": "Reject",
+                "style": "danger",
+                "custom_id": discord_approval_custom_id(
+                    action="reject",
+                    confirmation_id=confirmation_id,
+                    decision_nonce=f"nonce-{confirmation_id}",
+                ),
+            },
+        ]
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+
+    await channel.send(
+        "combined transcript response",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_message_parts": [
+                {
+                    "content": "Completed action result: first action finished.",
+                    "fallback_content": "Completed action result: first action finished.",
+                    "discord_components": [],
+                },
+                {
+                    "confirmation_id": "c-1",
+                    "content": "Review: first pending action",
+                    "fallback_content": "ID: c-1\nReview: first pending action",
+                    "discord_components": _components("c-1"),
+                },
+                {
+                    "confirmation_id": "c-2",
+                    "content": "Review: second pending action",
+                    "fallback_content": "ID: c-2\nReview: second pending action",
+                    "discord_components": _components("c-2"),
+                },
+            ]
+        },
+    )
+
+    assert [message for message, _kwargs in sent] == [
+        "Completed action result: first action finished.",
+        "Review: first pending action",
+        "Review: second pending action",
+    ]
+    assert "view" not in sent[0][1]
+    first_view = sent[1][1]["view"]
+    second_view = sent[2][1]["view"]
+    assert isinstance(first_view, _FakeView)
+    assert isinstance(second_view, _FakeView)
+    first_custom_ids = [str(item.kwargs["custom_id"]) for item in first_view.items]
+    second_custom_ids = [str(item.kwargs["custom_id"]) for item in second_view.items]
+    assert all("c-1" in custom_id for custom_id in first_custom_ids)
+    assert all("c-2" in custom_id for custom_id in second_custom_ids)
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_send_selects_degraded_part_when_view_build_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _InvalidView:
+        def add_item(self, _item: object) -> None:
+            raise ValueError("invalid view")
+
+    class _FakeButton:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_InvalidView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2),
+        ),
+    )
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+    await channel.send(
+        "combined",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_message_parts": [
+                {
+                    "confirmation_id": "c-1",
+                    "content": "Use the attached controls.",
+                    "fallback_content": "ID: c-1\nReply with `confirm c-1`.",
+                    "discord_components": [
+                        {
+                            "type": "button",
+                            "label": "Approve",
+                            "style": "success",
+                            "custom_id": discord_approval_custom_id(
+                                action="confirm",
+                                confirmation_id="c-1",
+                                decision_nonce="nonce-1",
+                            ),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert sent == [("ID: c-1\nReply with `confirm c-1`.", {})]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_invalid_component_row_selects_degraded_part() -> None:
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+
+    await channel.send(
+        "combined",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_message_parts": [
+                {
+                    "confirmation_id": "c-invalid",
+                    "content": "Use the attached controls.",
+                    "fallback_content": "ID: c-invalid\nUse the CLI approval route.",
+                    "discord_components": ["invalid-component-row"],
+                }
+            ]
+        },
+    )
+
+    assert sent == [("ID: c-invalid\nUse the CLI approval route.", {})]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_long_confirmation_attaches_view_only_to_final_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+
+        def add_item(self, item: object) -> None:
+            self.items.append(item)
+
+    class _FakeButton:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1),
+        ),
+    )
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    content = ("Review: " + ("x" * 1995)) + "\n" + ("warning " * 300)
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+
+    await channel.send(
+        "combined",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_message_parts": [
+                {
+                    "confirmation_id": "c-long",
+                    "content": content,
+                    "fallback_content": f"ID: c-long\n{content}",
+                    "discord_components": [
+                        {
+                            "type": "button",
+                            "label": "Approve",
+                            "style": "success",
+                            "custom_id": discord_approval_custom_id(
+                                action="confirm",
+                                confirmation_id="c-long",
+                                decision_nonce="nonce-long",
+                            ),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert "".join(message for message, _kwargs in sent) == content
+    assert len(sent) > 1
+    assert all(len(message) <= 2000 for message, _kwargs in sent)
+    assert all("view" not in kwargs for _message, kwargs in sent[:-1])
+    assert isinstance(sent[-1][1].get("view"), _FakeView)
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_partial_multi_send_failure_propagates() -> None:
+    sent: list[str] = []
+
+    class _FailingChannel:
+        async def send(self, message: str, **_kwargs: object) -> None:
+            sent.append(message)
+            if len(sent) == 2:
+                raise RuntimeError("provider send failed")
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FailingChannel())
+
+    with pytest.raises(RuntimeError, match="provider send failed"):
+        await channel.send(
+            "combined",
+            target=DeliveryTarget(channel="discord", recipient="123"),
+            metadata={
+                "discord_message_parts": [
+                    {
+                        "content": "first result chunk",
+                        "fallback_content": "first result chunk",
+                        "discord_components": [],
+                    },
+                    {
+                        "content": "second result chunk",
+                        "fallback_content": "second result chunk",
+                        "discord_components": [],
+                    },
+                    {
+                        "content": "must not send",
+                        "fallback_content": "must not send",
+                        "discord_components": [],
+                    },
+                ]
+            },
+        )
+
+    assert sent == ["first result chunk", "second result chunk"]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_interaction_controls_finalize_only_when_terminal() -> None:
+    acknowledgements: list[str] = []
+    edits: list[dict[str, object]] = []
+
+    class _FakeResponse:
+        async def send_message(self, message: str, **_kwargs: object) -> None:
+            acknowledgements.append(message)
+
+    class _FakeMessage:
+        async def edit(self, **kwargs: object) -> None:
+            edits.append(dict(kwargs))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    identity = channel_state.ReplayIdentity(
+        provider="discord",
+        account_id="bot-1",
+        scope_id='["guild-1","channel-1"]',
+        event_kind="interaction",
+        event_id="interaction-1",
+    )
+    channel._pending_interactions[identity.key] = SimpleNamespace(
+        response=_FakeResponse(),
+        message=_FakeMessage(),
+    )
+
+    assert await channel.acknowledge_reserved_interaction(identity) is True
+    assert identity.key in channel._pending_interactions
+    assert await channel.finalize_reserved_interaction(identity, remove_controls=False) is False
+    assert edits == []
+
+    channel._pending_interactions[identity.key] = SimpleNamespace(
+        response=_FakeResponse(),
+        message=_FakeMessage(),
+    )
+    assert await channel.finalize_reserved_interaction(identity, remove_controls=True) is True
+    assert edits == [{"view": None}]
+    assert identity.key not in channel._pending_interactions
+    assert acknowledgements == ["Approval response received."]
+
+
 def test_discord_component_view_requires_added_button(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

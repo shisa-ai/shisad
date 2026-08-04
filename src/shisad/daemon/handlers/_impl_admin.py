@@ -1551,9 +1551,7 @@ class AdminImplMixin(HandlerMixinBase):
                 return dict(raw)
             return {
                 "status": "unavailable" if enabled else "disabled",
-                "reason_code": (
-                    "channel.startup_status_unavailable" if enabled else ""
-                ),
+                "reason_code": ("channel.startup_status_unavailable" if enabled else ""),
                 "timeout_seconds": self._config.channel_startup_timeout_seconds,
             }
 
@@ -2229,6 +2227,11 @@ class AdminImplMixin(HandlerMixinBase):
         supports_totp_modal: bool = True,
     ) -> dict[str, Any]:
         raw_ids = response.get("response_action_confirmation_ids")
+        response_delivery = response.get("delivery")
+        delivery_payload = response_delivery if isinstance(response_delivery, Mapping) else {}
+        raw_parts = delivery_payload.get("response_action_confirmation_parts")
+        structured_part_rows = raw_parts if isinstance(raw_parts, list) else []
+        structured_parts = bool(structured_part_rows)
         normalized_principal_id = str(principal_id or "").strip()
         normalized_workspace_id = str(workspace_id or "").strip()
         if (
@@ -2243,15 +2246,17 @@ class AdminImplMixin(HandlerMixinBase):
         approval_confirmation_ids: list[str] = []
         totp_modal_confirmation_ids: list[str] = []
         reject_confirmation_ids: list[str] = []
+        components_by_confirmation_id: dict[str, list[dict[str, Any]]] = {}
 
         def _append_components_for_pending(
             items: list[dict[str, Any]],
             *,
             confirmation_id: str,
         ) -> bool:
-            if len(components) + len(items) > DISCORD_VIEW_COMPONENT_LIMIT:
+            if not structured_parts and len(components) + len(items) > DISCORD_VIEW_COMPONENT_LIMIT:
                 return False
             components.extend(items)
+            components_by_confirmation_id[confirmation_id] = list(items)
             attached_confirmation_ids.append(confirmation_id)
             for item in items:
                 custom_id = str(item.get("custom_id") or "")
@@ -2354,13 +2359,55 @@ class AdminImplMixin(HandlerMixinBase):
                 break
         if not components:
             return {}
-        return {
+        metadata = {
             "discord_components": components,
             "discord_component_confirmation_ids": attached_confirmation_ids,
             "discord_approval_confirmation_ids": approval_confirmation_ids,
             "discord_totp_modal_confirmation_ids": totp_modal_confirmation_ids,
             "discord_reject_confirmation_ids": reject_confirmation_ids,
         }
+        if not structured_parts:
+            return metadata
+
+        message_parts: list[dict[str, Any]] = []
+        result_content = str(delivery_payload.get("discord_result_content") or "").strip()
+        if result_content:
+            message_parts.append(
+                {
+                    "content": result_content,
+                    "fallback_content": result_content,
+                    "discord_components": [],
+                }
+            )
+        seen_confirmation_ids: set[str] = set()
+        for raw_part in structured_part_rows:
+            if not isinstance(raw_part, Mapping):
+                continue
+            confirmation_id = str(raw_part.get("confirmation_id") or "").strip()
+            content = str(raw_part.get("content") or "")
+            fallback_content = str(raw_part.get("fallback_content") or content)
+            owning_components = components_by_confirmation_id.get(confirmation_id)
+            if (
+                not confirmation_id
+                or confirmation_id in seen_confirmation_ids
+                or not content
+                or not fallback_content
+                or not owning_components
+            ):
+                continue
+            seen_confirmation_ids.add(confirmation_id)
+            message_parts.append(
+                {
+                    "confirmation_id": confirmation_id,
+                    "content": content,
+                    "fallback_content": fallback_content,
+                    "discord_components": list(owning_components),
+                }
+            )
+        if not any(str(part.get("confirmation_id") or "").strip() for part in message_parts):
+            return {}
+        metadata["discord_message_parts"] = message_parts
+        return metadata
 
     async def do_channel_ingest_reserved(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """Reserve one trusted ingress identity before invoking channel effects."""
@@ -2392,11 +2439,14 @@ class AdminImplMixin(HandlerMixinBase):
             )
         except asyncio.CancelledError:
             self._mark_channel_replay_uncertain(state_store, identity)
+            self._discard_pending_channel_interaction(params, identity)
             raise
         except Exception:
             self._mark_channel_replay_uncertain(state_store, identity)
+            self._discard_pending_channel_interaction(params, identity)
             raise
 
+        await self._finalize_reserved_channel_interaction(params, identity)
         state_store.mark_terminal(identity)
         return result
 
@@ -2437,6 +2487,33 @@ class AdminImplMixin(HandlerMixinBase):
             },
             "channel_policy": {"reason": "approval_interaction_ack_only"},
         }
+
+    async def _finalize_reserved_channel_interaction(
+        self,
+        params: Mapping[str, Any],
+        identity: ReplayIdentity,
+    ) -> None:
+        metadata = self._discord_approval_interaction_metadata(params, identity)
+        if metadata is None:
+            return
+        discord_channel = getattr(self, "_discord_channel", None)
+        finalize = getattr(discord_channel, "finalize_reserved_interaction", None)
+        if not callable(finalize):
+            return
+        confirmation_id = str(metadata.get("approval_confirmation_id") or "").strip()
+        pending = getattr(self, "_pending_actions", {}).get(confirmation_id)
+        remove_controls = bool(
+            confirmation_id
+            and not _metadata_bool(metadata, "approval_ack_only")
+            and (pending is None or not pending_action_is_live_pending(pending))
+        )
+        try:
+            await finalize(identity, remove_controls=remove_controls)
+        except Exception:
+            logger.warning(
+                "Discord interaction controls could not be finalized",
+                exc_info=True,
+            )
 
     def _discard_pending_channel_interaction(
         self,
@@ -2953,11 +3030,14 @@ class AdminImplMixin(HandlerMixinBase):
                     ),
                 )
                 can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
-                if (
+                structured_parts = candidate_metadata.get("discord_message_parts")
+                structured_delivery = bool(isinstance(structured_parts, list) and structured_parts)
+                legacy_delivery = bool(
                     candidate_metadata
                     and callable(can_build_view)
-                    and bool(can_build_view(candidate_metadata))
-                ):
+                    and can_build_view(candidate_metadata)
+                )
+                if structured_delivery or legacy_delivery:
                     delivery_metadata = candidate_metadata
         prepared = self._delivery.prepare(
             delivery_reservation.reservation_id,

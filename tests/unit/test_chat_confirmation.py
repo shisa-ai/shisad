@@ -689,6 +689,52 @@ def test_i5a_discord_empty_preview_uses_bounded_tool_label() -> None:
     assert "Risk Level: UNKNOWN" in response
 
 
+def test_i5b_discord_pending_parts_keep_action_reviews_separate() -> None:
+    from shisad.daemon.handlers import _impl_session as session_module
+
+    pending_actions: dict[str, PendingAction] = {}
+    pending_ids = ["c-first", "c-second"]
+    for index, confirmation_id in enumerate(pending_ids, start=1):
+        pending_actions[confirmation_id] = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{index}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("fs.write"),
+            arguments={"path": f"file-{index}.txt"},
+            reason="manual",
+            capabilities={Capability.FILE_WRITE},
+            created_at=datetime.now(UTC),
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                f"Review: Write file: file-{index}.txt\n"
+                "Action: fs.write\n"
+                "Risk Level: HIGH\n"
+                "PARAMETERS:\n"
+                f"path: file-{index}.txt"
+            ),
+        )
+
+    parts = session_module._daemon_pending_confirmation_response_parts(
+        pending_confirmation_ids=pending_ids,
+        pending_actions=pending_actions,
+        pending_index_by_id={"c-first": 1, "c-second": 2},
+        delivery_channel="discord",
+        discord_component_confirmation_ids=set(pending_ids),
+        discord_approval_confirmation_ids=set(pending_ids),
+        discord_reject_confirmation_ids=set(pending_ids),
+    )
+
+    assert [part["confirmation_id"] for part in parts] == pending_ids
+    assert "file-1.txt" in parts[0]["content"]
+    assert "file-2.txt" not in parts[0]["content"]
+    assert "file-2.txt" in parts[1]["content"]
+    assert "file-1.txt" not in parts[1]["content"]
+    assert "Review all pending:" not in parts[0]["content"]
+    assert "Review all pending:" not in parts[1]["content"]
+
+
 def test_daemon_pending_confirmation_response_uses_recovery_code_cli_fallback() -> None:
     pending = PendingAction(
         confirmation_id="c-recovery",
@@ -1658,6 +1704,87 @@ async def test_discord_component_confirm_uses_supplied_decision_nonce(tmp_path) 
             "principal_id": "alice",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_confirm_separates_result_from_remaining_action_parts(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending_ids = ["c-first", "c-second", "c-third"]
+    for index, confirmation_id in enumerate(pending_ids, start=1):
+        harness._pending_actions[confirmation_id] = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{index}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": f"https://example.test/{index}"},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC) + timedelta(microseconds=index),
+            delivery_target=delivery_target,
+            allowed_channel_principals=["alice"],
+            selected_backend_id="software.default",
+            selected_backend_method="software",
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                f"Review: Fetch https://example.test/{index}\n"
+                "Action: web.fetch\n"
+                "Risk Level: MEDIUM"
+            ),
+        )
+    harness._pending_to_dict = HandlerImplementation._pending_to_dict  # type: ignore[attr-defined]
+    harness._pending_selected_backend_available = lambda _pending: True  # type: ignore[attr-defined]
+    harness._discord_pending_delivery_metadata = (  # type: ignore[attr-defined]
+        HandlerImplementation._discord_pending_delivery_metadata.__get__(harness)
+    )
+    harness._discord_channel = SimpleNamespace(  # type: ignore[attr-defined]
+        supports_components=True,
+        supports_totp_modal=False,
+        can_build_view_from_metadata=lambda metadata: bool(metadata.get("discord_components")),
+    )
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=delivery_target,
+        content="confirm c-first",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-first",
+            original_hash="0" * 64,
+        ),
+        channel_metadata={
+            "approval_interaction_type": "discord_component",
+            "approval_component_action": "confirm",
+            "approval_confirmation_id": "c-first",
+            "approval_decision_nonce": "nonce-1",
+        },
+    )
+
+    assert result is not None
+    assert result["response_action_confirmation_ids"] == ["c-second", "c-third"]
+    delivery = result.get("delivery")
+    assert isinstance(delivery, dict)
+    assert "confirmed 1 (web.fetch): approved" in str(delivery.get("discord_result_content", ""))
+    parts = delivery.get("response_action_confirmation_parts")
+    assert isinstance(parts, list)
+    assert [part.get("confirmation_id") for part in parts] == ["c-second", "c-third"]
+    assert "example.test/2" in str(parts[0].get("content", ""))
+    assert "example.test/3" not in str(parts[0].get("content", ""))
+    assert "example.test/3" in str(parts[1].get("content", ""))
+    assert "example.test/2" not in str(parts[1].get("content", ""))
+    assert "consensus:" not in json.dumps(delivery)
+    assert "action_monitor:" not in json.dumps(delivery)
 
 
 @pytest.mark.asyncio

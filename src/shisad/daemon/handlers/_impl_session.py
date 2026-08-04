@@ -676,6 +676,17 @@ class SessionMessageExecutionResult:
 
 
 @dataclass(slots=True)
+class DiscordPendingDeliveryPresentation:
+    parts: list[dict[str, str]] = field(default_factory=list)
+    component_confirmation_ids: set[str] = field(default_factory=set)
+    approval_confirmation_ids: set[str] = field(default_factory=set)
+    reject_confirmation_ids: set[str] = field(default_factory=set)
+    totp_modal_confirmation_ids: set[str] = field(default_factory=set)
+    components_available: bool = False
+    totp_modal_available: bool = False
+
+
+@dataclass(slots=True)
 class PlannerActionResolveResult:
     executed: int = 0
     rejected: int = 0
@@ -4491,9 +4502,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
     fs_read_summary = _fs_read_succeeded_summary(sections)
     if "web_search_backend_unconfigured" in search_errors:
         return _with_local_file_evidence(
-            render_user_facing_failure(
-                execution_failure(code="web_search_backend_unconfigured")
-            ),
+            render_user_facing_failure(execution_failure(code="web_search_backend_unconfigured")),
             fs_read_summary,
         )
     setup_hint = (
@@ -5546,7 +5555,7 @@ def _pending_action_lifetime_metadata(pending: Any) -> str:
     return " ".join(fields)
 
 
-def _discord_pending_confirmation_response_text(
+def _discord_pending_confirmation_sections(
     *,
     indexed_confirmation_ids: Sequence[str],
     pending_actions: Mapping[str, Any] | None,
@@ -5562,12 +5571,8 @@ def _discord_pending_confirmation_response_text(
     discord_reject_confirmation_ids: set[str] | None = None,
     discord_totp_modal_confirmation_ids: set[str] | None = None,
     discord_totp_modal_available: bool = True,
-) -> str:
-    lines = [
-        "**Pending confirmations**",
-        "",
-        "Queued for your approval.",
-    ]
+) -> tuple[list[dict[str, Any]], bool]:
+    sections: list[dict[str, Any]] = []
     all_native_controls_complete = bool(indexed_confirmation_ids)
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index
@@ -5612,17 +5617,8 @@ def _discord_pending_confirmation_response_text(
             reject_available=reject_available,
             totp_modal_available=totp_modal_available,
         )
-        all_native_controls_complete = (
-            all_native_controls_complete and native_controls_complete
-        )
-        if index > 1:
-            lines.extend(["", "---"])
-        lines.extend(
-            [
-                "",
-                f"### {pending_number}. {_markdown_code_span(tool_label)}",
-            ]
-        )
+        all_native_controls_complete = all_native_controls_complete and native_controls_complete
+        lines = [f"### {pending_number}. {_markdown_code_span(tool_label)}"]
         if not native_controls_complete:
             lines.append(f"ID: {_markdown_code_span(confirmation_id)}")
 
@@ -5663,9 +5659,143 @@ def _discord_pending_confirmation_response_text(
             lines.extend(["", "**Warnings:**"])
             lines.extend(f"- {warning}" for warning in warning_lines)
         lines.extend(guidance_lines)
+        sections.append(
+            {
+                "confirmation_id": confirmation_id,
+                "pending_number": pending_number,
+                "content": "\n".join(lines).strip(),
+                "native_controls_complete": native_controls_complete,
+            }
+        )
+    return sections, all_native_controls_complete
+
+
+def _discord_pending_confirmation_response_text(
+    *,
+    indexed_confirmation_ids: Sequence[str],
+    pending_actions: Mapping[str, Any] | None,
+    pending_index_by_id: Mapping[str, int] | None,
+    pending_public_preview_by_id: Mapping[str, str] | None,
+    totp_guidance_ids: set[str],
+    single_totp_confirmation_id: str,
+    allow_chat_approval: bool,
+    pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+    discord_components_available: bool = True,
+    discord_component_confirmation_ids: set[str] | None = None,
+    discord_approval_confirmation_ids: set[str] | None = None,
+    discord_reject_confirmation_ids: set[str] | None = None,
+    discord_totp_modal_confirmation_ids: set[str] | None = None,
+    discord_totp_modal_available: bool = True,
+) -> str:
+    sections, all_native_controls_complete = _discord_pending_confirmation_sections(
+        indexed_confirmation_ids=indexed_confirmation_ids,
+        pending_actions=pending_actions,
+        pending_index_by_id=pending_index_by_id,
+        pending_public_preview_by_id=pending_public_preview_by_id,
+        totp_guidance_ids=totp_guidance_ids,
+        single_totp_confirmation_id=single_totp_confirmation_id,
+        allow_chat_approval=allow_chat_approval,
+        pending_channel_capability_by_id=pending_channel_capability_by_id,
+        discord_components_available=discord_components_available,
+        discord_component_confirmation_ids=discord_component_confirmation_ids,
+        discord_approval_confirmation_ids=discord_approval_confirmation_ids,
+        discord_reject_confirmation_ids=discord_reject_confirmation_ids,
+        discord_totp_modal_confirmation_ids=discord_totp_modal_confirmation_ids,
+        discord_totp_modal_available=discord_totp_modal_available,
+    )
+    lines = ["**Pending confirmations**", "", "Queued for your approval."]
+    for index, section in enumerate(sections):
+        if index:
+            lines.extend(["", "---"])
+        lines.extend(["", str(section["content"])])
     if not all_native_controls_complete:
         lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
     return "\n".join(lines).strip()
+
+
+def _daemon_pending_confirmation_response_parts(
+    *,
+    pending_confirmation_ids: Sequence[str],
+    pending_actions: Mapping[str, Any] | None,
+    pending_index_by_id: Mapping[str, int] | None = None,
+    pending_public_preview_by_id: Mapping[str, str] | None = None,
+    binding_pending_rows: Sequence[Any] | None = None,
+    totp_guidance_confirmation_ids: Sequence[str] | None = None,
+    allow_chat_approval: bool = True,
+    delivery_channel: str = "",
+    pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+    discord_components_available: bool = True,
+    discord_component_confirmation_ids: set[str] | None = None,
+    discord_approval_confirmation_ids: set[str] | None = None,
+    discord_reject_confirmation_ids: set[str] | None = None,
+    discord_totp_modal_confirmation_ids: set[str] | None = None,
+    discord_totp_modal_available: bool = True,
+) -> list[dict[str, str]]:
+    if str(delivery_channel).strip().lower() != "discord":
+        return []
+    indexed_confirmation_ids = [
+        str(confirmation_id).strip()
+        for confirmation_id in pending_confirmation_ids
+        if str(confirmation_id).strip()
+    ]
+    totp_guidance_ids = {
+        str(confirmation_id).strip()
+        for confirmation_id in (
+            pending_confirmation_ids
+            if totp_guidance_confirmation_ids is None
+            else totp_guidance_confirmation_ids
+        )
+        if str(confirmation_id).strip()
+    }
+    binding_rows = list(binding_pending_rows or ())
+    all_binding_totp_rows = _totp_pending_rows(binding_rows)
+    binding_totp_rows = [
+        row
+        for row in all_binding_totp_rows
+        if str(getattr(row, "confirmation_id", "")).strip() in totp_guidance_ids
+    ]
+    single_totp_confirmation_id = (
+        str(getattr(binding_totp_rows[0], "confirmation_id", "")).strip()
+        if len(all_binding_totp_rows) == 1 and len(binding_totp_rows) == 1
+        else ""
+    )
+    sections, _all_native = _discord_pending_confirmation_sections(
+        indexed_confirmation_ids=indexed_confirmation_ids,
+        pending_actions=pending_actions,
+        pending_index_by_id=pending_index_by_id,
+        pending_public_preview_by_id=pending_public_preview_by_id,
+        totp_guidance_ids=totp_guidance_ids,
+        single_totp_confirmation_id=single_totp_confirmation_id,
+        allow_chat_approval=allow_chat_approval,
+        pending_channel_capability_by_id=pending_channel_capability_by_id,
+        discord_components_available=discord_components_available,
+        discord_component_confirmation_ids=discord_component_confirmation_ids,
+        discord_approval_confirmation_ids=discord_approval_confirmation_ids,
+        discord_reject_confirmation_ids=discord_reject_confirmation_ids,
+        discord_totp_modal_confirmation_ids=discord_totp_modal_confirmation_ids,
+        discord_totp_modal_available=discord_totp_modal_available,
+    )
+    total = len(sections)
+    parts: list[dict[str, str]] = []
+    for section in sections:
+        pending_number = int(section["pending_number"])
+        heading = (
+            "**Pending confirmation**"
+            if total == 1
+            else f"**Pending confirmation {pending_number} of {total}**"
+        )
+        content = f"{heading}\n\nQueued for your approval.\n\n{section['content']}"
+        if not bool(section["native_controls_complete"]):
+            content = (
+                f"{content}\n\nReview all pending: {_markdown_code_span('shisad action list')}"
+            )
+        parts.append(
+            {
+                "confirmation_id": str(section["confirmation_id"]),
+                "content": content,
+            }
+        )
+    return parts
 
 
 def _daemon_pending_confirmation_response_text(
@@ -9180,6 +9310,159 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities[confirmation_id] = capability
         return capabilities
 
+    def _pending_public_presentation_by_id(
+        self,
+        pending_rows: Sequence[Any],
+    ) -> tuple[dict[str, str], dict[str, Mapping[str, Any]]]:
+        previews: dict[str, str] = {}
+        capabilities: dict[str, Mapping[str, Any]] = {}
+        pending_to_dict = getattr(self, "_pending_to_dict", None)
+        selected_backend_available_for_pending = getattr(
+            self,
+            "_pending_selected_backend_available",
+            None,
+        )
+        for pending in pending_rows:
+            confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+            if not confirmation_id:
+                continue
+            public_pending: Mapping[str, Any] = {}
+            if callable(pending_to_dict):
+                selected_backend_available = None
+                if callable(selected_backend_available_for_pending):
+                    try:
+                        selected_backend_available = bool(
+                            selected_backend_available_for_pending(pending)
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        selected_backend_available = False
+                candidate = pending_to_dict(
+                    pending,
+                    public=True,
+                    selected_backend_available=selected_backend_available,
+                )
+                if isinstance(candidate, Mapping):
+                    public_pending = candidate
+            previews[confirmation_id] = str(
+                public_pending.get("safe_preview")
+                or getattr(pending, "safe_preview", "")
+                or getattr(pending, "reason", "")
+                or ""
+            ).strip()
+            channel_capability = public_pending.get("channel_capability")
+            if isinstance(channel_capability, Mapping):
+                capabilities[confirmation_id] = channel_capability
+        return previews, capabilities
+
+    def _discord_pending_delivery_presentation(
+        self,
+        *,
+        confirmation_ids: Sequence[str],
+        pending_rows: Sequence[Any],
+        pending_index_by_id: Mapping[str, int],
+        pending_public_preview_by_id: Mapping[str, str],
+        pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]],
+        principal_id: str,
+        workspace_id: str,
+        delivery_target: DeliveryTarget | None,
+    ) -> DiscordPendingDeliveryPresentation:
+        presentation = DiscordPendingDeliveryPresentation()
+        discord_channel = getattr(self, "_discord_channel", None)
+        supports_components = bool(getattr(discord_channel, "supports_components", False))
+        supports_totp_modal = bool(getattr(discord_channel, "supports_totp_modal", False))
+        build_delivery_metadata = getattr(self, "_discord_pending_delivery_metadata", None)
+        can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
+        if (
+            supports_components
+            and delivery_target is not None
+            and callable(build_delivery_metadata)
+            and callable(can_build_view)
+        ):
+            for confirmation_id in confirmation_ids:
+                candidate_metadata = build_delivery_metadata(
+                    {
+                        "pending_confirmation_ids": [confirmation_id],
+                        "response_action_confirmation_ids": [confirmation_id],
+                    },
+                    principal_id=principal_id,
+                    workspace_id=workspace_id,
+                    delivery_target=delivery_target,
+                    supports_totp_modal=supports_totp_modal,
+                )
+                if not candidate_metadata or not bool(can_build_view(candidate_metadata)):
+                    continue
+                presentation.component_confirmation_ids.update(
+                    str(item).strip()
+                    for item in candidate_metadata.get("discord_component_confirmation_ids", [])
+                    if str(item).strip()
+                )
+                presentation.approval_confirmation_ids.update(
+                    str(item).strip()
+                    for item in candidate_metadata.get("discord_approval_confirmation_ids", [])
+                    if str(item).strip()
+                )
+                presentation.reject_confirmation_ids.update(
+                    str(item).strip()
+                    for item in candidate_metadata.get("discord_reject_confirmation_ids", [])
+                    if str(item).strip()
+                )
+                presentation.totp_modal_confirmation_ids.update(
+                    str(item).strip()
+                    for item in candidate_metadata.get("discord_totp_modal_confirmation_ids", [])
+                    if str(item).strip()
+                )
+        presentation.components_available = bool(presentation.component_confirmation_ids)
+        presentation.totp_modal_available = (
+            supports_totp_modal and presentation.components_available
+        )
+        native_parts = _daemon_pending_confirmation_response_parts(
+            pending_confirmation_ids=confirmation_ids,
+            pending_actions=getattr(self, "_pending_actions", {}),
+            pending_index_by_id=pending_index_by_id,
+            pending_public_preview_by_id=pending_public_preview_by_id,
+            binding_pending_rows=pending_rows,
+            totp_guidance_confirmation_ids=confirmation_ids,
+            allow_chat_approval=False,
+            delivery_channel="discord",
+            pending_channel_capability_by_id=pending_channel_capability_by_id,
+            discord_components_available=presentation.components_available,
+            discord_component_confirmation_ids=presentation.component_confirmation_ids,
+            discord_approval_confirmation_ids=presentation.approval_confirmation_ids,
+            discord_reject_confirmation_ids=presentation.reject_confirmation_ids,
+            discord_totp_modal_confirmation_ids=(presentation.totp_modal_confirmation_ids),
+            discord_totp_modal_available=presentation.totp_modal_available,
+        )
+        fallback_parts = _daemon_pending_confirmation_response_parts(
+            pending_confirmation_ids=confirmation_ids,
+            pending_actions=getattr(self, "_pending_actions", {}),
+            pending_index_by_id=pending_index_by_id,
+            pending_public_preview_by_id=pending_public_preview_by_id,
+            binding_pending_rows=pending_rows,
+            totp_guidance_confirmation_ids=confirmation_ids,
+            allow_chat_approval=False,
+            delivery_channel="discord",
+            pending_channel_capability_by_id=pending_channel_capability_by_id,
+            discord_components_available=False,
+            discord_component_confirmation_ids=set(),
+            discord_approval_confirmation_ids=set(),
+            discord_reject_confirmation_ids=set(),
+            discord_totp_modal_confirmation_ids=set(),
+            discord_totp_modal_available=False,
+        )
+        fallback_by_id = {part["confirmation_id"]: part["content"] for part in fallback_parts}
+        presentation.parts = [
+            {
+                "confirmation_id": part["confirmation_id"],
+                "content": part["content"],
+                "fallback_content": fallback_by_id.get(
+                    part["confirmation_id"],
+                    part["content"],
+                ),
+            }
+            for part in native_parts
+        ]
+        return presentation
+
     @staticmethod
     def _chat_pending_confirmation_summary(
         *,
@@ -9771,6 +10054,60 @@ class SessionImplMixin(HandlerMixinBase):
                     and confirmation_id in visible_result_ids
                 )
             )
+            discord_action_parts: list[dict[str, str]] = []
+            discord_result_content = ""
+            if (
+                channel == "discord"
+                and returned_response_action_confirmation_ids
+                and not public_sensitive_taints
+                and not output_result.blocked
+            ):
+                action_id_set = set(returned_response_action_confirmation_ids)
+                action_rows = [
+                    pending
+                    for pending in visible_pending_rows
+                    if str(getattr(pending, "confirmation_id", "")).strip() in action_id_set
+                ]
+                action_index_by_id = {
+                    confirmation_id: index
+                    for index, confirmation_id in enumerate(
+                        returned_response_action_confirmation_ids,
+                        start=1,
+                    )
+                }
+                (
+                    pending_public_preview_by_id,
+                    pending_channel_capability_by_id,
+                ) = self._pending_public_presentation_by_id(action_rows)
+                presentation = self._discord_pending_delivery_presentation(
+                    confirmation_ids=returned_response_action_confirmation_ids,
+                    pending_rows=action_rows,
+                    pending_index_by_id=action_index_by_id,
+                    pending_public_preview_by_id=pending_public_preview_by_id,
+                    pending_channel_capability_by_id=(pending_channel_capability_by_id),
+                    principal_id=str(user_id),
+                    workspace_id=str(workspace_id),
+                    delivery_target=delivery_target or stored_delivery_target,
+                )
+                discord_action_parts = presentation.parts
+                pending_summary = self._chat_pending_confirmation_summary(
+                    pending_rows=action_rows,
+                    tainted_session=tainted_session,
+                    allow_chat_approval=not is_internal_ingress,
+                    typed_channel_approval=is_internal_ingress,
+                    pending_channel_capability_by_id=(pending_channel_capability_by_id),
+                ).strip()
+                normalized_response = response_text.strip()
+                pending_suffix = f"\n\n{pending_summary}"
+                if normalized_response == pending_summary:
+                    discord_result_content = ""
+                elif normalized_response.endswith(pending_suffix):
+                    discord_result_content = normalized_response[: -len(pending_suffix)].strip()
+                else:
+                    discord_result_content = (
+                        _mixed_pending_confirmation_result_portion(normalized_response)
+                        or normalized_response
+                    )
             normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
@@ -9828,6 +10165,10 @@ class SessionImplMixin(HandlerMixinBase):
                 "cleanroom_block_reasons": [],
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
                 "response_action_confirmation_ids": (returned_response_action_confirmation_ids),
+                "delivery": {
+                    "response_action_confirmation_parts": discord_action_parts,
+                    "discord_result_content": discord_result_content,
+                },
                 "output_policy": _output_policy_response_payload(output_result),
                 "planner_error": "",
                 "tool_outputs": returned_tool_outputs,
@@ -9991,11 +10332,7 @@ class SessionImplMixin(HandlerMixinBase):
 
         def _append_confirmed_tool_output_summary(text: str) -> str:
             summary = _summarize_tool_outputs_for_user_response(
-                [
-                    item
-                    for item in confirmed_tool_outputs
-                    if bool(item.get("success", False))
-                ],
+                [item for item in confirmed_tool_outputs if bool(item.get("success", False))],
                 header="Confirmed action result",
                 include_page_title_metadata=True,
             )
@@ -14944,9 +15281,7 @@ class SessionImplMixin(HandlerMixinBase):
             provider_failure = getattr(provider_response, "failure", None)
             if isinstance(provider_failure, UserFacingFailure):
                 trusted_local_fallback_notice = render_user_facing_failure(provider_failure)
-            elif initial_planner_response_text.startswith(
-                "[PLANNER FALLBACK: CONFIGURATION]"
-            ):
+            elif initial_planner_response_text.startswith("[PLANNER FALLBACK: CONFIGURATION]"):
                 trusted_local_fallback_notice = initial_planner_response_text
         tool_output_summary = ""
         protected_tool_output_start: int | None = None
@@ -14997,6 +15332,8 @@ class SessionImplMixin(HandlerMixinBase):
         pending_sibling_result_content = ""
         system_generated_pending_confirmation_response = False
         response_action_confirmation_ids: list[str] = []
+        response_action_confirmation_parts: list[dict[str, str]] = []
+        discord_result_content = ""
         if execution.pending_confirmation_ids:
             fallback_notice = trusted_local_fallback_notice
             pending_rows = self._pending_confirmations_for_binding(
@@ -15030,106 +15367,38 @@ class SessionImplMixin(HandlerMixinBase):
             discord_approval_confirmation_ids: set[str] | None = None
             discord_reject_confirmation_ids: set[str] | None = None
             discord_totp_modal_confirmation_ids: set[str] | None = None
-            if validated.channel == "discord":
-                discord_components_available = False
-                discord_totp_modal_available = False
-                discord_component_confirmation_ids = set()
-                discord_approval_confirmation_ids = set()
-                discord_reject_confirmation_ids = set()
-                discord_totp_modal_confirmation_ids = set()
-                discord_channel = getattr(self, "_discord_channel", None)
-                supports_components = bool(getattr(discord_channel, "supports_components", False))
-                supports_totp_modal = bool(getattr(discord_channel, "supports_totp_modal", False))
-                build_delivery_metadata = getattr(self, "_discord_pending_delivery_metadata", None)
-                can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
-                if (
-                    supports_components
-                    and callable(build_delivery_metadata)
-                    and callable(can_build_view)
-                ):
-                    candidate_metadata = build_delivery_metadata(
-                        {
-                            "pending_confirmation_ids": visible_pending_confirmation_ids,
-                            "response_action_confirmation_ids": (visible_pending_confirmation_ids),
-                        },
-                        principal_id=str(validated.user_id),
-                        workspace_id=str(validated.workspace_id),
-                        delivery_target=(
-                            validated.delivery_target
-                            or _stored_delivery_target_from_session(validated.session)
-                        ),
-                        supports_totp_modal=supports_totp_modal,
-                    )
-                    discord_components_available = bool(candidate_metadata) and bool(
-                        can_build_view(candidate_metadata)
-                    )
-                    discord_totp_modal_available = (
-                        supports_totp_modal and discord_components_available
-                    )
-                    if discord_components_available:
-                        discord_component_confirmation_ids = {
-                            str(item).strip()
-                            for item in candidate_metadata.get(
-                                "discord_component_confirmation_ids", []
-                            )
-                            if str(item).strip()
-                        }
-                        discord_approval_confirmation_ids = {
-                            str(item).strip()
-                            for item in candidate_metadata.get(
-                                "discord_approval_confirmation_ids", []
-                            )
-                            if str(item).strip()
-                        }
-                        discord_reject_confirmation_ids = {
-                            str(item).strip()
-                            for item in candidate_metadata.get(
-                                "discord_reject_confirmation_ids", []
-                            )
-                            if str(item).strip()
-                        }
-                        discord_totp_modal_confirmation_ids = {
-                            str(item).strip()
-                            for item in candidate_metadata.get(
-                                "discord_totp_modal_confirmation_ids", []
-                            )
-                            if str(item).strip()
-                        }
             pending_index_by_id = {
                 str(getattr(pending, "confirmation_id", "")).strip(): index
                 for index, pending in enumerate(visible_pending_rows, start=1)
                 if str(getattr(pending, "confirmation_id", "")).strip()
             }
-            pending_public_preview_by_id: dict[str, str] = {}
-            pending_channel_capability_by_id: dict[str, Mapping[str, Any]] = {}
-            pending_to_dict = self._pending_to_dict
-            selected_backend_available_for_pending = getattr(
-                self, "_pending_selected_backend_available", None
-            )
-            for pending in visible_pending_rows:
-                confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
-                if not confirmation_id:
-                    continue
-                selected_backend_available = None
-                if callable(selected_backend_available_for_pending):
-                    try:
-                        selected_backend_available = bool(
-                            selected_backend_available_for_pending(pending)
-                        )
-                    except (AttributeError, TypeError, ValueError):
-                        selected_backend_available = False
-                public_pending = pending_to_dict(
-                    pending,
-                    public=True,
-                    selected_backend_available=selected_backend_available,
+            (
+                pending_public_preview_by_id,
+                pending_channel_capability_by_id,
+            ) = self._pending_public_presentation_by_id(visible_pending_rows)
+            discord_presentation = None
+            if validated.channel == "discord":
+                discord_presentation = self._discord_pending_delivery_presentation(
+                    confirmation_ids=visible_pending_confirmation_ids,
+                    pending_rows=visible_pending_rows,
+                    pending_index_by_id=pending_index_by_id,
+                    pending_public_preview_by_id=pending_public_preview_by_id,
+                    pending_channel_capability_by_id=pending_channel_capability_by_id,
+                    principal_id=str(validated.user_id),
+                    workspace_id=str(validated.workspace_id),
+                    delivery_target=(
+                        validated.delivery_target
+                        or _stored_delivery_target_from_session(validated.session)
+                    ),
                 )
-                public_preview = str(
-                    public_pending.get("safe_preview") or getattr(pending, "reason", "") or ""
-                ).strip()
-                pending_public_preview_by_id[confirmation_id] = public_preview
-                channel_capability = public_pending.get("channel_capability")
-                if isinstance(channel_capability, Mapping):
-                    pending_channel_capability_by_id[confirmation_id] = channel_capability
+                discord_components_available = discord_presentation.components_available
+                discord_totp_modal_available = discord_presentation.totp_modal_available
+                discord_component_confirmation_ids = discord_presentation.component_confirmation_ids
+                discord_approval_confirmation_ids = discord_presentation.approval_confirmation_ids
+                discord_reject_confirmation_ids = discord_presentation.reject_confirmation_ids
+                discord_totp_modal_confirmation_ids = (
+                    discord_presentation.totp_modal_confirmation_ids
+                )
             response_text = _daemon_pending_confirmation_response_text(
                 pending_confirmation_ids=visible_pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
@@ -15148,6 +15417,8 @@ class SessionImplMixin(HandlerMixinBase):
                 discord_totp_modal_available=discord_totp_modal_available,
             )
             response_action_confirmation_ids = list(visible_pending_confirmation_ids)
+            if discord_presentation is not None:
+                response_action_confirmation_parts = discord_presentation.parts
             system_generated_pending_confirmation_response = True
             if fallback_notice:
                 response_text = f"{fallback_notice}\n\n{response_text}"
@@ -15344,6 +15615,7 @@ class SessionImplMixin(HandlerMixinBase):
             protected_tool_output_start = None
             protected_tool_output_end = None
             response_action_confirmation_ids = []
+            response_action_confirmation_parts = []
         response_text, protected_tool_output_start, protected_tool_output_end = (
             _prepend_trusted_local_fallback_notice(
                 response_text=response_text,
@@ -15417,6 +15689,7 @@ class SessionImplMixin(HandlerMixinBase):
         if public_sensitive_taints:
             response_text = "Response blocked by public-channel output policy."
             response_action_confirmation_ids = []
+            response_action_confirmation_parts = []
         returned_tool_outputs = [] if public_sensitive_taints else raw_serialized_tool_outputs
         output_confirmation_user_goal = _output_confirmation_user_goal_for_response(
             current_turn=validated.firewall_result.sanitized_text,
@@ -15440,6 +15713,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
             returned_tool_outputs = []
             response_action_confirmation_ids = []
+            response_action_confirmation_parts = []
         else:
             response_text = output_result.sanitized_text
             if pending_sibling_result_content:
@@ -15477,6 +15751,9 @@ class SessionImplMixin(HandlerMixinBase):
         if lockdown_notice_fragment:
             response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
 
+        if validated.channel == "discord" and response_action_confirmation_parts:
+            discord_result_content = _mixed_pending_confirmation_result_portion(response_text) or ""
+
         returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
         current_visible_pending_ids = set(returned_pending_confirmation_ids)
         response_action_confirmation_ids = list(
@@ -15486,6 +15763,11 @@ class SessionImplMixin(HandlerMixinBase):
                 if confirmation_id in current_visible_pending_ids
             )
         )
+        response_action_confirmation_parts = [
+            part
+            for part in response_action_confirmation_parts
+            if part.get("confirmation_id", "") in current_visible_pending_ids
+        ]
 
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
@@ -15720,6 +16002,10 @@ class SessionImplMixin(HandlerMixinBase):
             "cleanroom_block_reasons": sorted(set(execution.cleanroom_block_reasons)),
             "pending_confirmation_ids": returned_pending_confirmation_ids,
             "response_action_confirmation_ids": response_action_confirmation_ids,
+            "delivery": {
+                "response_action_confirmation_parts": response_action_confirmation_parts,
+                "discord_result_content": discord_result_content,
+            },
             "output_policy": _output_policy_response_payload(output_result),
             "planner_error": planner_dispatch.planner_failure_code,
             "tool_outputs": returned_tool_outputs,
