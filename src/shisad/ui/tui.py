@@ -1019,7 +1019,7 @@ async def run_interactive(
             continue
         if command.startswith("c "):
             parts = command.split()
-            output_json = len(parts) > 2 and parts[-1] == "--json"
+            output_json = len(parts) > 1 and parts[-1] == "--json"
             if output_json:
                 parts = parts[:-1]
             confirmation_id = parts[1].strip() if len(parts) > 1 else ""

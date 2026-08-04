@@ -76,11 +76,11 @@ transaction, or locking work.
 
 - Canonical summary tests cover action-specific reviews and all named internal
   fields.
-- Discord exact-byte tests cover complete native controls, partial/missing
+- Discord builder/unit tests cover complete native controls, partial/missing
   controls, TOTP, recovery-code, expired, and unavailable-backend paths.
 - TUI tests cover safe confirmation success/failure, proof-code parsing, and
   explicit JSON details without a duplicate execution.
 - Existing CLI renderer tests remain byte-compatible through the shared seam.
-- A deterministic daemon journey queues a Discord confirmation, returns the
-  compact native-control review, preserves pending identity, and remains out
-  of lockdown.
+- A deterministic daemon journey queues a Discord confirmation, proves the
+  compact degraded-control review and truthful fallback, preserves pending
+  identity, and remains out of lockdown.

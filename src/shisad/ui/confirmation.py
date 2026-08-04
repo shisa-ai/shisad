@@ -265,6 +265,13 @@ class CompactConfirmationReview:
     risk_level: str
 
 
+def bounded_confirmation_action_label(action: object) -> str:
+    """Return a terminal-safe action label bounded for compact review surfaces."""
+
+    safe_action = sanitize_terminal_field(str(action or "").strip())
+    return _summarize_review_scalar(safe_action or "pending action", max_len=48)
+
+
 def compact_confirmation_review(
     preview: object,
     *,
@@ -287,8 +294,7 @@ def compact_confirmation_review(
         review = lines[1].partition(":")[2].strip()
         risk_level = lines[3].partition(":")[2].strip().upper()
     if not review:
-        action = sanitize_terminal_field(str(fallback_action or "").strip())
-        review = f"Run {action or 'pending action'}"
+        review = f"Run {bounded_confirmation_action_label(fallback_action)}"
     return CompactConfirmationReview(
         review=review,
         risk_level=risk_level or "UNKNOWN",

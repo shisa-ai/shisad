@@ -185,7 +185,10 @@ from shisad.security.spotlight import (
     build_planner_input_v2,
 )
 from shisad.security.taint import normalize_retrieval_taints
-from shisad.ui.confirmation import render_compact_confirmation_review
+from shisad.ui.confirmation import (
+    bounded_confirmation_action_label,
+    render_compact_confirmation_review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -5574,6 +5577,7 @@ def _discord_pending_confirmation_response_text(
         tool_name = "pending action"
         if pending is not None:
             tool_name = str(getattr(pending, "tool_name", "") or tool_name).strip() or tool_name
+        tool_label = bounded_confirmation_action_label(tool_name)
 
         _ = pending_number, allow_chat_approval, totp_guidance_ids, single_totp_confirmation_id
         component_available = (
@@ -5616,35 +5620,28 @@ def _discord_pending_confirmation_response_text(
         lines.extend(
             [
                 "",
-                f"### {pending_number}. {_markdown_code_span(tool_name)}",
+                f"### {pending_number}. {_markdown_code_span(tool_label)}",
             ]
         )
         if not native_controls_complete:
             lines.append(f"ID: {_markdown_code_span(confirmation_id)}")
-        lines.extend(
-            _discord_pending_guidance_lines(
-                pending=pending,
-                confirmation_id=confirmation_id,
-                pending_number=pending_number,
-                use_single_totp_code_reply=(
-                    confirmation_id == single_totp_confirmation_id
-                    and pending_actions is not None
-                    and len(pending_actions) > len(indexed_confirmation_ids)
-                ),
-                channel_capability=channel_capability,
-                discord_components_available=component_available,
-                discord_approval_available=approval_available,
-                discord_reject_available=reject_available,
-                discord_totp_modal_available=totp_modal_available,
-                native_controls_complete=native_controls_complete,
-            )
-        )
 
-        warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
-        warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
-        if warning_lines:
-            lines.extend(["", "**Warnings:**"])
-            lines.extend(f"- {warning}" for warning in warning_lines)
+        guidance_lines = _discord_pending_guidance_lines(
+            pending=pending,
+            confirmation_id=confirmation_id,
+            pending_number=pending_number,
+            use_single_totp_code_reply=(
+                confirmation_id == single_totp_confirmation_id
+                and pending_actions is not None
+                and len(pending_actions) > len(indexed_confirmation_ids)
+            ),
+            channel_capability=channel_capability,
+            discord_components_available=component_available,
+            discord_approval_available=approval_available,
+            discord_reject_available=reject_available,
+            discord_totp_modal_available=totp_modal_available,
+            native_controls_complete=native_controls_complete,
+        )
 
         preview = ""
         if pending_public_preview_by_id is not None:
@@ -5654,12 +5651,18 @@ def _discord_pending_confirmation_response_text(
                 preview = str(getattr(pending, "safe_preview", "") or "").strip()
             if not preview:
                 preview = str(getattr(pending, "reason", "") or "").strip()
-        if preview:
-            compact_review = render_compact_confirmation_review(
-                preview,
-                fallback_action=tool_name,
-            )
-            lines.extend(["", "**Review:**", _markdown_fenced_block(compact_review)])
+        compact_review = render_compact_confirmation_review(
+            preview,
+            fallback_action=tool_label,
+        )
+        lines.extend(["", _markdown_fenced_block(compact_review)])
+
+        warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
+        warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
+        if warning_lines:
+            lines.extend(["", "**Warnings:**"])
+            lines.extend(f"- {warning}" for warning in warning_lines)
+        lines.extend(guidance_lines)
     if not all_native_controls_complete:
         lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
     return "\n".join(lines).strip()

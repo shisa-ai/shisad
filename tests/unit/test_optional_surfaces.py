@@ -1232,7 +1232,7 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
         assert not proof_code
         decisions.append((method, confirmation_id, output_json))
 
-    inputs = iter(["r", "c conf-1 --json", "x conf-2", "unknown", "q"])
+    inputs = iter(["r", "c --json", "c conf-1 --json", "x conf-2", "unknown", "q"])
     monkeypatch.setattr(tui_module, "fetch_snapshot", _fake_fetch_snapshot)
     monkeypatch.setattr(tui_module, "_decision", _fake_decision)
     monkeypatch.setattr(tui_module, "render_plain", lambda snapshot: "snapshot")
@@ -1241,6 +1241,7 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
 
     await tui_module.run_interactive(Path("/tmp/control.sock"))
     assert decisions == [
+        ("action.confirm", "", True),
         ("action.confirm", "conf-1", True),
         ("action.reject", "conf-2", False),
     ]
@@ -1416,14 +1417,32 @@ async def test_i5a_tui_confirm_uses_semantic_output_and_explicit_json_details(
         async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
             self.calls.append((method, payload))
             if method == "action.pending":
+                confirmation_id = str(payload.get("confirmation_id", ""))
                 return {
                     "actions": [
                         {
-                            "confirmation_id": "conf-safe",
-                            "decision_nonce": "nonce-safe",
+                            "confirmation_id": confirmation_id,
+                            "decision_nonce": f"nonce-{confirmation_id}",
                         }
                     ],
                     "count": 1,
+                }
+            if payload.get("confirmation_id") == "conf-success":
+                return {
+                    "confirmed": True,
+                    "confirmation_id": "conf-success",
+                    "status": "approved",
+                    "tool_outputs": [
+                        {
+                            "tool_name": "fs.read",
+                            "success": True,
+                            "payload": {
+                                "ok": True,
+                                "path": "README.md",
+                                "content": "confirmed success marker",
+                            },
+                        }
+                    ],
                 }
             return {
                 "confirmed": False,
@@ -1475,6 +1494,18 @@ async def test_i5a_tui_confirm_uses_semantic_output_and_explicit_json_details(
     details_output = "\n".join(printed)
     assert '"status_reason": "web_search_backend_unconfigured"' in details_output
     assert '"checkpoint_id": "checkpoint-safe"' in details_output
+
+    printed.clear()
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-success",
+    )
+    success_output = "\n".join(printed)
+    assert "Confirmed conf-success: approved" in success_output
+    assert "fs.read read README.md" in success_output
+    assert "confirmed success marker" in success_output
+    assert '"tool_outputs"' not in success_output
 
 
 @pytest.mark.asyncio

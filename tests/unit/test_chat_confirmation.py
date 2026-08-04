@@ -646,11 +646,47 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert "### 2. `web.search`" in response
     assert "Review: Search the web for: hello\nRisk Level: MEDIUM" in response
     assert "Use Approve to open the TOTP modal, or Reject." in response
+    plain_review_index = response.index("Review: List files at: .")
+    warning_index = response.index("**Warnings:**")
+    plain_guidance_index = response.index("Use the Approve or Reject button")
+    totp_review_index = response.index("Review: Search the web for: hello")
+    totp_guidance_index = response.index("Use Approve to open the TOTP modal")
+    assert plain_review_index < warning_index < plain_guidance_index
+    assert totp_review_index < totp_guidance_index
+    assert "**Review:**" not in response
     assert "ID:" not in response
     assert "Lifecycle:" not in response
     assert "CLI fallback:" not in response
     assert "PARAMETERS:" not in response
     assert "Review all pending:" not in response
+
+
+def test_i5a_discord_empty_preview_uses_bounded_tool_label() -> None:
+    long_tool_name = f"mcp.{'x' * 200}"
+    pending = PendingAction(
+        confirmation_id="c-long-tool",
+        decision_nonce="nonce-long-tool",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName(long_tool_name),
+        arguments={},
+        reason="",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        safe_preview="",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        delivery_channel="discord",
+    )
+
+    assert long_tool_name not in response
+    assert "… [204 chars]" in response
+    assert "Review: Run mcp." in response
+    assert "Risk Level: UNKNOWN" in response
 
 
 def test_daemon_pending_confirmation_response_uses_recovery_code_cli_fallback() -> None:
