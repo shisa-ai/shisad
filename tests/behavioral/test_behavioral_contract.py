@@ -1915,7 +1915,7 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
         "SHISAD_MODEL_PLANNER_CAPABILITIES",
         json.dumps(
             {
-                "context_window_tokens": 14_000,
+                "context_window_tokens": 14_500,
                 "output_reserve_tokens": 512,
             }
         ),
