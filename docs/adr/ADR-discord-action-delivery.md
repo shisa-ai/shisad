@@ -45,8 +45,9 @@ machine do not move.
    Unicode characters. Splitting prefers the latest paragraph boundary, then
    line boundary, whitespace boundary, and finally a hard boundary.
    Concatenating the chunks reproduces the selected content exactly. Empty or
-   whitespace-only logical content fails the attempt instead of recording a
-   delivered result after zero provider sends.
+   whitespace-only logical content raises before a provider send; the existing
+   durable layer records `provider_attempt_failed` / `outcome_unknown` instead
+   of a zero-send delivered result.
 5. A long confirmation part attaches its view only to its final chunk. Result
    parts and preceding confirmation chunks never carry controls.
 6. An interaction handle remains available after its acknowledgement. Once
