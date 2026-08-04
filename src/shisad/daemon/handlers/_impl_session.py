@@ -8856,6 +8856,25 @@ def _mixed_pending_confirmation_result_portion(text: str) -> str | None:
     return str(text or "")[marker_start:].strip()
 
 
+def _discord_result_content_without_pending_summary(
+    text: str,
+    *,
+    pending_summary: str,
+) -> str:
+    """Remove one exact daemon-generated pending summary and retain its surroundings."""
+
+    normalized = str(text or "").strip()
+    summary = str(pending_summary or "").strip()
+    if not normalized or not summary:
+        return normalized
+    summary_start = normalized.find(summary)
+    if summary_start < 0:
+        return normalized
+    before = normalized[:summary_start].strip()
+    after = normalized[summary_start + len(summary) :].strip()
+    return "\n\n".join(part for part in (before, after) if part)
+
+
 def _normalized_pending_confirmation_text(text: str) -> str | None:
     normalized = _pending_confirmation_text_after_prefixes(text)
     if not _is_pending_confirmation_text(normalized):
@@ -10097,17 +10116,10 @@ class SessionImplMixin(HandlerMixinBase):
                     typed_channel_approval=is_internal_ingress,
                     pending_channel_capability_by_id=(pending_channel_capability_by_id),
                 ).strip()
-                normalized_response = response_text.strip()
-                pending_suffix = f"\n\n{pending_summary}"
-                if normalized_response == pending_summary:
-                    discord_result_content = ""
-                elif normalized_response.endswith(pending_suffix):
-                    discord_result_content = normalized_response[: -len(pending_suffix)].strip()
-                else:
-                    discord_result_content = (
-                        _mixed_pending_confirmation_result_portion(normalized_response)
-                        or normalized_response
-                    )
+                discord_result_content = _discord_result_content_without_pending_summary(
+                    response_text,
+                    pending_summary=pending_summary,
+                )
             normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
@@ -15334,6 +15346,7 @@ class SessionImplMixin(HandlerMixinBase):
         response_action_confirmation_ids: list[str] = []
         response_action_confirmation_parts: list[dict[str, str]] = []
         discord_result_content = ""
+        discord_pending_summary = ""
         if execution.pending_confirmation_ids:
             fallback_notice = trusted_local_fallback_notice
             pending_rows = self._pending_confirmations_for_binding(
@@ -15419,6 +15432,8 @@ class SessionImplMixin(HandlerMixinBase):
             response_action_confirmation_ids = list(visible_pending_confirmation_ids)
             if discord_presentation is not None:
                 response_action_confirmation_parts = discord_presentation.parts
+                if response_action_confirmation_parts:
+                    discord_pending_summary = response_text.strip()
             system_generated_pending_confirmation_response = True
             if fallback_notice:
                 response_text = f"{fallback_notice}\n\n{response_text}"
@@ -15752,7 +15767,10 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
 
         if validated.channel == "discord" and response_action_confirmation_parts:
-            discord_result_content = _mixed_pending_confirmation_result_portion(response_text) or ""
+            discord_result_content = _discord_result_content_without_pending_summary(
+                response_text,
+                pending_summary=discord_pending_summary,
+            )
 
         returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
         current_visible_pending_ids = set(returned_pending_confirmation_ids)

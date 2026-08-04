@@ -2407,6 +2407,7 @@ class AdminImplMixin(HandlerMixinBase):
         if not any(str(part.get("confirmation_id") or "").strip() for part in message_parts):
             return {}
         metadata["discord_message_parts"] = message_parts
+        metadata["discord_source_content"] = str(response.get("response") or "")
         return metadata
 
     async def do_channel_ingest_reserved(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -3019,26 +3020,24 @@ class AdminImplMixin(HandlerMixinBase):
         delivery_metadata: dict[str, Any] = {}
         if message.channel == "discord":
             discord_channel = getattr(self, "_discord_channel", None)
-            if bool(getattr(discord_channel, "supports_components", False)):
-                candidate_metadata = self._discord_pending_delivery_metadata(
-                    response,
-                    principal_id=str(identity_user_id),
-                    workspace_id=str(identity_workspace_id),
-                    delivery_target=delivery_target,
-                    supports_totp_modal=bool(
-                        getattr(discord_channel, "supports_totp_modal", False)
-                    ),
-                )
-                can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
-                structured_parts = candidate_metadata.get("discord_message_parts")
-                structured_delivery = bool(isinstance(structured_parts, list) and structured_parts)
-                legacy_delivery = bool(
-                    candidate_metadata
-                    and callable(can_build_view)
-                    and can_build_view(candidate_metadata)
-                )
-                if structured_delivery or legacy_delivery:
-                    delivery_metadata = candidate_metadata
+            candidate_metadata = self._discord_pending_delivery_metadata(
+                response,
+                principal_id=str(identity_user_id),
+                workspace_id=str(identity_workspace_id),
+                delivery_target=delivery_target,
+                supports_totp_modal=bool(getattr(discord_channel, "supports_totp_modal", False)),
+            )
+            can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
+            structured_parts = candidate_metadata.get("discord_message_parts")
+            structured_delivery = bool(isinstance(structured_parts, list) and structured_parts)
+            legacy_delivery = bool(
+                bool(getattr(discord_channel, "supports_components", False))
+                and candidate_metadata
+                and callable(can_build_view)
+                and can_build_view(candidate_metadata)
+            )
+            if structured_delivery or legacy_delivery:
+                delivery_metadata = candidate_metadata
         prepared = self._delivery.prepare(
             delivery_reservation.reservation_id,
             message=str(response.get("response", "")),

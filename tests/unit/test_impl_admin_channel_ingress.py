@@ -890,6 +890,61 @@ async def test_i5b_channel_ingest_prepares_result_and_per_action_message_parts(
 
 
 @pytest.mark.asyncio
+async def test_i5b_channel_ingest_prepares_degraded_parts_without_component_support(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    harness._discord_channel = SimpleNamespace(
+        supports_components=False,
+        supports_totp_modal=False,
+        workspace_for_guild=lambda guild_id: guild_id,
+        policy_decision_for=_DiscordChannelStub.policy_decision_for,
+    )
+    pending = _gh92_pending_action(confirmation_id="c-degraded")
+    pending.decision_nonce = "nonce-degraded"
+    harness._pending_actions = {pending.confirmation_id: pending}
+
+    async def _response(payload: dict[str, Any]) -> dict[str, Any]:
+        harness.message_payloads.append(dict(payload))
+        return {
+            "session_id": str(payload["session_id"]),
+            "response": "combined transcript response",
+            "pending_confirmation_ids": [pending.confirmation_id],
+            "response_action_confirmation_ids": [pending.confirmation_id],
+            "delivery": {
+                "response_action_confirmation_parts": [
+                    {
+                        "confirmation_id": pending.confirmation_id,
+                        "content": "Use the attached controls.",
+                        "fallback_content": "ID: c-degraded\nUse the CLI approval route.",
+                    }
+                ]
+            },
+        }
+
+    harness.do_session_message = _response  # type: ignore[method-assign]
+    await harness.do_channel_ingest(
+        {
+            "session_id": "sess-channel",
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-i5b-degraded-parts",
+                "content": "show pending action",
+            },
+        }
+    )
+
+    metadata = harness._delivery.calls[-1]["metadata"]
+    assert isinstance(metadata, dict)
+    parts = metadata["discord_message_parts"]
+    assert [part["confirmation_id"] for part in parts] == [pending.confirmation_id]
+    assert parts[0]["fallback_content"] == "ID: c-degraded\nUse the CLI approval route."
+
+
+@pytest.mark.asyncio
 async def test_f7b_proactive_channel_result_applies_marker_exactly_once(
     tmp_path: Path,
 ) -> None:

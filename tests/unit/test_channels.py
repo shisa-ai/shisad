@@ -1022,6 +1022,38 @@ def test_i5b_discord_chunking_is_bounded_and_lossless() -> None:
     assert chunks[0].endswith("\n\n")
 
 
+def test_i5b_discord_chunking_uses_earlier_unicode_boundary_when_late_line_is_invalid() -> None:
+    from shisad.channels import discord as discord_module
+
+    message = ("a" * 1500) + "\u2003" + ("b" * 499) + "\n" + "tail"
+
+    chunks = discord_module._chunk_discord_message(message)
+
+    assert chunks[0].endswith("\u2003")
+    assert "".join(chunks) == message
+    assert all(chunk.strip() for chunk in chunks)
+    assert all(len(chunk) <= 2000 for chunk in chunks)
+
+
+@pytest.mark.parametrize("message", ["", " " * 2001])
+def test_i5b_discord_chunking_rejects_empty_or_whitespace_only_content(message: str) -> None:
+    from shisad.channels import discord as discord_module
+
+    with pytest.raises(ValueError, match="content must not be empty"):
+        discord_module._chunk_discord_message(message)
+
+
+def test_i5b_discord_chunking_does_not_emit_leading_whitespace_only_chunk() -> None:
+    from shisad.channels import discord as discord_module
+
+    message = " " + ("x" * 2000)
+
+    chunks = discord_module._chunk_discord_message(message)
+
+    assert "".join(chunks) == message
+    assert all(chunk.strip() for chunk in chunks)
+
+
 @pytest.mark.asyncio
 async def test_i5b_discord_send_uses_one_owning_view_per_confirmation(
     monkeypatch: pytest.MonkeyPatch,
@@ -1212,6 +1244,162 @@ async def test_i5b_discord_invalid_component_row_selects_degraded_part() -> None
 
 
 @pytest.mark.asyncio
+async def test_i5b_discord_partial_or_constructor_invalid_view_selects_degraded_part(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+
+        def add_item(self, item: object) -> None:
+            self.items.append(item)
+
+    class _FakeButton:
+        def __init__(self, **kwargs: object) -> None:
+            if kwargs.get("label") == "Reject":
+                raise ValueError("invalid button")
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2),
+        ),
+    )
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+    await channel.send(
+        "combined",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_message_parts": [
+                {
+                    "confirmation_id": "c-atomic",
+                    "content": "Use the attached controls.",
+                    "fallback_content": "ID: c-atomic\nUse the CLI approval route.",
+                    "discord_components": [
+                        {
+                            "type": "button",
+                            "label": "Approve",
+                            "style": "success",
+                            "custom_id": discord_approval_custom_id(
+                                action="confirm",
+                                confirmation_id="c-atomic",
+                                decision_nonce="nonce-atomic",
+                            ),
+                        },
+                        {
+                            "type": "button",
+                            "label": "Reject",
+                            "style": "danger",
+                            "custom_id": discord_approval_custom_id(
+                                action="reject",
+                                confirmation_id="c-atomic",
+                                decision_nonce="nonce-atomic",
+                            ),
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert sent == [("ID: c-atomic\nUse the CLI approval route.", {})]
+
+
+def test_i5b_discord_action_view_rejects_more_than_five_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def add_item(self, _item: object) -> None:
+            return None
+
+    class _FakeButton:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1),
+        ),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    metadata = {
+        "discord_components": [
+            {
+                "type": "button",
+                "label": f"Action {index}",
+                "style": "success",
+                "custom_id": f"action-{index}",
+            }
+            for index in range(6)
+        ]
+    }
+
+    assert channel._view_from_delivery_metadata(metadata) is None
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_structured_send_preserves_prepared_message_prefix() -> None:
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+    await channel.send(
+        "[proactive] combined transcript response",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_source_content": "combined transcript response",
+            "discord_message_parts": [
+                {
+                    "content": "Completed action result.",
+                    "fallback_content": "Completed action result.",
+                    "discord_components": [],
+                },
+                {
+                    "confirmation_id": "c-prefix",
+                    "content": "Use the attached controls.",
+                    "fallback_content": "ID: c-prefix\nUse the CLI approval route.",
+                    "discord_components": [
+                        {
+                            "type": "button",
+                            "label": "Reject",
+                            "style": "danger",
+                            "custom_id": discord_approval_custom_id(
+                                action="reject",
+                                confirmation_id="c-prefix",
+                                decision_nonce="nonce-prefix",
+                            ),
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert sent[0][0] == "[proactive] Completed action result."
+    assert sent[1][0] == "Use the attached controls."
+
+
+@pytest.mark.asyncio
 async def test_i5b_discord_long_confirmation_attaches_view_only_to_final_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1359,6 +1547,60 @@ async def test_i5b_discord_interaction_controls_finalize_only_when_terminal() ->
     assert edits == [{"view": None}]
     assert identity.key not in channel._pending_interactions
     assert acknowledgements == ["Approval response received."]
+
+
+@pytest.mark.asyncio
+async def test_i5b_discord_legacy_aggregate_interaction_retains_sibling_controls() -> None:
+    edits: list[dict[str, object]] = []
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.components = [
+                SimpleNamespace(
+                    children=[
+                        SimpleNamespace(
+                            custom_id=discord_approval_custom_id(
+                                action="confirm",
+                                confirmation_id="c-terminal",
+                                decision_nonce="nonce-terminal",
+                            )
+                        ),
+                        SimpleNamespace(
+                            custom_id=discord_approval_custom_id(
+                                action="reject",
+                                confirmation_id="c-sibling",
+                                decision_nonce="nonce-sibling",
+                            )
+                        ),
+                    ]
+                )
+            ]
+
+        async def edit(self, **kwargs: object) -> None:
+            edits.append(dict(kwargs))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    identity = channel_state.ReplayIdentity(
+        provider="discord",
+        account_id="bot-1",
+        scope_id='["guild-1","channel-1"]',
+        event_kind="interaction",
+        event_id="interaction-legacy",
+    )
+    channel._pending_interactions[identity.key] = SimpleNamespace(
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="confirm",
+                confirmation_id="c-terminal",
+                decision_nonce="nonce-terminal",
+            )
+        },
+        message=_FakeMessage(),
+    )
+
+    assert await channel.finalize_reserved_interaction(identity, remove_controls=True) is False
+    assert edits == []
+    assert identity.key not in channel._pending_interactions
 
 
 def test_discord_component_view_requires_added_button(

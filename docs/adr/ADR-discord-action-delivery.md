@@ -28,24 +28,34 @@ machine do not move.
 1. A Discord response is prepared as an ordered list of delivery parts. A
    completed/action result is a non-control part. Every visible pending action
    is a separate confirmation part with its own native and degraded content.
+   The daemon removes only the exact machine-generated aggregate pending
+   summary; all surrounding finalized notices, warnings, suggestions, and
+   result content remain in non-control parts. A durable delivery prefix is
+   applied to the first selected part at the adapter boundary.
 2. Component metadata is revalidated per action immediately before delivery.
    Each confirmation part receives only buttons whose custom IDs bind that
    part's confirmation ID and decision nonce.
 3. The adapter builds the owning view at send time. Successful view
-   construction selects the native rendering; missing or invalid components
-   select the degraded rendering. Text cannot claim controls that the same
-   provider send did not attach.
+   construction selects the native rendering; missing, partial, invalid, or
+   over-bound component sets select the degraded rendering atomically. Text
+   cannot claim controls that the same provider send did not attach. Missing
+   optional component constructors therefore degrade each action separately
+   rather than reverting to one combined response.
 4. Every selected part is split into non-empty content chunks of at most 2,000
    Unicode characters. Splitting prefers the latest paragraph boundary, then
    line boundary, whitespace boundary, and finally a hard boundary.
-   Concatenating the chunks reproduces the selected content exactly.
+   Concatenating the chunks reproduces the selected content exactly. Empty or
+   whitespace-only logical content fails the attempt instead of recording a
+   delivered result after zero provider sends.
 5. A long confirmation part attaches its view only to its final chunk. Result
    parts and preceding confirmation chunks never carry controls.
 6. An interaction handle remains available after its acknowledgement. Once
    daemon state shows that the owning action is no longer live pending, the
    adapter releases that handle and removes the originating message's view.
    A non-terminal attempt releases the transient handle without removing
-   usable controls.
+   usable controls. If a pre-upgrade aggregate message visibly contains a
+   sibling confirmation, terminal handling retains the ambiguous legacy view
+   instead of clearing the sibling's controls.
 7. All provider sends remain within the existing logical delivery attempt.
    The attempt succeeds only after every send succeeds. Any exception,
    including one after a partial multi-send, propagates to the existing
@@ -104,11 +114,14 @@ protocol is added.
 ## Acceptance Evidence
 
 - Adapter tests prove one owning view per confirmation, degraded rendering on
-  view-construction failure, final-chunk-only controls, lossless 2,000-character
-  chunking, and propagation of partial multi-send failures.
+  atomic view-construction failure, componentless degraded delivery,
+  final-chunk-only controls, lossless 2,000-character chunking, prepared-prefix
+  preservation, and propagation of partial multi-send failures.
 - Daemon tests prove exact visible-action component ownership and separate
-  result/action parts.
-- Interaction tests prove terminal-only removal of the originating controls.
+  result/action parts while retaining finalized notices outside the exact
+  aggregate pending summary.
+- Interaction tests prove terminal-only removal of the originating controls
+  and fail-safe retention of legacy aggregate sibling controls.
 - A deterministic daemon journey proves that three Discord confirmations
   return three action-specific safe parts without leaking internal reason
   codes.

@@ -4431,6 +4431,7 @@ def test_i5b_discord_delivery_metadata_builds_one_part_per_visible_action() -> N
     metadata = HandlerImplementation._discord_pending_delivery_metadata(
         harness,
         {
+            "response": "combined transcript response",
             "pending_confirmation_ids": pending_ids,
             "response_action_confirmation_ids": pending_ids,
             "delivery": {
@@ -4451,6 +4452,7 @@ def test_i5b_discord_delivery_metadata_builds_one_part_per_visible_action() -> N
     )
 
     message_parts = metadata["discord_message_parts"]
+    assert metadata["discord_source_content"] == "combined transcript response"
     assert message_parts[0] == {
         "content": "Completed action result: prior action finished.",
         "fallback_content": "Completed action result: prior action finished.",

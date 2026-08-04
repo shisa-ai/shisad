@@ -735,6 +735,29 @@ def test_i5b_discord_pending_parts_keep_action_reviews_separate() -> None:
     assert "Review all pending:" not in parts[1]["content"]
 
 
+def test_i5b_discord_result_partition_preserves_late_lockdown_notice() -> None:
+    from shisad.daemon.handlers._impl_session import (
+        _discord_result_content_without_pending_summary,
+    )
+
+    pending_summary = "**Pending confirmations**\n\n### 1. `web.fetch`\nReview: fetch"
+    response = (
+        "Trusted local fallback is active.\n\n"
+        f"{pending_summary}\n\n"
+        "[LOCKDOWN NOTICE] Recovery confirmation is required."
+    )
+
+    result_content = _discord_result_content_without_pending_summary(
+        response,
+        pending_summary=pending_summary,
+    )
+
+    assert result_content == (
+        "Trusted local fallback is active.\n\n[LOCKDOWN NOTICE] Recovery confirmation is required."
+    )
+    assert "Pending confirmations" not in result_content
+
+
 def test_daemon_pending_confirmation_response_uses_recovery_code_cli_fallback() -> None:
     pending = PendingAction(
         confirmation_id="c-recovery",
@@ -1746,6 +1769,11 @@ async def test_i5b_discord_confirm_separates_result_from_remaining_action_parts(
         supports_totp_modal=False,
         can_build_view_from_metadata=lambda metadata: bool(metadata.get("discord_components")),
     )
+    harness._lockdown_notice_response_fragment = lambda **_kwargs: (  # type: ignore[method-assign]
+        "[LOCKDOWN NOTICE] Recovery confirmation is required.",
+        None,
+        "",
+    )
 
     result = await SessionImplMixin._maybe_handle_chat_confirmation(
         harness,
@@ -1775,7 +1803,10 @@ async def test_i5b_discord_confirm_separates_result_from_remaining_action_parts(
     assert result["response_action_confirmation_ids"] == ["c-second", "c-third"]
     delivery = result.get("delivery")
     assert isinstance(delivery, dict)
-    assert "confirmed 1 (web.fetch): approved" in str(delivery.get("discord_result_content", ""))
+    result_content = str(delivery.get("discord_result_content", ""))
+    assert "confirmed 1 (web.fetch): approved" in result_content
+    assert "[LOCKDOWN NOTICE] Recovery confirmation is required." in result_content
+    assert "Pending confirmations" not in result_content
     parts = delivery.get("response_action_confirmation_parts")
     assert isinstance(parts, list)
     assert [part.get("confirmation_id") for part in parts] == ["c-second", "c-third"]
