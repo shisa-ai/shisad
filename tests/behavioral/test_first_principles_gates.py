@@ -178,18 +178,25 @@ async def _assert_channel_originated_approval_not_cli_only_gate(
     assert pending_ids
 
     response_text = str(proposed.get("response", ""))
-    has_native_approval_guidance = "Discord approval:" in response_text
+    has_native_approval_guidance = (
+        "Use the Approve or Reject button on this message." in response_text
+    )
     has_component_degradation_guidance = (
         "Discord components unavailable; approval buttons were not attached." in response_text
     )
     assert has_native_approval_guidance or has_component_degradation_guidance
     if has_component_degradation_guidance:
         assert "Discord approval fallback: reply with `confirm " in response_text
-    assert "Discord rejection:" in response_text or "Discord rejection fallback:" in response_text
-    assert "CLI fallback:" in response_text
+        assert "Discord rejection fallback:" in response_text
+        assert "shisad action confirm" in response_text
     if has_native_approval_guidance:
-        assert response_text.index("Discord approval:") < response_text.index("CLI fallback:")
-    assert "shisad action confirm" in response_text
+        assert "Review: Write file: test-output.txt" in response_text
+        assert "Risk Level:" in response_text
+        assert "ID:" not in response_text
+        assert "Lifecycle:" not in response_text
+        assert "CLI fallback:" not in response_text
+        assert "PARAMETERS:" not in response_text
+        assert "shisad action confirm" not in response_text
 
     pending = await harness.client.call(
         "action.pending",

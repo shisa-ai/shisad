@@ -112,9 +112,14 @@ def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
         delivery_channel=delivery_channel,
     )
 
-    assert "age_seconds=" in response
-    assert expires_at.isoformat() in response
-    assert "turn-f2-lifetime" in response
+    if delivery_channel == "discord":
+        assert "age_seconds=" not in response
+        assert expires_at.isoformat() not in response
+        assert "turn-f2-lifetime" not in response
+    else:
+        assert "age_seconds=" in response
+        assert expires_at.isoformat() in response
+        assert "turn-f2-lifetime" in response
     assert "pending" in response.casefold()
 
 
@@ -583,7 +588,14 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
         reason="manual",
         capabilities={Capability.FILE_READ},
         created_at=datetime.now(UTC),
-        safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .",
+        safe_preview=(
+            "ACTION CONFIRMATION\n"
+            "Review: List files at: .\n"
+            "Action: fs.list\n"
+            "Risk Level: MEDIUM\n"
+            "PARAMETERS:\n"
+            "path: ."
+        ),
         warnings=["Contains tainted data"],
     )
     totp_pending = PendingAction(
@@ -597,7 +609,14 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
-        safe_preview="Search the web for hello",
+        safe_preview=(
+            "ACTION CONFIRMATION\n"
+            "Review: Search the web for: hello\n"
+            "Action: web.search\n"
+            "Risk Level: MEDIUM\n"
+            "PARAMETERS:\n"
+            "query: hello"
+        ),
         selected_backend_id="totp.default",
         selected_backend_method="totp",
     )
@@ -619,20 +638,19 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert response.startswith("**Pending confirmations**")
     assert "[PENDING CONFIRMATIONS]" not in response
     assert "### 1. `fs.list`" in response
-    assert "ID: `c-1`" in response
-    assert "Discord approval: use the Approve button when shown on this message." in response
-    assert "Discord rejection: use the Reject button when shown on this message." in response
-    assert "CLI fallback: `shisad action confirm c-1`" in response
+    assert "Review: List files at: .\nRisk Level: MEDIUM" in response
+    assert "Use the Approve or Reject button on this message." in response
     assert "**Warnings:**" in response
     assert "- Contains tainted data" in response
-    assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .\n```" in response
     assert "---" in response
     assert "### 2. `web.search`" in response
-    assert "ID: `c-2`" in response
-    assert "Discord approval: use Approve when shown to open the TOTP modal." in response
-    assert "TOTP fallback: reply with `confirm c-2 123456`" in response
-    assert "CLI fallback: `shisad action confirm c-2 --totp-code 123456`" in response
-    assert response.endswith("Review all pending: `shisad action list`")
+    assert "Review: Search the web for: hello\nRisk Level: MEDIUM" in response
+    assert "Use Approve to open the TOTP modal, or Reject." in response
+    assert "ID:" not in response
+    assert "Lifecycle:" not in response
+    assert "CLI fallback:" not in response
+    assert "PARAMETERS:" not in response
+    assert "Review all pending:" not in response
 
 
 def test_daemon_pending_confirmation_response_uses_recovery_code_cli_fallback() -> None:
@@ -732,11 +750,12 @@ def test_gh64_discord_pending_response_advertises_bounded_approval() -> None:
         delivery_channel="discord",
     )
 
-    assert "Discord approval: use the Approve button when shown on this message." in response
-    assert "Discord rejection: use the Reject button when shown on this message." in response
+    assert "Use the Approve or Reject button on this message." in response
     assert "button-only T1" not in response
     assert "Confirm from CLI:" not in response
-    assert "CLI fallback: `shisad action confirm c-1`" in response
+    assert "ID:" not in response
+    assert "Lifecycle:" not in response
+    assert "CLI fallback:" not in response
 
 
 def test_discord_pending_response_degrades_for_expired_action() -> None:
@@ -1019,12 +1038,13 @@ def test_discord_pending_response_degrades_for_ids_omitted_by_component_budget()
         discord_reject_confirmation_ids=attached_ids,
     )
 
-    first_section = response.split("ID: `c-0`", 1)[1].split("---", 1)[0]
-    omitted_section = response.split("ID: `c-12`", 1)[1]
-    assert "Approve button when shown" in first_section
-    assert "Reject button when shown" in first_section
+    first_section = response.split("### 1. `fs.list`", 1)[1].split("---", 1)[0]
+    omitted_section = response.split("### 13. `fs.list`", 1)[1]
+    assert "Use the Approve or Reject button on this message." in first_section
+    assert "ID: `c-0`" not in first_section
     assert "Approve button" not in omitted_section
     assert "Reject button" not in omitted_section
+    assert "ID: `c-12`" in omitted_section
     assert "Discord components unavailable; approval buttons were not attached." in (
         omitted_section
     )

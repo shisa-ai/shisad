@@ -8677,7 +8677,9 @@ async def test_finalize_response_formats_discord_pending_summary() -> None:
     assert "Discord rejection fallback: reply with `reject c-1`." in text
     assert "CLI fallback: `shisad action confirm c-1`" in text
     assert "**Warnings:**" in text
-    assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\n  path: .\n```" in text
+    assert "```text\nReview: Run fs.list\nRisk Level: UNKNOWN\n```" in text
+    assert "Lifecycle:" not in text
+    assert "PARAMETERS:" not in text
 
 
 @pytest.mark.asyncio

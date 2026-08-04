@@ -9522,6 +9522,45 @@ async def test_contract_non_cli_fs_write_routes_to_confirmation_not_lockdown(
 
 
 @pytest.mark.asyncio
+async def test_i5a_discord_confirmation_is_compact_and_truthful_about_controls(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(
+        contract_harness.client,
+        channel="discord",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "channel": "discord",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = reply.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    response = str(reply.get("response", ""))
+    assert "Review: Write file: test-output.txt" in response
+    assert "Risk Level:" in response
+    assert "Discord components unavailable; approval buttons were not attached." in response
+    assert "Discord approval fallback:" in response
+    assert str(pending_ids[0]) in response
+    assert "Lifecycle:" not in response
+    assert "PARAMETERS:" not in response
+
+
+@pytest.mark.asyncio
 async def test_contract_web_fetch_confirmation_approve_executes_after_confirmation(
     contract_harness: ContractHarness,
 ) -> None:

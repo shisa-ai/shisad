@@ -119,7 +119,6 @@ from shisad.core.config_file import (
     load_effective_config,
     render_config_template,
 )
-from shisad.core.failure_presentation import render_user_facing_failure
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
     load_private_key_from_path,
@@ -127,6 +126,10 @@ from shisad.interop.a2a_envelope import (
     write_ed25519_keypair,
 )
 from shisad.security.firewall.secrets import redact_ingress_secrets
+from shisad.ui.confirmation import (
+    render_action_confirm_result,
+    render_confirmed_tool_output,
+)
 from shisad.ui.evidence import (
     render_evidence_refs_for_terminal,
     sanitize_terminal_field,
@@ -2527,152 +2530,12 @@ def _canonical_terminal_confirm_result(
     )
 
 
-def _preview_cli_text(value: object, *, max_chars: int = 1600, max_lines: int = 24) -> str:
-    text = sanitize_terminal_text(str(value or "")).strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    truncated = len(lines) > max_lines or len(text) > max_chars
-    preview = "\n".join(lines[:max_lines])
-    if len(preview) > max_chars:
-        preview = preview[:max_chars].rstrip()
-    if truncated:
-        preview = f"{preview}\n... (truncated)"
-    return preview
-
-
-def _tool_error_detail_line(payload: dict[str, Any], *, max_chars: int = 240) -> str:
-    details = payload.get("details")
-    if not isinstance(details, dict):
-        return ""
-    raw_detail = ""
-    for key in ("stderr", "stdout"):
-        value = details.get(key)
-        if isinstance(value, str) and value.strip():
-            raw_detail = value
-            break
-    if not raw_detail and details.get("exit_code") not in ("", None):
-        raw_detail = f"exit_code={details.get('exit_code')}"
-    text = sanitize_terminal_text(raw_detail).strip()
-    if not text:
-        return ""
-    first_line = text.splitlines()[0].strip()
-    if len(first_line) > max_chars:
-        first_line = f"{first_line[: max_chars - 3].rstrip()}..."
-    if not first_line:
-        return ""
-    return f"  detail: {sanitize_terminal_field(first_line)}"
-
-
 def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
-    tool_name = sanitize_terminal_field(str(record.get("tool_name", "")).strip() or "tool")
-    payload = record.get("payload")
-    if not isinstance(payload, dict):
-        return [f"{tool_name}: completed."]
-    path = sanitize_terminal_field(str(payload.get("path", "")).strip())
-    ok_value = payload.get("ok")
-    ok_suffix = "" if ok_value in ("", None) else f" ok={bool(ok_value)}"
-    error = sanitize_terminal_field(str(payload.get("error", "")).strip())
-    if tool_name == "fs.list":
-        entries = payload.get("entries")
-        count = payload.get("count", len(entries) if isinstance(entries, list) else 0)
-        header = f"fs.list returned {count} entr{'y' if count == 1 else 'ies'}"
-        if path:
-            header = f"{header} for {path}"
-        lines = [f"{header}."]
-        if isinstance(entries, list) and entries:
-            names: list[str] = []
-            for entry in entries[:12]:
-                if isinstance(entry, dict):
-                    name = str(entry.get("name") or entry.get("path") or "").strip()
-                else:
-                    name = str(entry).strip()
-                if name:
-                    names.append(sanitize_terminal_field(name))
-            if names:
-                lines.append("Entries: " + ", ".join(names))
-                if len(entries) > len(names):
-                    lines.append(f"... ({len(entries) - len(names)} more)")
-        return lines
-    if tool_name == "fs.read":
-        content = str(payload.get("content", "") or "")
-        header = "fs.read completed"
-        if path:
-            header = f"fs.read read {path}"
-        if content:
-            header = f"{header} ({len(content)} chars)."
-            preview = _preview_cli_text(content)
-            return [header, preview] if preview else [header]
-        if error:
-            return [f"{header} failed: {error}."]
-        return [f"{header}{ok_suffix}."]
-    if tool_name == "web.fetch":
-        url = sanitize_terminal_field(str(payload.get("url", "")).strip())
-        title = sanitize_terminal_field(str(payload.get("title", "")).strip())
-        content = str(payload.get("content", "") or payload.get("text", "") or "")
-        header = "web.fetch completed"
-        if url:
-            header = f"web.fetch fetched {url}"
-        if title:
-            header = f"{header}: {title}"
-        preview = _preview_cli_text(content, max_chars=1000, max_lines=12)
-        if not preview and error:
-            return [f"{header} failed: {error}."]
-        return [f"{header}.", preview] if preview else [f"{header}{ok_suffix}."]
-    if tool_name.startswith("note."):
-        return [f"{tool_name}: completed{ok_suffix}."]
-    summary_parts = [f"{tool_name}: completed{ok_suffix}."]
-    for key in ("status", "count", "error"):
-        value = payload.get(key)
-        if value not in ("", None, [], {}):
-            summary_parts.append(f"{key}={sanitize_terminal_field(str(value))}")
-    lines = [" ".join(summary_parts)]
-    if error:
-        detail_line = _tool_error_detail_line(payload)
-        if detail_line:
-            lines.append(detail_line)
-    return lines
+    return render_confirmed_tool_output(record)
 
 
 def _render_action_confirm_result(result: ActionConfirmResult) -> str:
-    confirmation_id = sanitize_terminal_field(result.confirmation_id)
-    if result.failure is not None:
-        lines = [f"Action {confirmation_id}", render_user_facing_failure(result.failure)]
-        if result.checkpoint_id:
-            lines.append(
-                f"checkpoint={sanitize_terminal_field(result.checkpoint_id)}"
-            )
-        return "\n".join(lines)
-    if result.confirmed:
-        status = sanitize_terminal_field(
-            str(result.status or result.status_reason or result.reason or "").strip()
-        )
-        first = f"Confirmed {confirmation_id}"
-        if status:
-            first = f"{first}: {status}"
-    else:
-        status = sanitize_terminal_field(
-            str(result.reason or result.status_reason or result.status or "").strip()
-        )
-        first = f"Confirmation failed for {confirmation_id}"
-        if status:
-            first = f"{first}: {status}"
-    lines = [first]
-    if (
-        not result.confirmed
-        and result.reason
-        and result.status_reason
-        and result.reason != result.status_reason
-    ):
-        lines.append(f"status_reason={sanitize_terminal_field(result.status_reason)}")
-    if not result.confirmed and result.retry_after_seconds is not None:
-        retry_after = sanitize_terminal_field(str(result.retry_after_seconds))
-        lines.append(f"retry_after_seconds={retry_after}")
-    if result.checkpoint_id:
-        lines.append(f"checkpoint={sanitize_terminal_field(result.checkpoint_id)}")
-    for record in result.tool_outputs:
-        lines.extend(_render_confirmed_tool_output(record))
-    return "\n".join(line for line in lines if str(line).strip())
+    return render_action_confirm_result(result)
 
 
 def _wait_for_pending_action_resolution(

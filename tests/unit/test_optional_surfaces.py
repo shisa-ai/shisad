@@ -1219,12 +1219,20 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
     async def _fake_fetch_snapshot(_socket_path: Path) -> TuiSnapshot:
         return TuiSnapshot()
 
-    decisions: list[tuple[str, str]] = []
+    decisions: list[tuple[str, str, bool]] = []
 
-    async def _fake_decision(_socket_path: Path, method: str, confirmation_id: str) -> None:
-        decisions.append((method, confirmation_id))
+    async def _fake_decision(
+        _socket_path: Path,
+        method: str,
+        confirmation_id: str,
+        *,
+        proof_code: str = "",
+        output_json: bool = False,
+    ) -> None:
+        assert not proof_code
+        decisions.append((method, confirmation_id, output_json))
 
-    inputs = iter(["r", "c conf-1", "x conf-2", "unknown", "q"])
+    inputs = iter(["r", "c conf-1 --json", "x conf-2", "unknown", "q"])
     monkeypatch.setattr(tui_module, "fetch_snapshot", _fake_fetch_snapshot)
     monkeypatch.setattr(tui_module, "_decision", _fake_decision)
     monkeypatch.setattr(tui_module, "render_plain", lambda snapshot: "snapshot")
@@ -1232,7 +1240,10 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
 
     await tui_module.run_interactive(Path("/tmp/control.sock"))
-    assert decisions == [("action.confirm", "conf-1"), ("action.reject", "conf-2")]
+    assert decisions == [
+        ("action.confirm", "conf-1", True),
+        ("action.reject", "conf-2", False),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1313,7 +1324,7 @@ async def test_t3_tui_interactive_task_approval_carries_identity_and_stepup_comm
         ("action.reject", "c-task-identity", ""),
     ]
     output = "\n".join(printed)
-    assert "[r]efresh  [c]onfirm <id> [proof-code]  [x] reject <id>  [q]uit" in output
+    assert "[r]efresh  [c]onfirm <id> [proof-code] [--json]" in output
     assert "waiting_on_approval confirmation=c-task-stepup" in output
     assert "approve_hint=c c-task-stepup <totp-code>" in output
 
@@ -1381,6 +1392,89 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
         ),
         ("action.confirm", {"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_i5a_tui_confirm_uses_semantic_output_and_explicit_json_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-safe",
+                            "decision_nonce": "nonce-safe",
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {
+                "confirmed": False,
+                "confirmation_id": "conf-safe",
+                "status": "failed",
+                "status_reason": "web_search_backend_unconfigured",
+                "checkpoint_id": "checkpoint-safe",
+                "failure": {
+                    "code": "web_search_backend_unconfigured",
+                    "summary": (
+                        "Your approval was received, but web search couldn't run because "
+                        "it isn't set up."
+                    ),
+                    "safe_next_action": "Set up web search, then retry your request.",
+                    "approval_outcome": "accepted",
+                    "execution_outcome": "failed",
+                },
+            }
+
+        async def close(self) -> None:
+            return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _FakeClient)
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-safe",
+    )
+
+    semantic_output = "\n".join(printed)
+    assert "Your approval was received" in semantic_output
+    assert "Set up web search, then retry your request." in semantic_output
+    assert "checkpoint=checkpoint-safe" in semantic_output
+    assert "web_search_backend_unconfigured" not in semantic_output
+    assert '"status_reason"' not in semantic_output
+
+    printed.clear()
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-safe",
+        output_json=True,
+    )
+    details_output = "\n".join(printed)
+    assert '"status_reason": "web_search_backend_unconfigured"' in details_output
+    assert '"checkpoint_id": "checkpoint-safe"' in details_output
 
 
 @pytest.mark.asyncio
@@ -1756,11 +1850,16 @@ async def test_f1_tui_decision_retries_unfiltered_nonce_lookup_after_expiry(
                     ],
                     "count": 1,
                 }
+            if called_method == "action.confirm":
+                return {
+                    "confirmed": False,
+                    "confirmation_id": "conf-expired",
+                    "reason": "approval_expired",
+                }
             return {
-                "ok": False,
+                "rejected": False,
+                "confirmation_id": "conf-expired",
                 "reason": "approval_expired",
-                "method": called_method,
-                "payload": payload,
             }
 
         async def close(self) -> None:
@@ -1855,8 +1954,17 @@ async def test_f1_tui_decision_surfaces_cancelled_terminal_state_without_nonce(
                     ],
                     "count": 1,
                 }
+            if called_method == "action.confirm":
+                return {
+                    "confirmed": False,
+                    "confirmation_id": "conf-cancelled",
+                    "reason": "already_cancelled",
+                    "status": "cancelled",
+                    "status_reason": status_reason,
+                }
             return {
-                "ok": False,
+                "rejected": False,
+                "confirmation_id": "conf-cancelled",
                 "reason": "already_cancelled",
                 "status": "cancelled",
                 "status_reason": status_reason,
@@ -1947,7 +2055,11 @@ async def test_f1_tui_expired_stepup_confirmation_reaches_locked_daemon_prefligh
                     ],
                     "count": 1,
                 }
-            return {"ok": False, "reason": "approval_expired"}
+            return {
+                "confirmed": False,
+                "confirmation_id": "conf-expired-stepup",
+                "reason": "approval_expired",
+            }
 
         async def close(self) -> None:
             return

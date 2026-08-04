@@ -185,6 +185,7 @@ from shisad.security.spotlight import (
     build_planner_input_v2,
 )
 from shisad.security.taint import normalize_retrieval_taints
+from shisad.ui.confirmation import render_compact_confirmation_review
 
 logger = logging.getLogger(__name__)
 
@@ -5336,6 +5337,34 @@ def _markdown_fenced_block(text: str, *, language: str = "text") -> str:
     return f"{fence}\n{stripped}\n{fence}"
 
 
+def _discord_native_confirmation_controls_complete(
+    *,
+    pending: Any | None,
+    channel_capability: Mapping[str, Any] | None,
+    approval_available: bool,
+    reject_available: bool,
+    totp_modal_available: bool,
+) -> bool:
+    """Return whether displayed native controls cover this complete decision."""
+
+    if pending is None or not approval_available or not reject_available:
+        return False
+    if not pending_action_state_view(pending).is_live_pending:
+        return False
+    capability = channel_capability or {}
+    if not bool(capability.get("backend_available", True)):
+        return False
+    if not bool(capability.get("can_approve", True)):
+        return False
+    if not bool(capability.get("can_reject", True)):
+        return False
+    selected_method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
+    selected_method = selected_method or "software"
+    if selected_method == "software":
+        return True
+    return selected_method == "totp" and totp_modal_available
+
+
 def _discord_pending_guidance_lines(
     *,
     pending: Any | None,
@@ -5347,6 +5376,7 @@ def _discord_pending_guidance_lines(
     discord_approval_available: bool = True,
     discord_reject_available: bool = True,
     discord_totp_modal_available: bool = True,
+    native_controls_complete: bool = False,
 ) -> list[str]:
     def _discord_rejection_guidance() -> str:
         scoped_hint = (
@@ -5405,6 +5435,10 @@ def _discord_pending_guidance_lines(
         if can_reject:
             lines.append(_discord_rejection_guidance())
         return lines
+    if native_controls_complete:
+        if selected_method == "totp":
+            return ["Use Approve to open the TOTP modal, or Reject."]
+        return ["Use the Approve or Reject button on this message."]
     if selected_method == "recovery_code":
         return [
             "Recovery-code approval required; Discord cannot collect this proof.",
@@ -5531,6 +5565,7 @@ def _discord_pending_confirmation_response_text(
         "",
         "Queued for your approval.",
     ]
+    all_native_controls_complete = bool(indexed_confirmation_ids)
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index
         if pending_index_by_id is not None:
@@ -5540,19 +5575,6 @@ def _discord_pending_confirmation_response_text(
         if pending is not None:
             tool_name = str(getattr(pending, "tool_name", "") or tool_name).strip() or tool_name
 
-        if index > 1:
-            lines.extend(["", "---"])
-        lines.extend(
-            [
-                "",
-                f"### {pending_number}. {_markdown_code_span(tool_name)}",
-                f"ID: {_markdown_code_span(confirmation_id)}",
-            ]
-        )
-        if pending is not None:
-            lines.append(
-                "Lifecycle: " + _markdown_code_span(_pending_action_lifetime_metadata(pending))
-            )
         _ = pending_number, allow_chat_approval, totp_guidance_ids, single_totp_confirmation_id
         component_available = (
             confirmation_id in discord_component_confirmation_ids
@@ -5574,6 +5596,31 @@ def _discord_pending_confirmation_response_text(
             if discord_totp_modal_confirmation_ids is not None
             else (discord_totp_modal_available and component_available)
         )
+        channel_capability = (
+            pending_channel_capability_by_id.get(confirmation_id)
+            if pending_channel_capability_by_id is not None
+            else None
+        )
+        native_controls_complete = _discord_native_confirmation_controls_complete(
+            pending=pending,
+            channel_capability=channel_capability,
+            approval_available=approval_available,
+            reject_available=reject_available,
+            totp_modal_available=totp_modal_available,
+        )
+        all_native_controls_complete = (
+            all_native_controls_complete and native_controls_complete
+        )
+        if index > 1:
+            lines.extend(["", "---"])
+        lines.extend(
+            [
+                "",
+                f"### {pending_number}. {_markdown_code_span(tool_name)}",
+            ]
+        )
+        if not native_controls_complete:
+            lines.append(f"ID: {_markdown_code_span(confirmation_id)}")
         lines.extend(
             _discord_pending_guidance_lines(
                 pending=pending,
@@ -5584,15 +5631,12 @@ def _discord_pending_confirmation_response_text(
                     and pending_actions is not None
                     and len(pending_actions) > len(indexed_confirmation_ids)
                 ),
-                channel_capability=(
-                    pending_channel_capability_by_id.get(confirmation_id)
-                    if pending_channel_capability_by_id is not None
-                    else None
-                ),
+                channel_capability=channel_capability,
                 discord_components_available=component_available,
                 discord_approval_available=approval_available,
                 discord_reject_available=reject_available,
                 discord_totp_modal_available=totp_modal_available,
+                native_controls_complete=native_controls_complete,
             )
         )
 
@@ -5611,8 +5655,13 @@ def _discord_pending_confirmation_response_text(
             if not preview:
                 preview = str(getattr(pending, "reason", "") or "").strip()
         if preview:
-            lines.extend(["", "**Review:**", _markdown_fenced_block(preview)])
-    lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
+            compact_review = render_compact_confirmation_review(
+                preview,
+                fallback_action=tool_name,
+            )
+            lines.extend(["", "**Review:**", _markdown_fenced_block(compact_review)])
+    if not all_native_controls_complete:
+        lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
     return "\n".join(lines).strip()
 
 

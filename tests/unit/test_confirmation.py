@@ -17,6 +17,8 @@ from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
     ConfirmationWarningGenerator,
+    compact_confirmation_review,
+    render_compact_confirmation_review,
     render_pending_action,
     render_structured_confirmation,
     safe_summary,
@@ -116,6 +118,37 @@ def test_f7c_safe_summary_leads_with_action_specific_review_text() -> None:
             safe_summary(action=action, risk_level="medium", arguments=arguments)
         )
         assert expected in rendered
+
+
+def test_i5a_compact_review_uses_only_closed_preview_labels() -> None:
+    preview = (
+        "ACTION CONFIRMATION\n"
+        "Review: Search the web for: OpenClaw\n"
+        "Action: web.search\n"
+        "Risk Level: medium\n"
+        "PARAMETERS:\n"
+        "  query: OpenClaw\n"
+        "  internal_secret: should-not-render"
+    )
+
+    compact = compact_confirmation_review(preview, fallback_action="web.search")
+
+    assert compact.review == "Search the web for: OpenClaw"
+    assert compact.risk_level == "MEDIUM"
+    assert render_compact_confirmation_review(
+        preview,
+        fallback_action="web.search",
+    ) == "Review: Search the web for: OpenClaw\nRisk Level: MEDIUM"
+
+
+def test_i5a_compact_review_does_not_echo_malformed_preview() -> None:
+    compact = render_compact_confirmation_review(
+        "Review: raw operator diagnostic with secret-token\nRisk Level: high",
+        fallback_action="custom.tool",
+    )
+
+    assert compact == "Review: Run custom.tool\nRisk Level: UNKNOWN"
+    assert "secret-token" not in compact
 
 
 def test_f7c_action_review_preserves_literal_metacharacters() -> None:

@@ -11,9 +11,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from shisad.core.api.schema import ActionConfirmResult
 from shisad.core.api.transport import ControlClient
 from shisad.core.plan_steps import normalize_plan_step_status
-from shisad.ui.confirmation import approval_proof_placeholder, render_pending_action
+from shisad.ui.confirmation import (
+    approval_proof_placeholder,
+    render_action_confirm_result,
+    render_pending_action,
+)
 from shisad.ui.theme import UiPosture, resolve_ui_posture, rich_style_map
 
 logger = logging.getLogger(__name__)
@@ -1002,7 +1009,7 @@ async def run_interactive(
         snapshot = await fetch_snapshot(socket_path)
         print(render_plain(snapshot))
         print("")
-        print("[r]efresh  [c]onfirm <id> [proof-code]  [x] reject <id>  [q]uit")
+        print("[r]efresh  [c]onfirm <id> [proof-code] [--json]  [x] reject <id>  [q]uit")
         command = input("> ").strip()
         if not command:
             continue
@@ -1012,14 +1019,32 @@ async def run_interactive(
             continue
         if command.startswith("c "):
             parts = command.split()
+            output_json = len(parts) > 2 and parts[-1] == "--json"
+            if output_json:
+                parts = parts[:-1]
             confirmation_id = parts[1].strip() if len(parts) > 1 else ""
             proof_code = parts[2].strip() if len(parts) > 2 else ""
-            if proof_code:
+            if proof_code and output_json:
                 await _decision(
                     socket_path,
                     "action.confirm",
                     confirmation_id,
                     proof_code=proof_code,
+                    output_json=True,
+                )
+            elif proof_code:
+                await _decision(
+                    socket_path,
+                    "action.confirm",
+                    confirmation_id,
+                    proof_code=proof_code,
+                )
+            elif output_json:
+                await _decision(
+                    socket_path,
+                    "action.confirm",
+                    confirmation_id,
+                    output_json=True,
                 )
             else:
                 await _decision(socket_path, "action.confirm", confirmation_id)
@@ -1038,6 +1063,7 @@ async def _decision(
     *,
     proof_code: str = "",
     totp_code: str = "",
+    output_json: bool = False,
 ) -> None:
     if not confirmation_id:
         print("confirmation_id required")
@@ -1139,5 +1165,13 @@ async def _decision(
         )
     finally:
         await client.close()
-    print(json.dumps(result, indent=2))
+    if output_json or method != "action.confirm":
+        print(json.dumps(result, indent=2))
+    else:
+        try:
+            confirmed_result = ActionConfirmResult.model_validate(result)
+        except ValidationError:
+            print("The confirmation result couldn't be displayed. Retry with --json for details.")
+        else:
+            print(render_action_confirm_result(confirmed_result))
     await asyncio.sleep(0.05)
