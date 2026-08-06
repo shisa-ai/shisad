@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-07-30 (GH #100 source-checkout isolation)*
+*Updated: 2026-08-06 (v0.8.2 O0 dependency intake)*
 *Status: In Progress*  
 *Snapshot basis: code/dependency and workflow state in the v0.8.1 release published on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev`; focused groups plus an opt-in clean-wheel/image job |
 | Release path | PyPI: GitHub Actions `publish.yml` via OIDC; container: local candidate only, no registry path |
-| Current risk summary | Python runtime resolutions remain hash-locked; the release audit has no advisory exceptions; the assistant extra reuses existing locked packages; the local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. Existing Ledger/ACP findings below remain unchanged. |
+| Current risk summary | Python runtime resolutions remain hash-locked and no release-audit ignore is configured, but the all-groups audit now fails on a newly published high `cryptography 48.0.1` advisory whose first patched version (`50.0.0`) is not released. Optional-channel `aiohttp` and all current optional Ledger bridge advisories are resolved in the working candidate. The local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,43 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-08-06 — v0.8.2 O0 dependency intake
+
+- Optional Python channel resolution:
+  - `uv --no-config lock --upgrade-package aiohttp` changed only locked
+    `aiohttp 3.14.1 -> 3.14.3`; the direct dependency declarations and base
+    install remain unchanged.
+  - `uv --no-config lock --check` passed. A frozen `assistant` sync imported
+    `aiohttp 3.14.3`, `discord.py 2.6.4`, and `matrix-nio 0.25.2`, preserving
+    both supported optional-channel consumers.
+- Python audit disposition:
+  - The exact hash-enforced release command,
+    `uvx pip-audit --require-hashes --disable-pip -r <(uv --no-config export
+    --all-groups --frozen --format requirements.txt --no-emit-project)`,
+    reports `cryptography 48.0.1` advisories after the `aiohttp` fix.
+  - Dependabot alert `87` confirms the high PKCS#7 oracle advisory affects
+    `>=44,<50`; upstream identifies unreleased `50.0.0` as the first patched
+    version. Shisad has no direct PKCS#7 decrypt call, but that bounds current
+    exposure rather than proving safety for every dependency path.
+  - The human lead approved retaining `cryptography>=48.0.1,<49`, adding no
+    audit-ignore, and treating this as a v0.8.2 release blocker until a
+    compatible fixed release is locked and validated or a ReleaseClose risk
+    exception is explicitly approved after final review. Two lower-severity
+    audit records whose GitHub affected ranges end at `48.0.0` remain visible
+    for database reconciliation and re-audit.
+- Optional Ledger bridge resolution:
+  - The red `npm audit --json` reported `9` vulnerability groups (`1` low,
+    `3` moderate, `5` high) through the opt-in Ledger tree.
+  - Existing transitive override posture now pins `axios 1.18.0`, `esbuild
+    0.28.1`, `form-data 4.0.6`, `qs 6.15.2`, and `ws 8.21.0`; the existing
+    `uuid 11.1.1` override and all direct Ledger package pins are unchanged.
+  - `npm ci` installed `105` packages with zero vulnerabilities. `npm test`
+    passed all `6` bridge protocol tests,
+    `npx tsc --noEmit` passed, and both `npm audit --json` and
+    `npm audit --omit=dev --json` returned zero vulnerabilities.
+  - This changes no bridge route, hardware protocol, default-off posture, or
+    base Python installation claim.
 
 ### 2026-07-30 — GH #100 managed-environment source checkout
 
@@ -822,7 +859,7 @@ The full locked package set (third-party only) at snapshot time:
 agent-client-protocol==0.8.1
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
-aiohttp==3.14.1
+aiohttp==3.14.3
 aiohttp-socks==0.11.0
 aiosignal==1.4.0
 annotated-doc==0.0.4
@@ -968,7 +1005,7 @@ aiofiles==24.1.0
     # via matrix-nio
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.14.1
+aiohttp==3.14.3
     # via
     #   aiohttp-socks
     #   discord-py

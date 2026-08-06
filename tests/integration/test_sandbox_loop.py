@@ -27,11 +27,16 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
 
-async def _start_daemon(tmp_path: Path) -> tuple[asyncio.Task[None], ControlClient, DaemonConfig]:
+async def _start_daemon(
+    tmp_path: Path,
+    *,
+    assistant_fs_roots: list[Path] | None = None,
+) -> tuple[asyncio.Task[None], ControlClient, DaemonConfig]:
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
+        assistant_fs_roots=assistant_fs_roots or [],
         log_level="INFO",
     )
     daemon_task = asyncio.create_task(run_daemon(config))
@@ -240,7 +245,10 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
         'version: "1"\nsandbox:\n  containment_profile: expert_host_fallback\n',
         encoding="utf-8",
     )
-    daemon_task, client, _ = await _start_daemon(tmp_path)
+    daemon_task, client, _ = await _start_daemon(
+        tmp_path,
+        assistant_fs_roots=[tmp_path],
+    )
     try:
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -264,10 +272,7 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
             },
         )
         assert outside_result["allowed"] is False
-        assert outside_result["reason"] in {
-            "filesystem:outside_mounts",
-            "consensus:veto:ResourceAccessMonitor",
-        }
+        assert outside_result["reason"] == "filesystem:outside_mounts"
 
         deny_result = await client.call(
             "tool.execute",
@@ -285,10 +290,7 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
             },
         )
         assert deny_result["allowed"] is False
-        assert deny_result["reason"] in {
-            "filesystem:denylist_match",
-            "consensus:veto:ResourceAccessMonitor",
-        }
+        assert deny_result["reason"] == "filesystem:denylist_match"
     finally:
         await _shutdown(daemon_task, client)
 

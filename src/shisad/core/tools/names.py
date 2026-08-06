@@ -130,9 +130,7 @@ def canonical_tool_name(name: str, *, warn_on_alias: bool = True) -> str:
     if canonical is not None:
         if warn_on_alias and not had_functions_prefix and lowered not in _WARNED_LEGACY_ALIASES:
             logger.warning(
-                "Legacy tool alias '%s' is deprecated; use '%s' instead.",
-                lowered,
-                canonical,
+                "Legacy tool alias is deprecated; use its canonical dotted name instead."
             )
             _WARNED_LEGACY_ALIASES.add(lowered)
         return canonical

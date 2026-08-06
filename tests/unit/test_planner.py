@@ -1252,3 +1252,62 @@ async def test_f15_concurrent_planner_policy_views_do_not_cross_contaminate() ->
 
     assert allowed.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
     assert denied.evaluated[0].decision.kind == PEPDecisionKind.REJECT
+
+
+@pytest.mark.asyncio
+async def test_o0_validation_tool_names_are_concurrency_local_and_reset() -> None:
+    class ValidationNamesProvider:
+        def __init__(self) -> None:
+            self.planner: Planner | None = None
+            self._entered = 0
+            self._both_entered = asyncio.Event()
+            self.observed: dict[str, frozenset[str]] = {}
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = tools
+            assert self.planner is not None
+            user_content = messages[-1].content
+            self.observed[user_content] = self.planner._validation_tool_names.get()
+            if user_content != "after reset":
+                self._entered += 1
+                if self._entered == 2:
+                    self._both_entered.set()
+                await self._both_entered.wait()
+            return ProviderResponse(
+                message=Message(role="assistant", content="No action needed."),
+                finish_reason="stop",
+                usage={},
+            )
+
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = ValidationNamesProvider()
+    planner = Planner(provider, pep, max_retries=0)
+    provider.planner = planner
+    context = PolicyContext(capabilities={Capability.FILE_READ})
+
+    await asyncio.gather(
+        planner.propose_with_pep(
+            "resolve action",
+            context,
+            pep=pep,
+            validation_tool_names={"action.resolve"},
+        ),
+        planner.propose_with_pep(
+            "resume lockdown",
+            context,
+            pep=pep,
+            validation_tool_names={"lockdown.resume"},
+        ),
+    )
+    await planner.propose("after reset", context)
+
+    assert provider.observed == {
+        "resolve action": frozenset({"action.resolve"}),
+        "resume lockdown": frozenset({"lockdown.resume"}),
+        "after reset": frozenset(),
+    }
