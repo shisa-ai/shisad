@@ -3,7 +3,7 @@
 *Created: 2026-03-31*  
 *Updated: 2026-08-06 (v0.8.2 O0 dependency intake)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency and workflow state in the v0.8.1 release published on 2026-07-28; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.8.0 release evidence is retained where explicitly labeled. This snapshot includes no registry image.*
+*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory also include the v0.8.2 O0 working candidate at `shisad@a2546460`. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
 
 ## Scope and Intent
 
@@ -69,6 +69,10 @@ Goals:
   - Existing transitive override posture now pins `axios 1.18.0`, `esbuild
     0.28.1`, `form-data 4.0.6`, `qs 6.15.2`, and `ws 8.21.0`; the existing
     `uuid 11.1.1` override and all direct Ledger package pins are unchanged.
+  - The axios update adds `https-proxy-agent 5.0.1`, `agent-base 6.0.2`,
+    `debug 4.4.3`, and `ms 2.1.3` to the optional tree. The global `ws 8.21.0`
+    override also replaces ethers' prior nested exact `ws 8.17.1` resolution;
+    the clean audits and bridge tests cover the resulting shared resolution.
   - `npm ci` installed `105` packages with zero vulnerabilities. `npm test`
     passed all `6` bridge protocol tests,
     `npx tsc --noEmit` passed, and both `npm audit --json` and
@@ -606,9 +610,12 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-No open supply-chain deferrals as of 2026-06-03. The current Claude
-adapter-chain advisory is recorded above as accepted runtime-npx adapter risk,
-not as a new open deferral in this document.
+| ID | Rationale | Risk | Target / exit condition |
+|---|---|---|---|
+| `SC-v0.8.2-cryptography` | Locked `cryptography 48.0.1` is affected by the newly published PKCS#7 oracle advisory, while upstream names unreleased `50.0.0` as the first patched version. Released `49.0.0` does not close it. No audit ignore is configured. | A reachable PKCS#7 decrypt path could expose distinguishable error/timing behavior; the all-groups audit remains red. Shisad has no direct call to that surface, which bounds current exposure but is not a safety guarantee. | v0.8.2 ReleaseClose: lock and validate the first compatible `cryptography>=50` release, or record an explicit reviewed release-risk decision before publication. |
+
+The current Claude adapter-chain advisory remains recorded above as accepted
+runtime-npx adapter risk, not as a second open deferral in this document.
 
 ### Closed Deferrals
 
@@ -851,9 +858,9 @@ that path.
   provenance attestation, signature, or documented signature-verification path
   yet; public docs therefore call it a local candidate only.
 
-### D. Full upstream package inventory (all groups)
+### D. Current working-candidate package inventory (all groups)
 
-The full locked package set (third-party only) at snapshot time:
+The full locked package set (third-party only) at the O0 working candidate:
 
 ```text
 agent-client-protocol==0.8.1

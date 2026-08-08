@@ -1210,7 +1210,7 @@ async def test_f15_concurrent_planner_policy_views_do_not_cross_contaminate() ->
             self._entered += 1
             if self._entered == 2:
                 self._both_entered.set()
-            await self._both_entered.wait()
+            await asyncio.wait_for(self._both_entered.wait(), timeout=1)
             return await super().complete(messages, tools)
 
     registry = _make_registry()
@@ -1258,10 +1258,8 @@ async def test_f15_concurrent_planner_policy_views_do_not_cross_contaminate() ->
 async def test_o0_validation_tool_names_are_concurrency_local_and_reset() -> None:
     class ValidationNamesProvider:
         def __init__(self) -> None:
-            self.planner: Planner | None = None
             self._entered = 0
             self._both_entered = asyncio.Event()
-            self.observed: dict[str, frozenset[str]] = {}
 
         async def complete(
             self,
@@ -1269,45 +1267,72 @@ async def test_o0_validation_tool_names_are_concurrency_local_and_reset() -> Non
             tools: list[dict[str, Any]] | None = None,
         ) -> ProviderResponse:
             _ = tools
-            assert self.planner is not None
             user_content = messages[-1].content
-            self.observed[user_content] = self.planner._validation_tool_names.get()
-            if user_content != "after reset":
-                self._entered += 1
-                if self._entered == 2:
-                    self._both_entered.set()
-                await self._both_entered.wait()
+            self._entered += 1
+            if self._entered == 2:
+                self._both_entered.set()
+            await asyncio.wait_for(self._both_entered.wait(), timeout=1)
+            tool_name = {
+                "resolve action": "action.resolve",
+                "resume lockdown": "lockdown.resume",
+            }[user_content]
             return ProviderResponse(
-                message=Message(role="assistant", content="No action needed."),
+                message=Message(
+                    role="assistant",
+                    content="Using the requested control tool.",
+                    tool_calls=[
+                        {
+                            "id": f"call-{tool_name}",
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": "{}"},
+                        }
+                    ],
+                ),
                 finish_reason="stop",
                 usage={},
             )
 
     registry = _make_registry()
+    for tool_name in ("action.resolve", "lockdown.resume"):
+        registry.register(
+            ToolDefinition(
+                name=ToolName(tool_name),
+                description="Runtime-gated control tool.",
+                parameters=[],
+                capabilities_required=[Capability.FILE_READ],
+            )
+        )
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     provider = ValidationNamesProvider()
-    planner = Planner(provider, pep, max_retries=0)
-    provider.planner = planner
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
     context = PolicyContext(capabilities={Capability.FILE_READ})
 
-    await asyncio.gather(
-        planner.propose_with_pep(
-            "resolve action",
+    async def _propose_and_observe_reset(
+        user_content: str,
+        tool_name: str,
+    ) -> tuple[list[str], frozenset[str]]:
+        result = await planner.propose_with_pep(
+            user_content,
             context,
             pep=pep,
-            validation_tool_names={"action.resolve"},
-        ),
-        planner.propose_with_pep(
-            "resume lockdown",
-            context,
-            pep=pep,
-            validation_tool_names={"lockdown.resume"},
-        ),
-    )
-    await planner.propose("after reset", context)
+            tools=[],
+            validation_tool_names={tool_name},
+        )
+        return (
+            [str(item.proposal.tool_name) for item in result.evaluated],
+            planner._validation_tool_names.get(),
+        )
 
-    assert provider.observed == {
-        "resolve action": frozenset({"action.resolve"}),
-        "resume lockdown": frozenset({"lockdown.resume"}),
-        "after reset": frozenset(),
-    }
+    resolved, resumed = await asyncio.gather(
+        _propose_and_observe_reset("resolve action", "action.resolve"),
+        _propose_and_observe_reset("resume lockdown", "lockdown.resume"),
+    )
+
+    assert resolved == (["action.resolve"], frozenset())
+    assert resumed == (["lockdown.resume"], frozenset())
