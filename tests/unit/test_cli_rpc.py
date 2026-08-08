@@ -8,6 +8,7 @@ from typing import ClassVar
 import pytest
 
 from shisad.cli import rpc
+from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError
 from shisad.core.api.schema import SessionCreateResult
 from shisad.core.config import DaemonConfig
 
@@ -153,3 +154,22 @@ def test_rpc_run_wraps_operation_errors(
         rpc.rpc_run(config, _operation, action="events.subscribe")
 
     assert "Technical details: RuntimeError: boom" in str(exc.value)
+
+
+def test_o1_daemon_error_uses_shared_typed_envelope() -> None:
+    secret = "sk-" + "abcdefghijklmnopqrstuvwx"
+    error = rpc.daemon_cli_error(
+        what_failed=f"{'x' * 499} {secret}\x1b[31m daemon.",
+        exc=OSError("stopped"),
+        next_action="shisad doctor",
+    )
+
+    assert isinstance(error, StructuredCliError)
+    assert isinstance(error.envelope, CliErrorEnvelope)
+    assert error.envelope.error_type == "daemon"
+    assert error.envelope.exit_code == 2
+    assert error.envelope.next_action == "shisad doctor"
+    assert error.payload["technical_details"] == "OSError: stopped"
+    assert secret not in str(error)
+    assert "sk-abcdef" not in str(error)
+    assert "\x1b" not in str(error)

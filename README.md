@@ -66,6 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
+| v0.8.2 (development) | Reliability fixes plus a read-only bare-command environment/preflight welcome; setup and lifecycle routing remain in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -154,10 +155,11 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.1 CLI can create and inspect the typed TOML surface without starting
-the daemon:
+The current v0.8.2 development CLI can inspect the environment and create or
+inspect the typed TOML surface without starting the daemon:
 
 ```bash
+shisad
 shisad init
 shisad config validate
 shisad config show --format human
@@ -165,6 +167,14 @@ shisad config diff --format human
 shisad config schema --format json
 shisad env --format human
 ```
+
+Bare `shisad` is a read-only welcome and preflight. It distinguishes fresh,
+returning, explicitly managed, and non-interactive posture from finite machine
+facts; reports required, optional/degraded, and informational checks; and names
+an explicit next action. It does not prompt, write configuration, migrate a
+schema, start the daemon, or open chat. Unsupported config schema and invalid
+managed posture fail actionably instead of inferring consent. The guided setup
+wizard and automatic first-start/chat routing remain later v0.8.2 work.
 
 `shisad init` creates one owner-only commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally

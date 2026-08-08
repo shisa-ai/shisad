@@ -10,34 +10,15 @@ from typing import Any, overload
 import click
 from pydantic import BaseModel, ValidationError
 
+from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
-from shisad.security.firewall.secrets import redact_ingress_secrets
-from shisad.ui.evidence import sanitize_terminal_field
 
 
-class DaemonCliError(click.ClickException):
+class DaemonCliError(StructuredCliError):
     """Expected daemon/runtime failure with the documented CLI exit status."""
 
     exit_code = 2
-
-
-def _safe_error_detail(exc: BaseException) -> str:
-    if isinstance(exc, ValidationError):
-        failures = []
-        for error_row in exc.errors(
-            include_url=False,
-            include_context=False,
-            include_input=False,
-        )[:5]:
-            location = ".".join(str(part) for part in error_row.get("loc", ())) or "root"
-            failures.append(f"{location}:{error_row.get('type', 'invalid')}")
-        detail = ", ".join(failures) or "response:invalid"
-    else:
-        detail = sanitize_terminal_field(str(exc)[:4096])
-    redacted, _findings = redact_ingress_secrets(detail)
-    bounded = redacted[:240]
-    return f"{exc.__class__.__name__}: {bounded}" if bounded else exc.__class__.__name__
 
 
 def daemon_cli_error(
@@ -49,14 +30,14 @@ def daemon_cli_error(
     """Build the shared expected-error envelope used by daemon-facing commands."""
 
     return DaemonCliError(
-        "\n".join(
-            [
-                f"What failed: {what_failed}",
-                "What still works: config, help, and offline inspection commands.",
-                "Likely cause: the daemon is stopped, unreachable, or rejected the request.",
-                f"Next action: {next_action}",
-                f"Technical details: {_safe_error_detail(exc)}",
-            ]
+        CliErrorEnvelope(
+            error_type="daemon",
+            exit_code=DaemonCliError.exit_code,
+            what_failed=what_failed,
+            what_still_works="config, help, and offline inspection commands.",
+            likely_cause="the daemon is stopped, unreachable, or rejected the request.",
+            next_action=next_action,
+            technical_details=safe_error_detail(exc),
         )
     )
 

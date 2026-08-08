@@ -2794,6 +2794,80 @@ def test_f6_root_help_groups_tasks_and_hides_compatibility_alias() -> None:
     assert "realitycheck" not in result.output
 
 
+def test_o1_bare_root_reports_fresh_preflight_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Fresh install" in result.output
+    assert "Preflight" in result.output
+    assert "Next action: shisad init" in result.output
+    assert "\x1b[" not in result.output
+    assert not config_home.exists()
+
+
+def test_o1_bare_root_explicit_missing_config_is_actionable_and_nonmutating(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "missing config.toml"
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 3
+    assert str(config_path) in result.output
+    assert f"shisad --config '{config_path}' init" in result.output
+    assert "What failed: Could not load operator configuration." in result.output
+    assert not config_path.exists()
+
+
+def test_o1_bare_root_unsupported_schema_routes_to_upgrade_recovery(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("schema_version = 2\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 3
+    assert "upgrade" in result.output.lower()
+    assert "schema_version=1" in result.output
+    assert config_path.read_text(encoding="utf-8") == "schema_version = 2\n"
+
+
+def test_o1_bare_root_managed_posture_never_advertises_implicit_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("schema_version = 1\n", encoding="utf-8")
+    monkeypatch.setenv("SHISAD_MANAGED", "true")
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Managed environment" in result.output
+    assert "Next action: shisad doctor" in result.output
+    assert "Next action: shisad start" not in result.output
+
+
+def test_o1_bare_root_invalid_managed_posture_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MANAGED", "sometimes\x1b[31m")
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 3
+    assert "SHISAD_MANAGED" in result.output
+    assert "true or false" in result.output
+    assert "\x1b[31m" not in result.output
+
+
 def test_f6_reality_check_canonical_and_legacy_alias_share_rpc(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

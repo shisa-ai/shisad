@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
@@ -24,6 +25,12 @@ import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
+from shisad.cli.onboarding import (
+    EnvironmentDetectionError,
+    inspect_onboarding_environment,
+    render_welcome,
+)
+from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
 from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
 from shisad.core.api.schema import (
     ActionConfirmResult,
@@ -111,13 +118,16 @@ from shisad.core.api.schema import (
 from shisad.core.config import DaemonConfig
 from shisad.core.config_file import (
     ConfigFileError,
+    ConfigFileMissingError,
     LoadedConfig,
+    UnsupportedConfigSchemaError,
     config_diff_projection,
     config_schema_projection,
     environment_projection,
     initialize_config_file,
     load_effective_config,
     render_config_template,
+    selected_config_path,
 )
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
@@ -125,7 +135,6 @@ from shisad.interop.a2a_envelope import (
     load_public_key_from_path,
     write_ed25519_keypair,
 )
-from shisad.security.firewall.secrets import redact_ingress_secrets
 from shisad.ui.confirmation import (
     render_action_confirm_result,
     render_confirmed_tool_output,
@@ -550,33 +559,13 @@ def _progress(label: str) -> Any:
         _echo(f"{label} done ({elapsed:.2f}s)", fg="green")
 
 
-class ConfigCliError(click.ClickException):
+class ConfigCliError(StructuredCliError):
     """Invalid or unsafe user configuration."""
 
     exit_code = 3
 
     def __init__(self, payload: Mapping[str, object], *, output_format: str) -> None:
-        self.payload = dict(payload)
-        self.output_format = output_format
-        super().__init__(
-            "\n".join(
-                [
-                    f"What failed: {payload['what_failed']}",
-                    f"What still works: {payload['what_still_works']}",
-                    f"Likely cause: {payload['likely_cause']}",
-                    f"Next action: {payload['next_action']}",
-                    f"Technical details: {payload['technical_details']}",
-                ]
-            )
-        )
-
-    def show(self, file: Any | None = None) -> None:
-        if self.output_format != "json":
-            super().show(file)
-            return
-        if file is None:
-            file = click.get_text_stream("stderr")
-        click.echo(json.dumps(self.payload, sort_keys=True), file=file)
+        super().__init__(CliErrorEnvelope.from_mapping(payload), output_format=output_format)
 
 
 def _config_cli_error(
@@ -585,19 +574,17 @@ def _config_cli_error(
     exc: ConfigFileError,
     next_action: str,
     output_format: str = "human",
+    likely_cause: str = "the selected config is missing, invalid, unsafe, or unsupported.",
 ) -> ConfigCliError:
-    sanitized = sanitize_terminal_field(str(exc)[:4096])
-    redacted, _findings = redact_ingress_secrets(sanitized)
-    detail = redacted[:240] or exc.__class__.__name__
     return ConfigCliError(
         {
             "error_type": "config",
             "exit_code": ConfigCliError.exit_code,
             "what_failed": what_failed,
             "what_still_works": ("help, config template, config schema, and version commands."),
-            "likely_cause": ("the selected config is missing, invalid, unsafe, or unsupported."),
+            "likely_cause": likely_cause,
             "next_action": next_action,
-            "technical_details": f"{exc.__class__.__name__}: {detail}",
+            "technical_details": safe_error_detail(exc),
         },
         output_format=output_format,
     )
@@ -712,6 +699,7 @@ def _projection_lines(projection: Mapping[str, object]) -> list[str]:
 
 @click.group(
     cls=TaskGroupedGroup,
+    invoke_without_command=True,
     epilog=(
         "Fresh setup: shisad init\n"
         "Daemon stopped: shisad start --foreground\n"
@@ -733,6 +721,79 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["no_color"] = no_color
     ctx.obj["config_path"] = config_path
+    if ctx.invoked_subcommand is not None:
+        return
+
+    output_stream = click.get_text_stream("stdout")
+    is_interactive = bool(getattr(output_stream, "isatty", lambda: False)())
+    try:
+        report = inspect_onboarding_environment(
+            config_path,
+            environ=os.environ,
+            interactive=is_interactive,
+        )
+    except EnvironmentDetectionError as exc:
+        raise StructuredCliError(
+            CliErrorEnvelope(
+                error_type="environment",
+                exit_code=3,
+                what_failed="Could not determine a safe onboarding environment.",
+                what_still_works="help, version, and explicit operator commands.",
+                likely_cause="SHISAD_MANAGED has an unsupported explicit value.",
+                next_action="set SHISAD_MANAGED to true or false, then run: shisad",
+                technical_details=safe_error_detail(exc),
+            )
+        ) from exc
+    except ConfigFileMissingError as exc:
+        selected = selected_config_path(config_path, environ=os.environ)
+        quoted_path = shlex.quote(str(selected))
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            next_action=(
+                f"create the selected path explicitly with: "
+                f"shisad --config {quoted_path} init"
+            ),
+        ) from exc
+    except UnsupportedConfigSchemaError as exc:
+        selected = selected_config_path(config_path, environ=os.environ)
+        quoted_path = shlex.quote(str(selected))
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            likely_cause="the selected config requires upgrade recovery.",
+            next_action=(
+                "use a compatible shisad version or restore schema_version=1, then run: "
+                f"shisad --config {quoted_path} config validate"
+            ),
+        ) from exc
+    except ConfigFileError as exc:
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            next_action="review the selected TOML or run: shisad config template",
+        ) from exc
+
+    ui_posture = resolve_ui_posture(
+        theme_name=report.facts.ui_theme,
+        reduce_motion=report.facts.reduce_motion,
+        no_color=no_color,
+        environ=os.environ,
+        isatty=is_interactive,
+    )
+    click.echo(render_welcome(report, ui_posture=ui_posture), color=ui_posture.color_enabled)
+    if report.blocked:
+        raise StructuredCliError(
+            CliErrorEnvelope(
+                error_type="environment",
+                exit_code=3,
+                what_failed="Required onboarding preflight failed.",
+                what_still_works="help, version, and explicit diagnostic commands.",
+                likely_cause="the installed Python runtime is unsupported.",
+                next_action=report.next_action,
+                technical_details="required runtime check failed",
+            )
+        )
 
 
 @cli.group("config")

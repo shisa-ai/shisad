@@ -43,6 +43,19 @@ class ConfigFileError(ValueError):
     """An operator-authored configuration file is invalid or unsafe."""
 
 
+class ConfigFileMissingError(ConfigFileError):
+    """An explicitly selected configuration path does not exist."""
+
+
+class UnsupportedConfigSchemaError(ConfigFileError):
+    """The selected configuration schema is not supported by this version."""
+
+    def __init__(self, actual_version: object, *, supported_version: int = 1) -> None:
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(f"unsupported schema_version: {actual_version!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class LoadedConfig:
     """Validated effective configuration plus per-field source metadata."""
@@ -95,7 +108,7 @@ def load_config_file(
     try:
         raw_bytes = config_path.read_bytes()
     except FileNotFoundError:
-        raise ConfigFileError("selected config file does not exist") from None
+        raise ConfigFileMissingError("selected config file does not exist") from None
     except OSError as exc:
         raise ConfigFileError(
             f"cannot read selected config file: {exc.__class__.__name__}"
@@ -113,7 +126,7 @@ def load_config_file(
         raise ConfigFileError(f"unknown top-level key: {unknown_top_level[0]}")
     schema_version = document.get("schema_version", 1)
     if type(schema_version) is not int or schema_version != 1:
-        raise ConfigFileError(f"unsupported schema_version: {schema_version!r}")
+        raise UnsupportedConfigSchemaError(schema_version)
     daemon_document = document.get("daemon", {})
     if isinstance(daemon_document, dict) and "config_path" in daemon_document:
         raise ConfigFileError("daemon.config_path may be selected only by CLI or environment")
@@ -174,6 +187,17 @@ def _selected_config_path(
     if env_path_text:
         return Path(env_path_text).expanduser()
     return default_config_path(environ=environ)
+
+
+def selected_config_path(
+    config_path: Path | None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the canonical root/env/default selected configuration path."""
+
+    effective_env = os.environ if environ is None else environ
+    return _selected_config_path(config_path, environ=effective_env)
 
 
 def config_field_inventory() -> list[dict[str, str]]:

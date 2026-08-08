@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-31*
+*Updated: 2026-08-08*
 *Status: Active*
 
 ## Goal
@@ -421,13 +421,20 @@ TOTP entry remain deferred to `v0.8.0`.
   when a protected request or provider-reported request cannot fit. The next
   response-finality unit treats remote no-action planner prose as a preliminary
   draft and exposes only a typed model-produced final answer on native-tool-call
-  routes; it does not add a daemon prose classifier.
+  routes; it does not add a daemon prose classifier. The first onboarding unit
+  now gives bare `shisad` a read-only environment welcome and preflight using
+  finite config, terminal, managed-mode, container, policy, and bounded daemon
+  reachability facts. Optional gaps degrade without blocking the safe core,
+  while invalid explicit posture/config fails actionably; the command does not
+  prompt, write, migrate, start the daemon, or open chat.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
   help grouping, exit statuses, and naming compatibility
-- Onboarding — the interactive wizard, tutorial bot, and upgrade flow remain
-  later work; v0.8.1 `init` is only a minimal template publisher
+- Onboarding — the bounded environment/preflight welcome is present on the
+  v0.8.2 development tree. The interactive setup wizard, tutorial bot,
+  automatic lifecycle/chat routing, and schema migration flow remain later
+  work; `init` is still only a minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls
