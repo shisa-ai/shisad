@@ -67,6 +67,12 @@ def test_o1_invalid_managed_value_fails_closed() -> None:
         parse_managed_posture({"SHISAD_MANAGED": "sometimes\x1b[31m"})
 
 
+@pytest.mark.parametrize("value", [" true", "true ", " false ", " ", "\t"])
+def test_o1_padded_or_whitespace_managed_value_fails_closed(value: str) -> None:
+    with pytest.raises(onboarding.EnvironmentDetectionError, match="SHISAD_MANAGED"):
+        parse_managed_posture({"SHISAD_MANAGED": value})
+
+
 def test_o1_optional_gaps_do_not_block_safe_core(tmp_path: Path) -> None:
     report = build_preflight_report(
         EnvironmentFacts(
@@ -329,6 +335,34 @@ def test_o1_renderer_preserves_semantics_with_unicode_and_ascii_fallback(
         assert phrase in plain_text
 
 
+def test_o1_interactive_non_utf_renderer_is_ascii_and_no_color(tmp_path: Path) -> None:
+    report = build_preflight_report(
+        EnvironmentFacts(
+            posture=ConfiguredPosture.RETURNING,
+            config_path=tmp_path / "config.toml",
+            config_present=True,
+            explicit_config=False,
+            interactive=True,
+            managed=False,
+            containerized=False,
+            python_version=(3, 12, 7),
+            policy_present=False,
+            daemon_reachable=False,
+        )
+    )
+    non_utf = resolve_ui_posture(
+        environ={"TERM": "xterm-256color", "LANG": "C"},
+        isatty=True,
+    )
+
+    assert non_utf.capabilities.unicode is False
+    assert non_utf.capabilities.color_mode != "none"
+    rendered = render_welcome(report, ui_posture=non_utf)
+    assert "\x1b[" not in rendered
+    assert "╭" not in rendered
+    assert "WARN" in rendered
+
+
 def test_o1_daemon_probe_is_bounded_and_closes_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -353,6 +387,37 @@ def test_o1_daemon_probe_is_bounded_and_closes_client(
 
     assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.1)) is True
     assert events == ["connect", "daemon.status", "close"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, 1, {}, {"status": None}, {"status": 1}, {"status": {}}, {"status": "ready"}],
+)
+def test_o1_daemon_probe_rejects_malformed_or_unknown_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+) -> None:
+    closed = False
+
+    class _MalformedClient:
+        def __init__(self, _socket_path: Path) -> None:
+            return None
+
+        async def connect(self) -> None:
+            return None
+
+        async def call(self, _method: str) -> object:
+            return payload
+
+        async def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    monkeypatch.setattr(onboarding, "ControlClient", _MalformedClient)
+
+    assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.1)) is False
+    assert closed is True
 
 
 def test_o1_daemon_probe_times_out_and_closes_connected_client(

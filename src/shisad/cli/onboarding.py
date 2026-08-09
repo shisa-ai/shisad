@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 from shisad.cli.presentation import safe_cli_text
+from shisad.core.api.schema import DaemonStatusResult
 from shisad.core.api.transport import ControlClient
 from shisad.core.config_file import load_effective_config, selected_config_path
 from shisad.ui.motion import glyph
@@ -93,7 +94,7 @@ class PreflightReport:
 def parse_managed_posture(environ: Mapping[str, str]) -> bool:
     """Parse the finite managed-mode flag without treating invalid as false."""
 
-    value = str(environ.get("SHISAD_MANAGED", "")).strip().lower()
+    value = str(environ.get("SHISAD_MANAGED", "")).lower()
     if not value or value in _FALSY:
         return False
     if value in _TRUTHY:
@@ -143,7 +144,8 @@ async def probe_daemon(socket_path: Path, *, timeout: float = 1.0) -> bool:
                 await client.connect()
                 connected = True
                 payload = await client.call("daemon.status")
-                return isinstance(payload, Mapping) and bool(str(payload.get("status", "")).strip())
+                status = DaemonStatusResult.model_validate(payload)
+                return status.status == "running"
             finally:
                 if connected:
                     await client.close()
@@ -287,13 +289,7 @@ def build_preflight_report(facts: EnvironmentFacts) -> PreflightReport:
 
 
 def _environment_detail(facts: EnvironmentFacts) -> str:
-    mode = (
-        "managed"
-        if facts.managed
-        else "interactive"
-        if facts.interactive
-        else "non-interactive"
-    )
+    mode = "managed" if facts.managed else "interactive" if facts.interactive else "non-interactive"
     container = ", container marker present" if facts.containerized else ""
     return f"{mode}{container}"
 
@@ -380,7 +376,11 @@ def _style(
     ui_posture: UiPosture,
     bold: bool = False,
 ) -> str:
-    if not ui_posture.color_enabled or ui_posture.capabilities.color_mode == "none":
+    if (
+        not ui_posture.color_enabled
+        or not ui_posture.capabilities.unicode
+        or ui_posture.capabilities.color_mode == "none"
+    ):
         return text
     color = ui_posture.palette.color(semantic)
     rgb = (
