@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +18,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from shisad.cli import main as cli_main
+from shisad.cli import onboarding
 from shisad.cli import rpc as cli_rpc
 from shisad.core.config import DaemonConfig
 from shisad.ui.theme import UiPosture
@@ -2844,8 +2845,25 @@ def test_o1_bare_root_managed_posture_never_advertises_implicit_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text("schema_version = 1\n", encoding="utf-8")
+    ambient_runtime = tmp_path / "ambient-runtime"
+    ambient_socket = ambient_runtime / "shisad" / "control.sock"
+    isolated_socket = tmp_path / "isolated" / "control.sock"
+    ambient_socket.parent.mkdir(parents=True)
+    ambient_socket.touch()
+    config_path.write_text(
+        f'schema_version = 1\n[daemon]\nsocket_path = "{isolated_socket}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(ambient_runtime))
     monkeypatch.setenv("SHISAD_MANAGED", "true")
+    probed: list[Path] = []
+
+    def _ambient_probe(socket_path: Path) -> bool:
+        probed.append(socket_path)
+        return True
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _ambient_probe)
 
     result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
 
@@ -2853,6 +2871,60 @@ def test_o1_bare_root_managed_posture_never_advertises_implicit_start(
     assert "Managed environment" in result.output
     assert "Next action: shisad doctor" in result.output
     assert "Next action: shisad start" not in result.output
+    assert probed == []
+
+
+def test_o1_bare_root_no_color_uses_ascii_on_utf_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+    result = CliRunner().invoke(cli_main.cli, ["--no-color"])
+
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.output
+    assert "╭" not in result.output
+    assert "WARN" in result.output
+
+
+def test_o1_bare_root_required_runtime_failure_uses_exit_three_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config-home"
+    original_inspect = cli_main.inspect_onboarding_environment
+
+    def _inspect_with_unsupported_runtime(
+        config_path: Path | None,
+        *,
+        environ: Mapping[str, str] | None = None,
+        interactive: bool | None = None,
+    ) -> onboarding.PreflightReport:
+        return original_inspect(
+            config_path,
+            environ=environ,
+            interactive=interactive,
+            python_version=(3, 11, 9),
+            containerized=False,
+        )
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(
+        cli_main,
+        "inspect_onboarding_environment",
+        _inspect_with_unsupported_runtime,
+    )
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 3
+    assert "Required onboarding preflight failed." in result.output
+    assert "Python 3.12 or newer" in result.output
+    assert "help, version, and explicit diagnostic commands" in result.output
+    assert not config_home.exists()
 
 
 def test_o1_bare_root_invalid_managed_posture_fails_closed(

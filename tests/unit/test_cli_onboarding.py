@@ -363,6 +363,47 @@ def test_o1_interactive_non_utf_renderer_is_ascii_and_no_color(tmp_path: Path) -
     assert "WARN" in rendered
 
 
+@pytest.mark.parametrize(
+    ("environ", "no_color"),
+    [
+        ({"TERM": "xterm-256color", "LANG": "en_US.UTF-8", "NO_COLOR": "1"}, False),
+        ({"TERM": "xterm-256color", "LANG": "en_US.UTF-8"}, True),
+    ],
+)
+def test_o1_explicit_no_color_renderer_is_ascii(
+    tmp_path: Path,
+    environ: dict[str, str],
+    no_color: bool,
+) -> None:
+    report = build_preflight_report(
+        EnvironmentFacts(
+            posture=ConfiguredPosture.RETURNING,
+            config_path=tmp_path / "config.toml",
+            config_present=True,
+            explicit_config=False,
+            interactive=True,
+            managed=False,
+            containerized=False,
+            python_version=(3, 12, 7),
+            policy_present=False,
+            daemon_reachable=False,
+        )
+    )
+    posture = resolve_ui_posture(
+        no_color=no_color,
+        environ=environ,
+        isatty=True,
+    )
+
+    assert posture.capabilities.unicode is True
+    assert posture.color_enabled is False
+    rendered = render_welcome(report, ui_posture=posture)
+    assert "\x1b[" not in rendered
+    assert "╭" not in rendered
+    assert "⚠" not in rendered
+    assert "WARN" in rendered
+
+
 def test_o1_daemon_probe_is_bounded_and_closes_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -418,6 +459,56 @@ def test_o1_daemon_probe_rejects_malformed_or_unknown_status(
 
     assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.1)) is False
     assert closed is True
+
+
+def test_o1_daemon_probe_degrades_when_unix_transport_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnavailableClient:
+        def __init__(self, _socket_path: Path) -> None:
+            return None
+
+        async def connect(self) -> None:
+            raise AttributeError("module 'asyncio' has no attribute 'open_unix_connection'")
+
+    monkeypatch.setattr(onboarding, "ControlClient", _UnavailableClient)
+
+    assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock")) is False
+
+
+def test_o1_daemon_probe_bounds_close_after_request_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _DeadlineClient:
+        def __init__(self, _socket_path: Path) -> None:
+            return None
+
+        async def connect(self) -> None:
+            events.append("connect")
+
+        async def call(self, _method: str) -> object:
+            events.append("call")
+            await asyncio.sleep(1)
+            return {"status": "running"}
+
+        async def close(self) -> None:
+            events.append("close")
+            await asyncio.sleep(1)
+
+    async def _bounded_probe() -> bool:
+        return await asyncio.wait_for(
+            onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.01),
+            timeout=0.1,
+        )
+
+    monkeypatch.setattr(onboarding, "ControlClient", _DeadlineClient)
+
+    assert asyncio.run(_bounded_probe()) is False
+    assert events == ["connect", "call", "close"]
 
 
 def test_o1_daemon_probe_times_out_and_closes_connected_client(

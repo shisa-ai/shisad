@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -138,19 +138,26 @@ async def probe_daemon(socket_path: Path, *, timeout: float = 1.0) -> bool:
 
     client = ControlClient(socket_path)
     connected = False
+    reachable = False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.001, timeout)
     try:
-        async with asyncio.timeout(max(0.001, timeout)):
+        async with asyncio.timeout_at(deadline):
+            await client.connect()
+            connected = True
+            payload = await client.call("daemon.status")
+            status = DaemonStatusResult.model_validate(payload)
+            reachable = status.status == "running"
+    except (TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        reachable = False
+    finally:
+        if connected:
             try:
-                await client.connect()
-                connected = True
-                payload = await client.call("daemon.status")
-                status = DaemonStatusResult.model_validate(payload)
-                return status.status == "running"
-            finally:
-                if connected:
+                async with asyncio.timeout_at(deadline):
                     await client.close()
-    except (TimeoutError, OSError, RuntimeError, TypeError, ValueError):
-        return False
+            except (TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                reachable = False
+    return reachable
 
 
 def _sync_daemon_probe(socket_path: Path) -> bool:
@@ -314,9 +321,13 @@ def render_welcome(report: PreflightReport, *, ui_posture: UiPosture) -> str:
     """Render one semantic report with Unicode/color or deterministic fallback."""
 
     lines = [_render_logo(ui_posture), "", _welcome_label(report.facts), "", "Preflight"]
+    render_capabilities = replace(
+        ui_posture.capabilities,
+        unicode=_unicode_rendering_enabled(ui_posture),
+    )
     for check in report.checks:
         icon_name, color_name = _check_style(check.state)
-        marker = glyph(icon_name, ui_posture.capabilities)
+        marker = glyph(icon_name, render_capabilities)
         prefix = _style(
             f"{marker} {check.label}",
             semantic=color_name,
@@ -352,11 +363,15 @@ def _welcome_label(facts: EnvironmentFacts) -> str:
 
 
 def _render_logo(ui_posture: UiPosture) -> str:
-    if ui_posture.capabilities.unicode:
+    if _unicode_rendering_enabled(ui_posture):
         logo = "╭─ shisad ─╮\n╰ security-first agent daemon ╯"
     else:
         logo = "[ shisad ]\nsecurity-first agent daemon"
     return _style(logo, semantic="accent", ui_posture=ui_posture, bold=True)
+
+
+def _unicode_rendering_enabled(ui_posture: UiPosture) -> bool:
+    return ui_posture.color_enabled and ui_posture.capabilities.unicode
 
 
 def _check_style(state: CheckState) -> tuple[str, str]:

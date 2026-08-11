@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from shisad.cli import onboarding
 from shisad.cli.main import cli
 
 pytestmark = pytest.mark.first_principles
@@ -107,10 +108,28 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text("schema_version = 1\n", encoding="utf-8")
+    isolated_socket = tmp_path / "isolated" / "control.sock"
+    ambient_runtime = tmp_path / "ambient-runtime"
+    ambient_socket = ambient_runtime / "shisad" / "control.sock"
+    ambient_socket.parent.mkdir(parents=True)
+    ambient_socket.touch()
+    config_path.write_text(
+        f'schema_version = 1\n[daemon]\nsocket_path = "{isolated_socket}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(ambient_runtime))
     monkeypatch.setenv("SHISAD_MANAGED", "yes")
-    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
     monkeypatch.setenv("NO_COLOR", "1")
+    probed: list[Path] = []
+
+    def _ambient_probe(socket_path: Path) -> bool:
+        probed.append(socket_path)
+        return True
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _ambient_probe)
 
     result = CliRunner().invoke(cli, ["--config", str(config_path)])
 
@@ -119,3 +138,7 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
     assert "Next action: shisad doctor" in result.output
     assert "Next action: shisad start" not in result.output
     assert "\x1b[" not in result.output
+    assert "╭" not in result.output
+    assert "WARN" in result.output
+    assert probed == []
+    assert not isolated_socket.exists()
