@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-08-06 (v0.8.2 O0 dependency intake)*
+*Updated: 2026-08-12 (v0.8.2 O2A optional keyring intake)*
 *Status: In Progress*  
-*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory also include the v0.8.2 O0 working candidate at `shisad@a2546460`. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
+*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory include the v0.8.2 O0 candidate at `shisad@a2546460` plus the O2A optional-keyring lock delta from public baseline `5262d7a2`. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
 
 ## Scope and Intent
 
@@ -38,6 +38,32 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-08-12 — v0.8.2 O2A optional keyring intake
+
+- Added a separate `credentials` extra with direct bound
+  `keyring>=25.7,<26`; the lock selects `keyring 25.7.0`, whose published
+  metadata requires Python 3.9+ and whose maintained API supplies
+  `get_password`, `set_password`, and `delete_password` across OS keyring
+  backends. The project remains Python 3.12+.
+- The optional lock delta adds `jaraco-classes 3.4.0`, `jaraco-context 6.1.2`,
+  `jaraco-functools 4.6.0`, `more-itertools 11.1.0`, Linux
+  `jeepney 0.9.0`/`secretstorage 3.5.0`, and Windows `pywin32-ctypes 0.2.3`.
+  Every selected artifact is hash-locked in `uv.lock`.
+- Keyring availability is capability-detected at use time. A missing package,
+  null/unusable system backend, locked desktop service, or backend exception
+  returns a bounded unavailable result. Shisad does not install or select an
+  insecure alternate backend and never falls back from keyring to the local
+  file backend.
+- The built-in file backend is not a dependency or encryption claim. It uses
+  existing atomic-state/file-lock owners and truthfully stores local plaintext
+  under owner-only POSIX modes. Deterministic tests inject the keyring adapter
+  and do not read or mutate the developer's host keyring.
+- The exact hash-enforced `credentials`-extra audit reported no advisory for
+  keyring or its newly selected transitives. It still reports the three
+  pre-existing `cryptography 48.0.1` records (`PYSEC-2026-3552` through
+  `PYSEC-2026-3554`); the high record requires `50.0.0`, so the existing
+  `V082-D008` ReleaseClose blocker/risk-decision path remains unchanged.
 
 ### 2026-08-06 — v0.8.2 O0 dependency intake
 

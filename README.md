@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes plus a read-only bare-command environment/preflight welcome; setup and lifecycle routing remain in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, and provider-agnostic credential references; the combined setup wizard and lifecycle routing remain in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -166,6 +166,7 @@ shisad config show --format human
 shisad config diff --format human
 shisad config schema --format json
 shisad env --format human
+shisad credential status model.primary
 ```
 
 Bare `shisad` is a read-only welcome and preflight. It distinguishes fresh,
@@ -184,6 +185,35 @@ configure a provider or policy, create daemon state, or start the daemon. Use
 root `--config FILE` to select another path. Effective precedence remains
 command-line override, environment, TOML, then typed default; show, diff, env,
 and validation output redact secret-bearing fields.
+
+The O2 credential foundation can keep model-provider secrets out of TOML. A
+logical reference records only backend metadata; the value stays in an
+environment variable, an optional OS keyring, or a permission-protected local
+plaintext file:
+
+```bash
+# Metadata only: this never copies or prints OPENAI_API_KEY.
+shisad credential set model.primary --backend env --locator OPENAI_API_KEY
+
+# Or enroll a local owner-only file value through stdin, never argv.
+printf '%s' "$PROVIDER_KEY" |
+  shisad credential set model.primary --backend file --stdin
+
+# Point model config at the logical name.
+# [model]
+# api_key_ref = "model.primary"
+
+shisad credential status model.primary --format human
+shisad credential remove model.primary
+```
+
+The local file backend is plaintext at rest protected by `0700` directories
+and `0600` files; it is not described as encrypted. Install
+`shisad[credentials]` to enable the maintained Python keyring integration. An
+unavailable keyring fails actionably and never falls back to a file. Generated
+setup/config output persists references, not values. Existing explicit raw
+model-key fields remain compatible, but a route cannot configure both a raw
+key and a reference.
 
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and

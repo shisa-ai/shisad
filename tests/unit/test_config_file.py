@@ -47,3 +47,30 @@ def test_o1_selected_config_path_preserves_canonical_precedence(tmp_path: Path) 
     assert selected_config_path(None, environ={"XDG_CONFIG_HOME": str(xdg_home)}) == (
         xdg_home / "shisad" / "config.toml"
     )
+
+
+def test_o2a_model_reference_is_visible_but_secret_value_remains_redacted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+schema_version = 1
+[model]
+api_key = "raw-secret"
+""",
+        encoding="utf-8",
+    )
+    raw = load_config_file(config_path, environ={}).redacted_projection()
+    assert raw["model"]["api_key"]["value"] == "<redacted>"
+
+    config_path.write_text(
+        """
+schema_version = 1
+[model]
+api_key_ref = "model.primary"
+""",
+        encoding="utf-8",
+    )
+    referenced = load_config_file(config_path, environ={}).redacted_projection()
+
+    assert referenced["model"]["api_key_ref"]["value"] == "model.primary"
+    assert referenced["model"]["api_key"]["value"] is None

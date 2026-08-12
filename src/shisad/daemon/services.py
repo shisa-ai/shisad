@@ -29,6 +29,7 @@ from shisad.core.config import (
     ModelConfig,
     SecurityConfig,
     effective_approval_factor_store_path,
+    effective_credential_reference_paths,
 )
 from shisad.core.config_file import load_effective_config
 from shisad.core.events import EventBus
@@ -80,6 +81,10 @@ from shisad.security.control_plane.sidecar import (
     ControlPlaneGateway,
     ControlPlaneSidecarHandle,
     start_control_plane_sidecar,
+)
+from shisad.security.credential_refs import (
+    CredentialReferenceError,
+    CredentialReferenceStore,
 )
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
@@ -215,6 +220,30 @@ def _configs_for_daemon(
 
     loaded = load_effective_config(config.config_path, environ=environ)
     return loaded.model, loaded.security
+
+
+def _resolve_model_credential_references(
+    model_config: ModelConfig,
+    *,
+    store: CredentialReferenceStore,
+) -> ModelConfig:
+    """Resolve model secrets only for trusted provider construction."""
+
+    updates: dict[str, str] = {}
+    for prefix in ("", "planner_", "embeddings_", "monitor_"):
+        reference = getattr(model_config, f"{prefix}api_key_ref")
+        if not reference:
+            continue
+        try:
+            updates[f"{prefix}api_key"] = store.resolve(reference)
+        except CredentialReferenceError as exc:
+            route = prefix.removesuffix("_") or "global"
+            logger.warning(
+                "Model credential reference unavailable: route=%s reason=%s",
+                route,
+                exc.reason,
+            )
+    return model_config.model_copy(update=updates)
 
 
 def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
@@ -680,6 +709,18 @@ class DaemonServices:
             )
 
         model_config, security_config = _configs_for_daemon(config)
+        credential_reference_path, credential_secret_dir = effective_credential_reference_paths(
+            data_dir=config.data_dir,
+            configured_store_path=security_config.credential_reference_store_path,
+            configured_secret_dir=security_config.credential_secret_dir,
+        )
+        model_config = _resolve_model_credential_references(
+            model_config,
+            store=CredentialReferenceStore(
+                registry_path=credential_reference_path,
+                secret_root=credential_secret_dir,
+            ),
+        )
         router = ModelRouter(model_config)
         _validate_model_endpoints(model_config, router)
         _validate_security_route_pins(model_config, router)

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core import config_file
+from shisad.core.config import ModelConfig, effective_credential_reference_paths
 from shisad.core.config_file import (
     ConfigFileError,
     config_field_inventory,
@@ -305,6 +306,10 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     assert by_name[("daemon", "reduce_motion")]["consumer"] == "UiPosture"
     assert ("daemon", "ui_theme_path") not in by_name
     assert by_name[("model", "planner_api_key")]["consumer"] == "ModelRouter"
+    assert by_name[("model", "planner_api_key_ref")]["consumer"] == "ModelRouter"
+    assert by_name[("security", "credential_reference_store_path")]["consumer"] == (
+        "CredentialReferenceStore"
+    )
     for removed in (
         "require_confirmation_for_writes",
         "egress_default_deny",
@@ -313,6 +318,28 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     ):
         assert ("security", removed) not in by_name
     assert ("model", "log_prompts") not in by_name
+
+
+def test_o2a_raw_model_key_and_reference_conflict() -> None:
+    with pytest.raises(ValueError, match="cannot use both"):
+        ModelConfig(api_key="raw-secret", api_key_ref="model.primary")
+    with pytest.raises(ValueError, match="planner"):
+        ModelConfig(planner_api_key="raw-secret", planner_api_key_ref="model.planner")
+
+
+def test_o2a_default_credential_paths_follow_selected_data_root(tmp_path: Path) -> None:
+    store_path, secret_dir = effective_credential_reference_paths(data_dir=tmp_path)
+
+    assert store_path == tmp_path / "credential-references.json"
+    assert secret_dir == tmp_path / "credentials.d"
+
+    custom_store, custom_dir = effective_credential_reference_paths(
+        data_dir=tmp_path,
+        configured_store_path=tmp_path / "custom" / "refs.json",
+        configured_secret_dir=tmp_path / "custom" / "secrets",
+    )
+    assert custom_store == tmp_path / "custom" / "refs.json"
+    assert custom_dir == tmp_path / "custom" / "secrets"
 
 
 def test_u41_commented_template_is_generated_from_live_inventory() -> None:

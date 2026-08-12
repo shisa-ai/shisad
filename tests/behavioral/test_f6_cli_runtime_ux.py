@@ -155,3 +155,41 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
     assert "Next action: shisad start" not in reachable_without_config.output
     assert probed == [ambient_socket]
     assert not config_home.exists()
+
+
+def test_o2a_credential_reference_cli_journey_is_redacted_and_reversible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    secret = "behavioral-provider-secret"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("NO_COLOR", "1")
+    runner = CliRunner()
+
+    created = runner.invoke(
+        cli,
+        [
+            "credential",
+            "set",
+            "model.primary",
+            "--backend",
+            "env",
+            "--locator",
+            "OPENAI_API_KEY",
+        ],
+    )
+    shown = runner.invoke(cli, ["credential", "status", "model.primary"])
+    removed = runner.invoke(cli, ["credential", "remove", "model.primary"])
+
+    for result in (created, shown, removed):
+        assert result.exit_code == 0, result.output
+        assert secret not in result.output
+        assert "model.primary" in result.output
+    assert "configured=yes available=yes" in shown.output
+    assert "configured=no available=no" in removed.output
+    registry = data_dir / "credential-references.json"
+    assert secret not in registry.read_text(encoding="utf-8")
+    assert not (tmp_path / "config").exists()

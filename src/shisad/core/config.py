@@ -48,6 +48,15 @@ def _default_socket_path() -> Path:
 
 _WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
 _MCP_SERVER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_CREDENTIAL_REFERENCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+
+
+def validate_credential_reference_name(value: str) -> str:
+    """Validate one finite provider-agnostic logical credential name."""
+
+    if not _CREDENTIAL_REFERENCE_NAME_RE.fullmatch(value):
+        raise ValueError("credential reference name is invalid")
+    return value
 
 
 def _destination_host_pattern(destination: str) -> str:
@@ -1116,6 +1125,14 @@ class SecurityConfig(BaseSettings):
         default=Path.home() / ".local" / "share" / "shisad" / "approval-factors.json",
         description="Path to the approval-factor state store",
     )
+    credential_reference_store_path: Path = Field(
+        default=Path.home() / ".local" / "share" / "shisad" / "credential-references.json",
+        description="Path to provider-agnostic credential reference metadata",
+    )
+    credential_secret_dir: Path = Field(
+        default=Path.home() / ".local" / "share" / "shisad" / "credentials.d",
+        description="Owner-only local plaintext credential backend directory",
+    )
 
 
 def effective_approval_factor_store_path(
@@ -1137,6 +1154,32 @@ def effective_approval_factor_store_path(
     if configured == default_path:
         return data_dir / "approval-factors.json"
     return configured
+
+
+def effective_credential_reference_paths(
+    *,
+    data_dir: Path,
+    configured_store_path: Path | None = None,
+    configured_secret_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve credential metadata and file-backend paths for one daemon root."""
+
+    defaults = SecurityConfig.model_fields
+    store_path = (
+        defaults["credential_reference_store_path"].default
+        if configured_store_path is None
+        else configured_store_path
+    )
+    secret_dir = (
+        defaults["credential_secret_dir"].default
+        if configured_secret_dir is None
+        else configured_secret_dir
+    )
+    if store_path == defaults["credential_reference_store_path"].default:
+        store_path = data_dir / "credential-references.json"
+    if secret_dir == defaults["credential_secret_dir"].default:
+        secret_dir = data_dir / "credentials.d"
+    return Path(store_path), Path(secret_dir)
 
 
 class ModelConfig(BaseSettings):
@@ -1180,6 +1223,10 @@ class ModelConfig(BaseSettings):
     api_key: str | None = Field(
         default=None,
         description="Optional global API key override (SHISAD_MODEL_API_KEY).",
+    )
+    api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the global model API key.",
     )
     remote_enabled: bool = Field(
         default=False,
@@ -1229,13 +1276,25 @@ class ModelConfig(BaseSettings):
         default=None,
         description="Optional route-local planner API key override.",
     )
+    planner_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the planner route.",
+    )
     embeddings_api_key: str | None = Field(
         default=None,
         description="Optional route-local embeddings API key override.",
     )
+    embeddings_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the embeddings route.",
+    )
     monitor_api_key: str | None = Field(
         default=None,
         description="Optional route-local monitor API key override.",
+    )
+    monitor_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the monitor route.",
     )
 
     planner_auth_mode: AuthMode | None = Field(
@@ -1446,6 +1505,23 @@ class ModelConfig(BaseSettings):
         return cls._parse_nested_model(value, field_name=field_name)
 
     @field_validator(
+        "api_key_ref",
+        "planner_api_key_ref",
+        "embeddings_api_key_ref",
+        "monitor_api_key_ref",
+        mode="before",
+    )
+    @classmethod
+    def _parse_credential_references(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("credential reference name must be a string")
+        if not value:
+            return None
+        return validate_credential_reference_name(value)
+
+    @field_validator(
         "planner_api_key",
         "embeddings_api_key",
         "monitor_api_key",
@@ -1488,6 +1564,14 @@ class ModelConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_route_header_configuration(self) -> Self:
+        for prefix in ("", "planner_", "embeddings_", "monitor_"):
+            raw_value = getattr(self, f"{prefix}api_key")
+            reference = getattr(self, f"{prefix}api_key_ref")
+            if raw_value and reference:
+                label = prefix.removesuffix("_") or "global"
+                raise ValueError(
+                    f"{label} model API key cannot use both a raw value and a credential reference"
+                )
         for route in ("planner", "embeddings", "monitor"):
             auth_mode = getattr(self, f"{route}_auth_mode")
             auth_header_name = getattr(self, f"{route}_auth_header_name")

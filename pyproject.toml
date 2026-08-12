@@ -32,6 +32,9 @@ shisactl = "shisad.cli.main:cli"
 shisad-approver = "shisad.approver.main:cli"
 
 [project.optional-dependencies]
+credentials = [
+    "keyring>=25.7,<26",
+]
 assistant = [
     "textual>=0.89,<1",
     "mcp>=1.28.1,<2",

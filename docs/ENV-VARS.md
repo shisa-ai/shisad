@@ -639,6 +639,17 @@ Notes:
   request.
 - Route-local `*_REMOTE_ENABLED` fields accept empty/unset to mean “inherit global”.
 - `SHISAD_MODEL_API_KEY` is the generic global override, but preset-native key envs are also recognized.
+- `SHISAD_MODEL_API_KEY_REF` is the provider-agnostic logical-reference
+  alternative to the global raw key. Route-local alternatives are
+  `SHISAD_MODEL_PLANNER_API_KEY_REF`,
+  `SHISAD_MODEL_EMBEDDINGS_API_KEY_REF`, and
+  `SHISAD_MODEL_MONITOR_API_KEY_REF`. A raw key and its matching reference are
+  mutually exclusive. When a reference is explicit, unrelated ambient
+  provider keys do not replace it.
+- `SHISAD_SECURITY_CREDENTIAL_REFERENCE_STORE_PATH` selects the versioned
+  metadata registry, and `SHISAD_SECURITY_CREDENTIAL_SECRET_DIR` selects the
+  owner-only local plaintext backend root. Their defaults follow
+  `SHISAD_DATA_DIR`; custom paths are explicit operator state.
 - Ordinary `shisad doctor check --component provider` reports configuration
   evidence only; a present key is `configured`, not authenticated or verified.
   Run `shisad doctor check --component provider --live` for the opt-in bounded
@@ -659,6 +670,7 @@ These are still part of the live surface:
 | `OPENROUTER_API_KEY` | OpenRouter preset credential discovery |
 | `GEMINI_API_KEY` | Google OpenAI-compatible preset credential discovery |
 | `ANTHROPIC_API_KEY` | Anthropic preset credential discovery for planner/monitor routes |
+| Dynamically registered environment locator | A `credential set --backend env --locator NAME` entry reads only the exact registered variable at trusted resolution; status never prints its value |
 | `_SHISAD_COMPLETE` | shell-completion internal env, not operator config |
 
 ## Opt-In Test / Dev Knobs

@@ -182,7 +182,14 @@ class ModelRouter:
 
         preset_override = getattr(self._config, f"{prefix}_provider_preset")
         if preset_override is None:
-            detected = self._auto_detect_preset_from_api_key(component=component)
+            has_explicit_reference = bool(
+                getattr(self._config, f"{prefix}_api_key_ref") or self._config.api_key_ref
+            )
+            detected = (
+                None
+                if has_explicit_reference
+                else self._auto_detect_preset_from_api_key(component=component)
+            )
             if detected is not None:
                 preset = detected
                 preset_source = "auto_detected"
@@ -336,8 +343,18 @@ class ModelRouter:
     ) -> tuple[str | None, str]:
         prefix = component.value
         route_key = getattr(self._config, f"{prefix}_api_key")
+        route_reference = getattr(self._config, f"{prefix}_api_key_ref")
+        if route_reference:
+            if route_key:
+                return route_key, f"route:{prefix}_api_key_ref"
+            return None, f"route:{prefix}_api_key_ref_unavailable"
         if route_key:
             return route_key, f"route:{prefix}_api_key"
+
+        if self._config.api_key_ref:
+            if self._config.api_key:
+                return self._config.api_key, "global:SHISAD_MODEL_API_KEY_REF"
+            return None, "global:SHISAD_MODEL_API_KEY_REF_UNAVAILABLE"
 
         preset_env = _PRESET_PROVIDER_KEY_ENV.get(preset)
         if preset_env:

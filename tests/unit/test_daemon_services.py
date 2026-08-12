@@ -40,6 +40,7 @@ from shisad.daemon.services import (
     _normalize_tool_destination,
     _promptguard_degraded_hint,
     _register_route_credentials,
+    _resolve_model_credential_references,
     _validate_security_route_pins,
     _warn_on_evidence_kms_endpoint_config,
     _warn_on_provider_route_gaps,
@@ -48,6 +49,7 @@ from shisad.interop.a2a_registry import A2aConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
+from shisad.security.credential_refs import CredentialBackend, CredentialReferenceStore
 from shisad.security.credentials import (
     ApprovalFactorRecord,
     CredentialConfig,
@@ -82,6 +84,47 @@ approval_factor_store_path = "/tmp/shisad-u41-factors.json"
     assert model_config.model_id == "toml-planner"
     assert model_config.remote_enabled is False
     assert security_config.approval_factor_store_path.as_posix() == ("/tmp/shisad-u41-factors.json")
+
+
+def test_o2a_daemon_resolves_model_reference_only_at_trusted_construction(tmp_path) -> None:
+    registry_path = tmp_path / "credential-references.json"
+    store = CredentialReferenceStore(
+        registry_path=registry_path,
+        secret_root=tmp_path / "credentials.d",
+        environ={"OPENAI_API_KEY": "resolved-at-construction"},
+    )
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.ENV,
+        locator="OPENAI_API_KEY",
+    )
+    model = ModelConfig(api_key_ref="model.primary", remote_enabled=True)
+
+    resolved = _resolve_model_credential_references(model, store=store)
+
+    assert model.api_key is None
+    assert model.api_key_ref == "model.primary"
+    assert resolved.api_key == "resolved-at-construction"
+    assert "resolved-at-construction" not in registry_path.read_text(encoding="utf-8")
+
+
+def test_o2a_missing_optional_model_reference_preserves_safe_core_config(tmp_path) -> None:
+    store = CredentialReferenceStore(
+        registry_path=tmp_path / "credential-references.json",
+        secret_root=tmp_path / "credentials.d",
+        environ={},
+    )
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.ENV,
+        locator="OPENAI_API_KEY",
+    )
+    model = ModelConfig(api_key_ref="model.primary", remote_enabled=True)
+
+    resolved = _resolve_model_credential_references(model, store=store)
+
+    assert resolved.api_key is None
+    assert resolved.api_key_ref == "model.primary"
 
 
 def _write_browser_wrapper(path) -> None:

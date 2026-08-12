@@ -369,6 +369,38 @@ Planner preset to credential mapping:
 
 See `README.md` for full provider routing examples (mixed mode, custom base URLs, auth modes).
 
+For model routes, v0.8.2 can persist a logical credential reference instead of
+a raw secret in TOML. Environment references store only the environment
+variable name:
+
+```bash
+export OPENAI_API_KEY="<openai-api-key>"
+uv run shisad credential set model.primary \
+  --backend env --locator OPENAI_API_KEY
+```
+
+Then select the logical name in the operator config:
+
+```toml
+[model]
+planner_provider_preset = "openai_default"
+planner_remote_enabled = true
+planner_api_key_ref = "model.primary"
+```
+
+An explicit reference suppresses ambient provider-key auto-detection for that
+route. If the referenced value is unavailable, provider readiness remains
+actionable while local/core daemon construction remains available. Do not set
+both `planner_api_key` and `planner_api_key_ref` (or the corresponding global,
+embeddings, or monitor pair).
+
+The built-in file backend accepts values only through a hidden prompt or
+`--stdin`; it stores permission-protected plaintext under the active data root
+with `0700` directories and `0600` files. Install the optional maintained OS
+keyring integration with `uv sync --frozen --extra credentials` (source
+checkout) or `pip install 'shisad[credentials]'` (package install). A missing
+or unusable keyring is reported and never falls back to the file backend.
+
 ### Health Checks
 
 ```bash

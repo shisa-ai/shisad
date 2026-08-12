@@ -82,7 +82,11 @@ placed in the LLM context. A credential broker resolves an opaque reference at
 the HTTP proxy layer, so the model cannot exfiltrate the brokered value it
 never receives. User-provided or retrieved text can still contain
 credential-like material; bounded ingress, output, and argument-DLP detection
-is defense in depth for that separate case. This is the scoped invariant I3.
+is defense in depth for that separate case. Model-provider references use a
+separate trusted construction boundary: versioned metadata resolves only while
+the daemon constructs trusted provider configuration, never in config/status
+output or an LLM prompt. This is the scoped invariant I3; it is not a claim
+that arbitrary user-supplied secrets cannot reach a model.
 
 **7. Approvals don't launder provenance.** When a user confirms an ambiguous action, the confirmation authorizes *that specific action* — it does not remove taint labels, change the content's provenance, or grant blanket trust to the source. A confirmed web fetch from an untrusted page does not make the fetched content trusted. Taint persists through the full data lifecycle regardless of intermediate approvals.
 
@@ -385,6 +389,15 @@ For delegated TASK sessions and persisted scheduler/background tasks, credential
 use is narrowed again by the immutable task envelope: the envelope carries an
 explicit `credential_refs` allowlist, and the PEP denies missing or
 out-of-scope refs fail closed. Tool grants do not imply credential grants.
+
+The v0.8.2 setup foundation also administers provider-agnostic logical
+references through redacted `credential set/status/remove` commands.
+Environment entries persist only a variable name. The optional OS-keyring
+backend never falls back to disk when unavailable. The local file backend is
+truthfully permission-protected plaintext (`0700` directory, `0600` file), not
+encrypted storage. Generated TOML may name a reference but does not contain the
+resolved value. These setup references currently wire model routes; channel
+setup consumers remain a later v0.8.2 unit.
 
 ### Evidence References (context isolation)
 

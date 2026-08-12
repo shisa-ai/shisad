@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from shisad.core.config import ModelConfig
+from shisad.core.providers.capabilities import ProviderPreset
 from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 
 
@@ -240,6 +241,33 @@ def test_s0_openai_key_auto_detects_preset(
 
     assert route.provider_preset == "openai_default"
     assert route.provider_preset_source == "auto_detected"
+
+
+def test_o2a_explicit_unavailable_reference_suppresses_ambient_auto_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key-that-must-not-win")
+    config = ModelConfig(api_key_ref="model.primary", remote_enabled=True)
+
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset is ProviderPreset.SHISA_DEFAULT
+    assert route.provider_preset_source == "default"
+    assert route.api_key is None
+    assert route.api_key_source == "global:SHISAD_MODEL_API_KEY_REF_UNAVAILABLE"
+
+
+def test_o2a_trusted_resolved_reference_is_labeled_without_ambient_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key-that-must-not-win")
+    configured = ModelConfig(api_key_ref="model.primary", remote_enabled=True)
+    resolved = configured.model_copy(update={"api_key": "trusted-resolved-key"})
+
+    route = ModelRouter(resolved).route_for(ModelComponent.PLANNER)
+
+    assert route.api_key == "trusted-resolved-key"
+    assert route.api_key_source == "global:SHISAD_MODEL_API_KEY_REF"
 
 
 def test_s0_auto_detected_preset_enables_remote_implicitly(

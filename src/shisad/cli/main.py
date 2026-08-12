@@ -25,6 +25,7 @@ import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
+from shisad.cli.credentials import credential
 from shisad.cli.onboarding import (
     EnvironmentDetectionError,
     inspect_onboarding_environment,
@@ -636,7 +637,7 @@ class TaskGroupedGroup(click.Group):
         ),
         (
             "Administration",
-            ("config", "env", "completion", "admin", "dev"),
+            ("config", "credential", "env", "completion", "admin", "dev"),
         ),
     )
 
@@ -794,6 +795,9 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
                 technical_details="required runtime check failed",
             )
         )
+
+
+cli.add_command(credential)
 
 
 @cli.group("config")

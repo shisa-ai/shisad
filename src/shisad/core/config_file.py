@@ -214,6 +214,11 @@ def config_field_inventory() -> list[dict[str, str]]:
                 consumer = "PolicyBundle.default_deny"
             elif section == "model":
                 consumer = "ModelRouter"
+            elif section == "security" and field in {
+                "credential_reference_store_path",
+                "credential_secret_dir",
+            }:
+                consumer = "CredentialReferenceStore"
             elif section == "security":
                 consumer = "approval factor store construction"
             else:
@@ -751,6 +756,8 @@ def _select_schema_branch(
 
 def _field_is_secret(name: str) -> bool:
     lowered = name.casefold()
+    if lowered.endswith("_ref"):
+        return False
     return any(marker in lowered for marker in _SECRET_FIELD_MARKERS)
 
 
