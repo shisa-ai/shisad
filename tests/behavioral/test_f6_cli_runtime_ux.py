@@ -107,6 +107,7 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    config_home = tmp_path / "config-home"
     config_path = tmp_path / "config.toml"
     isolated_socket = tmp_path / "isolated" / "control.sock"
     ambient_runtime = tmp_path / "ambient-runtime"
@@ -118,6 +119,8 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
         encoding="utf-8",
     )
     monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(ambient_runtime))
     monkeypatch.setenv("SHISAD_MANAGED", "yes")
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -142,3 +145,13 @@ def test_o1_managed_bare_cli_is_read_only_and_ascii_safe(
     assert "WARN" in result.output
     assert probed == []
     assert not isolated_socket.exists()
+
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(ambient_socket))
+    reachable_without_config = CliRunner().invoke(cli, [])
+
+    assert reachable_without_config.exit_code == 0, reachable_without_config.output
+    assert "Managed environment" in reachable_without_config.output
+    assert "Next action: shisad status" in reachable_without_config.output
+    assert "Next action: shisad start" not in reachable_without_config.output
+    assert probed == [ambient_socket]
+    assert not config_home.exists()

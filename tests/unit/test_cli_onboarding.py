@@ -251,6 +251,55 @@ def test_o1_inspection_uses_canonical_config_and_bounded_probe(
     assert probed == [socket_path]
 
 
+def test_o1_managed_without_config_probes_canonical_existing_socket(
+    tmp_path: Path,
+) -> None:
+    socket_path = tmp_path / "managed-control.sock"
+    socket_path.touch()
+    probed: list[Path] = []
+
+    def _probe(path: Path) -> bool:
+        probed.append(path)
+        return True
+
+    report = onboarding.inspect_onboarding_environment(
+        None,
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "config-home"),
+            "SHISAD_MANAGED": "yes",
+            "SHISAD_SOCKET_PATH": str(socket_path),
+            "SHISAD_POLICY_PATH": str(tmp_path / "missing-policy.yaml"),
+        },
+        interactive=True,
+        containerized=False,
+        daemon_probe=_probe,
+    )
+
+    assert report.facts.posture is ConfiguredPosture.MANAGED
+    assert report.facts.config_present is False
+    assert report.facts.daemon_reachable is True
+    assert report.next_action == "shisad status"
+    assert probed == [socket_path]
+
+    probed.clear()
+    fresh = onboarding.inspect_onboarding_environment(
+        None,
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "fresh-config-home"),
+            "SHISAD_SOCKET_PATH": str(socket_path),
+            "SHISAD_POLICY_PATH": str(tmp_path / "missing-policy.yaml"),
+        },
+        interactive=True,
+        containerized=False,
+        daemon_probe=_probe,
+    )
+
+    assert fresh.facts.posture is ConfiguredPosture.FRESH
+    assert fresh.facts.daemon_reachable is False
+    assert fresh.next_action == "shisad init"
+    assert probed == []
+
+
 def test_o1_container_markers_are_informational_facts(tmp_path: Path) -> None:
     marker = tmp_path / ".dockerenv"
     assert onboarding.detect_container((marker,)) is False
@@ -258,6 +307,28 @@ def test_o1_container_markers_are_informational_facts(tmp_path: Path) -> None:
     marker.write_text("", encoding="utf-8")
 
     assert onboarding.detect_container((marker,)) is True
+
+    report = build_preflight_report(
+        EnvironmentFacts(
+            posture=ConfiguredPosture.FRESH,
+            config_path=tmp_path / "config.toml",
+            config_present=False,
+            explicit_config=False,
+            interactive=True,
+            managed=False,
+            containerized=True,
+            python_version=(3, 12, 7),
+            policy_present=False,
+            daemon_reachable=False,
+        )
+    )
+    environment = next(check for check in report.checks if check.check_id == "environment")
+    assert environment.requirement is CheckRequirement.INFORMATIONAL
+    assert environment.state is CheckState.INFO
+    assert "container marker present" in environment.detail
+    assert report.facts.posture is ConfiguredPosture.FRESH
+    assert report.blocked is False
+    assert report.next_action == "shisad init"
 
 
 def test_o1_noninteractive_and_managed_actions_remain_read_only(tmp_path: Path) -> None:
@@ -425,6 +496,33 @@ def test_o1_daemon_probe_is_bounded_and_closes_client(
             events.append("close")
 
     monkeypatch.setattr(onboarding, "ControlClient", _FakeClient)
+
+    assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.1)) is True
+    assert events == ["connect", "daemon.status", "close"]
+
+
+def test_o1_daemon_probe_preserves_running_result_when_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _CloseFailureClient:
+        def __init__(self, _socket_path: Path) -> None:
+            return None
+
+        async def connect(self) -> None:
+            events.append("connect")
+
+        async def call(self, method: str) -> dict[str, str]:
+            events.append(method)
+            return {"status": "running"}
+
+        async def close(self) -> None:
+            events.append("close")
+            raise OSError("connection already closed")
+
+    monkeypatch.setattr(onboarding, "ControlClient", _CloseFailureClient)
 
     assert asyncio.run(onboarding.probe_daemon(tmp_path / "control.sock", timeout=0.1)) is True
     assert events == ["connect", "daemon.status", "close"]

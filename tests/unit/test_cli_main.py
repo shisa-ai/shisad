@@ -2878,9 +2878,19 @@ def test_o1_bare_root_no_color_uses_ascii_on_utf_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHISAD_POLICY_PATH", str(tmp_path / "missing-policy.yaml"))
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(tmp_path / "missing-control.sock"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+    def _unexpected_probe(_socket_path: Path) -> bool:
+        pytest.fail("isolated bare-root no-color test attempted live daemon IPC")
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _unexpected_probe)
 
     result = CliRunner().invoke(cli_main.cli, ["--no-color"])
 
@@ -2896,6 +2906,17 @@ def test_o1_bare_root_required_runtime_failure_uses_exit_three_envelope(
 ) -> None:
     config_home = tmp_path / "config-home"
     original_inspect = cli_main.inspect_onboarding_environment
+
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHISAD_POLICY_PATH", str(tmp_path / "missing-policy.yaml"))
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(tmp_path / "missing-control.sock"))
+
+    def _unexpected_probe(_socket_path: Path) -> bool:
+        pytest.fail("isolated required-runtime test attempted live daemon IPC")
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _unexpected_probe)
 
     def _inspect_with_unsupported_runtime(
         config_path: Path | None,

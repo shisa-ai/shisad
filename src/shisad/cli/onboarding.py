@@ -156,7 +156,7 @@ async def probe_daemon(socket_path: Path, *, timeout: float = 1.0) -> bool:
                 async with asyncio.timeout_at(deadline):
                     await client.close()
             except (TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
-                reachable = False
+                pass
     return reachable
 
 
@@ -191,7 +191,7 @@ def inspect_onboarding_environment(
         schema_supported=True,
     )
     reachable = False
-    if config_present and loaded.daemon.socket_path.exists():
+    if (config_present or managed) and loaded.daemon.socket_path.exists():
         reachable = (daemon_probe or _sync_daemon_probe)(loaded.daemon.socket_path)
     version = python_version or (
         sys.version_info.major,
