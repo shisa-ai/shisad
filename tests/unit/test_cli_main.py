@@ -2816,8 +2816,10 @@ def test_o1_bare_root_reports_fresh_preflight_without_writing(
 
 def test_o1_bare_root_explicit_missing_config_is_actionable_and_nonmutating(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "missing config.toml"
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
 
     result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
 
@@ -2828,9 +2830,13 @@ def test_o1_bare_root_explicit_missing_config_is_actionable_and_nonmutating(
     assert not config_path.exists()
 
 
-def test_o1_bare_root_unsupported_schema_routes_to_upgrade_recovery(tmp_path: Path) -> None:
+def test_o1_bare_root_unsupported_schema_routes_to_upgrade_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text("schema_version = 2\n", encoding="utf-8")
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
 
     result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
 

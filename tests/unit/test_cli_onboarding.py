@@ -278,7 +278,33 @@ def test_o1_managed_without_config_probes_canonical_existing_socket(
     assert report.facts.posture is ConfiguredPosture.MANAGED
     assert report.facts.config_present is False
     assert report.facts.daemon_reachable is True
+    running_daemon_check = next(check for check in report.checks if check.check_id == "daemon")
+    assert running_daemon_check.requirement is CheckRequirement.OPTIONAL
+    assert running_daemon_check.state is CheckState.PASS
+    assert running_daemon_check.detail == "running and reachable"
     assert report.next_action == "shisad status"
+    assert probed == [socket_path]
+
+    probed.clear()
+    managed_stopped = onboarding.inspect_onboarding_environment(
+        None,
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "managed-stopped-config-home"),
+            "SHISAD_MANAGED": "yes",
+            "SHISAD_SOCKET_PATH": str(socket_path),
+            "SHISAD_POLICY_PATH": str(tmp_path / "missing-policy.yaml"),
+        },
+        interactive=True,
+        containerized=False,
+        daemon_probe=lambda path: probed.append(path) or False,
+    )
+    daemon_check = next(check for check in managed_stopped.checks if check.check_id == "daemon")
+
+    assert managed_stopped.facts.daemon_reachable is False
+    assert daemon_check.requirement is CheckRequirement.OPTIONAL
+    assert daemon_check.state is CheckState.DEGRADED
+    assert daemon_check.detail == "stopped or unreachable"
+    assert managed_stopped.next_action == "shisad doctor"
     assert probed == [socket_path]
 
     probed.clear()

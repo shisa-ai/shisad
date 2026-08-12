@@ -219,6 +219,7 @@ def build_preflight_report(facts: EnvironmentFacts) -> PreflightReport:
     """Project required, optional, and informational checks from typed facts."""
 
     runtime_supported = facts.python_version[:2] >= _SUPPORTED_PYTHON
+    daemon_applicable = facts.config_present or facts.managed
     checks = [
         PreflightCheck(
             check_id="runtime",
@@ -261,22 +262,20 @@ def build_preflight_report(facts: EnvironmentFacts) -> PreflightReport:
             check_id="daemon",
             label="Daemon",
             requirement=(
-                CheckRequirement.OPTIONAL
-                if facts.config_present
-                else CheckRequirement.INFORMATIONAL
+                CheckRequirement.OPTIONAL if daemon_applicable else CheckRequirement.INFORMATIONAL
             ),
             state=(
                 CheckState.PASS
                 if facts.daemon_reachable
                 else CheckState.DEGRADED
-                if facts.config_present
+                if daemon_applicable
                 else CheckState.INFO
             ),
             detail=(
                 "running and reachable"
                 if facts.daemon_reachable
                 else "stopped or unreachable"
-                if facts.config_present
+                if daemon_applicable
                 else "not checked before configuration"
             ),
         ),
