@@ -308,6 +308,29 @@ def test_o1_managed_without_config_probes_canonical_existing_socket(
     assert probed == [socket_path]
 
     probed.clear()
+    missing_socket = tmp_path / "missing-control.sock"
+    managed_missing_socket = onboarding.inspect_onboarding_environment(
+        None,
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "managed-missing-config-home"),
+            "SHISAD_MANAGED": "yes",
+            "SHISAD_SOCKET_PATH": str(missing_socket),
+            "SHISAD_POLICY_PATH": str(tmp_path / "missing-policy.yaml"),
+        },
+        interactive=True,
+        containerized=False,
+        daemon_probe=_probe,
+    )
+    missing_daemon_check = next(
+        check for check in managed_missing_socket.checks if check.check_id == "daemon"
+    )
+
+    assert missing_daemon_check.requirement is CheckRequirement.OPTIONAL
+    assert missing_daemon_check.state is CheckState.DEGRADED
+    assert missing_daemon_check.detail == "stopped or unreachable"
+    assert managed_missing_socket.next_action == "shisad doctor"
+    assert probed == []
+
     fresh = onboarding.inspect_onboarding_environment(
         None,
         environ={
@@ -319,9 +342,13 @@ def test_o1_managed_without_config_probes_canonical_existing_socket(
         containerized=False,
         daemon_probe=_probe,
     )
+    fresh_daemon_check = next(check for check in fresh.checks if check.check_id == "daemon")
 
     assert fresh.facts.posture is ConfiguredPosture.FRESH
     assert fresh.facts.daemon_reachable is False
+    assert fresh_daemon_check.requirement is CheckRequirement.INFORMATIONAL
+    assert fresh_daemon_check.state is CheckState.INFO
+    assert fresh_daemon_check.detail == "not checked before configuration"
     assert fresh.next_action == "shisad init"
     assert probed == []
 
