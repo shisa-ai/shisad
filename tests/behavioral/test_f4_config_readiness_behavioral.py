@@ -50,6 +50,14 @@ planner_remote_enabled = true
 
 
 def test_o0_doctor_reports_actionable_provider_and_channel_degradation(monkeypatch) -> None:
+    for key in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "SHISA_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
     checks = {
         "provider": _build_provider_diagnostics(
             ModelRouter(ModelConfig(planner_remote_enabled=True, planner_api_key=""))
