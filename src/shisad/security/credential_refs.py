@@ -22,7 +22,6 @@ from shisad.core.atomic_state import (
     write_state,
 )
 from shisad.core.config import validate_credential_reference_name
-from shisad.core.storage_platform import tighten_permissions
 
 _MAX_LOCATOR_LENGTH = 128
 _MAX_SECRET_BYTES = 1024 * 1024
@@ -31,6 +30,8 @@ _KEYRING_LOCATOR_CHARS = frozenset(
 )
 _ENV_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ_")
 _ENV_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789")
+_FILE_UNSAFE = "credential_file_unsafe"
+_REGISTRY_UNSAFE = "credential_registry_unsafe"
 
 
 class CredentialBackend(StrEnum):
@@ -43,7 +44,6 @@ class CredentialBackend(StrEnum):
 
 class CredentialReferenceError(ValueError):
     """A credential operation failed without exposing backend details."""
-
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -141,6 +141,21 @@ def _posix_mode_is(path: Path, expected: int) -> bool | None:
         return False
 
 
+def _path_safe(path: Path, *, directory: bool, mode: int, reason: str) -> bool:
+    if _has_symlink_component(path):
+        raise CredentialReferenceError(reason)
+    try:
+        actual = path.stat(follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise CredentialReferenceError(reason) from None
+    expected_kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_kind(actual) or _posix_mode_is(path, mode) is False:
+        raise CredentialReferenceError(reason)
+    return True
+
+
 def _load_system_keyring() -> KeyringBackend:
     try:
         module = importlib.import_module("keyring")
@@ -151,6 +166,20 @@ def _load_system_keyring() -> KeyringBackend:
     except Exception:
         raise CredentialReferenceError("keyring_backend_unavailable") from None
     return module
+
+
+def _bounded_name(name: str) -> str:
+    try:
+        return validate_credential_reference_name(name)
+    except ValueError:
+        raise CredentialReferenceError("credential_reference_invalid") from None
+
+
+def _reference(name: str, backend: CredentialBackend, locator: str) -> CredentialReference:
+    try:
+        return CredentialReference(name=name, backend=backend, locator=locator)
+    except ValueError:
+        raise CredentialReferenceError("credential_reference_invalid") from None
 
 
 class CredentialReferenceStore:
@@ -166,9 +195,10 @@ class CredentialReferenceStore:
     ) -> None:
         self.registry_path = Path(registry_path).expanduser()
         self.secret_root = Path(secret_root).expanduser()
+        self.lock_path = self.registry_path.with_suffix(".lock")
         self._environ = os.environ if environ is None else environ
         self._keyring_backend = keyring_backend
-        self._lock = FileLock(str(self.registry_path.with_suffix(".lock")), timeout=5)
+        self._lock = FileLock(str(self.lock_path), timeout=5, mode=0o600)
 
     def set_reference(
         self,
@@ -180,8 +210,7 @@ class CredentialReferenceStore:
         replace: bool = False,
     ) -> CredentialStatus:
         """Create or explicitly replace one reference after backend publication."""
-
-        reference = CredentialReference(
+        reference = _reference(
             name=name,
             backend=backend,
             locator=name if backend is CredentialBackend.FILE else locator,
@@ -205,6 +234,10 @@ class CredentialReferenceStore:
             ):
                 raise CredentialReferenceError("credential_locator_change_requires_remove")
 
+            orphan_material = existing is None and self._backend_material_exists(reference)
+            if orphan_material and not replace:
+                raise CredentialReferenceError("credential_backend_material_exists")
+
             self._publish_backend(reference, secret=secret)
             references = [item for item in state.references if item.name != reference.name]
             references.append(reference)
@@ -213,15 +246,14 @@ class CredentialReferenceStore:
                     references, key=lambda item: item.name
                 )))
             except CredentialReferenceError:
-                if existing is None:
+                if existing is None and not orphan_material:
                     self._rollback_new_backend(reference)
                 raise
             return self._status_for(reference)
 
     def status(self, name: str) -> CredentialStatus:
         """Return one redacted status without resolving a value to the caller."""
-
-        normalized = validate_credential_reference_name(name)
+        normalized = _bounded_name(name)
         with self._locked():
             state = self._load_state()
             for reference in state.references:
@@ -237,15 +269,13 @@ class CredentialReferenceStore:
 
     def list_status(self) -> list[CredentialStatus]:
         """Return stable redacted statuses for every configured reference."""
-
         with self._locked():
             state = self._load_state()
             return [self._status_for(reference) for reference in state.references]
 
     def resolve(self, name: str) -> str:
         """Resolve a value for a trusted adapter-construction boundary."""
-
-        normalized = validate_credential_reference_name(name)
+        normalized = _bounded_name(name)
         with self._locked():
             state = self._load_state()
             reference = next(
@@ -261,8 +291,7 @@ class CredentialReferenceStore:
 
     def remove(self, name: str) -> CredentialStatus:
         """Remove backend material first, retaining metadata on backend failure."""
-
-        normalized = validate_credential_reference_name(name)
+        normalized = _bounded_name(name)
         with self._locked():
             state = self._load_state()
             reference = next(
@@ -295,6 +324,7 @@ class CredentialReferenceStore:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
+        self._prepare_registry_storage()
         try:
             self._lock.acquire(timeout=5)
         except Timeout:
@@ -302,6 +332,7 @@ class CredentialReferenceStore:
         except OSError:
             raise CredentialReferenceError("credential_registry_unavailable") from None
         try:
+            self._validate_lock_path()
             yield
         finally:
             self._lock.release()
@@ -331,17 +362,39 @@ class CredentialReferenceStore:
             raise CredentialReferenceError("credential_registry_unsafe")
 
     def _validate_registry_path(self) -> None:
-        if _has_symlink_component(self.registry_path):
-            raise CredentialReferenceError("credential_registry_unsafe")
+        _path_safe(self.registry_path, directory=False, mode=0o600, reason=_REGISTRY_UNSAFE)
+
+    def _prepare_registry_storage(self) -> None:
+        self._validate_layout()
+        parent = self.registry_path.parent
         try:
-            if self.registry_path.exists():
-                mode = self.registry_path.stat(follow_symlinks=False).st_mode
-                if not stat.S_ISREG(mode):
-                    raise CredentialReferenceError("credential_registry_unsafe")
-                if _posix_mode_is(self.registry_path, 0o600) is False:
-                    raise CredentialReferenceError("credential_registry_unsafe")
+            if not _path_safe(parent, directory=True, mode=0o700, reason=_REGISTRY_UNSAFE):
+                parent.mkdir(parents=True, mode=0o700)
+                _path_safe(parent, directory=True, mode=0o700, reason=_REGISTRY_UNSAFE)
+            self._validate_lock_path()
+        except CredentialReferenceError:
+            raise
         except OSError:
             raise CredentialReferenceError("credential_registry_unavailable") from None
+
+    def _validate_lock_path(self) -> None:
+        _path_safe(self.lock_path, directory=False, mode=0o600, reason=_REGISTRY_UNSAFE)
+
+    def _validate_layout(self) -> None:
+        try:
+            registry = self.registry_path.resolve(strict=False)
+            lock = self.lock_path.resolve(strict=False)
+            root = self.secret_root.resolve(strict=False)
+        except (OSError, RuntimeError):
+            raise CredentialReferenceError("credential_storage_collision") from None
+        if (
+            len({registry, lock, root}) != 3
+            or registry.is_relative_to(root)
+            or root.is_relative_to(registry)
+            or lock.is_relative_to(root)
+            or root.is_relative_to(lock)
+        ):
+            raise CredentialReferenceError("credential_storage_collision")
 
     @staticmethod
     def _validate_secret(secret: str | None) -> None:
@@ -363,6 +416,21 @@ class CredentialReferenceStore:
                 raise CredentialReferenceError("keyring_backend_unavailable") from None
             return
         self._write_file_secret(reference, secret)
+
+    def _backend_material_exists(self, reference: CredentialReference) -> bool:
+        if reference.backend is CredentialBackend.ENV:
+            return False
+        if reference.backend is CredentialBackend.FILE:
+            self._validate_secret_root(create=False)
+            return _path_safe(
+                self._secret_path(reference), directory=False, mode=0o600, reason=_FILE_UNSAFE
+            )
+        try:
+            return self._keyring().get_password(reference.locator, reference.name) is not None
+        except CredentialReferenceError:
+            raise
+        except Exception:
+            raise CredentialReferenceError("keyring_backend_unavailable") from None
 
     def _status_for(self, reference: CredentialReference) -> CredentialStatus:
         if reference.backend is CredentialBackend.FILE:
@@ -421,18 +489,8 @@ class CredentialReferenceStore:
 
     def _write_file_secret(self, reference: CredentialReference, secret: str) -> None:
         path = self._secret_path(reference)
-        if _has_symlink_component(self.secret_root) or path.is_symlink():
-            raise CredentialReferenceError("credential_file_unsafe")
-        try:
-            self.secret_root.mkdir(parents=True, mode=0o700, exist_ok=True)
-        except OSError:
-            raise CredentialReferenceError("credential_file_unavailable") from None
-        if tighten_permissions(self.secret_root, 0o700) == "failed":
-            raise CredentialReferenceError("credential_file_unsafe")
-        if _posix_mode_is(self.secret_root, 0o700) is False:
-            raise CredentialReferenceError("credential_file_unsafe")
-        if path.is_symlink():
-            raise CredentialReferenceError("credential_file_unsafe")
+        self._validate_secret_root(create=True)
+        _path_safe(path, directory=False, mode=0o600, reason=_FILE_UNSAFE)
         try:
             capability = atomic_write_bytes(path, secret.encode("utf-8"))
         except AtomicWriteError:
@@ -445,22 +503,45 @@ class CredentialReferenceStore:
         try:
             root = self.secret_root.resolve(strict=False)
             resolved_parent = path.parent.resolve(strict=False)
+            resolved_path = path.resolve(strict=False)
+            reserved = {
+                self.registry_path.resolve(strict=False),
+                self.lock_path.resolve(strict=False),
+            }
         except (OSError, RuntimeError):
             raise CredentialReferenceError("credential_file_unsafe") from None
         if resolved_parent != root:
             raise CredentialReferenceError("credential_file_unsafe")
+        if resolved_path in reserved:
+            raise CredentialReferenceError("credential_storage_collision")
         return path
 
-    def _file_posture_safe(self, path: Path) -> bool | None:
-        if _has_symlink_component(self.secret_root) or path.is_symlink():
-            return False
-        if not path.exists():
-            return _posix_mode_is(self.secret_root, 0o700) if self.secret_root.exists() else True
+    def _validate_secret_root(self, *, create: bool) -> bool:
         try:
-            if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
-                return False
+            exists = _path_safe(
+                self.secret_root, directory=True, mode=0o700, reason=_FILE_UNSAFE
+            )
+            if not exists and create:
+                self.secret_root.mkdir(parents=True, mode=0o700)
+                exists = _path_safe(
+                    self.secret_root, directory=True, mode=0o700, reason=_FILE_UNSAFE
+                )
+        except CredentialReferenceError:
+            raise
         except OSError:
+            raise CredentialReferenceError("credential_file_unavailable") from None
+        return exists
+
+    def _file_posture_safe(self, path: Path) -> bool | None:
+        try:
+            root_exists = self._validate_secret_root(create=False)
+            if not root_exists:
+                return True
+            file_exists = _path_safe(path, directory=False, mode=0o600, reason=_FILE_UNSAFE)
+        except CredentialReferenceError:
             return False
+        if not file_exists:
+            return _posix_mode_is(self.secret_root, 0o700)
         root_safe = _posix_mode_is(self.secret_root, 0o700)
         file_safe = _posix_mode_is(path, 0o600)
         if root_safe is None or file_safe is None:
@@ -479,10 +560,15 @@ class CredentialReferenceStore:
                 raise CredentialReferenceError("credential_backend_remove_failed") from None
             return
         path = self._secret_path(reference)
-        if path.is_symlink() or (_has_symlink_component(self.secret_root) and path.exists()):
-            raise CredentialReferenceError("credential_backend_remove_failed")
         try:
-            path.unlink(missing_ok=True)
+            if not self._validate_secret_root(create=False):
+                return
+            if not _path_safe(path, directory=False, mode=0o600, reason=_FILE_UNSAFE):
+                return
+        except CredentialReferenceError:
+            raise CredentialReferenceError("credential_backend_remove_failed") from None
+        try:
+            path.unlink()
         except OSError:
             raise CredentialReferenceError("credential_backend_remove_failed") from None
 

@@ -16,6 +16,7 @@ from shisad.core.config import effective_credential_reference_paths
 from shisad.core.config_file import ConfigFileError, load_effective_config
 from shisad.security.credential_refs import (
     CredentialBackend,
+    CredentialReference,
     CredentialReferenceError,
     CredentialReferenceStore,
     CredentialStatus,
@@ -90,7 +91,11 @@ def _credential_error(
     output_format: str,
 ) -> CredentialCliError:
     actions: Mapping[str, str] = {
+        "credential_reference_invalid": "use a lowercase logical name and valid backend locator",
         "credential_reference_exists": "rerun with --replace or remove the existing reference",
+        "credential_backend_material_exists": (
+            "rerun with --replace to claim and replace the existing backend value"
+        ),
         "credential_secret_required": "supply the secret through --stdin or an interactive prompt",
         "keyring_backend_unavailable": (
             "install shisad[credentials] and configure a usable OS keyring"
@@ -114,7 +119,14 @@ def _secret_input(*, use_stdin: bool, output_format: str) -> str:
             output_format=output_format,
         ) from exc
     if use_stdin:
+        if bool(getattr(sys.stdin, "isatty", lambda: False)()):
+            raise CredentialCliError(
+                reason="credential_secret_input_tty",
+                next_action="pipe the secret from non-interactive standard input",
+                output_format=output_format,
+            )
         secret = sys.stdin.read()
+        secret = secret.removesuffix("\r\n").removesuffix("\n").removesuffix("\r")
         if not secret:
             raise CredentialCliError(
                 reason="credential_secret_required",
@@ -171,7 +183,6 @@ def credential_set(
     output_format: str,
 ) -> None:
     """Register a logical credential without placing its value in argv."""
-
     selected_backend = CredentialBackend(backend)
     if selected_backend is CredentialBackend.ENV and use_stdin:
         raise CredentialCliError(
@@ -187,6 +198,17 @@ def credential_set(
         )
     if selected_backend is CredentialBackend.KEYRING and not locator:
         locator = "shisad"
+    try:
+        CredentialReference(
+            name=name,
+            backend=selected_backend,
+            locator=name if selected_backend is CredentialBackend.FILE else locator,
+        )
+    except ValueError:
+        raise _credential_error(
+            CredentialReferenceError("credential_reference_invalid"),
+            output_format=output_format,
+        ) from None
     secret = (
         None
         if selected_backend is CredentialBackend.ENV
@@ -217,7 +239,6 @@ def credential_set(
 @click.pass_context
 def credential_status(ctx: click.Context, name: str, output_format: str) -> None:
     """Report one credential reference without resolving its value to output."""
-
     try:
         status = _store_from_context(ctx, output_format=output_format).status(name)
     except CredentialReferenceError as exc:
@@ -237,7 +258,6 @@ def credential_status(ctx: click.Context, name: str, output_format: str) -> None
 @click.pass_context
 def credential_remove(ctx: click.Context, name: str, output_format: str) -> None:
     """Remove backend material and its logical reference."""
-
     try:
         status = _store_from_context(ctx, output_format=output_format).remove(name)
     except CredentialReferenceError as exc:

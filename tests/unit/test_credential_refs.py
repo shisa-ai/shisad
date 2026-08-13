@@ -140,6 +140,31 @@ def test_o2a_env_registration_rejects_a_secret_value(tmp_path: Path) -> None:
     assert not (tmp_path / "state" / "credential-references.json").exists()
 
 
+def test_o2a_store_normalizes_invalid_caller_input_to_bounded_errors(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    operations = (
+        lambda: store.set_reference(
+            name="Model.Primary",
+            backend=CredentialBackend.ENV,
+            locator="OPENAI_API_KEY",
+        ),
+        lambda: store.set_reference(
+            name="model.primary",
+            backend=CredentialBackend.ENV,
+            locator="openai_api_key",
+        ),
+        lambda: store.status("Model.Primary"),
+        lambda: store.resolve("Model.Primary"),
+        lambda: store.remove("Model.Primary"),
+    )
+
+    for operation in operations:
+        with pytest.raises(CredentialReferenceError) as exc:
+            operation()
+        assert exc.value.reason == "credential_reference_invalid"
+    assert not (tmp_path / "state").exists()
+
+
 def test_o2a_keyring_has_no_file_fallback_and_never_serializes_secret(tmp_path: Path) -> None:
     keyring = FakeKeyring()
     store = _store(tmp_path, keyring=keyring)
@@ -257,6 +282,8 @@ def test_o2a_file_backend_rejects_symlink_destination_without_mutation(tmp_path:
     outside.write_text("keep", encoding="utf-8")
     secret_root = tmp_path / "state" / "credentials.d"
     secret_root.mkdir(parents=True)
+    (tmp_path / "state").chmod(0o700)
+    secret_root.chmod(0o700)
     (secret_root / "model.primary").symlink_to(outside)
     store = _store(tmp_path)
 
@@ -270,6 +297,275 @@ def test_o2a_file_backend_rejects_symlink_destination_without_mutation(tmp_path:
     assert exc.value.reason == "credential_file_unsafe"
     assert outside.read_text(encoding="utf-8") == "keep"
     assert not (tmp_path / "state" / "credential-references.json").exists()
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+def test_o2a_file_backend_replace_requires_authority_and_replaces_safely(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.FILE,
+        secret="first-secret",
+    )
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.set_reference(
+            name="model.primary",
+            backend=CredentialBackend.FILE,
+            secret="second-secret",
+        )
+
+    assert exc.value.reason == "credential_reference_exists"
+    assert store.resolve("model.primary") == "first-secret"
+
+    replaced = store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.FILE,
+        secret="second-secret",
+        replace=True,
+    )
+
+    assert replaced.available is True
+    assert store.resolve("model.primary") == "second-secret"
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+def test_o2a_orphan_file_material_requires_explicit_replace(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    secret_root = state / "credentials.d"
+    secret_file = secret_root / "model.primary"
+    secret_root.mkdir(parents=True, mode=0o700)
+    state.chmod(0o700)
+    secret_root.chmod(0o700)
+    secret_file.write_text("orphan-secret", encoding="utf-8")
+    secret_file.chmod(0o600)
+    store = _store(tmp_path)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.set_reference(
+            name="model.primary",
+            backend=CredentialBackend.FILE,
+            secret="replacement-secret",
+        )
+
+    assert exc.value.reason == "credential_backend_material_exists"
+    assert secret_file.read_text(encoding="utf-8") == "orphan-secret"
+    assert not (state / "credential-references.json").exists()
+
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.FILE,
+        secret="replacement-secret",
+        replace=True,
+    )
+    assert store.resolve("model.primary") == "replacement-secret"
+
+
+def test_o2a_orphan_keyring_material_requires_explicit_replace(tmp_path: Path) -> None:
+    keyring = FakeKeyring()
+    keyring.values[("shisad-test", "model.primary")] = "orphan-secret"
+    store = _store(tmp_path, keyring=keyring)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.set_reference(
+            name="model.primary",
+            backend=CredentialBackend.KEYRING,
+            locator="shisad-test",
+            secret="replacement-secret",
+        )
+
+    assert exc.value.reason == "credential_backend_material_exists"
+    assert keyring.values[("shisad-test", "model.primary")] == "orphan-secret"
+
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.KEYRING,
+        locator="shisad-test",
+        secret="replacement-secret",
+        replace=True,
+    )
+    assert store.resolve("model.primary") == "replacement-secret"
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+@pytest.mark.parametrize("unsafe_target", ["root", "file"])
+def test_o2a_file_set_rejects_existing_unsafe_modes_without_repair(
+    tmp_path: Path,
+    unsafe_target: str,
+) -> None:
+    state = tmp_path / "state"
+    secret_root = state / "credentials.d"
+    secret_file = secret_root / "model.primary"
+    secret_root.mkdir(parents=True, mode=0o700)
+    state.chmod(0o700)
+    secret_root.chmod(0o700)
+    secret_file.write_text("keep", encoding="utf-8")
+    secret_file.chmod(0o600)
+    target = secret_root if unsafe_target == "root" else secret_file
+    target.chmod(0o755 if unsafe_target == "root" else 0o644)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        _store(tmp_path).set_reference(
+            name="model.primary",
+            backend=CredentialBackend.FILE,
+            secret="replacement",
+            replace=True,
+        )
+
+    assert exc.value.reason == "credential_file_unsafe"
+    assert secret_file.read_text(encoding="utf-8") == "keep"
+    assert stat.S_IMODE(target.stat().st_mode) == (
+        0o755 if unsafe_target == "root" else 0o644
+    )
+    assert not (state / "credential-references.json").exists()
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+def test_o2a_file_set_rejects_non_regular_existing_destination(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    secret_root = state / "credentials.d"
+    destination = secret_root / "model.primary"
+    destination.mkdir(parents=True, mode=0o700)
+    state.chmod(0o700)
+    secret_root.chmod(0o700)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        _store(tmp_path).set_reference(
+            name="model.primary",
+            backend=CredentialBackend.FILE,
+            secret="replacement",
+            replace=True,
+        )
+
+    assert exc.value.reason == "credential_file_unsafe"
+    assert destination.is_dir()
+    assert not (state / "credential-references.json").exists()
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+def test_o2a_file_remove_rejects_unsafe_material_and_retains_metadata(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.FILE,
+        secret="retain-me",
+    )
+    secret_file = tmp_path / "state" / "credentials.d" / "model.primary"
+    secret_file.chmod(0o644)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.remove("model.primary")
+
+    assert exc.value.reason == "credential_backend_remove_failed"
+    assert secret_file.read_text(encoding="utf-8") == "retain-me"
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o644
+    assert store.status("model.primary").configured is True
+    assert store.status("model.primary").reason == "credential_file_unsafe"
+
+
+def test_o2a_file_remove_rejects_missing_destination_beneath_symlink_root(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.set_reference(
+        name="model.primary",
+        backend=CredentialBackend.FILE,
+        secret="remove-me",
+    )
+    state = tmp_path / "state"
+    secret_root = state / "credentials.d"
+    (secret_root / "model.primary").unlink()
+    secret_root.rmdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.remove("model.primary")
+
+    assert exc.value.reason == "credential_backend_remove_failed"
+    assert not (outside / "model.primary").exists()
+    assert "model.primary" in (state / "credential-references.json").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
+@pytest.mark.parametrize("unsafe_target", ["parent", "lock"])
+def test_o2a_registry_rejects_existing_unsafe_storage_without_repair(
+    tmp_path: Path,
+    unsafe_target: str,
+) -> None:
+    parent = tmp_path / "state"
+    parent.mkdir(mode=0o700)
+    lock_path = parent / "credential-references.lock"
+    target = parent
+    expected_mode = 0o755
+    if unsafe_target == "lock":
+        lock_path.write_text("", encoding="utf-8")
+        lock_path.chmod(0o644)
+        target = lock_path
+        expected_mode = 0o644
+    else:
+        parent.chmod(0o755)
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        _store(tmp_path).status("model.primary")
+
+    assert exc.value.reason == "credential_registry_unsafe"
+    assert stat.S_IMODE(target.stat().st_mode) == expected_mode
+    assert not (parent / "credential-references.json").exists()
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    ["credential-references.json", "credential-references.lock"],
+)
+def test_o2a_file_secret_rejects_registry_and_lock_collisions(
+    tmp_path: Path,
+    reserved_name: str,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    store = CredentialReferenceStore(
+        registry_path=state / "credential-references.json",
+        secret_root=state,
+        environ={},
+    )
+
+    with pytest.raises(CredentialReferenceError) as exc:
+        store.set_reference(
+            name=reserved_name,
+            backend=CredentialBackend.FILE,
+            secret="must-not-overwrite-state",
+        )
+
+    assert exc.value.reason == "credential_storage_collision"
+    registry = state / "credential-references.json"
+    assert not registry.exists()
+    lock_path = state / "credential-references.lock"
+    if lock_path.exists():
+        assert "must-not-overwrite-state" not in lock_path.read_text(encoding="utf-8")
+
+
+def test_o2a_rejects_secret_root_equal_to_registry_or_lock_path(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    registry = state / "credential-references.json"
+
+    for secret_root in (registry, registry.with_suffix(".lock")):
+        store = CredentialReferenceStore(
+            registry_path=registry,
+            secret_root=secret_root,
+            environ={},
+        )
+        with pytest.raises(CredentialReferenceError) as exc:
+            store.status("model.primary")
+        assert exc.value.reason == "credential_storage_collision"
+    assert not state.exists()
 
 
 def test_o2a_replace_requires_explicit_authority(tmp_path: Path) -> None:
@@ -332,6 +628,7 @@ def test_o2a_backend_and_keyring_locator_changes_require_remove(tmp_path: Path) 
 def test_o2a_corrupt_registry_fails_bounded_without_backend_access(tmp_path: Path) -> None:
     registry = tmp_path / "state" / "credential-references.json"
     registry.parent.mkdir(parents=True)
+    registry.parent.chmod(0o700)
     registry.write_text(
         json.dumps({"schema": 99, "sha256": "unused", "payload": {}}),
         encoding="utf-8",

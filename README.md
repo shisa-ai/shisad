@@ -201,6 +201,7 @@ printf '%s' "$PROVIDER_KEY" |
 
 # Point model config at the logical name.
 # [model]
+# remote_enabled = true
 # api_key_ref = "model.primary"
 
 shisad credential status model.primary --format human
@@ -213,7 +214,8 @@ and `0600` files; it is not described as encrypted. Install
 unavailable keyring fails actionably and never falls back to a file. Generated
 setup/config output persists references, not values. Existing explicit raw
 model-key fields remain compatible, but a route cannot configure both a raw
-key and a reference.
+key and a reference. A reference supplies a credential; it does not bypass the
+existing `remote_enabled` posture.
 
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and
