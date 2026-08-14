@@ -217,6 +217,11 @@ model-key fields remain compatible, but a route cannot configure both a raw
 key and a reference. A reference supplies a credential; it does not bypass the
 existing `remote_enabled` posture.
 
+Credential `--stdin` treats one terminal CRLF, LF, or CR as an input record
+delimiter and removes it before storage. The `printf '%s'` example avoids
+adding a shell newline; values that intentionally end in a newline are not
+representable through this enrollment path.
+
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and
 `shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional

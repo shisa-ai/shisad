@@ -93,13 +93,12 @@ def _credential_error(
     actions: Mapping[str, str] = {
         "credential_reference_invalid": "use a lowercase logical name and valid backend locator",
         "credential_reference_exists": "rerun with --replace or remove the existing reference",
-        "credential_backend_material_exists": (
-            "rerun with --replace to claim and replace the existing backend value"
-        ),
+        "credential_backend_material_exists": "rerun with --replace to claim the backend value",
         "credential_secret_required": "supply the secret through --stdin or an interactive prompt",
-        "keyring_backend_unavailable": (
-            "install shisad[credentials] and configure a usable OS keyring"
-        ),
+        "credential_registry_unsafe": "chmod the credential data directory to 700, then retry",
+        "credential_file_unsafe": "repair the secret directory/file modes and types, then retry",
+        "credential_storage_collision": "separate the credential registry, lock, and secret paths",
+        "keyring_backend_unavailable": "install shisad[credentials] and configure an OS keyring",
         "credential_registry_busy": "wait for the current credential operation, then retry",
     }
     return CredentialCliError(

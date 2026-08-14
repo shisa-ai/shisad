@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from shisad.cli.credentials import CredentialCliError, _secret_input
+from shisad.cli.credentials import CredentialCliError, _credential_error, _secret_input
 from shisad.cli.main import cli
+from shisad.security.credential_refs import CredentialReferenceError
 
 
 def _root_env(tmp_path: Path) -> dict[str, str]:
@@ -20,6 +21,32 @@ def _root_env(tmp_path: Path) -> dict[str, str]:
         "SHISAD_DATA_DIR": str(tmp_path / "data"),
         "NO_COLOR": "1",
     }
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_action"),
+    (
+        (
+            "credential_registry_unsafe",
+            "chmod the credential data directory to 700, then retry",
+        ),
+        (
+            "credential_file_unsafe",
+            "repair the secret directory/file modes and types, then retry",
+        ),
+        (
+            "credential_storage_collision",
+            "separate the credential registry, lock, and secret paths",
+        ),
+    ),
+)
+def test_o2a_posture_errors_have_specific_recovery_actions(
+    reason: str,
+    expected_action: str,
+) -> None:
+    error = _credential_error(CredentialReferenceError(reason), output_format="human")
+
+    assert error.envelope.next_action == expected_action
 
 
 def test_o2a_cli_env_set_status_remove_is_redacted(tmp_path: Path) -> None:

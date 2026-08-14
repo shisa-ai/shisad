@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import textwrap
@@ -224,6 +225,35 @@ async def test_daemon_services_builds_with_local_provider(
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_o2a_daemon_data_root_remains_credential_compatible(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    prior_umask = os.umask(0o022)
+    try:
+        services = await DaemonServices.build(config)
+    finally:
+        os.umask(prior_umask)
+    try:
+        assert stat.S_IMODE(config.data_dir.stat().st_mode) == 0o700
+        store = CredentialReferenceStore(
+            registry_path=config.data_dir / "credential-references.json",
+            secret_root=config.data_dir / "credentials.d",
+            environ={},
+        )
+        assert store.status("model.primary").reason == "credential_reference_not_configured"
     finally:
         await services.shutdown()
 
