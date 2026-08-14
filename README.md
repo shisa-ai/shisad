@@ -224,6 +224,11 @@ enrollment of values that intentionally end in a newline is not supported.
 Provider and policy setup can now be evaluated without writing the final
 configuration or active policy files:
 
+Authenticated maintained presets require an explicit `--credential-ref`;
+`vllm_local_default` is the only maintained unauthenticated preset and rejects
+a credential reference. Ambient provider keys do not fill an omitted setup
+selection.
+
 ```bash
 # Resolves model.primary only in memory, validates the endpoint, and performs
 # one bounded planner request. Output contains the logical reference, not its value.

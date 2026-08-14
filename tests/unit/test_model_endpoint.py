@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from shisad.core.config import ModelConfig
-from shisad.core.providers.routing import ModelRouter
+from shisad.core.providers.routing import ModelComponent, ModelRouter
 from shisad.daemon import runner as daemon_runner
 from shisad.daemon.services import validate_model_endpoints
 
@@ -49,6 +49,24 @@ def test_model_endpoint_validation_checks_all_model_components() -> None:
 
     with pytest.raises(ValueError, match="planner"):
         validate_model_endpoints(config, router)
+
+
+def test_model_endpoint_validation_can_scope_setup_to_planner() -> None:
+    config = ModelConfig(
+        planner_base_url="https://planner.example.com/v1",
+        monitor_base_url="http://monitor.example.com/v1",
+        endpoint_allowlist=["https://planner.example.com/v1"],
+    )
+    router = ModelRouter(config)
+
+    assert (
+        validate_model_endpoints(
+            config,
+            router,
+            components=(ModelComponent.PLANNER,),
+        )
+        is None
+    )
 
 
 def test_model_endpoint_validation_enforces_configured_allowlist() -> None:

@@ -114,6 +114,10 @@ class ProviderSetupSelection(BaseModel):
                 raise ValueError("maintained provider presets own their authentication mode")
             if self.preset == ProviderPreset.VLLM_LOCAL_DEFAULT.value and self.credential_ref:
                 raise ValueError("the unauthenticated local provider does not accept a credential")
+            if self.preset != ProviderPreset.VLLM_LOCAL_DEFAULT.value and not self.credential_ref:
+                raise ValueError(
+                    "maintained authenticated provider credential reference is required"
+                )
             return self
         if not self.model_id:
             raise ValueError("custom provider model ID is required")
@@ -121,6 +125,8 @@ class ProviderSetupSelection(BaseModel):
             raise ValueError("custom provider base URL is required")
         if self.auth_mode is None:
             raise ValueError("custom provider authentication mode is required")
+        if self.auth_mode not in {AuthMode.BEARER, AuthMode.NONE}:
+            raise ValueError("custom provider authentication mode must be bearer or none")
         if self.auth_mode is AuthMode.BEARER and not self.credential_ref:
             raise ValueError("custom bearer provider credential reference is required")
         if self.auth_mode is AuthMode.NONE and self.credential_ref:
@@ -175,6 +181,10 @@ def build_provider_setup_config(
             ProviderPreset.SHISA_DEFAULT if selection.preset == "custom" else selection.preset
         ),
         "planner_remote_enabled": True,
+        "embeddings_provider_preset": ProviderPreset.VLLM_LOCAL_DEFAULT,
+        "embeddings_remote_enabled": False,
+        "monitor_provider_preset": ProviderPreset.VLLM_LOCAL_DEFAULT,
+        "monitor_remote_enabled": False,
         "allow_http_localhost": selection.allow_http_localhost,
         "block_private_ranges": selection.block_private_ranges,
         "endpoint_allowlist": list(selection.endpoint_allowlist),
@@ -185,9 +195,9 @@ def build_provider_setup_config(
         payload["planner_api_key_ref"] = selection.credential_ref
     if selection.preset == "custom":
         destination = safe_url_destination(selection.base_url)
-        if destination is not None and (
-            destination.has_userinfo or destination.parsed.query or destination.parsed.fragment
-        ):
+        if destination is None:
+            raise ValueError("custom provider base URL is malformed")
+        if destination.has_userinfo or destination.parsed.query or destination.parsed.fragment:
             raise ValueError(
                 "custom provider base URL cannot contain credentials, a query, or a fragment"
             )
@@ -196,7 +206,11 @@ def build_provider_setup_config(
 
     model_config = ModelConfig.model_validate(payload)
     router = ModelRouter(model_config)
-    validate_model_endpoints(model_config, router)
+    validate_model_endpoints(
+        model_config,
+        router,
+        components=(ModelComponent.PLANNER,),
+    )
     route = router.route_for(ModelComponent.PLANNER)
     fragment: dict[str, object] = {
         "planner_provider_preset": route.provider_preset.value,
@@ -356,14 +370,14 @@ def setup() -> None:
 @setup.command("provider")
 @click.option(
     "--preset",
-    required=True,
-    type=click.Choice([preset.value for preset in ProviderPreset] + ["custom"]),
+    default="",
+    help="Maintained provider preset or custom.",
 )
 @click.option("--model-id", default="", help="Explicit planner model ID.")
 @click.option("--base-url", default="", help="Explicit custom OpenAI-compatible endpoint.")
 @click.option("--credential-ref", default="", help="Logical O2A credential reference.")
-@click.option("--auth", "auth_mode", type=click.Choice(["bearer", "none"]), default=None)
-@click.option("--timeout", "timeout_seconds", type=click.FloatRange(0.1, 30.0), default=3.0)
+@click.option("--auth", "auth_mode", default=None, help="Custom auth: bearer or none.")
+@click.option("--timeout", "timeout_value", default="3.0", help="Probe timeout in seconds.")
 @click.option("--skip-probe", is_flag=True, help="Generate an explicitly unverified result.")
 @click.option(
     "--format",
@@ -380,13 +394,19 @@ def setup_provider(
     base_url: str,
     credential_ref: str,
     auth_mode: str | None,
-    timeout_seconds: float,
+    timeout_value: str,
     skip_probe: bool,
     output_format: str,
 ) -> None:
     """Select and verify one planner provider without writing configuration."""
 
     try:
+        try:
+            timeout_seconds = float(timeout_value)
+        except (TypeError, ValueError):
+            raise ValueError("provider probe timeout must be a number") from None
+        if not 0.1 <= timeout_seconds <= 30.0:
+            raise ValueError("provider probe timeout must be between 0.1 and 30 seconds")
         store, current_model = _credential_store(ctx)
         selection = ProviderSetupSelection(
             preset=preset,
@@ -408,20 +428,22 @@ def setup_provider(
         )
     except (ConfigFileError, ValueError) as exc:
         raise SetupCliError(str(exc), output_format=output_format) from exc
+    if result.exit_code == 3:
+        raise SetupCliError(result.probe.reason, output_format=output_format)
     _emit_provider_result(result, output_format=output_format)
     if result.exit_code:
         ctx.exit(result.exit_code)
 
 
 @setup.command("policy")
-@click.option("--profile", required=True, type=click.Choice([item.value for item in PolicyProfile]))
-@click.option("--confirmation", type=click.Choice(["auto", "always"]), default=None)
+@click.option("--profile", default="", help="Policy profile: recommended, strict, or custom.")
+@click.option("--confirmation", default=None, help="Custom confirmation: auto or always.")
 @click.option(
     "--semantic-classifier",
-    type=click.Choice(["off", "best_effort", "required"]),
     default=None,
+    help="Custom classifier posture: off, best_effort, or required.",
 )
-@click.option("--yara", type=click.Choice(["optional", "required"]), default=None)
+@click.option("--yara", default=None, help="Custom YARA posture: optional or required.")
 @click.option(
     "--format",
     "output_format",
@@ -438,8 +460,8 @@ def setup_policy(
 ) -> None:
     """Generate a validated policy profile without writing an active policy."""
 
-    selected = PolicyProfile(profile)
     try:
+        selected = PolicyProfile(profile)
         if selected is PolicyProfile.CUSTOM:
             if confirmation is None or semantic_classifier is None or yara is None:
                 raise ValueError(

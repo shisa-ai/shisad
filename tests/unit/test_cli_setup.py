@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from shisad.cli import setup as cli_setup
 from shisad.cli.main import cli
-from shisad.core.providers.capabilities import ProviderPreset
+from shisad.core.providers.capabilities import AuthMode, ProviderPreset
+from shisad.core.providers.routing import ModelComponent
 from shisad.core.readiness import failed_probe_readiness, verified_probe_readiness
 from shisad.core.types import Capability
 from shisad.security.credential_refs import CredentialReferenceError
@@ -28,7 +30,15 @@ class _CredentialStore:
 def test_o2b_explicit_preset_ignores_unrelated_ambient_provider_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "ambient-must-not-select-openai")
+    ambient_secret = "ambient-must-not-select-any-route"
+    for variable in (
+        "SHISA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ):
+        monkeypatch.setenv(variable, ambient_secret)
     selection = cli_setup.ProviderSetupSelection(
         preset=ProviderPreset.SHISA_DEFAULT.value,
         credential_ref="model.primary",
@@ -44,7 +54,28 @@ def test_o2b_explicit_preset_ignores_unrelated_ambient_provider_keys(
         "planner_api_key_ref": "model.primary",
         "planner_remote_enabled": True,
     }
-    assert "ambient-must-not-select-openai" not in json.dumps(fragment)
+    assert ambient_secret not in json.dumps(fragment)
+    router = cli_setup.ModelRouter(model_config)
+    planner = router.route_for(ModelComponent.PLANNER)
+    assert planner.api_key is None
+    assert planner.api_key_source == "route:planner_api_key_ref_unavailable"
+    for component in (ModelComponent.EMBEDDINGS, ModelComponent.MONITOR):
+        route = router.route_for(component)
+        assert route.provider_preset is ProviderPreset.VLLM_LOCAL_DEFAULT
+        assert route.remote_enabled is False
+        assert route.api_key is None
+        assert route.api_key_source == "missing"
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [preset for preset in ProviderPreset if preset is not ProviderPreset.VLLM_LOCAL_DEFAULT],
+)
+def test_o2b_authenticated_maintained_preset_requires_explicit_reference(
+    preset: ProviderPreset,
+) -> None:
+    with pytest.raises(ValueError, match="credential reference is required"):
+        cli_setup.ProviderSetupSelection(preset=preset.value)
 
 
 @pytest.mark.parametrize("preset", list(ProviderPreset))
@@ -118,6 +149,15 @@ def test_o2b_valid_custom_provider_emits_explicit_safe_fragment() -> None:
             },
             "terminal-safe",
         ),
+        (
+            {
+                "preset": "custom",
+                "model_id": "model-1",
+                "base_url": "https://models.example/v1",
+                "auth_mode": AuthMode.HEADER,
+            },
+            "authentication mode",
+        ),
     ],
 )
 def test_o2b_custom_provider_requires_complete_bounded_explicit_input(
@@ -141,14 +181,18 @@ def test_o2b_custom_provider_uses_services_endpoint_validator() -> None:
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    ("base_url", "match"),
     [
-        "https://user:secret@models.example/v1",
-        "https://models.example/v1?api_key=secret",
-        "https://models.example/v1#secret",
+        ("https://user:secret@models.example/v1", "cannot contain credentials"),
+        ("https://user:sec%72et@models.example/v1", "base URL is malformed"),
+        ("https://models.example/v1?api_key=secret", "cannot contain credentials"),
+        ("https://models.example/v1#secret", "cannot contain credentials"),
     ],
 )
-def test_o2b_custom_provider_rejects_secret_bearing_endpoint_shapes(base_url: str) -> None:
+def test_o2b_custom_provider_rejects_secret_bearing_endpoint_shapes(
+    base_url: str,
+    match: str,
+) -> None:
     selection = cli_setup.ProviderSetupSelection(
         preset="custom",
         model_id="local-model",
@@ -156,8 +200,26 @@ def test_o2b_custom_provider_rejects_secret_bearing_endpoint_shapes(base_url: st
         auth_mode="none",
     )
 
-    with pytest.raises(ValueError, match="cannot contain credentials"):
+    with pytest.raises(ValueError, match=match) as exc:
         cli_setup.build_provider_setup_config(selection)
+
+    assert base_url not in str(exc.value)
+
+
+def test_o2b_malformed_custom_provider_url_never_echoes_embedded_secret() -> None:
+    secret = "malformed-secret-must-not-echo"
+    selection = cli_setup.ProviderSetupSelection(
+        preset="custom",
+        model_id="local-model",
+        base_url=f"https://user:{secret}@[::1",
+        auth_mode="none",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        cli_setup.build_provider_setup_config(selection)
+
+    assert str(exc.value) == "custom provider base URL is malformed"
+    assert secret not in str(exc.value)
 
 
 async def test_o2b_provider_probe_resolves_once_and_discards_secret_and_response(
@@ -354,3 +416,173 @@ def test_o2b_policy_cli_rejects_incomplete_custom_profile_without_traceback() ->
     assert payload["exit_code"] == 3
     assert "requires" in payload["likely_cause"]
     assert "Traceback" not in result.output
+
+
+def _setup_cli_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "SHISAD_DATA_DIR": str(tmp_path / "data"),
+        "NO_COLOR": "1",
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["setup", "provider", "--format", "json"],
+        ["setup", "provider", "--preset", "unknown", "--format", "json"],
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "custom",
+            "--model-id",
+            "model-1",
+            "--base-url",
+            "https://models.example/v1",
+            "--auth",
+            "header",
+            "--format",
+            "json",
+        ],
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "vllm_local_default",
+            "--timeout",
+            "forever",
+            "--format",
+            "json",
+        ],
+        ["setup", "policy", "--format", "json"],
+        ["setup", "policy", "--profile", "unknown", "--format", "json"],
+        [
+            "setup",
+            "policy",
+            "--profile",
+            "custom",
+            "--confirmation",
+            "sometimes",
+            "--semantic-classifier",
+            "off",
+            "--yara",
+            "optional",
+            "--format",
+            "json",
+        ],
+    ],
+)
+def test_o2b_cli_selection_errors_use_setup_json_envelope(
+    tmp_path: Path,
+    arguments: list[str],
+) -> None:
+    result = CliRunner().invoke(cli, arguments, env=_setup_cli_env(tmp_path))
+
+    assert result.exit_code == 3, result.output
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    assert payload["exit_code"] == 3
+    assert "Usage:" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_o2b_cli_malformed_custom_url_json_never_echoes_embedded_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "cli-malformed-secret-must-not-echo"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "custom",
+            "--model-id",
+            "model-1",
+            "--base-url",
+            f"https://user:{secret}@[::1",
+            "--auth",
+            "none",
+            "--format",
+            "json",
+        ],
+        env=_setup_cli_env(tmp_path),
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    assert payload["likely_cause"] == "custom provider base URL is malformed"
+    assert secret not in result.output
+
+
+def test_o2b_cli_unavailable_reference_uses_setup_error_envelope(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env = {**_setup_cli_env(tmp_path), "OPENAI_API_KEY": ""}
+    enrolled = runner.invoke(
+        cli,
+        [
+            "credential",
+            "set",
+            "model.primary",
+            "--backend",
+            "env",
+            "--locator",
+            "OPENAI_API_KEY",
+        ],
+        env=env,
+    )
+    assert enrolled.exit_code == 0, enrolled.output
+
+    result = runner.invoke(
+        cli,
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "openai_default",
+            "--credential-ref",
+            "model.primary",
+            "--skip-probe",
+            "--format",
+            "json",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 3, result.output
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    assert payload["likely_cause"] == "missing_api_key"
+    assert "config_fragment" not in payload
+
+
+def test_o2b_provider_and_policy_human_output_is_bounded(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env = _setup_cli_env(tmp_path)
+    provider = runner.invoke(
+        cli,
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "vllm_local_default",
+            "--skip-probe",
+        ],
+        env=env,
+    )
+    policy = runner.invoke(
+        cli,
+        ["setup", "policy", "--profile", "recommended"],
+        env=env,
+    )
+
+    assert provider.exit_code == 0, provider.output
+    assert "Provider setup: skipped" in provider.output
+    assert "Probe: probe_skipped" in provider.output
+    assert "Config fragment:" in provider.output
+    assert policy.exit_code == 0, policy.output
+    assert "Policy profile: recommended" in policy.output
+    assert "Generated only; no active policy file was changed." in policy.output
+    assert "\x1b[" not in provider.output + policy.output

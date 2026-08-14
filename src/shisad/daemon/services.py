@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -2826,10 +2826,16 @@ def _log_provider_route_summary(router: ModelRouter) -> None:
         )
 
 
-def validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
-    """Validate every resolved model route against the configured endpoint posture."""
+def validate_model_endpoints(
+    model_config: ModelConfig,
+    router: ModelRouter,
+    *,
+    components: Iterable[ModelComponent] | None = None,
+) -> None:
+    """Validate selected routes, or every route for daemon startup."""
 
-    for component in ModelComponent:
+    selected_components = tuple(ModelComponent) if components is None else tuple(components)
+    for component in selected_components:
         route = router.route_for(component)
         errors = validate_endpoint(
             route.base_url,
