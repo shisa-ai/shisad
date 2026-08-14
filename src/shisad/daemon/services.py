@@ -722,7 +722,7 @@ class DaemonServices:
             ),
         )
         router = ModelRouter(model_config)
-        _validate_model_endpoints(model_config, router)
+        validate_model_endpoints(model_config, router)
         _validate_security_route_pins(model_config, router)
 
         transcript_root = config.data_dir / "sessions"
@@ -2826,7 +2826,9 @@ def _log_provider_route_summary(router: ModelRouter) -> None:
         )
 
 
-def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
+def validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
+    """Validate every resolved model route against the configured endpoint posture."""
+
     for component in ModelComponent:
         route = router.route_for(component)
         errors = validate_endpoint(

@@ -33,6 +33,7 @@ from shisad.cli.onboarding import (
 )
 from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
 from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
+from shisad.cli.setup import setup
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
@@ -600,7 +601,18 @@ class TaskGroupedGroup(click.Group):
     _ROOT_SECTIONS = (
         (
             "Get started",
-            ("init", "start", "status", "chat", "tui", "web-ui", "doctor", "stop", "restart"),
+            (
+                "init",
+                "setup",
+                "start",
+                "status",
+                "chat",
+                "tui",
+                "web-ui",
+                "doctor",
+                "stop",
+                "restart",
+            ),
         ),
         (
             "Work with shisad",
@@ -752,8 +764,7 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
             what_failed="Could not load operator configuration.",
             exc=exc,
             next_action=(
-                f"create the selected path explicitly with: "
-                f"shisad --config {quoted_path} init"
+                f"create the selected path explicitly with: shisad --config {quoted_path} init"
             ),
         ) from exc
     except UnsupportedConfigSchemaError as exc:
@@ -798,6 +809,7 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
 
 
 cli.add_command(credential)
+cli.add_command(setup)
 
 
 @cli.group("config")

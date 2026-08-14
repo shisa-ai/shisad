@@ -193,3 +193,61 @@ def test_o2a_credential_reference_cli_journey_is_redacted_and_reversible(
     registry = data_dir / "credential-references.json"
     assert secret not in registry.read_text(encoding="utf-8")
     assert not (tmp_path / "config").exists()
+
+
+def test_o2b_provider_and_policy_setup_cli_is_redacted_and_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    secret = "o2b-provider-secret-must-not-print"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("NO_COLOR", "1")
+    runner = CliRunner()
+
+    enrolled = runner.invoke(
+        cli,
+        [
+            "credential",
+            "set",
+            "model.primary",
+            "--backend",
+            "env",
+            "--locator",
+            "OPENAI_API_KEY",
+        ],
+    )
+    provider = runner.invoke(
+        cli,
+        [
+            "setup",
+            "provider",
+            "--preset",
+            "openai_default",
+            "--credential-ref",
+            "model.primary",
+            "--skip-probe",
+            "--format",
+            "json",
+        ],
+    )
+    policy = runner.invoke(
+        cli,
+        ["setup", "policy", "--profile", "recommended", "--format", "json"],
+    )
+
+    for result in (enrolled, provider, policy):
+        assert result.exit_code == 0, result.output
+        assert secret not in result.output
+    provider_payload = json.loads(provider.output)
+    assert provider_payload["outcome"] == "skipped"
+    assert provider_payload["probe"]["verified"] is False
+    assert provider_payload["config_fragment"]["planner_api_key_ref"] == "model.primary"
+    policy_payload = json.loads(policy.output)
+    assert policy_payload["profile"] == "recommended"
+    assert policy_payload["policy"]["default_deny"] is False
+    assert policy_payload["policy"]["default_require_confirmation"] is False
+    assert not (tmp_path / "config").exists()
+    assert not (tmp_path / "policy.yaml").exists()

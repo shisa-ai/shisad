@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, and provider-agnostic credential references; the combined setup wizard and lifecycle routing remain in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, and redacted provider/policy setup projections; channel and combined wizard work remain in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -217,10 +217,42 @@ model-key fields remain compatible, but a route cannot configure both a raw
 key and a reference. A reference supplies a credential; it does not bypass the
 existing `remote_enabled` posture.
 
-Credential `--stdin` treats one terminal CRLF, LF, or CR as an input record
-delimiter and removes it before storage. The `printf '%s'` example avoids
-adding a shell newline; values that intentionally end in a newline are not
-representable through this enrollment path.
+Credential `--stdin` normalizes terminal CR/LF input record delimiters before
+storage. The `printf '%s'` example avoids adding a shell newline; exact-byte
+enrollment of values that intentionally end in a newline is not supported.
+
+Provider and policy setup can now be evaluated without writing the final
+configuration or active policy files:
+
+```bash
+# Resolves model.primary only in memory, validates the endpoint, and performs
+# one bounded planner request. Output contains the logical reference, not its value.
+shisad setup provider \
+  --preset openai_default \
+  --credential-ref model.primary \
+  --format human
+
+# Explicitly generate an unverified fragment without making a network request.
+shisad setup provider \
+  --preset openai_default \
+  --credential-ref model.primary \
+  --skip-probe \
+  --format json
+
+# Generate a validated profile on stdout; no active policy is changed.
+shisad setup policy --profile recommended --format human
+shisad setup policy --profile strict --format json
+```
+
+`recommended` keeps default-grant capabilities and automatic per-call handling.
+`strict` keeps the same capabilities but requires confirmation by default and
+requires the semantic classifier and YARA postures. A `custom` profile requires
+all three finite choices explicitly (`--confirmation`,
+`--semantic-classifier`, and `--yara`). Broader rule authoring remains available
+through the existing policy-file format. A skipped probe is reported as
+unverified; a failed probe is not retried automatically, and provider response
+bodies are discarded rather than printed or persisted. The later combined
+wizard will publish the selected config and policy artifacts.
 
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and
@@ -234,8 +266,9 @@ and egress-review data, so keep it private and remove it when the investigation
 is complete.
 
 Expected CLI failures use exit status 1 for command/user-state errors, 2 for
-daemon-connect/RPC errors (and Click usage compatibility), and 3 for invalid or
-unsafe configuration; success is 0. `doctor` remains read-only and has no
+daemon-connect/RPC errors, a completed unsuccessful setup-provider probe (and
+Click usage compatibility), and 3 for invalid or unsafe configuration; success
+is 0. `doctor` remains read-only and has no
 automatic `--fix` mode. Root help advertises the canonical `reality-check`
 spelling while the legacy `realitycheck` spelling remains a hidden
 compatibility alias.

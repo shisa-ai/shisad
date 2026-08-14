@@ -430,17 +430,23 @@ TOTP entry remain deferred to `v0.8.0`.
   adds versioned provider-agnostic credential references with environment,
   optional OS-keyring, and owner-only local-file backends; redacted
   set/status/remove commands; and trusted model-route resolution that suppresses
-  unrelated ambient-key auto-detection. Provider/policy selection, channel
-  setup, and combined wizard orchestration remain later v0.8.2 units.
+  unrelated ambient-key auto-detection. A following bounded unit adds explicit
+  provider/model selection, a single redacted immediate planner probe, and
+  generated recommended/strict/finite-custom policy profiles without writing
+  active config or policy files. Channel setup and combined wizard publication
+  remain later v0.8.2 units.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
   help grouping, exit statuses, and naming compatibility
-- Onboarding — the bounded environment/preflight welcome and generic model
-  credential-reference lifecycle are present on the v0.8.2 development tree.
-  The interactive setup wizard, provider probe, channel setup, tutorial bot,
-  automatic lifecycle/chat routing, and schema migration flow remain later
-  work; `init` is still only a minimal template publisher
+- Onboarding — the bounded environment/preflight welcome, generic model
+  credential-reference lifecycle, explicit provider/model verification, and
+  generated capability-preserving policy profiles are present on the v0.8.2
+  development tree. Provider setup runs at most one probe and policy setup only
+  emits output; neither publishes final files. The interactive combined wizard,
+  channel setup, tutorial bot, automatic lifecycle/chat routing, and schema
+  migration flow remain later work; `init` is still only a minimal template
+  publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls
