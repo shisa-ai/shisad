@@ -100,6 +100,14 @@ shisad --help
 shisad doctor check --component all
 ```
 
+The v0.8.2 development tree can also prepare one channel at a time without
+writing final configuration. Enroll a logical credential reference first, then
+run `shisad setup channel --channel <name> ... --skip-probe`; omit
+`--skip-probe` for a bounded connector check, or add both `--send-test` and an
+explicit `--test-target` for one fixed outbound notice. Connector start alone
+is reported as configured, not authenticated or verified, and ingress remains
+default-deny until an explicit trusted user is included.
+
 The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
 Telegram, and Slack client runtimes. It does not enable channels or add
 credentials; those remain explicit configuration. PromptGuard also remains a

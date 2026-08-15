@@ -41,6 +41,7 @@ from shisad.daemon.services import (
     _normalize_tool_destination,
     _promptguard_degraded_hint,
     _register_route_credentials,
+    _resolve_channel_credential_references,
     _resolve_model_credential_references,
     _validate_security_route_pins,
     _warn_on_evidence_kms_endpoint_config,
@@ -50,7 +51,11 @@ from shisad.interop.a2a_registry import A2aConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
-from shisad.security.credential_refs import CredentialBackend, CredentialReferenceStore
+from shisad.security.credential_refs import (
+    CredentialBackend,
+    CredentialReferenceError,
+    CredentialReferenceStore,
+)
 from shisad.security.credentials import (
     ApprovalFactorRecord,
     CredentialConfig,
@@ -126,6 +131,74 @@ def test_o2a_missing_optional_model_reference_preserves_safe_core_config(tmp_pat
 
     assert resolved.api_key is None
     assert resolved.api_key_ref == "model.primary"
+
+
+def test_o2c_daemon_resolves_enabled_channel_references_only_at_adapter_boundary() -> None:
+    config = DaemonConfig(
+        matrix_enabled=True,
+        matrix_homeserver="https://matrix.example",
+        matrix_user_id="@bot:example",
+        matrix_room_id="!room:example",
+        matrix_access_token_ref="channel.matrix",
+        discord_enabled=True,
+        discord_bot_token_ref="channel.discord",
+        telegram_enabled=False,
+        telegram_bot_token_ref="channel.telegram.disabled",
+        slack_enabled=True,
+        slack_bot_token_ref="channel.slack.bot",
+        slack_app_token_ref="channel.slack.app",
+    )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.resolved: list[str] = []
+
+        def resolve(self, name: str) -> str:
+            self.resolved.append(name)
+            return f"resolved:{name}"
+
+    store = _Store()
+    credentials, diagnostics = _resolve_channel_credential_references(config, store=store)
+
+    assert store.resolved == [
+        "channel.matrix",
+        "channel.discord",
+        "channel.slack.bot",
+        "channel.slack.app",
+    ]
+    assert credentials == {
+        "matrix": {"matrix_access_token": "resolved:channel.matrix"},
+        "discord": {"discord_bot_token": "resolved:channel.discord"},
+        "slack": {
+            "slack_bot_token": "resolved:channel.slack.bot",
+            "slack_app_token": "resolved:channel.slack.app",
+        },
+    }
+    assert diagnostics == {}
+    assert config.matrix_access_token == ""
+    assert config.discord_bot_token == ""
+    assert config.slack_bot_token == ""
+
+
+def test_o2c_unavailable_enabled_reference_is_redacted_channel_diagnostic() -> None:
+    config = DaemonConfig(discord_enabled=True, discord_bot_token_ref="channel.discord")
+
+    class _Store:
+        def resolve(self, name: str) -> str:
+            assert name == "channel.discord"
+            raise CredentialReferenceError("credential_value_unavailable")
+
+    credentials, diagnostics = _resolve_channel_credential_references(config, store=_Store())
+
+    assert credentials == {}
+    assert diagnostics == {
+        "discord": {
+            "status": "degraded",
+            "reason_code": "channel.credential_unavailable",
+            "timeout_seconds": config.channel_startup_timeout_seconds,
+        }
+    }
+    assert "channel.discord" not in str(diagnostics)
 
 
 def _write_browser_wrapper(path) -> None:
@@ -1555,51 +1628,55 @@ def test_s0_key_gated_acceptance_reports_env_eligibility_only(
 
 
 @pytest.mark.asyncio
-async def test_daemon_services_matrix_missing_config_raises(tmp_path) -> None:
+@pytest.mark.parametrize("channel", ["matrix", "discord", "telegram", "slack"])
+async def test_o2c_missing_optional_channel_config_degrades_without_blocking_core(
+    tmp_path,
+    channel: str,
+) -> None:
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
-        matrix_enabled=True,
+        **{f"{channel}_enabled": True},
     )
-    with pytest.raises(ValueError, match="Matrix channel is enabled but missing required config"):
-        await DaemonServices.build(config)
+    services = await DaemonServices.build(config)
+    try:
+        assert channel not in services.channels
+        assert services.channel_startup_status[channel]["status"] == "degraded"
+        assert services.channel_startup_status[channel]["reason_code"] == (
+            "channel.configuration_incomplete"
+        )
+    finally:
+        await services.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_daemon_services_discord_missing_config_raises(tmp_path) -> None:
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        discord_enabled=True,
+async def test_o2c_missing_optional_dependency_never_activates_memory_fallback() -> None:
+    connect_calls = 0
+
+    class _MissingDependencyChannel:
+        available = False
+
+        async def connect(self) -> None:
+            nonlocal connect_calls
+            connect_calls += 1
+
+        async def disconnect(self) -> None:
+            raise AssertionError("cleanup must not run before connector start")
+
+    result = await services_module._start_channel(
+        name="telegram",
+        channel=_MissingDependencyChannel(),
+        timeout_seconds=0.05,
     )
-    with pytest.raises(ValueError, match="Discord channel is enabled but missing required config"):
-        await DaemonServices.build(config)
 
-
-@pytest.mark.asyncio
-async def test_daemon_services_telegram_missing_config_raises(tmp_path) -> None:
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        telegram_enabled=True,
-    )
-    with pytest.raises(ValueError, match="Telegram channel is enabled but missing required config"):
-        await DaemonServices.build(config)
-
-
-@pytest.mark.asyncio
-async def test_daemon_services_slack_missing_config_raises(tmp_path) -> None:
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        slack_enabled=True,
-    )
-    with pytest.raises(ValueError, match="Slack channel is enabled but missing required config"):
-        await DaemonServices.build(config)
+    assert result.active is False
+    assert result.diagnostic == {
+        "status": "degraded",
+        "reason_code": "channel.dependency_unavailable",
+        "timeout_seconds": 0.05,
+    }
+    assert connect_calls == 0
 
 
 @pytest.mark.asyncio
@@ -1793,12 +1870,27 @@ async def test_gh111_all_channel_builders_use_bounded_startup_owner(
         return channel
 
     monkeypatch.setattr(services_module, builder_name, _fake_builder)
+    required_config = {
+        "matrix": {
+            "matrix_homeserver": "https://matrix.example",
+            "matrix_user_id": "@bot:example",
+            "matrix_access_token": "placeholder-token",
+            "matrix_room_id": "!room:example",
+        },
+        "discord": {"discord_bot_token": "placeholder-token"},
+        "telegram": {"telegram_bot_token": "placeholder-token"},
+        "slack": {
+            "slack_bot_token": "placeholder-bot-token",
+            "slack_app_token": "placeholder-app-token",
+        },
+    }[channel_name]
     config = DaemonConfig(
         data_dir=tmp_path / channel_name / "data",
         socket_path=tmp_path / channel_name / "control.sock",
         policy_path=tmp_path / channel_name / "policy.yaml",
         channel_startup_timeout_seconds=0.1,
         **{enabled_field: True},
+        **required_config,
     )
 
     services = await _build_services(config)
@@ -1830,8 +1922,11 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
             nonlocal disconnected
             disconnected = True
 
-    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
-        _ = config
+    def _fake_build_matrix_channel(
+        config: DaemonConfig,
+        **kwargs: object,
+    ):  # type: ignore[no-untyped-def]
+        _ = config, kwargs
         return _MatrixStub()
 
     class _ExplodingCredentialStore:
@@ -1871,8 +1966,11 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_unexpected_f
             nonlocal disconnected
             disconnected = True
 
-    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
-        _ = config
+    def _fake_build_matrix_channel(
+        config: DaemonConfig,
+        **kwargs: object,
+    ):  # type: ignore[no-untyped-def]
+        _ = config, kwargs
         return _MatrixStub()
 
     class _ExplodingCredentialStore:
@@ -1912,8 +2010,11 @@ async def test_daemon_services_build_rolls_back_when_container_construction_fail
             nonlocal disconnected
             disconnected = True
 
-    def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
-        _ = config
+    def _fake_build_matrix_channel(
+        config: DaemonConfig,
+        **kwargs: object,
+    ):  # type: ignore[no-untyped-def]
+        _ = config, kwargs
         return _MatrixStub()
 
     class _ExplodingServices(DaemonServices):
@@ -1953,12 +2054,10 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error(tmp_pat
             calls.append("server")
 
     # HDL-M1: construct a minimal DaemonServices via object.__new__ so this
-    # test can pin the shutdown ordering (embeddings → matrix → server) and
-    # the continue-past-disconnect-error invariant without standing up the
-    # full services container. If DaemonServices.shutdown starts touching a
-    # new attribute this test will raise AttributeError inside the call below
-    # — that is the intended drift signal. A deeper cleanup would split
-    # shutdown logic into a pure function; tracked as a follow-up.
+    # test can pin all-resources-attempted and continue-past-disconnect-error
+    # without standing up the full services container. The independent close
+    # operations run concurrently, so scheduler order is intentionally not an
+    # invariant. A deeper cleanup would split shutdown into a pure function.
     services = object.__new__(DaemonServices)
     data_lock = FileLock(str(tmp_path / "data.lock"))
     data_lock.acquire()
@@ -1968,9 +2067,7 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error(tmp_pat
     services.server = _ServerStub()  # type: ignore[assignment]
 
     await DaemonServices.shutdown(services)
-    assert calls[0] == "embed:True"
-    assert "matrix" in calls
-    assert calls[-1] == "server"
+    assert sorted(calls) == ["embed:True", "matrix", "server"]
     assert data_lock.is_locked is False
 
 

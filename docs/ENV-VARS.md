@@ -153,6 +153,7 @@ Matrix:
 - `SHISAD_MATRIX_HOMESERVER`
 - `SHISAD_MATRIX_USER_ID`
 - `SHISAD_MATRIX_ACCESS_TOKEN`
+- `SHISAD_MATRIX_ACCESS_TOKEN_REF`
 - `SHISAD_MATRIX_ROOM_ID`
 - `SHISAD_MATRIX_E2EE`
 - `SHISAD_MATRIX_TRUSTED_USERS`
@@ -162,6 +163,7 @@ Discord:
 
 - `SHISAD_DISCORD_ENABLED`
 - `SHISAD_DISCORD_BOT_TOKEN`
+- `SHISAD_DISCORD_BOT_TOKEN_REF`
 - `SHISAD_DISCORD_DEFAULT_CHANNEL_ID`
 - `SHISAD_DISCORD_TRUSTED_USERS`
 - `SHISAD_DISCORD_GUILD_WORKSPACE_MAP`
@@ -171,6 +173,7 @@ Telegram:
 
 - `SHISAD_TELEGRAM_ENABLED`
 - `SHISAD_TELEGRAM_BOT_TOKEN`
+- `SHISAD_TELEGRAM_BOT_TOKEN_REF`
 - `SHISAD_TELEGRAM_DEFAULT_CHAT_ID`
 - `SHISAD_TELEGRAM_TRUSTED_USERS`
 - `SHISAD_TELEGRAM_CHAT_WORKSPACE_MAP`
@@ -179,7 +182,9 @@ Slack:
 
 - `SHISAD_SLACK_ENABLED`
 - `SHISAD_SLACK_BOT_TOKEN`
+- `SHISAD_SLACK_BOT_TOKEN_REF`
 - `SHISAD_SLACK_APP_TOKEN`
+- `SHISAD_SLACK_APP_TOKEN_REF`
 - `SHISAD_SLACK_DEFAULT_CHANNEL_ID`
 - `SHISAD_SLACK_TRUSTED_USERS`
 - `SHISAD_SLACK_TEAM_WORKSPACE_MAP`
@@ -187,6 +192,13 @@ Slack:
 Identity gating:
 
 - `SHISAD_CHANNEL_IDENTITY_ALLOWLIST`
+
+Each `*_TOKEN_REF` is a logical O2A credential name resolved only for enabled
+adapter construction. It is mutually exclusive with the matching raw token
+field. Missing references and optional channel dependencies degrade that
+channel without blocking the safe core daemon. A connector or test target is
+never an identity grant; configure an explicit channel `*_TRUSTED_USERS` list
+or generic allowlist for ingress.
 
 Discord public-channel rules:
 

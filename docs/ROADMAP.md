@@ -433,8 +433,12 @@ TOTP entry remain deferred to `v0.8.0`.
   unrelated ambient-key auto-detection. A following bounded unit adds explicit
   provider/model selection, a single redacted immediate planner probe, and
   generated recommended/strict/finite-custom policy profiles without writing
-  active config or policy files. Channel setup and combined wizard publication
-  remain later v0.8.2 units.
+  active config or policy files. The channel sibling now adds reference-only
+  Matrix/Discord/Telegram/Slack fragments, bounded truthful connector
+  readiness, explicit default-deny identity guidance, and an optional
+  one-attempt fixed test notice through normal durable delivery. It does not
+  claim inbound round-trip verification. Combined interactive selection and
+  final owner-only config publication remain the next v0.8.2 unit.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -442,11 +446,12 @@ TOTP entry remain deferred to `v0.8.0`.
 - Onboarding — the bounded environment/preflight welcome, generic model
   credential-reference lifecycle, explicit provider/model verification, and
   generated capability-preserving policy profiles are present on the v0.8.2
-  development tree. Provider setup runs at most one probe and policy setup only
-  emits output; neither publishes final files. The interactive combined wizard,
-  channel setup, tutorial bot, automatic lifecycle/chat routing, and schema
-  migration flow remain later work; `init` is still only a minimal template
-  publisher
+  development tree. Reference-only four-channel setup now emits validated
+  fragments, runs at most one bounded connector start, and sends a test notice
+  only with explicit effect and target authority. Provider, policy, and channel
+  setup only emit output; none publishes final files. The interactive combined
+  wizard, tutorial bot, automatic lifecycle/chat routing, and schema migration
+  flow remain later work; `init` is still only a minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls

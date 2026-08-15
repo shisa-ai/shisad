@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from shisad.channels.setup import ChannelSetupOutcome
 from shisad.cli import setup as cli_setup
 from shisad.cli.main import cli
 from shisad.core.providers.capabilities import AuthMode, ProviderPreset
@@ -220,6 +221,83 @@ def test_o2b_malformed_custom_provider_url_never_echoes_embedded_secret() -> Non
 
     assert str(exc.value) == "custom provider base URL is malformed"
     assert secret not in str(exc.value)
+
+
+def test_o2c_channel_cli_is_explicit_reference_only_and_json_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "channel-secret-must-not-print"
+    captured: list[cli_setup.ChannelSetupSelection] = []
+
+    monkeypatch.setattr(
+        cli_setup,
+        "_channel_setup_context",
+        lambda _ctx: (_CredentialStore(secret), cli_setup.DaemonConfig(data_dir=tmp_path)),
+    )
+
+    async def _evaluate(selection, **kwargs):
+        captured.append(selection)
+        return cli_setup.ChannelSetupResult(
+            outcome=ChannelSetupOutcome.SKIPPED,
+            channel=selection.channel,
+            probe=cli_setup.ReadinessStatus(
+                state=cli_setup.ReadinessState.CONFIGURED,
+                configured=True,
+                evidence="not_run",
+                reason="probe_skipped",
+                next_action="rerun without --skip-probe",
+                source="explicit_setup_skip",
+            ),
+            identity_ready=True,
+            identity_next_action="none",
+            config_fragment={
+                "discord_enabled": True,
+                "discord_bot_token_ref": "channel.discord",
+                "discord_trusted_users": ["123"],
+            },
+            retry_allowed=True,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(cli_setup, "evaluate_channel_setup", _evaluate)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "setup",
+            "channel",
+            "--channel",
+            "discord",
+            "--bot-token-ref",
+            "channel.discord",
+            "--trusted-user",
+            "123",
+            "--skip-probe",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert secret not in result.output
+    payload = json.loads(result.output)
+    assert payload["outcome"] == "skipped"
+    assert payload["identity_ready"] is True
+    assert payload["config_fragment"]["discord_bot_token_ref"] == "channel.discord"
+    assert len(captured) == 1
+    assert captured[0].run_test is False
+
+
+def test_o2c_channel_cli_has_no_raw_token_or_arbitrary_message_option() -> None:
+    result = CliRunner().invoke(cli, ["setup", "channel", "--help"])
+
+    assert result.exit_code == 0
+    assert "--bot-token-ref" in result.output
+    assert "--access-token-ref" in result.output
+    assert "--app-token-ref" in result.output
+    assert "--token " not in result.output
+    assert "--message" not in result.output
 
 
 async def test_o2b_provider_probe_resolves_once_and_discards_secret_and_response(

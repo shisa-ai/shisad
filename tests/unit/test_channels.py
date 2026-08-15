@@ -10,7 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels import discord as discord_module
+from shisad.channels import matrix as matrix_module
+from shisad.channels import slack as slack_module
 from shisad.channels import state as channel_state
+from shisad.channels import telegram as telegram_module
 from shisad.channels.base import DeliveryRecoveryKind, DeliveryTarget, InMemoryChannel
 from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent
 from shisad.channels.discord import (
@@ -21,14 +25,55 @@ from shisad.channels.discord import (
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelRule
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
+from shisad.channels.setup import ChannelName, adapter_setup_readiness
 from shisad.channels.slack import SlackChannel, SlackConfig
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.config import DaemonConfig
+from shisad.core.readiness import ReadinessState
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName, UserId, WorkspaceId
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle, RiskPolicy
+
+
+@pytest.mark.parametrize(
+    ("module", "attributes", "channel"),
+    [
+        (
+            matrix_module,
+            ("nio",),
+            MatrixChannel(MatrixConfig("https://matrix.example", "@bot:example", "token", "!r")),
+        ),
+        (discord_module, ("discord",), DiscordChannel(DiscordConfig("token"))),
+        (
+            telegram_module,
+            ("Application", "MessageHandler", "filters"),
+            TelegramChannel(TelegramConfig("token")),
+        ),
+        (
+            slack_module,
+            ("AsyncApp", "AsyncSocketModeHandler"),
+            SlackChannel(SlackConfig("bot-token", "app-token")),
+        ),
+    ],
+)
+def test_o2c_each_adapter_reports_missing_optional_dependency_truthfully(
+    monkeypatch: pytest.MonkeyPatch,
+    module: object,
+    attributes: tuple[str, ...],
+    channel: object,
+) -> None:
+    for attribute in attributes:
+        monkeypatch.setattr(module, attribute, None)
+
+    status = adapter_setup_readiness(ChannelName(channel._name), channel)
+
+    assert status.state is ReadinessState.ABSENT
+    assert status.installed is False
+    assert status.configured is True
+    assert status.verified is False
+    assert status.reason == "channel_dependency_unavailable"
 
 
 def test_channel_identity_map_applies_per_channel_default_trust() -> None:

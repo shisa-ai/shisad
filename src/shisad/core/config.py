@@ -319,6 +319,9 @@ class DaemonConfig(BaseSettings):
     matrix_homeserver: str = Field(default="", description="Matrix homeserver URL.")
     matrix_user_id: str = Field(default="", description="Matrix user id for bot account.")
     matrix_access_token: str = Field(default="", description="Matrix access token.")
+    matrix_access_token_ref: str = Field(
+        default="", description="Logical credential reference for the Matrix access token."
+    )
     matrix_room_id: str = Field(default="", description="Default Matrix room id.")
     matrix_e2ee: bool = Field(default=True, description="Enable Matrix E2EE when available.")
     matrix_trusted_users: list[str] = Field(
@@ -333,6 +336,9 @@ class DaemonConfig(BaseSettings):
     # Optional Discord runtime channel
     discord_enabled: bool = Field(default=False, description="Enable Discord channel runtime.")
     discord_bot_token: str = Field(default="", description="Discord bot token.")
+    discord_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Discord bot token."
+    )
     discord_default_channel_id: str = Field(
         default="",
         description="Default Discord channel id for outbound sends.",
@@ -355,6 +361,9 @@ class DaemonConfig(BaseSettings):
     # Optional Telegram runtime channel
     telegram_enabled: bool = Field(default=False, description="Enable Telegram channel runtime.")
     telegram_bot_token: str = Field(default="", description="Telegram bot token.")
+    telegram_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Telegram bot token."
+    )
     telegram_default_chat_id: str = Field(
         default="",
         description="Default Telegram chat id for outbound sends.",
@@ -371,7 +380,13 @@ class DaemonConfig(BaseSettings):
     # Optional Slack runtime channel
     slack_enabled: bool = Field(default=False, description="Enable Slack channel runtime.")
     slack_bot_token: str = Field(default="", description="Slack bot token.")
+    slack_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Slack bot token."
+    )
     slack_app_token: str = Field(default="", description="Slack Socket Mode app token.")
+    slack_app_token_ref: str = Field(
+        default="", description="Logical credential reference for the Slack Socket Mode app token."
+    )
     slack_default_channel_id: str = Field(
         default="",
         description="Default Slack channel id for outbound sends.",
@@ -780,6 +795,21 @@ class DaemonConfig(BaseSettings):
             return [Path(str(item)).expanduser() for item in value if str(item).strip()]
         return value
 
+    @field_validator(
+        "matrix_access_token_ref",
+        "discord_bot_token_ref",
+        "telegram_bot_token_ref",
+        "slack_bot_token_ref",
+        "slack_app_token_ref",
+        mode="before",
+    )
+    @classmethod
+    def _parse_channel_credential_references(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("credential reference name must be a string")
+        selected = value.strip()
+        return validate_credential_reference_name(selected) if selected else ""
+
     @field_validator("matrix_trusted_users", mode="before")
     @classmethod
     def _parse_matrix_trusted_users(cls, value: object) -> object:
@@ -1034,6 +1064,21 @@ class DaemonConfig(BaseSettings):
             seen.add(candidate)
             normalized.append(candidate)
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_channel_credential_configuration(self) -> Self:
+        for raw_field, reference_field in (
+            ("matrix_access_token", "matrix_access_token_ref"),
+            ("discord_bot_token", "discord_bot_token_ref"),
+            ("telegram_bot_token", "telegram_bot_token_ref"),
+            ("slack_bot_token", "slack_bot_token_ref"),
+            ("slack_app_token", "slack_app_token_ref"),
+        ):
+            if getattr(self, raw_field) and getattr(self, reference_field):
+                raise ValueError(
+                    f"{raw_field} cannot use both a raw value and a credential reference"
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_browser_hardened_scope(self) -> Self:

@@ -396,8 +396,13 @@ Environment entries persist only a variable name. The optional OS-keyring
 backend never falls back to disk when unavailable. The local file backend is
 truthfully permission-protected plaintext (`0700` directory, `0600` file), not
 encrypted storage. Generated TOML may name a reference but does not contain the
-resolved value. These setup references currently wire model routes; channel
-setup consumers remain a later v0.8.2 unit.
+resolved value. These references now wire model routes and enabled
+Matrix/Discord/Telegram/Slack adapters at their trusted construction
+boundaries. A missing channel reference or optional client runtime degrades
+only that channel. Channel setup never infers an ingress identity grant, and
+its optional fixed test notice requires an explicit target and makes one
+normal durable-delivery attempt; an uncertain effect is not automatically
+retried or described as an inbound round trip.
 
 ### Evidence References (context isolation)
 

@@ -8,8 +8,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from shisad.channels import setup as channel_setup
+from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.cli import onboarding
 from shisad.cli.main import cli
+from shisad.core.readiness import ReadinessState, ReadinessStatus
 
 pytestmark = pytest.mark.first_principles
 
@@ -251,3 +254,161 @@ def test_o2b_provider_and_policy_setup_cli_is_redacted_and_explicit(
     assert policy_payload["policy"]["default_require_confirmation"] is False
     assert not (tmp_path / "config").exists()
     assert not (tmp_path / "policy.yaml").exists()
+
+
+def test_o2c_four_channel_setup_cli_journey_is_reference_only_and_default_deny(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    secrets = {
+        "MATRIX_TEST_TOKEN": "matrix-secret-must-not-print",
+        "DISCORD_TEST_TOKEN": "discord-secret-must-not-print",
+        "TELEGRAM_TEST_TOKEN": "telegram-secret-must-not-print",
+        "SLACK_BOT_TEST_TOKEN": "slack-bot-secret-must-not-print",
+        "SLACK_APP_TEST_TOKEN": "slack-app-secret-must-not-print",
+    }
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("NO_COLOR", "1")
+    for variable, secret in secrets.items():
+        monkeypatch.setenv(variable, secret)
+
+    runner = CliRunner()
+    references = {
+        "channel.matrix": "MATRIX_TEST_TOKEN",
+        "channel.discord": "DISCORD_TEST_TOKEN",
+        "channel.telegram": "TELEGRAM_TEST_TOKEN",
+        "channel.slack.bot": "SLACK_BOT_TEST_TOKEN",
+        "channel.slack.app": "SLACK_APP_TEST_TOKEN",
+    }
+    for reference, variable in references.items():
+        enrolled = runner.invoke(
+            cli,
+            ["credential", "set", reference, "--backend", "env", "--locator", variable],
+        )
+        assert enrolled.exit_code == 0, enrolled.output
+
+    commands = [
+        [
+            "matrix",
+            "--access-token-ref",
+            "channel.matrix",
+            "--homeserver",
+            "https://matrix.example",
+            "--user-id",
+            "@bot:example",
+            "--room-id",
+            "!room:example",
+        ],
+        ["discord", "--bot-token-ref", "channel.discord"],
+        ["telegram", "--bot-token-ref", "channel.telegram"],
+        [
+            "slack",
+            "--bot-token-ref",
+            "channel.slack.bot",
+            "--app-token-ref",
+            "channel.slack.app",
+        ],
+    ]
+    for channel, *options in commands:
+        result = runner.invoke(
+            cli,
+            [
+                "setup",
+                "channel",
+                "--channel",
+                channel,
+                *options,
+                "--skip-probe",
+                "--format",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["outcome"] == "skipped"
+        assert payload["identity_ready"] is False
+        assert "trusted" in payload["identity_next_action"]
+        assert payload["probe"]["verified"] is False
+        serialized = json.dumps(payload)
+        for secret in secrets.values():
+            assert secret not in serialized
+
+    assert not (tmp_path / "config" / "shisad" / "config.toml").exists()
+
+
+def test_o2c_explicit_cli_test_delivery_uses_the_shipped_surface_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _InjectedDiscordChannel(InMemoryChannel):
+        available = True
+
+        def __init__(self) -> None:
+            super().__init__("discord")
+            self.sent: list[tuple[str, DeliveryTarget | None]] = []
+
+        async def send(
+            self,
+            message: str,
+            *,
+            target: DeliveryTarget | None = None,
+            metadata: dict[str, object] | None = None,
+        ) -> None:
+            self.sent.append((message, target))
+            await super().send(message, target=target, metadata=metadata)
+
+        async def disconnect_strict(self) -> None:
+            await self.disconnect()
+
+        def setup_readiness(self) -> ReadinessStatus:
+            return ReadinessStatus(
+                state=ReadinessState.CONFIGURED,
+                configured=True,
+                evidence="live_probe",
+                reason="channel_transport_started_not_verified",
+                next_action="send an explicit test message to verify outbound delivery",
+                source="channel_setup_probe",
+            )
+
+    injected = _InjectedDiscordChannel()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(
+        channel_setup,
+        "_build_setup_channel",
+        lambda *args, **kwargs: injected,
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "setup",
+            "channel",
+            "--channel",
+            "discord",
+            "--bot-token-ref",
+            "channel.discord",
+            "--trusted-user",
+            "operator-123",
+            "--send-test",
+            "--test-target",
+            "channel-456",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["outcome"] == "verified"
+    assert payload["probe"]["evidence"] == "live_test_delivery"
+    assert payload["identity_ready"] is True
+    assert len(injected.sent) == 1
+    assert injected.sent[0][0] == channel_setup.CHANNEL_SETUP_TEST_MESSAGE
+    assert injected.sent[0][1] is not None
+    assert injected.sent[0][1].recipient == "channel-456"
+    assert "round trip" not in result.output.lower()
+    assert not (tmp_path / "config" / "shisad" / "config.toml").exists()

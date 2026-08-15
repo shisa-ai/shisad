@@ -474,6 +474,22 @@ shisad supports Discord, Telegram, Slack, and Matrix as messaging channels. Each
 channel uses default-deny identity allowlisting — only explicitly allowed user IDs
 can interact with the daemon.
 
+On the v0.8.2 development tree, prefer logical channel token references over
+raw `SHISAD_*_TOKEN` config values. Register each reference with
+`shisad credential set` (environment, optional keyring, or owner-only local
+file), then use `shisad setup channel --channel <name> ...`. The command validates and
+prints a reference-only fragment but does not publish it. `--skip-probe` makes
+no connector call. An optional fixed test notice requires both `--send-test`
+and an explicit `--test-target`, uses the normal durable delivery path exactly
+once, and does not claim an inbound round trip. If its effect is uncertain,
+inspect the target before deciding whether to rerun.
+
+Raw token settings below remain compatibility inputs, but a raw value and its
+matching `*_TOKEN_REF` are mutually exclusive. Missing optional credentials or
+client libraries degrade only that channel. For ingress, use the channel's
+`*_TRUSTED_USERS` field (or the generic identity allowlist) explicitly;
+connection or outbound delivery never grants trust.
+
 `shisad[assistant]` and the local container already contain the channel client
 libraries. For a source checkout, install the matching dependency group:
 
@@ -498,9 +514,22 @@ uv --no-config sync --frozen --group channels-runtime
 
 ```bash
 SHISAD_DISCORD_ENABLED=true
-SHISAD_DISCORD_BOT_TOKEN=<bot-token>
+SHISAD_DISCORD_BOT_TOKEN_REF=channel.discord
 SHISAD_DISCORD_DEFAULT_CHANNEL_ID=<channel-id>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
+SHISAD_DISCORD_TRUSTED_USERS='["<your-discord-user-id>"]'
+```
+
+For example, register the reference to an operator-supplied environment
+variable, then preview it without connecting:
+
+```bash
+shisad credential set channel.discord \
+  --backend env --locator DISCORD_BOT_TOKEN
+shisad setup channel --channel discord \
+  --bot-token-ref channel.discord \
+  --default-target <channel-id> \
+  --trusted-user <your-discord-user-id> \
+  --skip-probe
 ```
 
 **Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs currently do not require a mention.
@@ -548,8 +577,8 @@ the owner session's full tool surface.
 
 ```bash
 SHISAD_TELEGRAM_ENABLED=true
-SHISAD_TELEGRAM_BOT_TOKEN=<bot-token>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"telegram":["<your-numeric-user-id>"]}'
+SHISAD_TELEGRAM_BOT_TOKEN_REF=channel.telegram
+SHISAD_TELEGRAM_TRUSTED_USERS='["<your-numeric-user-id>"]'
 ```
 
 **Verify:** Start the daemon, then send a message to your bot in Telegram.
@@ -568,9 +597,9 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"telegram":["<your-numeric-user-id>"]}'
 
 ```bash
 SHISAD_SLACK_ENABLED=true
-SHISAD_SLACK_BOT_TOKEN=<xoxb-token>
-SHISAD_SLACK_APP_TOKEN=<xapp-token>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
+SHISAD_SLACK_BOT_TOKEN_REF=channel.slack.bot
+SHISAD_SLACK_APP_TOKEN_REF=channel.slack.app
+SHISAD_SLACK_TRUSTED_USERS='["<your-slack-user-id>"]'
 ```
 
 **Verify:** Start the daemon, then mention the bot or DM it in Slack.
@@ -594,11 +623,10 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
 SHISAD_MATRIX_ENABLED=true
 SHISAD_MATRIX_HOMESERVER=https://matrix.example.org
 SHISAD_MATRIX_USER_ID=@shisad:example.org
-SHISAD_MATRIX_ACCESS_TOKEN=<access-token>
+SHISAD_MATRIX_ACCESS_TOKEN_REF=channel.matrix
 SHISAD_MATRIX_ROOM_ID='!room:example.org'
 SHISAD_MATRIX_E2EE=true
 SHISAD_MATRIX_TRUSTED_USERS='["@alice:example.org"]'
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"matrix":["@alice:example.org"]}'
 ```
 
 **Verify:** Start the daemon, send a message from an allowlisted Matrix user in

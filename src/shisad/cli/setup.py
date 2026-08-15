@@ -1,4 +1,4 @@
-"""Bounded provider verification and policy-profile generation for setup."""
+"""Bounded provider, policy, and channel preparation for setup."""
 
 from __future__ import annotations
 
@@ -13,8 +13,15 @@ import click
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shisad.channels.setup import (
+    ChannelName,
+    ChannelSetupResult,
+    ChannelSetupSelection,
+    evaluate_channel_setup,
+)
 from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_cli_text
 from shisad.core.config import (
+    DaemonConfig,
     ModelConfig,
     effective_credential_reference_paths,
     validate_credential_reference_name,
@@ -348,6 +355,28 @@ def _credential_store(ctx: click.Context) -> tuple[CredentialReferenceStore, Mod
     )
 
 
+def _channel_setup_context(
+    ctx: click.Context,
+) -> tuple[CredentialReferenceStore, DaemonConfig]:
+    root = ctx.find_root()
+    selected = (root.obj or {}).get("config_path")
+    config_path = selected if isinstance(selected, Path) else None
+    loaded = load_effective_config(config_path, environ=os.environ)
+    registry_path, secret_root = effective_credential_reference_paths(
+        data_dir=loaded.daemon.data_dir,
+        configured_store_path=loaded.security.credential_reference_store_path,
+        configured_secret_dir=loaded.security.credential_secret_dir,
+    )
+    return (
+        CredentialReferenceStore(
+            registry_path=registry_path,
+            secret_root=secret_root,
+            environ=os.environ,
+        ),
+        loaded.daemon,
+    )
+
+
 def _emit_provider_result(result: ProviderSetupResult, *, output_format: str) -> None:
     if output_format == "json":
         click.echo(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
@@ -362,9 +391,25 @@ def _emit_provider_result(result: ProviderSetupResult, *, output_format: str) ->
     click.echo(yaml.safe_dump(result.config_fragment, sort_keys=True).rstrip())
 
 
+def _emit_channel_result(result: ChannelSetupResult, *, output_format: str) -> None:
+    if output_format == "json":
+        click.echo(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
+        return
+    click.echo(f"Channel setup: {result.outcome.value}")
+    click.echo(f"Channel: {result.channel.value}")
+    click.echo(f"Probe: {result.probe.reason}")
+    click.echo(f"Ingress identity ready: {'yes' if result.identity_ready else 'no'}")
+    click.echo(f"Identity next: {result.identity_next_action}")
+    if result.test_delivery is not None:
+        click.echo(f"Test delivery: {result.test_delivery.state}")
+        click.echo(f"Test target: {safe_cli_text(result.test_delivery.target, limit=512)}")
+    click.echo("Config fragment:")
+    click.echo(yaml.safe_dump(result.config_fragment, sort_keys=True).rstrip())
+
+
 @click.group("setup")
 def setup() -> None:
-    """Prepare provider and policy choices without publishing final files."""
+    """Prepare provider, policy, and channel choices without publishing files."""
 
 
 @setup.command("provider")
@@ -497,3 +542,85 @@ def setup_policy(
     click.echo(f"Policy profile: {selected.value}")
     click.echo("Generated only; no active policy file was changed.")
     click.echo(yaml.safe_dump(policy_payload, sort_keys=False).rstrip())
+
+
+@setup.command("channel")
+@click.option(
+    "--channel",
+    "channel_name",
+    type=click.Choice([channel.value for channel in ChannelName]),
+    default="",
+    help="One maintained channel to prepare.",
+)
+@click.option("--access-token-ref", default="", help="Logical Matrix access-token ref.")
+@click.option("--bot-token-ref", default="", help="Logical bot-token credential ref.")
+@click.option("--app-token-ref", default="", help="Logical Slack app-token ref.")
+@click.option("--homeserver", default="", help="Matrix homeserver URL.")
+@click.option("--user-id", default="", help="Matrix bot user ID.")
+@click.option("--room-id", default="", help="Matrix default room ID.")
+@click.option("--default-target", default="", help="Optional default outbound target.")
+@click.option("--trusted-user", "trusted_users", multiple=True, help="Explicit ingress user ID.")
+@click.option("--send-test", is_flag=True, help="Send one fixed setup notice.")
+@click.option("--test-target", default="", help="Explicit target for --send-test.")
+@click.option("--timeout", "timeout_value", default="3.0", help="Probe timeout in seconds.")
+@click.option("--skip-probe", is_flag=True, help="Generate an explicitly unverified result.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def setup_channel(
+    ctx: click.Context,
+    channel_name: str,
+    access_token_ref: str,
+    bot_token_ref: str,
+    app_token_ref: str,
+    homeserver: str,
+    user_id: str,
+    room_id: str,
+    default_target: str,
+    trusted_users: tuple[str, ...],
+    send_test: bool,
+    test_target: str,
+    timeout_value: str,
+    skip_probe: bool,
+    output_format: str,
+) -> None:
+    """Prepare one channel without publishing final configuration."""
+
+    try:
+        try:
+            timeout_seconds = float(timeout_value)
+        except (TypeError, ValueError):
+            raise ValueError("channel probe timeout must be a number") from None
+        store, daemon_config = _channel_setup_context(ctx)
+        selection = ChannelSetupSelection(
+            channel=channel_name,
+            access_token_ref=access_token_ref,
+            bot_token_ref=bot_token_ref,
+            app_token_ref=app_token_ref,
+            homeserver=homeserver,
+            user_id=user_id,
+            room_id=room_id,
+            default_target=default_target,
+            trusted_users=list(trusted_users),
+            run_test=send_test,
+            test_target=test_target,
+        )
+        result = asyncio.run(
+            evaluate_channel_setup(
+                selection,
+                credential_store=store,
+                state_root=daemon_config.data_dir / "channels",
+                timeout_seconds=timeout_seconds,
+                skip_probe=skip_probe,
+            )
+        )
+    except (ConfigFileError, ValueError) as exc:
+        raise SetupCliError(str(exc), output_format=output_format) from exc
+    _emit_channel_result(result, output_format=output_format)
+    if result.exit_code:
+        ctx.exit(result.exit_code)

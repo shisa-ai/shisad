@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core import config_file
-from shisad.core.config import ModelConfig, effective_credential_reference_paths
+from shisad.core.config import DaemonConfig, ModelConfig, effective_credential_reference_paths
 from shisad.core.config_file import (
     ConfigFileError,
     config_field_inventory,
@@ -21,6 +21,42 @@ from shisad.core.providers.routing import ModelComponent, ModelRouter
 def _write_config(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize(
+    ("raw_field", "ref_field"),
+    [
+        ("matrix_access_token", "matrix_access_token_ref"),
+        ("discord_bot_token", "discord_bot_token_ref"),
+        ("telegram_bot_token", "telegram_bot_token_ref"),
+        ("slack_bot_token", "slack_bot_token_ref"),
+        ("slack_app_token", "slack_app_token_ref"),
+    ],
+)
+def test_o2c_channel_token_raw_and_reference_are_mutually_exclusive(
+    raw_field: str,
+    ref_field: str,
+) -> None:
+    with pytest.raises(ValueError, match="cannot use both a raw value and a credential reference"):
+        DaemonConfig.model_validate({raw_field: "raw-secret", ref_field: "channel.token"})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "matrix_access_token_ref",
+        "discord_bot_token_ref",
+        "telegram_bot_token_ref",
+        "slack_bot_token_ref",
+        "slack_app_token_ref",
+    ],
+)
+def test_o2c_channel_token_reference_uses_generic_logical_name_grammar(field: str) -> None:
+    assert getattr(DaemonConfig.model_validate({field: "channel.valid-token"}), field) == (
+        "channel.valid-token"
+    )
+    with pytest.raises(ValueError, match="credential reference name is invalid"):
+        DaemonConfig.model_validate({field: "../channel-secret"})
 
 
 def test_u41_config_precedence_sources_and_secret_redaction(tmp_path: Path) -> None:
