@@ -180,11 +180,16 @@ async def test_partial_startup_failure_releases_data_root_lock(
         tmp_path,
         root="retryable",
         socket_name="broken.sock",
-        matrix_enabled=True,
     )
 
-    with pytest.raises(ValueError, match="Matrix channel is enabled"):
-        await run_daemon(broken)
+    with monkeypatch.context() as startup_failure:
+
+        async def _fail_after_lock(*_args) -> None:
+            raise ValueError("simulated partial startup failure")
+
+        startup_failure.setattr(DaemonServices, "_build_locked", classmethod(_fail_after_lock))
+        with pytest.raises(ValueError, match="simulated partial startup failure"):
+            await run_daemon(broken)
 
     healthy = _config(tmp_path, root="retryable", socket_name="healthy.sock")
     task = _spawn_daemon(healthy)
