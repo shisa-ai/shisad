@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -3920,8 +3921,9 @@ def test_o3a_start_default_routes_to_background_with_bounded_health(
 
     captured: dict[str, object] = {}
 
-    def _fake_background_start(effective_config: DaemonConfig):
+    def _fake_background_start(effective_config: DaemonConfig, *, no_color: bool = False):
         captured["config"] = effective_config
+        captured["no_color"] = no_color
         return SimpleNamespace(
             already_running=False,
             pid=4242,
@@ -3949,9 +3951,10 @@ def test_o3a_start_default_routes_to_background_with_bounded_health(
     monkeypatch.setattr(cli_main, "_run_daemon_foreground", _unexpected_foreground)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main.cli, ["start"])
+    result = runner.invoke(cli_main.cli, ["--no-color", "start"])
     assert result.exit_code == 0, result.output
     assert captured["config"] is config
+    assert captured["no_color"] is True
     assert "Daemon: started pid=4242" in result.output
     assert "Health: configured" in result.output
     assert "provider=configured" in result.output
@@ -4005,12 +4008,53 @@ def test_o3a_background_argv_preserves_explicit_config_without_secret_values(
     )
 
     argv = build_background_argv(config)
+    no_color_argv = build_background_argv(config, no_color=True)
 
     assert argv[-2:] == ["start", "--foreground"]
     assert argv[0] == sys.executable
     assert argv[1:3] == ["-m", "shisad.cli.main"]
     assert argv[3:5] == ["--config", str(config_path)]
+    assert "--no-color" not in argv
+    assert no_color_argv[3:6] == ["--no-color", "--config", str(config_path)]
+    assert no_color_argv[-2:] == ["start", "--foreground"]
     assert secret not in " ".join(argv)
+    assert secret not in " ".join(no_color_argv)
+
+
+def test_o3a_lifecycle_rpc_enforces_connect_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import lifecycle
+
+    closed: list[bool] = []
+
+    class _WedgedClient:
+        def __init__(self, _socket_path: Path) -> None:
+            pass
+
+        async def connect(self) -> None:
+            await asyncio.Event().wait()
+
+        async def call(self, *_args, **_kwargs) -> object:
+            raise AssertionError("call must not run before connect completes")
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(lifecycle, "ControlClient", _WedgedClient, raising=False)
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError):
+        lifecycle._bounded_rpc_call(
+            _config(tmp_path),
+            "daemon.status",
+            response_model=cli_main.DaemonStatusResult,
+            timeout_seconds=0.02,
+        )
+
+    assert time.monotonic() - started < 0.5
+    assert closed == [True]
 
 
 def test_o3a_background_start_is_idempotent_when_daemon_is_reachable(
@@ -4079,7 +4123,7 @@ def test_o3a_background_start_uses_owner_only_log_and_reports_child_failure(
             rpc_call_fn=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
             popen_factory=_spawn,
             sleep_fn=lambda _seconds: None,
-            monotonic_fn=iter((0.0, 0.1)).__next__,
+            monotonic_fn=iter((0.0, 0.01)).__next__,
         )
 
     log_path = config.data_dir / "logs" / "daemon.log"
@@ -4172,11 +4216,12 @@ def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
 
     config = _config(tmp_path)
     launched: list[tuple[Path, Path | None]] = []
+    background_no_color: list[bool] = []
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
-    monkeypatch.setattr(
-        cli_main,
-        "start_background_daemon",
-        lambda _config: SimpleNamespace(
+
+    def _fake_start(_config: DaemonConfig, *, no_color: bool = False) -> SimpleNamespace:
+        background_no_color.append(no_color)
+        return SimpleNamespace(
             already_running=False,
             pid=4242,
             log_path=tmp_path / "daemon.log",
@@ -4186,7 +4231,12 @@ def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
             doctor=cli_main.DoctorCheckResult.model_validate(
                 {"status": "verified", "component": "all", "checks": {}}
             ),
-        ),
+        )
+
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        _fake_start,
     )
     monkeypatch.setattr(
         chat_ui.ChatApp,
@@ -4195,13 +4245,17 @@ def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
     )
 
     @click.command()
-    def _harness() -> None:
+    @click.pass_context
+    def _harness(ctx: click.Context) -> None:
+        ctx.ensure_object(dict)
+        ctx.obj["no_color"] = True
         cli_main._run_post_setup_action("chat")
 
     result = CliRunner().invoke(_harness)
 
     assert result.exit_code == 0, result.output
     assert "Daemon: started pid=4242" in result.output
+    assert background_no_color == [True]
     assert launched == [(config.socket_path, config.data_dir / "sessions")]
 
 

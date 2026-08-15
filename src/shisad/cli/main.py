@@ -1104,7 +1104,10 @@ def _run_post_setup_action(action: str) -> None:
 
     config = _get_config()
     try:
-        started = start_background_daemon(config)
+        started = start_background_daemon(
+            config,
+            no_color=bool((root.obj or {}).get("no_color", False)),
+        )
     except BackgroundStartError as exc:
         raise daemon_cli_error(
             what_failed="Could not start the shisad daemon for the selected next step.",
@@ -1430,14 +1433,18 @@ def _start_daemon(
     is_flag=True,
     help="Run in foreground with DEBUG logging and local autoreload.",
 )
-def start(foreground: bool, debug: bool) -> None:
+@click.pass_context
+def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
     """Start the shisad daemon."""
     config = _get_config()
     if foreground or debug:
         _start_daemon(config=config, foreground=foreground, debug=debug)
         return
     try:
-        result = start_background_daemon(config)
+        result = start_background_daemon(
+            config,
+            no_color=bool((ctx.find_root().obj or {}).get("no_color", False)),
+        )
     except BackgroundStartError as exc:
         raise daemon_cli_error(
             what_failed="Could not start the shisad daemon in the background.",

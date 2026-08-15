@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import subprocess
@@ -14,9 +15,10 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 import click
+from pydantic import BaseModel
 
-from shisad.cli.rpc import rpc_call
 from shisad.core.api.schema import DaemonStatusResult, DoctorCheckResult
+from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 
 _KNOWN_READINESS_COMPONENTS = (
@@ -67,10 +69,12 @@ class BackgroundStartResult:
     doctor: DoctorCheckResult | None
 
 
-def build_background_argv(config: DaemonConfig) -> list[str]:
+def build_background_argv(config: DaemonConfig, *, no_color: bool = False) -> list[str]:
     """Build the detached child argv without carrying secret config fields."""
 
     argv = [sys.executable, "-m", "shisad.cli.main"]
+    if no_color:
+        argv.append("--no-color")
     if config.config_path is not None:
         argv.extend(["--config", str(config.config_path)])
     argv.extend(["start", "--foreground"])
@@ -131,16 +135,67 @@ def _open_owner_only_log(config: DaemonConfig) -> tuple[Path, BinaryIO]:
         ) from exc
 
 
+async def _bounded_rpc_call_async[T: BaseModel](
+    config: DaemonConfig,
+    method: str,
+    params: dict[str, Any] | None,
+    *,
+    response_model: type[T],
+    timeout_seconds: float,
+) -> T:
+    client = ControlClient(config.socket_path)
+    try:
+        async with asyncio.timeout(max(0.01, timeout_seconds)):
+            await client.connect()
+            raw = await client.call(method, params=params or {})
+        return response_model.model_validate(raw)
+    finally:
+        with suppress(OSError, RuntimeError, TimeoutError):
+            async with asyncio.timeout(0.1):
+                await client.close()
+
+
+def _bounded_rpc_call[T: BaseModel](
+    config: DaemonConfig,
+    method: str,
+    params: dict[str, Any] | None = None,
+    *,
+    response_model: type[T],
+    timeout_seconds: float,
+) -> T:
+    """Run one lifecycle RPC with a deadline covering connect and response."""
+
+    return asyncio.run(
+        _bounded_rpc_call_async(
+            config,
+            method,
+            params,
+            response_model=response_model,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+
+
 def _try_status(
     config: DaemonConfig,
-    rpc_call_fn: Callable[..., Any],
+    rpc_call_fn: Callable[..., Any] | None,
+    *,
+    timeout_seconds: float,
 ) -> DaemonStatusResult | None:
     try:
-        result = rpc_call_fn(
-            config,
-            "daemon.status",
-            response_model=DaemonStatusResult,
-        )
+        if rpc_call_fn is None:
+            result = _bounded_rpc_call(
+                config,
+                "daemon.status",
+                response_model=DaemonStatusResult,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            result = rpc_call_fn(
+                config,
+                "daemon.status",
+                response_model=DaemonStatusResult,
+            )
     except (click.ClickException, OSError, RuntimeError, TypeError, ValueError):
         return None
     if isinstance(result, DaemonStatusResult):
@@ -153,15 +208,27 @@ def _try_status(
 
 def _try_doctor(
     config: DaemonConfig,
-    rpc_call_fn: Callable[..., Any],
+    rpc_call_fn: Callable[..., Any] | None,
+    *,
+    timeout_seconds: float,
 ) -> DoctorCheckResult | None:
     try:
-        result = rpc_call_fn(
-            config,
-            "doctor.check",
-            {"component": "all", "live": False, "timeout_seconds": 3.0},
-            response_model=DoctorCheckResult,
-        )
+        params = {"component": "all", "live": False, "timeout_seconds": 3.0}
+        if rpc_call_fn is None:
+            result = _bounded_rpc_call(
+                config,
+                "doctor.check",
+                params,
+                response_model=DoctorCheckResult,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            result = rpc_call_fn(
+                config,
+                "doctor.check",
+                params,
+                response_model=DoctorCheckResult,
+            )
     except (click.ClickException, OSError, RuntimeError, TypeError, ValueError):
         return None
     if isinstance(result, DoctorCheckResult):
@@ -191,6 +258,7 @@ def _terminate_spawned_child(process: Any) -> None:
 def start_background_daemon(
     config: DaemonConfig,
     *,
+    no_color: bool = False,
     timeout_seconds: float = 10.0,
     rpc_call_fn: Callable[..., Any] | None = None,
     popen_factory: Callable[..., Any] | None = None,
@@ -199,28 +267,46 @@ def start_background_daemon(
 ) -> BackgroundStartResult:
     """Start one detached POSIX daemon and wait for typed RPC readiness."""
 
-    effective_rpc = rpc_call if rpc_call_fn is None else rpc_call_fn
     effective_popen = subprocess.Popen if popen_factory is None else popen_factory
     effective_sleep = time.sleep if sleep_fn is None else sleep_fn
     effective_monotonic = time.monotonic if monotonic_fn is None else monotonic_fn
     log_path = config.data_dir / "logs" / "daemon.log"
+    deadline = effective_monotonic() + max(0.1, timeout_seconds)
 
     if config.socket_path.exists():
-        existing_status = _try_status(config, effective_rpc)
+        remaining = deadline - effective_monotonic()
+        existing_status = (
+            _try_status(
+                config,
+                rpc_call_fn,
+                timeout_seconds=min(1.0, remaining),
+            )
+            if remaining > 0
+            else None
+        )
         if existing_status is not None:
+            remaining = deadline - effective_monotonic()
             return BackgroundStartResult(
                 already_running=True,
                 pid=None,
                 log_path=log_path,
                 status=existing_status,
-                doctor=_try_doctor(config, effective_rpc),
+                doctor=(
+                    _try_doctor(
+                        config,
+                        rpc_call_fn,
+                        timeout_seconds=min(3.0, remaining),
+                    )
+                    if remaining > 0
+                    else None
+                ),
             )
 
     log_path, log_stream = _open_owner_only_log(config)
     try:
         try:
             process = effective_popen(
-                build_background_argv(config),
+                build_background_argv(config, no_color=no_color),
                 stdin=subprocess.DEVNULL,
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
@@ -235,16 +321,31 @@ def start_background_daemon(
     finally:
         log_stream.close()
 
-    deadline = effective_monotonic() + max(0.1, timeout_seconds)
-    while effective_monotonic() < deadline:
-        status = _try_status(config, effective_rpc)
+    while True:
+        remaining = deadline - effective_monotonic()
+        if remaining <= 0:
+            break
+        status = _try_status(
+            config,
+            rpc_call_fn,
+            timeout_seconds=min(1.0, remaining),
+        )
         if status is not None:
+            remaining = deadline - effective_monotonic()
             return BackgroundStartResult(
                 already_running=False,
                 pid=int(process.pid),
                 log_path=log_path,
                 status=status,
-                doctor=_try_doctor(config, effective_rpc),
+                doctor=(
+                    _try_doctor(
+                        config,
+                        rpc_call_fn,
+                        timeout_seconds=min(3.0, remaining),
+                    )
+                    if remaining > 0
+                    else None
+                ),
             )
         exit_code = process.poll()
         if exit_code is not None:
@@ -252,7 +353,7 @@ def start_background_daemon(
                 f"daemon child exited before readiness (exit={int(exit_code)})",
                 log_path=log_path,
             )
-        effective_sleep(0.1)
+        effective_sleep(min(0.1, max(0.0, remaining)))
 
     _terminate_spawned_child(process)
     raise BackgroundStartError(
