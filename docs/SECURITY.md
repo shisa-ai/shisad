@@ -404,6 +404,19 @@ its optional fixed test notice requires an explicit target and makes one
 normal durable-delivery attempt; an uncertain effect is not automatically
 retried or described as an inbound round trip.
 
+Combined setup accepts only the typed provider/policy/channel selection schema;
+unknown fields and raw-secret fields are rejected without echoing document
+contents. The interactive wizard is unavailable in managed or non-terminal
+postures and uses a final default-no write confirmation. Deterministic
+`setup apply` never prompts and remains a dry run unless `--write` is explicit.
+It publishes the validated policy before activating that exact path in a
+commented, schema-validated TOML config. Both files are exclusive no-overwrite
+`0600` artifacts, and final TOML contains credential references rather than
+resolved values. This ordered pair is not a transaction: a later config-write
+failure can leave an inert policy artifact, which the error reports for
+operator inspection or removal. Setup does not start the daemon or turn a
+skipped probe into verification evidence.
+
 ### Evidence References (context isolation)
 
 Large untrusted content is stored out-of-band in a content-addressed evidence store. The LLM context receives only a short reference stub with metadata (`[EVIDENCE ref=ev-a1b2c3d4 source=web.fetch:nytimes.com taint=untrusted size=14832 summary="..."]`). The raw tainted content never enters the conversation transcript, eliminating persistent injection surface. When the model needs to re-examine content, it calls `evidence.read(ref_id)` — which goes through PEP enforcement and returns content into a single-turn isolated context. This dramatically reduces the token-budget cost of tainted content and limits each injection payload to a single exposure window.

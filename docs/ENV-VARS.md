@@ -25,7 +25,7 @@ There are three kinds of env vars in the current codebase:
 3. tool or CLI internal env vars (`_SHISAD_COMPLETE`, opt-in live-test vars, placeholders)
 
 The same typed settings are available in an operator-authored TOML file. Use
-`shisad init` for one no-overwrite owner-only commented template,
+`shisad init --non-interactive` for one no-overwrite owner-only commented template,
 `shisad config template` to print that template without writing it, and
 `shisad config validate|show|schema|diff` plus `shisad env` for human or JSON
 inspection. Effective values and sources are derived from the same typed loader
@@ -66,8 +66,9 @@ Precedence is command-line override, then environment, then TOML, then default.
 Parsing is read-only and does not create the configured data directory.
 
 There is intentionally no `init --from-env` migration command in this release.
-Use the generated template and `config show` rather than assuming environment
-values were written to disk.
+`init --non-interactive` names the same minimal no-prompt behavior; it does not
+copy environment values. Use the generated template and `config show` rather
+than assuming environment values were written to disk.
 
 `shisad init` writes only the generated comments/default examples. It refuses
 existing files, symlink destinations, and destinations inside configured data
@@ -75,6 +76,14 @@ or assistant-managed roots; it does not configure providers or policy, create
 daemon state, or start the daemon. `config validate`, `config show`, `config
 schema`, `config diff`, and `shisad env` are read-only. Each accepts `--format
 human|json`; `config show` retains JSON as its compatibility default.
+
+`shisad setup apply --selection FILE` is the deterministic managed/automation
+path for final provider, policy, and channel setup. It never prompts and is a
+dry run unless `--write` is present. The selection document may contain logical
+credential references but no raw-secret field. Final TOML uncomments only the
+validated selected fields and never copies ambient provider/channel secrets.
+The sibling policy and config files are each created exclusively at `0600`;
+they are ordered policy then config but are not a cross-file transaction.
 
 ## Child-Process Environment Boundaries
 

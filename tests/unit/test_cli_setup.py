@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from shisad.channels.setup import ChannelSetupOutcome
@@ -739,3 +740,401 @@ def test_o2b_provider_and_policy_human_output_is_bounded(tmp_path: Path) -> None
     assert "Policy profile: recommended" in policy.output
     assert "Generated only; no active policy file was changed." in policy.output
     assert "\x1b[" not in provider.output + policy.output
+
+
+def _o2d_selection_payload(
+    *,
+    preset: str = "vllm_local_default",
+    model_id: str = "local/setup-model",
+    channels: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "provider": {
+            "preset": preset,
+            "model_id": model_id,
+            "credential_ref": "model.primary" if preset != "vllm_local_default" else "",
+        },
+        "policy": {"profile": "recommended"},
+        "channels": channels or [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("preset", "credential_ref"),
+    [
+        ("openrouter_default", "model.primary"),
+        ("vllm_local_default", ""),
+    ],
+)
+def test_o2d_final_publication_requires_explicit_openrouter_and_vllm_model(
+    preset: str,
+    credential_ref: str,
+) -> None:
+    payload = _o2d_selection_payload(preset=preset, model_id="")
+    provider = payload["provider"]
+    assert isinstance(provider, dict)
+    provider["credential_ref"] = credential_ref
+
+    with pytest.raises(ValueError, match="explicit model ID"):
+        cli_setup.CombinedSetupSelection.model_validate(payload)
+
+
+def test_o2d_combined_selection_rejects_duplicate_channels() -> None:
+    payload = _o2d_selection_payload(
+        channels=[
+            {"channel": "discord", "bot_token_ref": "channel.discord"},
+            {"channel": "discord", "bot_token_ref": "channel.discord.other"},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="selected only once"):
+        cli_setup.CombinedSetupSelection.model_validate(payload)
+
+
+def test_o2d_selection_file_is_bounded_forbids_unknown_fields_and_redacts_failure(
+    tmp_path: Path,
+) -> None:
+    secret = "selection-secret-must-not-print"
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(
+        yaml.safe_dump({**_o2d_selection_payload(), "raw_api_key": secret}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["setup", "apply", "--selection", str(selection_path), "--format", "json"],
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    assert secret not in result.output
+    assert "raw_api_key" not in result.output
+
+
+def test_o2d_managed_apply_is_dry_run_without_explicit_write(tmp_path: Path) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(yaml.safe_dump(_o2d_selection_payload()), encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_MANAGED": "1", "SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["outcome"] == "ready"
+    assert payload["persisted"] is False
+    assert payload["provider"]["outcome"] == "skipped"
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()
+    assert "Write" not in result.output
+
+
+def test_o2d_wizard_refuses_noninteractive_and_managed_posture_before_prompt_or_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    invoked: list[str] = []
+
+    async def _unexpected_provider(*args, **kwargs):
+        invoked.append("provider")
+        pytest.fail("wizard must not probe in a refused posture")
+
+    monkeypatch.setattr(cli_setup, "evaluate_provider_setup", _unexpected_provider)
+    runner = CliRunner()
+    noninteractive = runner.invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard", "--format", "json"],
+    )
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    managed = runner.invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard", "--format", "json"],
+        env={"SHISAD_MANAGED": "true"},
+    )
+
+    for result in (noninteractive, managed):
+        assert result.exit_code == 3
+        payload = json.loads(result.output)
+        assert payload["error_type"] == "setup"
+        assert "setup apply" in payload["next_action"]
+    assert invoked == []
+    assert not config_path.exists()
+
+
+def test_o2d_interactive_decline_after_multiselect_summary_writes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    config_path = tmp_path / "config.toml"
+
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard"],
+        input=("vllm_local_default\nlocal/setup-model\nn\nrecommended\n\nn\n"),
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data"), "NO_COLOR": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Provider: skipped" in result.output
+    assert "Policy: recommended" in result.output
+    assert "Channels: none" in result.output
+    assert "Setup publication: skipped" in result.output
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()
+    assert "\x1b[" not in result.output
+
+
+def test_o2d_interactive_multiselect_collects_each_channel_reference_and_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    captured: list[cli_setup.CombinedSetupSelection] = []
+
+    async def _evaluate(selection, *, config_path: Path, **kwargs):
+        _ = kwargs
+        captured.append(selection)
+        probe = cli_setup.ReadinessStatus(
+            state=cli_setup.ReadinessState.CONFIGURED,
+            configured=True,
+            evidence="not_run",
+            reason="probe_skipped",
+            next_action="rerun without skipping probes",
+            source="explicit_setup_skip",
+        )
+        provider = cli_setup.ProviderSetupResult(
+            outcome=cli_setup.ProviderSetupOutcome.SKIPPED,
+            preset=selection.provider.preset,
+            model_id=selection.provider.model_id,
+            base_url="http://127.0.0.1:8000/v1",
+            probe=probe,
+            config_fragment={
+                "planner_provider_preset": "vllm_local_default",
+                "planner_model_id": selection.provider.model_id,
+                "planner_remote_enabled": True,
+            },
+            retry_allowed=True,
+            exit_code=0,
+        )
+        channels = [
+            cli_setup.ChannelSetupResult(
+                outcome=ChannelSetupOutcome.SKIPPED,
+                channel=item.channel,
+                probe=probe,
+                identity_ready=True,
+                identity_next_action="none",
+                config_fragment={},
+                retry_allowed=True,
+                exit_code=0,
+            )
+            for item in selection.channels
+        ]
+        return (
+            cli_setup.CombinedSetupResult(
+                outcome=cli_setup.CombinedSetupOutcome.READY,
+                provider=provider,
+                policy_profile=selection.policy.profile,
+                policy_requirements={
+                    "semantic_classifier": "best_effort",
+                    "yara": "optional",
+                },
+                channels=channels,
+                config_path=str(config_path),
+                policy_path=str(config_path.with_name("policy.yaml")),
+                persisted=False,
+                next_actions=["rerun with --write"],
+                exit_code=0,
+            ),
+            cli_setup.generate_policy_profile(selection.policy.profile),
+        )
+
+    monkeypatch.setattr(cli_setup, "evaluate_combined_setup", _evaluate)
+    config_path = tmp_path / "config.toml"
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard"],
+        input=(
+            "vllm_local_default\n"
+            "local/setup-model\n"
+            "n\n"
+            "recommended\n"
+            "discord,telegram\n"
+            "channel.discord\n"
+            "discord-room\n"
+            "discord-user\n"
+            "channel.telegram\n"
+            "telegram-chat\n"
+            "telegram-user-1,telegram-user-2\n"
+            "n\n"
+        ),
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data"), "NO_COLOR": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    selected = captured[0]
+    assert [item.channel.value for item in selected.channels] == ["discord", "telegram"]
+    assert selected.channels[0].bot_token_ref == "channel.discord"
+    assert selected.channels[0].trusted_users == ["discord-user"]
+    assert selected.channels[1].bot_token_ref == "channel.telegram"
+    assert selected.channels[1].trusted_users == ["telegram-user-1", "telegram-user-2"]
+    assert not config_path.exists()
+
+
+def test_o2d_policy_residue_is_reported_when_config_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(yaml.safe_dump(_o2d_selection_payload()), encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+
+    def _fail_config(*args, **kwargs):
+        raise cli_setup.ConfigFileError("simulated config publication failure")
+
+    monkeypatch.setattr(cli_setup, "initialize_config_file", _fail_config)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--write",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    policy_path = tmp_path / "policy.yaml"
+    assert policy_path.exists()
+    assert policy_path.stat().st_mode & 0o777 == 0o600
+    assert str(policy_path) in payload["next_action"]
+    assert "inert" in payload["likely_cause"]
+    assert not config_path.exists()
+
+
+@pytest.mark.parametrize("occupied", ["config", "policy", "policy_symlink"])
+def test_o2d_publication_preflight_rejects_existing_or_symlink_artifacts_before_write(
+    tmp_path: Path,
+    occupied: str,
+) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(yaml.safe_dump(_o2d_selection_payload()), encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    policy_path = tmp_path / "policy.yaml"
+    if occupied == "config":
+        config_path.write_text("schema_version = 1\n", encoding="utf-8")
+    elif occupied == "policy":
+        policy_path.write_text("do not replace\n", encoding="utf-8")
+    else:
+        target = tmp_path / "policy-target.yaml"
+        target.write_text("do not replace\n", encoding="utf-8")
+        policy_path.symlink_to(target)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--write",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    if occupied == "config":
+        assert config_path.read_text(encoding="utf-8") == "schema_version = 1\n"
+        assert not policy_path.exists()
+    else:
+        assert not config_path.exists()
+        assert policy_path.exists() or policy_path.is_symlink()
+
+
+def test_o2d_unsuccessful_provider_result_cannot_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(yaml.safe_dump(_o2d_selection_payload()), encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+
+    async def _degraded_provider(selection, **kwargs):
+        _ = kwargs
+        return cli_setup.ProviderSetupResult(
+            outcome=cli_setup.ProviderSetupOutcome.DEGRADED,
+            preset=selection.preset,
+            model_id=selection.model_id,
+            base_url="http://127.0.0.1:8000/v1",
+            probe=cli_setup.ReadinessStatus(
+                state=cli_setup.ReadinessState.DEGRADED,
+                configured=True,
+                evidence="live_probe",
+                reason="provider_unreachable",
+                next_action="inspect the configured provider",
+                source="provider_setup_probe",
+            ),
+            config_fragment={
+                "planner_provider_preset": "vllm_local_default",
+                "planner_model_id": "local/setup-model",
+                "planner_remote_enabled": True,
+            },
+            retry_allowed=True,
+            exit_code=2,
+        )
+
+    monkeypatch.setattr(cli_setup, "evaluate_provider_setup", _degraded_provider)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--write",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["outcome"] == "blocked"
+    assert payload["provider"]["outcome"] == "degraded"
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()

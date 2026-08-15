@@ -234,13 +234,17 @@ def config_field_inventory() -> list[dict[str, str]]:
     return rows
 
 
-def render_config_template() -> str:
-    """Generate a commented TOML template from the classified live schema."""
+def render_config_template(
+    *,
+    section_overrides: Mapping[str, Mapping[str, object]] | None = None,
+) -> str:
+    """Generate a commented TOML template with optional validated active values."""
 
     inventory = config_field_inventory()
     rows_by_section: dict[str, list[dict[str, str]]] = {name: [] for name in _SECTIONS}
     for row in inventory:
         rows_by_section[row["section"]].append(row)
+    active_values = _validate_template_overrides(section_overrides or {})
 
     lines = ["schema_version = 1", ""]
     for section, model_type in _SECTIONS.items():
@@ -254,9 +258,55 @@ def render_config_template() -> str:
                 continue
             value = "" if _field_is_secret(field) else defaults.get(field)
             lines.append(f"# status={row['status']} consumer={row['consumer']}")
-            lines.append(f"# {field} = {_toml_literal(value)}")
+            if field in active_values.get(section, {}):
+                lines.append(f"{field} = {_toml_literal(active_values[section][field])}")
+            else:
+                lines.append(f"# {field} = {_toml_literal(value)}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _validate_template_overrides(
+    overrides: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    unknown_sections = sorted(set(overrides) - set(_SECTIONS))
+    if unknown_sections:
+        raise ConfigFileError(f"unknown config section override: {unknown_sections[0]}")
+
+    validated: dict[str, dict[str, object]] = {}
+    for section, raw_values in overrides.items():
+        model_type = _SECTIONS[section]
+        unknown_fields = sorted(set(raw_values) - set(model_type.model_fields))
+        if unknown_fields:
+            raise ConfigFileError(f"unknown {section} field override: {unknown_fields[0]}")
+        for field in raw_values:
+            if field in _NESTED_SECRET_FIELDS or _field_is_secret(field):
+                raise ConfigFileError(
+                    f"raw secret-bearing override is not allowed: {section}.{field}"
+                )
+
+        values = _settings_defaults(model_type)
+        values.update(raw_values)
+        try:
+            settings_factory = cast(Any, model_type)
+            settings = settings_factory(
+                _env_prefix="__SHISAD_CONFIG_TEMPLATE_ENV_DISABLED__",
+                **values,
+            )
+        except ValidationError as exc:
+            failures = []
+            for error_row in exc.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            ):
+                location = ".".join(str(part) for part in error_row.get("loc", ())) or "root"
+                failures.append(f"{section}.{location}:{error_row.get('type', 'invalid')}")
+            summary = ", ".join(failures) or f"{section}.root:invalid"
+            raise ConfigFileError(f"invalid generated configuration: {summary}") from exc
+        dumped = settings.model_dump(mode="json")
+        validated[section] = {field: dumped[field] for field in raw_values}
+    return validated
 
 
 def config_schema_projection() -> dict[str, object]:
@@ -381,29 +431,43 @@ def initialize_config_file(
     path: Path | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    section_overrides: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Path:
     """Create one owner-only generated config without overwriting existing data."""
 
     effective_env = dict(os.environ if environ is None else environ)
     destination = _selected_config_path(path, environ=effective_env)
-    if destination.is_symlink():
-        raise ConfigFileError("selected config destination is a symlink")
-    baseline = _load_empty_config(environ=effective_env, cli_overrides=None)
-    _reject_protected_path(
+    payload = render_config_template(section_overrides=section_overrides).encode("utf-8")
+    return _initialize_owner_only_generated_file(
         destination,
-        protected_roots=(baseline.daemon.data_dir, *baseline.daemon.assistant_fs_roots),
+        payload,
+        environ=effective_env,
+        label="config",
     )
-    if destination.parent.is_symlink():
-        raise ConfigFileError("selected config parent is a symlink")
-    payload = render_config_template().encode("utf-8")
+
+
+def _initialize_owner_only_generated_file(
+    destination: Path,
+    payload: bytes,
+    *,
+    environ: Mapping[str, str],
+    label: str,
+) -> Path:
+    """Exclusively create one generated owner-only file without following its symlink."""
+
+    _validate_owner_only_generated_path(
+        destination,
+        environ=environ,
+        label=label,
+    )
     try:
         destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     except OSError as exc:
         raise ConfigFileError(
-            f"cannot prepare selected config parent: {exc.__class__.__name__}"
+            f"cannot prepare selected {label} parent: {exc.__class__.__name__}"
         ) from exc
     if destination.parent.is_symlink():
-        raise ConfigFileError("selected config parent is a symlink")
+        raise ConfigFileError(f"selected {label} parent is a symlink")
 
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
@@ -411,10 +475,10 @@ def initialize_config_file(
     try:
         descriptor = os.open(destination, flags, 0o600)
     except FileExistsError:
-        raise ConfigFileError("selected config file already exists") from None
+        raise ConfigFileError(f"selected {label} file already exists") from None
     except OSError as exc:
         raise ConfigFileError(
-            f"cannot create selected config file: {exc.__class__.__name__}"
+            f"cannot create selected {label} file: {exc.__class__.__name__}"
         ) from exc
 
     try:
@@ -423,14 +487,14 @@ def initialize_config_file(
         while offset < len(payload):
             written = os.write(descriptor, payload[offset:])
             if written <= 0:
-                raise OSError("short config write")
+                raise OSError(f"short {label} write")
             offset += written
         os.fsync(descriptor)
     except OSError as exc:
         with suppress(OSError):
             os.close(descriptor)
         raise ConfigFileError(
-            f"cannot finish selected config file: {exc.__class__.__name__}"
+            f"cannot finish selected {label} file: {exc.__class__.__name__}"
         ) from exc
     except BaseException:
         with suppress(OSError):
@@ -440,9 +504,30 @@ def initialize_config_file(
         os.close(descriptor)
     except OSError as exc:
         raise ConfigFileError(
-            f"cannot finish selected config file: {exc.__class__.__name__}"
+            f"cannot finish selected {label} file: {exc.__class__.__name__}"
         ) from exc
     return destination
+
+
+def _validate_owner_only_generated_path(
+    destination: Path,
+    *,
+    environ: Mapping[str, str],
+    label: str,
+) -> None:
+    """Validate a generated-file destination without creating parent or file state."""
+
+    if destination.is_symlink():
+        raise ConfigFileError(f"selected {label} destination is a symlink")
+    if destination.exists():
+        raise ConfigFileError(f"selected {label} file already exists")
+    baseline = _load_empty_config(environ=environ, cli_overrides=None)
+    _reject_protected_path(
+        destination,
+        protected_roots=(baseline.daemon.data_dir, *baseline.daemon.assistant_fs_roots),
+    )
+    if destination.parent.is_symlink():
+        raise ConfigFileError(f"selected {label} parent is a symlink")
 
 
 def _toml_literal(value: object) -> str:

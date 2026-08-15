@@ -2590,6 +2590,30 @@ def test_f6_init_honors_environment_path_with_explicit_cli_precedence(
     assert explicit_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_o2d_init_noninteractive_is_explicit_minimal_no_prompt_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "operator" / "config.toml"
+    result = CliRunner().invoke(
+        cli_main.cli,
+        [
+            "--config",
+            str(config_path),
+            "init",
+            "--non-interactive",
+            "--format",
+            "json",
+        ],
+        input="input-must-not-be-consumed\n",
+        env={"SHISAD_MANAGED": "true", "SHISAD_MODEL_API_KEY": "must-not-persist"},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["mode"] == "non_interactive"
+    assert payload["managed"] is True
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert "must-not-persist" not in config_path.read_text(encoding="utf-8")
+
+
 def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

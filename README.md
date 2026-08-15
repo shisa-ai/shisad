@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, and redacted provider/policy setup projections; channel and combined wizard work remain in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, and explicit guided or managed setup publication; first-start and tutorial work remain in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -100,13 +100,12 @@ shisad --help
 shisad doctor check --component all
 ```
 
-The v0.8.2 development tree can also prepare one channel at a time without
-writing final configuration. Enroll a logical credential reference first, then
-run `shisad setup channel --channel <name> ... --skip-probe`; omit
-`--skip-probe` for a bounded connector check, or add both `--send-test` and an
-explicit `--test-target` for one fixed outbound notice. Connector start alone
-is reported as configured, not authenticated or verified, and ingress remains
-default-deny until an explicit trusted user is included.
+The v0.8.2 development tree can prepare one channel at a time or explicitly
+publish a combined provider/policy/channel selection. Enroll logical credential
+references first, then use `shisad setup wizard` on an interactive unmanaged
+terminal or `shisad setup apply --selection FILE` for deterministic automation.
+The apply command is a dry run unless `--write` is present. One-channel setup
+remains available through `shisad setup channel --channel <name> ...`.
 
 The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
 Telegram, and Slack client runtimes. It does not enable channels or add
@@ -168,7 +167,7 @@ inspect the typed TOML surface without starting the daemon:
 
 ```bash
 shisad
-shisad init
+shisad init --non-interactive
 shisad config validate
 shisad config show --format human
 shisad config diff --format human
@@ -182,17 +181,19 @@ returning, explicitly managed, and non-interactive posture from finite machine
 facts; reports required, optional/degraded, and informational checks; and names
 an explicit next action. It does not prompt, write configuration, migrate a
 schema, start the daemon, or open chat. Unsupported config schema and invalid
-managed posture fail actionably instead of inferring consent. The guided setup
-wizard and automatic first-start/chat routing remain later v0.8.2 work.
+managed posture fail actionably instead of inferring consent. Guided setup is
+an explicit `shisad setup wizard` command; automatic first-start/chat routing
+remains later v0.8.2 work.
 
 `shisad init` creates one owner-only commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally
 `~/.config/shisad/config.toml`) and refuses an existing or symlink destination.
 It is deliberately not a setup wizard: it does not copy ambient secrets,
 configure a provider or policy, create daemon state, or start the daemon. Use
-root `--config FILE` to select another path. Effective precedence remains
-command-line override, environment, TOML, then typed default; show, diff, env,
-and validation output redact secret-bearing fields.
+`--non-interactive` when scripts want to state the existing no-prompt behavior
+explicitly, and root `--config FILE` to select another path. Effective
+precedence remains command-line override, environment, TOML, then typed
+default; show, diff, env, and validation output redact secret-bearing fields.
 
 The O2 credential foundation can keep model-provider secrets out of TOML. A
 logical reference records only backend metadata; the value stays in an
@@ -264,8 +265,44 @@ all three finite choices explicitly (`--confirmation`,
 `--semantic-classifier`, and `--yara`). Broader rule authoring remains available
 through the existing policy-file format. A skipped probe is reported as
 unverified; a failed probe is not retried automatically, and provider response
-bodies are discarded rather than printed or persisted. The later combined
-wizard will publish the selected config and policy artifacts.
+bodies are discarded rather than printed or persisted.
+
+The combined flow accepts the same typed inputs. Interactive setup prompts only
+when both terminal streams are interactive and managed mode is off; it shows a
+redacted summary and requires a final confirmation whose default is no. For
+automation, use one bounded secret-free YAML/JSON selection:
+
+```yaml
+provider:
+  preset: openai_default
+  model_id: gpt-5.4-2026-03-05
+  credential_ref: model.primary
+policy:
+  profile: recommended
+channels:
+  - channel: discord
+    bot_token_ref: channel.discord
+    default_target: "1234567890"
+    trusted_users: ["operator-user-id"]
+```
+
+```bash
+# Evaluate only. No prompt and no write.
+shisad setup apply --selection setup.yaml --skip-probes --format human
+
+# Explicitly publish the displayed unverified selection.
+shisad setup apply --selection setup.yaml --skip-probes --write --format json
+```
+
+Omit `--skip-probes` for the bounded live checks. OpenRouter and local vLLM
+combined selections require an explicit model ID because shisad does not invent
+a maintained default for those presets. Successful publication creates
+`policy.yaml` first and then a schema-validated commented `config.toml` beside
+it, both owner-only (`0600`). Selected fields are active; the rest of the live
+schema stays commented. Existing or symlink destinations are refused. The two
+exclusive writes are not a transaction: if config publication fails after the
+policy completes, the error identifies the inert policy artifact for explicit
+inspection or removal. Setup never starts the daemon.
 
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and

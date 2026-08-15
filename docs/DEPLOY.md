@@ -490,6 +490,44 @@ client libraries degrade only that channel. For ingress, use the channel's
 `*_TRUSTED_USERS` field (or the generic identity allowlist) explicitly;
 connection or outbound delivery never grants trust.
 
+For a combined setup, enroll the references first and create a bounded
+secret-free selection document. For example:
+
+```yaml
+provider:
+  preset: openai_default
+  model_id: gpt-5.4-2026-03-05
+  credential_ref: model.primary
+policy:
+  profile: strict
+channels:
+  - channel: discord
+    bot_token_ref: channel.discord
+    default_target: "<channel-id>"
+    trusted_users: ["<your-discord-user-id>"]
+```
+
+`shisad setup wizard` provides the interactive equivalent on a real unmanaged
+terminal, including zero-or-more channel selection and one final default-no
+publication confirmation. Managed deployments and scripts should use:
+
+```bash
+# Dry run; resolves references but makes no network call or file write.
+shisad setup apply --selection setup.yaml --skip-probes
+
+# Explicitly publish this unverified selection.
+shisad setup apply --selection setup.yaml --skip-probes --write
+```
+
+Remove `--skip-probes` to run each existing bounded provider/channel check
+serially. A failed check is not retried and blocks publication. OpenRouter and
+local vLLM combined selections require an explicit `model_id`. The successful
+write creates `policy.yaml` before a sibling commented `config.toml`; each is
+exclusive, no-overwrite, and `0600`, and only logical `*_ref` values enter the
+config. The pair is not transactional. If config publication fails after the
+policy file completes, the policy is inert and the error identifies it for
+inspection/removal. The command never starts or restarts the daemon.
+
 Matrix homeserver values must be absolute HTTP(S) URLs without embedded
 userinfo, a query, or a fragment. Slack bot-token and app-token references must
 name distinct logical credentials.

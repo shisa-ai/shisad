@@ -29,6 +29,7 @@ from shisad.cli.credentials import credential
 from shisad.cli.onboarding import (
     EnvironmentDetectionError,
     inspect_onboarding_environment,
+    parse_managed_posture,
     render_welcome,
 )
 from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
@@ -573,7 +574,7 @@ class ConfigCliError(StructuredCliError):
 def _config_cli_error(
     *,
     what_failed: str,
-    exc: ConfigFileError,
+    exc: ConfigFileError | EnvironmentDetectionError,
     next_action: str,
     output_format: str = "human",
     likely_cause: str = "the selected config is missing, invalid, unsafe, or unsupported.",
@@ -905,6 +906,11 @@ def config_diff(output_format: str) -> None:
 
 @cli.command("init")
 @click.option(
+    "--non-interactive",
+    is_flag=True,
+    help="Explicitly create only the minimal no-prompt config template.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["human", "json"]),
@@ -912,13 +918,14 @@ def config_diff(output_format: str) -> None:
     show_default=True,
 )
 @click.pass_context
-def init_config(ctx: click.Context, output_format: str) -> None:
+def init_config(ctx: click.Context, non_interactive: bool, output_format: str) -> None:
     """Create a minimal commented user config without overwriting existing data."""
 
     selected = (ctx.obj or {}).get("config_path")
     try:
+        managed = parse_managed_posture(os.environ)
         destination = initialize_config_file(selected if isinstance(selected, Path) else None)
-    except ConfigFileError as exc:
+    except (ConfigFileError, EnvironmentDetectionError) as exc:
         raise _config_cli_error(
             what_failed="Could not create operator configuration.",
             exc=exc,
@@ -928,6 +935,8 @@ def init_config(ctx: click.Context, output_format: str) -> None:
     payload: dict[str, object] = {
         "created": True,
         "path": str(destination),
+        "mode": "non_interactive" if non_interactive else "minimal",
+        "managed": managed,
         "next_actions": [
             "shisad config validate",
             "shisad config show --format human",

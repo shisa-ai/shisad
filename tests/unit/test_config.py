@@ -533,3 +533,59 @@ def test_f6_init_parent_preparation_failure_uses_config_error(tmp_path: Path) ->
 
     with pytest.raises(ConfigFileError, match="cannot prepare selected config parent"):
         config_file.initialize_config_file(blocked_parent / "config.toml", environ={})
+
+
+def test_o2d_rendered_selected_config_is_commented_validated_and_reference_only(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "config.toml"
+    policy_path = tmp_path / "policy.yaml"
+    secret = "ambient-secret-must-not-persist"
+
+    config_file.initialize_config_file(
+        destination,
+        environ={"SHISAD_MODEL_API_KEY": secret},
+        section_overrides={
+            "daemon": {
+                "policy_path": policy_path,
+                "discord_enabled": True,
+                "discord_bot_token_ref": "channel.discord",
+                "discord_trusted_users": ["operator-1"],
+            },
+            "model": {
+                "planner_provider_preset": "openai_default",
+                "planner_model_id": "gpt-5.4-2026-03-05",
+                "planner_api_key_ref": "model.primary",
+                "planner_remote_enabled": True,
+            },
+        },
+    )
+
+    text = destination.read_text(encoding="utf-8")
+    assert text.startswith("schema_version = 1\n")
+    assert 'policy_path = "' in text
+    assert 'discord_bot_token_ref = "channel.discord"' in text
+    assert 'planner_api_key_ref = "model.primary"' in text
+    assert "# status=live" in text
+    assert secret not in text
+    loaded = load_config_file(destination, environ={})
+    assert loaded.daemon.policy_path == policy_path
+    assert loaded.daemon.discord_enabled is True
+    assert loaded.daemon.discord_bot_token_ref == "channel.discord"
+    assert loaded.model.planner_provider_preset.value == "openai_default"
+    assert loaded.model.planner_model_id == "gpt-5.4-2026-03-05"
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("model", "planner_api_key"),
+        ("daemon", "discord_bot_token"),
+    ],
+)
+def test_o2d_selected_config_rejects_raw_secret_overrides(
+    section: str,
+    field: str,
+) -> None:
+    with pytest.raises(ConfigFileError, match="raw secret"):
+        render_config_template(section_overrides={section: {field: "do-not-write"}})

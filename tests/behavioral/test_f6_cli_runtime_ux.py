@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from shisad.channels import setup as channel_setup
@@ -56,6 +57,90 @@ def test_f6_first_use_config_journey_is_safe_and_scriptable(
     assert error["error_type"] == "config"
     assert error["exit_code"] == 3
     assert secret not in failed.output
+
+
+def test_o2d_noninteractive_setup_journey_publishes_valid_reference_only_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "o2d-behavioral-secret-must-not-persist"
+    config_home = tmp_path / "config-home"
+    config_path = config_home / "shisad" / "config.toml"
+    policy_path = config_home / "shisad" / "policy.yaml"
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(
+        yaml.safe_dump(
+            {
+                "provider": {
+                    "preset": "vllm_local_default",
+                    "model_id": "local/setup-model",
+                },
+                "policy": {"profile": "strict"},
+                "channels": [
+                    {
+                        "channel": "discord",
+                        "bot_token_ref": "channel.discord",
+                        "default_target": "12345",
+                        "trusted_users": ["operator-1"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHISAD_MANAGED", "true")
+    monkeypatch.setenv("DISCORD_SETUP_TOKEN", secret)
+    runner = CliRunner()
+
+    enrolled = runner.invoke(
+        cli,
+        [
+            "credential",
+            "set",
+            "channel.discord",
+            "--backend",
+            "env",
+            "--locator",
+            "DISCORD_SETUP_TOKEN",
+        ],
+    )
+    applied = runner.invoke(
+        cli,
+        [
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--write",
+            "--format",
+            "json",
+        ],
+    )
+    validated = runner.invoke(cli, ["config", "validate", "--format", "json"])
+    shown = runner.invoke(cli, ["config", "show", "--format", "json"])
+
+    assert enrolled.exit_code == 0, enrolled.output
+    assert applied.exit_code == 0, applied.output
+    assert validated.exit_code == 0, validated.output
+    assert shown.exit_code == 0, shown.output
+    payload = json.loads(applied.output)
+    assert payload["outcome"] == "completed"
+    assert payload["persisted"] is True
+    assert payload["provider"]["outcome"] == "skipped"
+    assert payload["channels"][0]["outcome"] == "skipped"
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert policy_path.stat().st_mode & 0o777 == 0o600
+    config_text = config_path.read_text(encoding="utf-8")
+    policy_text = policy_path.read_text(encoding="utf-8")
+    all_visible = applied.output + validated.output + shown.output + config_text + policy_text
+    assert secret not in all_visible
+    assert 'discord_bot_token_ref = "channel.discord"' in config_text
+    assert 'planner_model_id = "local/setup-model"' in config_text
+    assert 'policy_path = "' in config_text
+    assert json.loads(validated.output)["valid"] is True
 
 
 def test_o1_bare_cli_welcome_routes_without_mutation(

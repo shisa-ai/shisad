@@ -19,6 +19,7 @@ from shisad.channels.setup import (
     ChannelSetupSelection,
     evaluate_channel_setup,
 )
+from shisad.cli.onboarding import EnvironmentDetectionError, parse_managed_posture
 from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_cli_text
 from shisad.core.config import (
     DaemonConfig,
@@ -26,7 +27,14 @@ from shisad.core.config import (
     effective_credential_reference_paths,
     validate_credential_reference_name,
 )
-from shisad.core.config_file import ConfigFileError, load_effective_config
+from shisad.core.config_file import (
+    ConfigFileError,
+    _initialize_owner_only_generated_file,
+    _validate_owner_only_generated_path,
+    initialize_config_file,
+    load_effective_config,
+    selected_config_path,
+)
 from shisad.core.providers.capabilities import AuthMode, ProviderPreset
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelComponent, ModelRouter
@@ -158,6 +166,75 @@ class ProviderSetupResult(BaseModel):
     exit_code: int
 
 
+class SetupPolicySelection(BaseModel):
+    """One finite generated policy choice for combined setup."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    profile: PolicyProfile
+    custom: CustomPolicyChoices | None = None
+
+    @model_validator(mode="after")
+    def _validate_custom_shape(self) -> SetupPolicySelection:
+        if self.profile is PolicyProfile.CUSTOM and self.custom is None:
+            raise ValueError("custom policy choices are required")
+        if self.profile is not PolicyProfile.CUSTOM and self.custom is not None:
+            raise ValueError("custom policy choices require profile=custom")
+        return self
+
+
+class CombinedSetupSelection(BaseModel):
+    """Secret-free provider, policy, and zero-or-more channel selections."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: ProviderSetupSelection
+    policy: SetupPolicySelection
+    channels: list[ChannelSetupSelection] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def _validate_combined_shape(self) -> CombinedSetupSelection:
+        if (
+            self.provider.preset
+            in {
+                ProviderPreset.OPENROUTER_DEFAULT.value,
+                ProviderPreset.VLLM_LOCAL_DEFAULT.value,
+            }
+            and not self.provider.model_id
+        ):
+            raise ValueError(
+                f"{self.provider.preset} requires an explicit model ID for final publication"
+            )
+        selected = [item.channel for item in self.channels]
+        if len(set(selected)) != len(selected):
+            raise ValueError("each channel may be selected only once")
+        return self
+
+
+class CombinedSetupOutcome(StrEnum):
+    READY = "ready"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+
+
+class CombinedSetupResult(BaseModel):
+    """Redacted composition of existing typed setup results."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: CombinedSetupOutcome
+    provider: ProviderSetupResult
+    policy_profile: PolicyProfile
+    policy_requirements: dict[str, str]
+    channels: list[ChannelSetupResult]
+    config_path: str
+    policy_path: str
+    persisted: bool
+    next_actions: list[str]
+    exit_code: int
+
+
 class SetupCliError(StructuredCliError):
     """Expected setup selection/configuration failure."""
 
@@ -172,6 +249,49 @@ class SetupCliError(StructuredCliError):
                 what_still_works="help, credential status, diagnostics, and local features.",
                 likely_cause=safe_cli_text(reason, limit=256),
                 next_action="correct the explicit setup values, then rerun the command",
+                technical_details=safe_cli_text(reason, limit=256),
+            ),
+            output_format=output_format,
+        )
+
+
+class SetupPostureError(StructuredCliError):
+    """Interactive setup cannot safely run in the current posture."""
+
+    exit_code = 3
+
+    def __init__(self, reason: str, *, output_format: str) -> None:
+        super().__init__(
+            CliErrorEnvelope(
+                error_type="setup",
+                exit_code=self.exit_code,
+                what_failed="Could not start interactive setup.",
+                what_still_works="deterministic setup apply and explicit init commands.",
+                likely_cause=safe_cli_text(reason, limit=256),
+                next_action="use setup apply --selection FILE; add --write only to publish",
+                technical_details=safe_cli_text(reason, limit=256),
+            ),
+            output_format=output_format,
+        )
+
+
+class SetupPublicationError(StructuredCliError):
+    """Policy completed but final config publication did not."""
+
+    exit_code = 3
+
+    def __init__(self, policy_path: Path, reason: str, *, output_format: str) -> None:
+        safe_path = safe_cli_text(str(policy_path), limit=512)
+        super().__init__(
+            CliErrorEnvelope(
+                error_type="setup",
+                exit_code=self.exit_code,
+                what_failed="Could not finish setup artifact publication.",
+                what_still_works=(
+                    "the generated policy remains inactive until a config references it."
+                ),
+                likely_cause="an inert owner-only policy remains after config publication failed",
+                next_action=f"inspect or remove the inert policy at {safe_path}, then retry setup",
                 technical_details=safe_cli_text(reason, limit=256),
             ),
             output_format=output_format,
@@ -335,6 +455,297 @@ def generate_policy_profile(
     return PolicyBundle.model_validate(payload)
 
 
+_MAX_SELECTION_BYTES = 65_536
+
+
+def load_combined_setup_selection(path: Path) -> CombinedSetupSelection:
+    """Load one bounded secret-free YAML/JSON selection without echoing its content."""
+
+    try:
+        if path.stat().st_size > _MAX_SELECTION_BYTES:
+            raise ValueError("setup selection file exceeds 65536 bytes")
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        raise ValueError("setup selection file does not exist") from None
+    except OSError as exc:
+        raise ValueError(f"setup selection file cannot be read: {exc.__class__.__name__}") from exc
+    if len(raw) > _MAX_SELECTION_BYTES:
+        raise ValueError("setup selection file exceeds 65536 bytes")
+    try:
+        payload = yaml.safe_load(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("selection root must be a mapping")
+        return CombinedSetupSelection.model_validate(payload)
+    except (UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("setup selection file exceeds"):
+            raise
+        raise ValueError("setup selection document does not match the supported schema") from exc
+
+
+def _combined_setup_context(
+    ctx: click.Context,
+) -> tuple[CredentialReferenceStore, DaemonConfig, ModelConfig, Path]:
+    root = ctx.find_root()
+    selected = (root.obj or {}).get("config_path")
+    explicit_path = selected if isinstance(selected, Path) else None
+    destination = selected_config_path(explicit_path, environ=os.environ)
+    if destination.exists():
+        loaded = load_effective_config(explicit_path, environ=os.environ)
+    else:
+        baseline_env = dict(os.environ)
+        baseline_env.pop("SHISAD_CONFIG_PATH", None)
+        loaded = load_effective_config(None, environ=baseline_env)
+    registry_path, secret_root = effective_credential_reference_paths(
+        data_dir=loaded.daemon.data_dir,
+        configured_store_path=loaded.security.credential_reference_store_path,
+        configured_secret_dir=loaded.security.credential_secret_dir,
+    )
+    store = CredentialReferenceStore(
+        registry_path=registry_path,
+        secret_root=secret_root,
+        environ=os.environ,
+    )
+    return store, loaded.daemon, loaded.model, destination
+
+
+async def evaluate_combined_setup(
+    selection: CombinedSetupSelection,
+    *,
+    credential_store: CredentialReferenceStore,
+    daemon_config: DaemonConfig,
+    model_config: ModelConfig,
+    config_path: Path,
+    skip_probes: bool,
+    timeout_seconds: float = 3.0,
+) -> tuple[CombinedSetupResult, PolicyBundle]:
+    """Serially compose the existing provider, policy, and channel setup owners."""
+
+    provider_selection = selection.provider.model_copy(
+        update={
+            "allow_http_localhost": model_config.allow_http_localhost,
+            "block_private_ranges": model_config.block_private_ranges,
+            "endpoint_allowlist": list(model_config.endpoint_allowlist),
+        }
+    )
+    provider = await evaluate_provider_setup(
+        provider_selection,
+        credential_store=credential_store,
+        timeout_seconds=timeout_seconds,
+        skip_probe=skip_probes,
+    )
+    policy = generate_policy_profile(
+        selection.policy.profile,
+        custom=selection.policy.custom,
+    )
+    channels: list[ChannelSetupResult] = []
+    for channel_selection in selection.channels:
+        channels.append(
+            await evaluate_channel_setup(
+                channel_selection,
+                credential_store=credential_store,
+                state_root=daemon_config.data_dir / "channels",
+                timeout_seconds=timeout_seconds,
+                skip_probe=skip_probes,
+            )
+        )
+
+    exit_codes = [provider.exit_code, *(item.exit_code for item in channels)]
+    exit_code = 3 if 3 in exit_codes else 2 if 2 in exit_codes else 0
+    policy_path = config_path.with_name("policy.yaml")
+    requirements = {
+        "semantic_classifier": policy.content_firewall.semantic_classifier.posture,
+        "yara": "required" if policy.yara_required else "optional",
+    }
+    result = CombinedSetupResult(
+        outcome=CombinedSetupOutcome.READY if exit_code == 0 else CombinedSetupOutcome.BLOCKED,
+        provider=provider,
+        policy_profile=selection.policy.profile,
+        policy_requirements=requirements,
+        channels=channels,
+        config_path=str(config_path),
+        policy_path=str(policy_path),
+        persisted=False,
+        next_actions=(
+            ["rerun with --write to publish the displayed selection"]
+            if exit_code == 0
+            else ["follow the component next actions, then rerun setup"]
+        ),
+        exit_code=exit_code,
+    )
+    return result, policy
+
+
+def publish_combined_setup(
+    result: CombinedSetupResult,
+    policy: PolicyBundle,
+    *,
+    output_format: str,
+) -> CombinedSetupResult:
+    """Publish policy then config as independent exclusive owner-only artifacts."""
+
+    if result.exit_code != 0:
+        raise ValueError("blocked setup results cannot be published")
+    config_path = Path(result.config_path)
+    policy_path = Path(result.policy_path)
+    _validate_owner_only_generated_path(config_path, environ=os.environ, label="config")
+    _validate_owner_only_generated_path(policy_path, environ=os.environ, label="policy")
+
+    policy_payload = yaml.safe_dump(
+        policy.model_dump(mode="json"),
+        sort_keys=False,
+    ).encode("utf-8")
+    _initialize_owner_only_generated_file(
+        policy_path,
+        policy_payload,
+        environ=os.environ,
+        label="policy",
+    )
+
+    daemon_values: dict[str, object] = {"policy_path": policy_path}
+    for channel in result.channels:
+        daemon_values.update(channel.config_fragment)
+    try:
+        initialize_config_file(
+            config_path,
+            environ=os.environ,
+            section_overrides={
+                "daemon": daemon_values,
+                "model": result.provider.config_fragment,
+            },
+        )
+    except ConfigFileError as exc:
+        raise SetupPublicationError(
+            policy_path,
+            str(exc),
+            output_format=output_format,
+        ) from exc
+
+    return result.model_copy(
+        update={
+            "outcome": CombinedSetupOutcome.COMPLETED,
+            "persisted": True,
+            "next_actions": [
+                "shisad config validate",
+                "shisad config show --format human",
+                "shisad start --foreground",
+            ],
+        }
+    )
+
+
+def _interactive_terminal() -> bool:
+    stdin = click.get_text_stream("stdin")
+    stdout = click.get_text_stream("stdout")
+    return bool(
+        getattr(stdin, "isatty", lambda: False)() and getattr(stdout, "isatty", lambda: False)()
+    )
+
+
+def _comma_separated_values(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _prompt_channel_selection(channel: ChannelName, *, allow_test: bool) -> ChannelSetupSelection:
+    values: dict[str, object] = {"channel": channel}
+    if channel is ChannelName.MATRIX:
+        values.update(
+            access_token_ref=click.prompt("Matrix access-token reference").strip(),
+            homeserver=click.prompt("Matrix homeserver URL").strip(),
+            user_id=click.prompt("Matrix bot user ID").strip(),
+            room_id=click.prompt("Matrix default room ID", default="", show_default=False).strip(),
+        )
+    else:
+        label = channel.value.capitalize()
+        values["bot_token_ref"] = click.prompt(f"{label} bot-token reference").strip()
+        if channel is ChannelName.SLACK:
+            values["app_token_ref"] = click.prompt("Slack app-token reference").strip()
+        values["default_target"] = click.prompt(
+            f"{label} default outbound target",
+            default="",
+            show_default=False,
+        ).strip()
+    values["trusted_users"] = _comma_separated_values(
+        click.prompt(
+            f"{channel.value.capitalize()} trusted user IDs (comma-separated)",
+            default="",
+            show_default=False,
+        )
+    )
+    run_test = allow_test and click.confirm(
+        f"Send the fixed {channel.value} setup test notice?",
+        default=False,
+    )
+    values["run_test"] = run_test
+    if run_test:
+        values["test_target"] = click.prompt("Explicit test target").strip()
+    return ChannelSetupSelection.model_validate(values)
+
+
+def _prompt_combined_setup_selection() -> tuple[CombinedSetupSelection, bool]:
+    presets = [preset.value for preset in ProviderPreset] + ["custom"]
+    preset = click.prompt("Provider preset", type=click.Choice(presets)).strip()
+    model_id = click.prompt("Planner model ID", default="", show_default=False).strip()
+    provider_values: dict[str, object] = {"preset": preset, "model_id": model_id}
+    if preset == "custom":
+        provider_values["base_url"] = click.prompt("Provider base URL").strip()
+        provider_values["auth_mode"] = click.prompt(
+            "Provider authentication",
+            type=click.Choice([AuthMode.BEARER.value, AuthMode.NONE.value]),
+        )
+    auth_required = preset != ProviderPreset.VLLM_LOCAL_DEFAULT.value and (
+        preset != "custom" or provider_values.get("auth_mode") == AuthMode.BEARER.value
+    )
+    if auth_required:
+        provider_values["credential_ref"] = click.prompt(
+            "Logical provider credential reference"
+        ).strip()
+    run_probes = click.confirm("Run live provider and channel probes now?", default=True)
+
+    profile = PolicyProfile(
+        click.prompt(
+            "Policy profile",
+            type=click.Choice([item.value for item in PolicyProfile]),
+        )
+    )
+    custom = None
+    if profile is PolicyProfile.CUSTOM:
+        custom = CustomPolicyChoices(
+            confirmation=click.prompt(
+                "Confirmation posture",
+                type=click.Choice(["auto", "always"]),
+            ),
+            semantic_classifier=click.prompt(
+                "Semantic classifier posture",
+                type=click.Choice(["off", "best_effort", "required"]),
+            ),
+            yara=click.prompt("YARA posture", type=click.Choice(["optional", "required"])),
+        )
+
+    channel_text = click.prompt(
+        "Channels (comma-separated matrix, discord, telegram, slack; blank for none)",
+        default="",
+        show_default=False,
+    )
+    channel_names = _comma_separated_values(channel_text)
+    try:
+        selected_channels = [ChannelName(item.lower()) for item in channel_names]
+    except ValueError:
+        raise ValueError("channel selection must use matrix, discord, telegram, or slack") from None
+    if len(set(selected_channels)) != len(selected_channels):
+        raise ValueError("each channel may be selected only once")
+    channels = [
+        _prompt_channel_selection(channel, allow_test=run_probes) for channel in selected_channels
+    ]
+    return (
+        CombinedSetupSelection(
+            provider=ProviderSetupSelection.model_validate(provider_values),
+            policy=SetupPolicySelection(profile=profile, custom=custom),
+            channels=channels,
+        ),
+        not run_probes,
+    )
+
+
 def _credential_store(ctx: click.Context) -> tuple[CredentialReferenceStore, ModelConfig]:
     root = ctx.find_root()
     selected = (root.obj or {}).get("config_path")
@@ -409,9 +820,168 @@ def _emit_channel_result(result: ChannelSetupResult, *, output_format: str) -> N
     click.echo(yaml.safe_dump(result.config_fragment, sort_keys=True).rstrip())
 
 
+def _emit_combined_result(result: CombinedSetupResult, *, output_format: str) -> None:
+    if output_format == "json":
+        click.echo(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
+        return
+    click.echo(f"Provider: {result.provider.outcome.value}")
+    click.echo(f"Provider next: {result.provider.probe.next_action}")
+    click.echo(f"Policy: {result.policy_profile.value}")
+    if result.channels:
+        click.echo("Channels:")
+        for channel in result.channels:
+            click.echo(
+                f"- {channel.channel.value}: {channel.outcome.value}; "
+                f"retry={'yes' if channel.retry_allowed else 'no'}; "
+                f"next={channel.probe.next_action}"
+            )
+    else:
+        click.echo("Channels: none")
+    click.echo(f"Config path: {safe_cli_text(result.config_path, limit=512)}")
+    click.echo(f"Policy path: {safe_cli_text(result.policy_path, limit=512)}")
+    click.echo(f"Setup publication: {result.outcome.value}")
+    for action in result.next_actions:
+        click.echo(f"Next: {safe_cli_text(action, limit=512)}")
+
+
 @click.group("setup")
 def setup() -> None:
-    """Prepare provider, policy, and channel choices without publishing files."""
+    """Prepare, verify, and explicitly publish setup choices."""
+
+
+@setup.command("apply")
+@click.option(
+    "--selection",
+    "selection_path",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Bounded secret-free YAML/JSON setup selection.",
+)
+@click.option("--skip-probes", is_flag=True, help="Publish explicitly unverified results.")
+@click.option("--write", is_flag=True, help="Explicitly publish config and policy artifacts.")
+@click.option("--timeout", "timeout_value", default="3.0", help="Probe timeout in seconds.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def setup_apply(
+    ctx: click.Context,
+    selection_path: Path,
+    skip_probes: bool,
+    write: bool,
+    timeout_value: str,
+    output_format: str,
+) -> None:
+    """Evaluate one deterministic selection; write only with --write."""
+
+    try:
+        parse_managed_posture(os.environ)
+        try:
+            timeout_seconds = float(timeout_value)
+        except (TypeError, ValueError):
+            raise ValueError("setup probe timeout must be a number") from None
+        if not 0.1 <= timeout_seconds <= 30.0:
+            raise ValueError("setup probe timeout must be between 0.1 and 30 seconds")
+        selection = load_combined_setup_selection(selection_path)
+        store, daemon_config, model_config, config_path = _combined_setup_context(ctx)
+        result, policy = asyncio.run(
+            evaluate_combined_setup(
+                selection,
+                credential_store=store,
+                daemon_config=daemon_config,
+                model_config=model_config,
+                config_path=config_path,
+                skip_probes=skip_probes,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        if write and result.exit_code == 0:
+            result = publish_combined_setup(
+                result,
+                policy,
+                output_format=output_format,
+            )
+    except SetupPublicationError:
+        raise
+    except (ConfigFileError, EnvironmentDetectionError, ValueError) as exc:
+        raise SetupCliError(str(exc), output_format=output_format) from exc
+
+    _emit_combined_result(result, output_format=output_format)
+    if result.exit_code:
+        ctx.exit(result.exit_code)
+
+
+@setup.command("wizard")
+@click.option("--timeout", "timeout_value", default="3.0", help="Probe timeout in seconds.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> None:
+    """Interactively compose setup and require final default-no write consent."""
+
+    try:
+        managed = parse_managed_posture(os.environ)
+        if managed:
+            raise SetupPostureError(
+                "managed posture does not permit interactive prompts",
+                output_format=output_format,
+            )
+        if not _interactive_terminal():
+            raise SetupPostureError(
+                "stdin and stdout must both be interactive terminals",
+                output_format=output_format,
+            )
+        try:
+            timeout_seconds = float(timeout_value)
+        except (TypeError, ValueError):
+            raise ValueError("setup probe timeout must be a number") from None
+        if not 0.1 <= timeout_seconds <= 30.0:
+            raise ValueError("setup probe timeout must be between 0.1 and 30 seconds")
+        selection, skip_probes = _prompt_combined_setup_selection()
+        store, daemon_config, model_config, config_path = _combined_setup_context(ctx)
+        result, policy = asyncio.run(
+            evaluate_combined_setup(
+                selection,
+                credential_store=store,
+                daemon_config=daemon_config,
+                model_config=model_config,
+                config_path=config_path,
+                skip_probes=skip_probes,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        _emit_combined_result(result, output_format=output_format)
+        if result.exit_code:
+            ctx.exit(result.exit_code)
+        if not click.confirm("Publish the displayed config and policy?", default=False):
+            declined = result.model_copy(
+                update={
+                    "outcome": CombinedSetupOutcome.SKIPPED,
+                    "next_actions": ["rerun setup wizard when ready to publish"],
+                }
+            )
+            _emit_combined_result(declined, output_format=output_format)
+            return
+        result = publish_combined_setup(
+            result,
+            policy,
+            output_format=output_format,
+        )
+    except (SetupPostureError, SetupPublicationError):
+        raise
+    except (ConfigFileError, EnvironmentDetectionError, ValueError) as exc:
+        raise SetupCliError(str(exc), output_format=output_format) from exc
+
+    _emit_combined_result(result, output_format=output_format)
 
 
 @setup.command("provider")
