@@ -779,6 +779,96 @@ def test_o2d_final_publication_requires_explicit_openrouter_and_vllm_model(
         cli_setup.CombinedSetupSelection.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("preset", "credential_ref"),
+    [
+        ("openrouter_default", "model.selection-secret-must-not-print"),
+        ("vllm_local_default", ""),
+    ],
+)
+def test_o2d_apply_missing_explicit_model_is_actionable_and_secret_free(
+    tmp_path: Path,
+    preset: str,
+    credential_ref: str,
+) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    payload = _o2d_selection_payload(preset=preset, model_id="")
+    provider = payload["provider"]
+    assert isinstance(provider, dict)
+    provider["credential_ref"] = credential_ref
+    selection_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--write",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3, result.output
+    error = json.loads(result.output)
+    assert error["likely_cause"] == (
+        f"{preset} requires an explicit model ID for final publication"
+    )
+    assert error["technical_details"] == (
+        f"provider.model_id is required when provider.preset is {preset}"
+    )
+    assert error["next_action"] == (f"set provider.model_id for {preset}, then rerun setup apply")
+    assert error["technical_details"] != error["likely_cause"]
+    assert "selection-secret-must-not-print" not in result.output
+    assert "Traceback" not in result.output
+    assert not config_path.exists()
+    assert not config_path.with_name("policy.yaml").exists()
+
+
+def test_o2d_wizard_missing_explicit_model_uses_actionable_json_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    config_path = tmp_path / "config.toml"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "setup",
+            "wizard",
+            "--format",
+            "json",
+        ],
+        input="openrouter_default\n\nmodel.primary\nn\nrecommended\n\n",
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3, result.output
+    error = json.loads(result.stderr.splitlines()[-1])
+    assert error["likely_cause"] == (
+        "openrouter_default requires an explicit model ID for final publication"
+    )
+    assert error["technical_details"] == (
+        "provider.model_id is required when provider.preset is openrouter_default"
+    )
+    assert error["next_action"] == (
+        "set provider.model_id for openrouter_default, then rerun setup apply"
+    )
+    assert "Traceback" not in result.output
+    assert not config_path.exists()
+    assert not config_path.with_name("policy.yaml").exists()
+
+
 def test_o2d_combined_selection_rejects_duplicate_channels() -> None:
     payload = _o2d_selection_payload(
         channels=[

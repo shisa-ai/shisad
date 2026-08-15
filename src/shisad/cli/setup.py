@@ -11,7 +11,8 @@ from typing import Literal
 
 import click
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from shisad.channels.setup import (
     ChannelName,
@@ -203,8 +204,10 @@ class CombinedSetupSelection(BaseModel):
             }
             and not self.provider.model_id
         ):
-            raise ValueError(
-                f"{self.provider.preset} requires an explicit model ID for final publication"
+            raise PydanticCustomError(
+                "explicit_model_required",
+                "{preset} requires an explicit model ID for final publication",
+                {"preset": self.provider.preset},
             )
         selected = [item.channel for item in self.channels]
         if len(set(selected)) != len(selected):
@@ -248,12 +251,28 @@ class SetupWizardSkippedResult(BaseModel):
     )
 
 
+class SetupSelectionValidationError(ValueError):
+    """Secret-free actionable projection of a selection validation failure."""
+
+    def __init__(self, reason: str, *, next_action: str, technical_details: str) -> None:
+        super().__init__(reason)
+        self.next_action = next_action
+        self.technical_details = technical_details
+
+
 class SetupCliError(StructuredCliError):
     """Expected setup selection/configuration failure."""
 
     exit_code = 3
 
-    def __init__(self, reason: str, *, output_format: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        output_format: str,
+        next_action: str = "correct the explicit setup values, then rerun the command",
+        technical_details: str | None = None,
+    ) -> None:
         super().__init__(
             CliErrorEnvelope(
                 error_type="setup",
@@ -261,8 +280,8 @@ class SetupCliError(StructuredCliError):
                 what_failed="Could not prepare the requested setup selection.",
                 what_still_works="help, credential status, diagnostics, and local features.",
                 likely_cause=safe_cli_text(reason, limit=256),
-                next_action="correct the explicit setup values, then rerun the command",
-                technical_details=safe_cli_text(reason, limit=256),
+                next_action=safe_cli_text(next_action, limit=256),
+                technical_details=safe_cli_text(technical_details or reason, limit=256),
             ),
             output_format=output_format,
         )
@@ -471,6 +490,32 @@ def generate_policy_profile(
 _MAX_SELECTION_BYTES = 65_536
 
 
+def _safe_selection_validation_error(exc: ValidationError) -> SetupSelectionValidationError:
+    """Project only finite machine-owned validation codes into CLI guidance."""
+
+    for error in exc.errors(include_input=False, include_url=False):
+        if error.get("type") != "explicit_model_required":
+            continue
+        context = error.get("ctx")
+        preset = context.get("preset") if isinstance(context, dict) else None
+        if preset not in {
+            ProviderPreset.OPENROUTER_DEFAULT.value,
+            ProviderPreset.VLLM_LOCAL_DEFAULT.value,
+        }:
+            continue
+        return SetupSelectionValidationError(
+            f"{preset} requires an explicit model ID for final publication",
+            next_action=f"set provider.model_id for {preset}, then rerun setup apply",
+            technical_details=(f"provider.model_id is required when provider.preset is {preset}"),
+        )
+    reason = "setup selection document does not match the supported schema"
+    return SetupSelectionValidationError(
+        reason,
+        next_action="correct the explicit setup values, then rerun the command",
+        technical_details=reason,
+    )
+
+
 def load_combined_setup_selection(path: Path) -> CombinedSetupSelection:
     """Load one bounded secret-free YAML/JSON selection without echoing its content."""
 
@@ -489,6 +534,8 @@ def load_combined_setup_selection(path: Path) -> CombinedSetupSelection:
         if not isinstance(payload, dict):
             raise ValueError("selection root must be a mapping")
         return CombinedSetupSelection.model_validate(payload)
+    except ValidationError as exc:
+        raise _safe_selection_validation_error(exc) from exc
     except (UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("setup selection file exceeds"):
             raise
@@ -771,14 +818,15 @@ def _prompt_combined_setup_selection(*, err: bool = False) -> tuple[CombinedSetu
         _prompt_channel_selection(channel, allow_test=run_probes, err=err)
         for channel in selected_channels
     ]
-    return (
-        CombinedSetupSelection(
+    try:
+        selection = CombinedSetupSelection(
             provider=ProviderSetupSelection.model_validate(provider_values),
             policy=SetupPolicySelection(profile=profile, custom=custom),
             channels=channels,
-        ),
-        not run_probes,
-    )
+        )
+    except ValidationError as exc:
+        raise _safe_selection_validation_error(exc) from exc
+    return selection, not run_probes
 
 
 def _credential_store(ctx: click.Context) -> tuple[CredentialReferenceStore, ModelConfig]:
@@ -981,6 +1029,13 @@ def setup_apply(
             )
     except SetupPublicationError:
         raise
+    except SetupSelectionValidationError as exc:
+        raise SetupCliError(
+            str(exc),
+            output_format=output_format,
+            next_action=exc.next_action,
+            technical_details=exc.technical_details,
+        ) from exc
     except (ConfigFileError, EnvironmentDetectionError, ValueError) as exc:
         raise SetupCliError(str(exc), output_format=output_format) from exc
 
@@ -1079,6 +1134,13 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
         return
     except (SetupPostureError, SetupPublicationError):
         raise
+    except SetupSelectionValidationError as exc:
+        raise SetupCliError(
+            str(exc),
+            output_format=output_format,
+            next_action=exc.next_action,
+            technical_details=exc.technical_details,
+        ) from exc
     except (ConfigFileError, EnvironmentDetectionError, ValueError) as exc:
         raise SetupCliError(str(exc), output_format=output_format) from exc
 
