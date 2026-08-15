@@ -397,7 +397,7 @@ embeddings, or monitor pair).
 The built-in file backend accepts values only through a hidden prompt or
 `--stdin`; it stores permission-protected plaintext under the active data root
 with `0700` directories and `0600` files. Install the optional maintained OS
-keyring integration with `uv sync --frozen --extra credentials` (source
+keyring integration with `uv --no-config sync --frozen --extra credentials` (source
 checkout) or `pip install 'shisad[credentials]'` (package install). A missing
 or unusable keyring is reported and never falls back to the file backend.
 
