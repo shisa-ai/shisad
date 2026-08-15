@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, and explicit guided or managed setup publication; first-start and tutorial work remain in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, and bounded background first-start/health; the full tutorial and unified chat work remain in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -174,6 +174,9 @@ shisad config diff --format human
 shisad config schema --format json
 shisad env --format human
 shisad credential status model.primary
+shisad start
+shisad status
+shisad stop
 ```
 
 Bare `shisad` is a read-only welcome and preflight. It distinguishes fresh,
@@ -182,8 +185,18 @@ facts; reports required, optional/degraded, and informational checks; and names
 an explicit next action. It does not prompt, write configuration, migrate a
 schema, start the daemon, or open chat. Unsupported config schema and invalid
 managed posture fail actionably instead of inferring consent. Guided setup is
-an explicit `shisad setup wizard` command; automatic first-start/chat routing
-remains later v0.8.2 work.
+an explicit `shisad setup wizard` command. After successful interactive
+publication, its default-exit menu can start the daemon and open chat or the
+dashboard, or show the guided-tour entry point; managed/non-interactive setup
+does not prompt or start a process.
+
+`shisad start` now launches one detached POSIX daemon, waits boundedly for its
+typed status, and prints only a structural readiness summary plus the owner-only
+log path. Repeating it against a reachable daemon is idempotent. Use
+`shisad start --foreground` for service supervisors, containers, or direct log
+inspection; unsupported native background platforms receive that foreground
+path as actionable guidance. `shisad stop` still shuts down through the control
+API rather than trusting a PID file.
 
 `shisad init` creates one owner-only commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally

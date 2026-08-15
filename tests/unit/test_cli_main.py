@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import click
 import pytest
@@ -3910,37 +3911,298 @@ def test_start_debug_routes_to_autoreload_with_debug_log_level(
     assert "only supported mode" not in result.output
 
 
-def test_start_default_routes_to_foreground_path(
+def test_o3a_start_default_routes_to_background_with_bounded_health(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
 
-    captured: dict[str, DaemonConfig] = {}
+    captured: dict[str, object] = {}
+
+    def _fake_background_start(effective_config: DaemonConfig):
+        captured["config"] = effective_config
+        return SimpleNamespace(
+            already_running=False,
+            pid=4242,
+            log_path=tmp_path / "data" / "logs" / "daemon.log",
+            status=SimpleNamespace(
+                status="running",
+                readiness={
+                    "provider": {"status": "configured"},
+                    "storage": {"status": "verified"},
+                },
+            ),
+            doctor=SimpleNamespace(status="configured", checks={}),
+        )
+
+    def _unexpected_foreground(*args, **kwargs) -> None:
+        _ = args, kwargs
+        raise AssertionError("default start must not enter the foreground runner")
+
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        _fake_background_start,
+        raising=False,
+    )
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _unexpected_foreground)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["start"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"] is config
+    assert "Daemon: started pid=4242" in result.output
+    assert "Health: configured" in result.output
+    assert "provider=configured" in result.output
+    assert "storage=verified" in result.output
+    assert "only supported mode" not in result.output
+
+
+def test_o3a_start_foreground_preserves_blocking_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: list[DaemonConfig] = []
 
     def _fake_foreground_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
-        captured["config"] = effective_config
-        if on_starting is not None:
-            on_starting(effective_config)
-        if on_started is not None:
-            on_started(effective_config)
-
-    def _fake_debug_start(_: DaemonConfig) -> None:
-        raise AssertionError("debug/autoreload path should not be used without --debug")
+        assert on_started is None
+        assert on_starting is None
+        captured.append(effective_config)
 
     monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
-    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda _config: pytest.fail("--foreground must not spawn a child"),
+        raising=False,
+    )
 
-    runner = CliRunner()
-    result = runner.invoke(cli_main.cli, ["start"])
+    result = CliRunner().invoke(cli_main.cli, ["start", "--foreground"])
+
     assert result.exit_code == 0, result.output
-    assert captured["config"].log_level == config.log_level
-    assert "only supported mode" in result.output
+    assert captured == [config]
+
+
+def test_o3a_background_argv_preserves_explicit_config_without_secret_values(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import build_background_argv
+
+    secret = "must-never-enter-child-argv"
+    config_path = tmp_path / "selected config.toml"
+    config = _config(tmp_path).model_copy(
+        update={
+            "config_path": config_path,
+            "discord_bot_token": secret,
+        }
+    )
+
+    argv = build_background_argv(config)
+
+    assert argv[-2:] == ["start", "--foreground"]
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-m", "shisad.cli.main"]
+    assert argv[3:5] == ["--config", str(config_path)]
+    assert secret not in " ".join(argv)
+
+
+def test_o3a_background_start_is_idempotent_when_daemon_is_reachable(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import start_background_daemon
+
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    calls: list[str] = []
+
+    def _rpc(_config, method, _params=None, *, response_model=None):
+        _ = response_model
+        calls.append(method)
+        if method == "daemon.status":
+            return cli_main.DaemonStatusResult.model_validate(
+                {
+                    "status": "running",
+                    "readiness": {"provider": {"status": "configured"}},
+                }
+            )
+        return cli_main.DoctorCheckResult.model_validate(
+            {"status": "configured", "component": "all", "checks": {}}
+        )
+
+    def _unexpected_spawn(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("reachable daemon must not spawn a child")
+
+    result = start_background_daemon(
+        config,
+        rpc_call_fn=_rpc,
+        popen_factory=_unexpected_spawn,
+    )
+
+    assert result.already_running is True
+    assert result.pid is None
+    assert calls == ["daemon.status", "doctor.check"]
+    assert not (config.data_dir / "logs").exists()
+
+
+def test_o3a_background_start_uses_owner_only_log_and_reports_child_failure(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import BackgroundStartError, start_background_daemon
+
+    config = _config(tmp_path)
+
+    class _FailedProcess:
+        pid = 999
+
+        @staticmethod
+        def poll() -> int:
+            return 7
+
+    captured: dict[str, object] = {}
+
+    def _spawn(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return _FailedProcess()
+
+    with pytest.raises(BackgroundStartError, match="exited before readiness") as exc_info:
+        start_background_daemon(
+            config,
+            rpc_call_fn=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
+            popen_factory=_spawn,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=iter((0.0, 0.1)).__next__,
+        )
+
+    log_path = config.data_dir / "logs" / "daemon.log"
+    assert exc_info.value.log_path == log_path
+    assert log_path.stat().st_mode & 0o777 == 0o600
+    assert log_path.parent.stat().st_mode & 0o777 == 0o700
+    assert captured["stdin"] is not None
+    assert captured["stderr"] is not None
+    assert captured["start_new_session"] is True
+
+
+def test_o3a_background_timeout_terminates_only_the_spawned_child(tmp_path: Path) -> None:
+    from shisad.cli.lifecycle import BackgroundStartError, start_background_daemon
+
+    config = _config(tmp_path)
+
+    class _HangingProcess:
+        pid = 1001
+        terminated = False
+        waited: ClassVar[list[float]] = []
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @classmethod
+        def terminate(cls) -> None:
+            cls.terminated = True
+
+        @classmethod
+        def wait(cls, timeout: float) -> int:
+            cls.waited.append(timeout)
+            return -15
+
+    with pytest.raises(BackgroundStartError, match="start timeout"):
+        start_background_daemon(
+            config,
+            timeout_seconds=0.1,
+            rpc_call_fn=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
+            popen_factory=lambda *args, **kwargs: _HangingProcess(),
+            monotonic_fn=iter((0.0, 1.0)).__next__,
+        )
+
+    assert _HangingProcess.terminated is True
+    assert _HangingProcess.waited == [2.0]
+
+
+def test_o3a_health_projection_omits_nested_details_and_secrets(tmp_path: Path) -> None:
+    from shisad.cli.lifecycle import BackgroundStartResult, render_background_start
+
+    secret = "provider-secret-that-must-not-render"
+    result = BackgroundStartResult(
+        already_running=False,
+        pid=4242,
+        log_path=tmp_path / "daemon.log",
+        status=cli_main.DaemonStatusResult.model_validate(
+            {
+                "status": "running",
+                "readiness": {
+                    "provider": {
+                        "status": "blocked",
+                        "reason": secret,
+                        "next_action": secret,
+                    },
+                    secret: {"status": "verified"},
+                },
+            }
+        ),
+        doctor=cli_main.DoctorCheckResult.model_validate(
+            {
+                "status": "degraded",
+                "component": "all",
+                "checks": {"provider": {"problems": [secret]}},
+            }
+        ),
+    )
+
+    rendered = "\n".join(render_background_start(result))
+
+    assert "Health: degraded" in rendered
+    assert "provider=blocked" in rendered
+    assert secret not in rendered
+
+
+def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import chat as chat_ui
+
+    config = _config(tmp_path)
+    launched: list[tuple[Path, Path | None]] = []
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda _config: SimpleNamespace(
+            already_running=False,
+            pid=4242,
+            log_path=tmp_path / "daemon.log",
+            status=cli_main.DaemonStatusResult.model_validate(
+                {"status": "running", "readiness": {}}
+            ),
+            doctor=cli_main.DoctorCheckResult.model_validate(
+                {"status": "verified", "component": "all", "checks": {}}
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        chat_ui.ChatApp,
+        "run",
+        lambda app: launched.append((app._socket_path, app._transcript_root)),
+    )
+
+    @click.command()
+    def _harness() -> None:
+        cli_main._run_post_setup_action("chat")
+
+    result = CliRunner().invoke(_harness)
+
+    assert result.exit_code == 0, result.output
+    assert "Daemon: started pid=4242" in result.output
+    assert launched == [(config.socket_path, config.data_dir / "sessions")]
 
 
 def test_restart_default_shuts_down_then_starts_foreground(

@@ -444,6 +444,13 @@ Start the daemon:
 uv run shisad start --foreground
 ```
 
+`--foreground` is the right posture for containers and service supervisors.
+For an interactive POSIX install, `uv run shisad start` launches a detached
+child, waits boundedly for the control API, and reports a redacted health
+summary plus its owner-only log at `<data-dir>/logs/daemon.log`. A repeated
+start is idempotent while that socket is reachable. Native Windows daemon
+transport/background support is not claimed by this path.
+
 In another shell:
 
 ```bash
@@ -526,7 +533,9 @@ write creates `policy.yaml` before a sibling commented `config.toml`; each is
 exclusive, no-overwrite, and `0600`, and only logical `*_ref` values enter the
 config. The pair is not transactional. If config publication fails after the
 policy file completes, the policy is inert and the error identifies it for
-inspection/removal. The command never starts or restarts the daemon.
+inspection/removal. `setup apply` never starts or restarts the daemon. After a
+successful interactive `setup wizard` publication, a separate default-exit
+menu can explicitly start the daemon and open chat or the dashboard.
 
 Matrix homeserver values must be absolute HTTP(S) URLs without embedded
 userinfo, a query, or a fragment. Slack bot-token and app-token references must

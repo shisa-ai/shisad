@@ -26,6 +26,11 @@ from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
 from shisad.cli.credentials import credential
+from shisad.cli.lifecycle import (
+    BackgroundStartError,
+    render_background_start,
+    start_background_daemon,
+)
 from shisad.cli.onboarding import (
     EnvironmentDetectionError,
     inspect_onboarding_environment,
@@ -608,6 +613,7 @@ class TaskGroupedGroup(click.Group):
                 "start",
                 "status",
                 "chat",
+                "tour",
                 "tui",
                 "web-ui",
                 "doctor",
@@ -716,7 +722,7 @@ def _projection_lines(projection: Mapping[str, object]) -> list[str]:
     invoke_without_command=True,
     epilog=(
         "Fresh setup: shisad init\n"
-        "Daemon stopped: shisad start --foreground\n"
+        "Daemon stopped: shisad start\n"
         "Configured system: shisad status && shisad chat"
     ),
 )
@@ -735,6 +741,7 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["no_color"] = no_color
     ctx.obj["config_path"] = config_path
+    ctx.obj["post_setup_action_runner"] = _run_post_setup_action
     if ctx.invoked_subcommand is not None:
         return
 
@@ -1064,6 +1071,59 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
     app.run()
 
 
+@cli.command("tour")
+def tour() -> None:
+    """Preview the deterministic guided tour."""
+
+    click.echo(
+        "\n".join(
+            [
+                "shisad guided tour",
+                "1. Check runtime health with: shisad status && shisad doctor",
+                "2. Chat normally with: shisad chat",
+                "3. Tool actions follow policy: allow, confirmation, denial, or lockdown.",
+                "4. Review pending actions and runtime state with: shisad tui --interactive",
+                "5. Re-run this guide any time with: shisad tour",
+            ]
+        )
+    )
+
+
+def _run_post_setup_action(action: str) -> None:
+    """Run one finite post-publication action from the root Click context."""
+
+    normalized = action.strip().lower()
+    root = click.get_current_context().find_root()
+    if normalized == "tour":
+        command = cli.get_command(root, "tour")
+        if command is not None:
+            root.invoke(command)
+        return
+    if normalized not in {"chat", "dashboard"}:
+        return
+
+    config = _get_config()
+    try:
+        started = start_background_daemon(config)
+    except BackgroundStartError as exc:
+        raise daemon_cli_error(
+            what_failed="Could not start the shisad daemon for the selected next step.",
+            exc=exc,
+            next_action=(f"inspect {exc.log_path} or run: shisad start --foreground"),
+        ) from exc
+    for line in render_background_start(started):
+        _echo(line)
+
+    command_name = "chat" if normalized == "chat" else "tui"
+    command = cli.get_command(root, command_name)
+    if command is None:
+        raise click.ClickException(f"selected next step is unavailable: {normalized}")
+    if normalized == "chat":
+        root.invoke(command)
+    else:
+        root.invoke(command, interactive=True, plain=False)
+
+
 @cli.command("web-ui")
 @click.option(
     "--output",
@@ -1372,7 +1432,20 @@ def _start_daemon(
 )
 def start(foreground: bool, debug: bool) -> None:
     """Start the shisad daemon."""
-    _start_daemon(config=_get_config(), foreground=foreground, debug=debug)
+    config = _get_config()
+    if foreground or debug:
+        _start_daemon(config=config, foreground=foreground, debug=debug)
+        return
+    try:
+        result = start_background_daemon(config)
+    except BackgroundStartError as exc:
+        raise daemon_cli_error(
+            what_failed="Could not start the shisad daemon in the background.",
+            exc=exc,
+            next_action=f"inspect {exc.log_path} or run: shisad start --foreground",
+        ) from exc
+    for line in render_background_start(result):
+        _echo(line)
 
 
 @cli.command()

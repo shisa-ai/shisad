@@ -441,7 +441,12 @@ TOTP entry remain deferred to `v0.8.0`.
   those owners through an interactive default-no wizard or a deterministic
   dry-run-by-default selection-file command, then explicitly publishes an
   owner-only policy and commented reference-only config without starting the
-  daemon.
+  daemon. The first-start sibling now makes bare `shisad start` a bounded POSIX
+  background launch with an owner-only log, typed status/doctor projection,
+  exact-child cleanup on startup timeout, and idempotent already-running
+  behavior. Foreground/debug paths remain explicit. A successful interactive
+  wizard publication offers a finite default-exit next-step menu; automation
+  and managed setup still never prompt or launch a child.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -453,9 +458,11 @@ TOTP entry remain deferred to `v0.8.0`.
   fragments, runs at most one bounded connector start, and sends a test notice
   only with explicit effect and target authority. Combined setup can now
   publish selected reference-only config and policy artifacts after explicit
-  write authority; managed/non-interactive apply never prompts. The tutorial
-  bot, automatic lifecycle/chat routing, and schema migration flow remain later
-  work; `init` is still only a minimal template publisher
+  write authority; managed/non-interactive apply never prompts. Bounded
+  background first-start and the interactive post-publication next-step menu
+  are now present; the deterministic full tour, persistent chat state, and
+  channel progress/thread units remain in progress. `init` is still only a
+  minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls

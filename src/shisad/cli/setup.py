@@ -966,6 +966,34 @@ def _emit_wizard_skipped(*, output_format: str) -> None:
     click.echo(f"Next: {result.next_actions[0]}")
 
 
+def _run_post_setup_menu(ctx: click.Context) -> None:
+    """Offer one default-exit action after successful interactive publication."""
+
+    try:
+        action = (
+            click.prompt(
+                "What next?",
+                type=click.Choice(["chat", "tour", "dashboard", "exit"], case_sensitive=False),
+                default="exit",
+                show_default=True,
+            )
+            .strip()
+            .lower()
+        )
+    except (click.Abort, EOFError):
+        action = "exit"
+    if action == "exit":
+        click.echo("Next: shisad chat, shisad tour, or shisad tui when ready.")
+        return
+    root_obj = ctx.find_root().obj
+    runner = root_obj.get("post_setup_action_runner") if isinstance(root_obj, dict) else None
+    if callable(runner):
+        runner(action)
+        return
+    command = "shisad tui --interactive" if action == "dashboard" else f"shisad {action}"
+    click.echo(f"Next: {command}")
+
+
 @click.group("setup")
 def setup() -> None:
     """Prepare, verify, and explicitly publish setup choices."""
@@ -1145,6 +1173,8 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
         raise SetupCliError(str(exc), output_format=output_format) from exc
 
     _emit_combined_result(result, output_format=output_format)
+    if result.persisted and output_format == "human":
+        _run_post_setup_menu(ctx)
 
 
 @setup.command("provider")

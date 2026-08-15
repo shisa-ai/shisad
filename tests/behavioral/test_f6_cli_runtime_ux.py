@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,65 @@ def test_o2d_noninteractive_setup_journey_publishes_valid_reference_only_artifac
     assert json.loads(validated.output)["valid"] is True
     assert loaded_policy.version == "1"
     assert loaded_policy.default_deny is False
+
+
+def test_o3a_background_first_start_reports_bounded_health_and_stops_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    socket_path = tmp_path / "control.sock"
+    config_path = tmp_path / "config.toml"
+    secret = "o3a-background-secret-must-not-print"
+    config_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                "[daemon]",
+                f'data_dir = "{data_dir}"',
+                f'socket_path = "{socket_path}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(socket_path))
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", secret)
+    runner = CliRunner()
+
+    try:
+        started = runner.invoke(cli, ["--config", str(config_path), "start"])
+        assert started.exit_code == 0, started.output
+        assert "Daemon: started pid=" in started.output
+        assert "Health:" in started.output
+        assert "Readiness:" in started.output
+        assert str(data_dir / "logs" / "daemon.log") in started.output
+        assert secret not in started.output
+
+        status = runner.invoke(cli, ["--config", str(config_path), "status"])
+        assert status.exit_code == 0, status.output
+        assert "Status: running" in status.output
+
+        second = runner.invoke(cli, ["--config", str(config_path), "start"])
+        assert second.exit_code == 0, second.output
+        assert "Daemon: already running" in second.output
+        assert "Daemon: started pid=" not in second.output
+
+        stopped = runner.invoke(cli, ["--config", str(config_path), "stop"])
+        assert stopped.exit_code == 0, stopped.output
+        deadline = time.monotonic() + 5.0
+        while socket_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not socket_path.exists()
+        log_path = data_dir / "logs" / "daemon.log"
+        assert log_path.stat().st_mode & 0o777 == 0o600
+        assert log_path.parent.stat().st_mode & 0o777 == 0o700
+        assert secret not in log_path.read_text(encoding="utf-8")
+    finally:
+        if socket_path.exists():
+            runner.invoke(cli, ["--config", str(config_path), "stop"])
 
 
 def test_o1_bare_cli_welcome_routes_without_mutation(

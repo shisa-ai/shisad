@@ -10,6 +10,7 @@ import yaml
 from click.testing import CliRunner
 
 from shisad.channels.setup import ChannelSetupOutcome
+from shisad.cli import main as cli_main
 from shisad.cli import setup as cli_setup
 from shisad.cli.main import cli
 from shisad.core.providers.capabilities import AuthMode, ProviderPreset
@@ -994,6 +995,93 @@ def test_o2d_interactive_decline_after_multiselect_summary_writes_nothing(
     assert not config_path.exists()
     assert not (tmp_path / "policy.yaml").exists()
     assert "\x1b[" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("menu_input", "expected_actions"),
+    [
+        ("y\n\n", []),
+        ("y\nchat\n", ["chat"]),
+    ],
+)
+def test_o3a_post_setup_menu_defaults_to_exit_and_runs_only_explicit_choice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    menu_input: str,
+    expected_actions: list[str],
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    selection = cli_setup.CombinedSetupSelection.model_validate(_o2d_selection_payload())
+    monkeypatch.setattr(
+        cli_setup,
+        "_prompt_combined_setup_selection",
+        lambda **_kwargs: (selection, True),
+    )
+    probe = cli_setup.ReadinessStatus(
+        state=cli_setup.ReadinessState.CONFIGURED,
+        configured=True,
+        evidence="not_run",
+        reason="probe_skipped",
+        next_action="rerun without skipping probes",
+        source="explicit_setup_skip",
+    )
+    provider = cli_setup.ProviderSetupResult(
+        outcome=cli_setup.ProviderSetupOutcome.SKIPPED,
+        preset=selection.provider.preset,
+        model_id=selection.provider.model_id,
+        base_url="http://127.0.0.1:8000/v1",
+        probe=probe,
+        config_fragment={},
+        retry_allowed=True,
+        exit_code=0,
+    )
+    ready = cli_setup.CombinedSetupResult(
+        outcome=cli_setup.CombinedSetupOutcome.READY,
+        provider=provider,
+        policy_profile=selection.policy.profile,
+        policy_requirements={"confirmation": "auto"},
+        channels=[],
+        config_path=str(tmp_path / "config.toml"),
+        policy_path=str(tmp_path / "policy.yaml"),
+        persisted=False,
+        next_actions=["publish"],
+        exit_code=0,
+    )
+
+    async def _evaluate(*args, **kwargs):
+        _ = args, kwargs
+        return ready, cli_setup.generate_policy_profile(selection.policy.profile)
+
+    monkeypatch.setattr(cli_setup, "evaluate_combined_setup", _evaluate)
+    monkeypatch.setattr(
+        cli_setup,
+        "publish_combined_setup",
+        lambda result, _policy, **_kwargs: result.model_copy(
+            update={
+                "outcome": cli_setup.CombinedSetupOutcome.COMPLETED,
+                "persisted": True,
+                "next_actions": ["choose a next step"],
+            }
+        ),
+    )
+    actions: list[str] = []
+    monkeypatch.setattr(
+        cli_main,
+        "_run_post_setup_action",
+        lambda action: actions.append(action),
+        raising=False,
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(tmp_path / "config.toml"), "setup", "wizard"],
+        input=menu_input,
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "What next?" in result.output
+    assert actions == expected_actions
 
 
 def test_o2d_interactive_multiselect_collects_each_channel_reference_and_identity(
