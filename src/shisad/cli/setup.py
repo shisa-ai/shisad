@@ -1035,6 +1035,9 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
                 timeout_seconds=timeout_seconds,
             )
         )
+        if result.exit_code:
+            _emit_combined_result(result, output_format=output_format)
+            ctx.exit(result.exit_code)
         result = result.model_copy(
             update={
                 "next_actions": [
@@ -1043,8 +1046,6 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
             }
         )
         _emit_combined_result(result, output_format=output_format, err=json_output)
-        if result.exit_code:
-            ctx.exit(result.exit_code)
         if not click.confirm(
             "Publish the displayed config and policy?",
             default=False,

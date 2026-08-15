@@ -1061,6 +1061,74 @@ def test_o2d_wizard_final_confirmation_cancellation_keeps_json_stdout_parseable(
     assert not (tmp_path / "policy.yaml").exists()
 
 
+def test_o2d_wizard_blocked_result_preserves_actionable_stdout_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    selection = cli_setup.CombinedSetupSelection.model_validate(_o2d_selection_payload())
+    monkeypatch.setattr(
+        cli_setup,
+        "_prompt_combined_setup_selection",
+        lambda **_kwargs: (selection, True),
+    )
+
+    async def _blocked(*args, config_path: Path, **kwargs):
+        _ = args, kwargs
+        probe = cli_setup.ReadinessStatus(
+            state=cli_setup.ReadinessState.BLOCKED,
+            configured=False,
+            reason="provider_unavailable",
+            next_action="repair the selected provider reference",
+            source="provider_setup_probe",
+        )
+        provider = cli_setup.ProviderSetupResult(
+            outcome=cli_setup.ProviderSetupOutcome.BLOCKED,
+            preset="vllm_local_default",
+            model_id="local/setup-model",
+            base_url="http://127.0.0.1:8000/v1",
+            probe=probe,
+            config_fragment={},
+            retry_allowed=True,
+            exit_code=3,
+        )
+        return (
+            cli_setup.CombinedSetupResult(
+                outcome=cli_setup.CombinedSetupOutcome.BLOCKED,
+                provider=provider,
+                policy_profile=cli_setup.PolicyProfile.RECOMMENDED,
+                policy_requirements={
+                    "confirmation": "auto",
+                    "semantic_classifier": "best_effort",
+                    "yara": "optional",
+                },
+                channels=[],
+                config_path=str(config_path),
+                policy_path=str(config_path.with_name("policy.yaml")),
+                persisted=False,
+                next_actions=["follow the component next actions, then rerun setup"],
+                exit_code=3,
+            ),
+            cli_setup.generate_policy_profile(cli_setup.PolicyProfile.RECOMMENDED),
+        )
+
+    monkeypatch.setattr(cli_setup, "evaluate_combined_setup", _blocked)
+    config_path = tmp_path / "config.toml"
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard", "--format", "json"],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3, result.output
+    payload = json.loads(result.stdout)
+    assert payload["outcome"] == "blocked"
+    assert payload["next_actions"] == ["follow the component next actions, then rerun setup"]
+    assert "confirm publication below" not in result.output
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()
+
+
 def test_o2d_policy_residue_is_reported_when_config_publication_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
