@@ -14,6 +14,7 @@ from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.cli import onboarding
 from shisad.cli.main import cli
 from shisad.core.readiness import ReadinessState, ReadinessStatus
+from shisad.security.policy import PolicyLoader
 
 pytestmark = pytest.mark.first_principles
 
@@ -135,12 +136,15 @@ def test_o2d_noninteractive_setup_journey_publishes_valid_reference_only_artifac
     assert policy_path.stat().st_mode & 0o777 == 0o600
     config_text = config_path.read_text(encoding="utf-8")
     policy_text = policy_path.read_text(encoding="utf-8")
+    loaded_policy = PolicyLoader(policy_path).load()
     all_visible = applied.output + validated.output + shown.output + config_text + policy_text
     assert secret not in all_visible
     assert 'discord_bot_token_ref = "channel.discord"' in config_text
     assert 'planner_model_id = "local/setup-model"' in config_text
     assert 'policy_path = "' in config_text
     assert json.loads(validated.output)["valid"] is True
+    assert loaded_policy.version == "1"
+    assert loaded_policy.default_deny is False
 
 
 def test_o1_bare_cli_welcome_routes_without_mutation(

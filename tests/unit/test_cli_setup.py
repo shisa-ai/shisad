@@ -893,7 +893,12 @@ def test_o2d_interactive_decline_after_multiselect_summary_writes_nothing(
 
     assert result.exit_code == 0, result.output
     assert "Provider: skipped" in result.output
+    assert "Provider readiness: probe_skipped" in result.output
+    assert "Provider retry allowed: yes" in result.output
     assert "Policy: recommended" in result.output
+    assert "Policy confirmation: auto" in result.output
+    assert "Policy semantic classifier: best_effort" in result.output
+    assert "Policy YARA: optional" in result.output
     assert "Channels: none" in result.output
     assert "Setup publication: skipped" in result.output
     assert not config_path.exists()
@@ -995,7 +1000,65 @@ def test_o2d_interactive_multiselect_collects_each_channel_reference_and_identit
     assert selected.channels[0].trusted_users == ["discord-user"]
     assert selected.channels[1].bot_token_ref == "channel.telegram"
     assert selected.channels[1].trusted_users == ["telegram-user-1", "telegram-user-2"]
+    assert "- discord: skipped" in result.output
+    assert "Readiness: probe_skipped" in result.output
+    assert "Retry allowed: yes" in result.output
+    assert "Ingress identity ready: yes" in result.output
+    assert "Identity next: none" in result.output
     assert not config_path.exists()
+
+
+def test_o2d_wizard_cancellation_before_selection_is_typed_json_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+
+    def _cancel_selection(*args, **kwargs):
+        _ = args, kwargs
+        raise cli_setup.click.Abort()
+
+    monkeypatch.setattr(cli_setup, "_prompt_combined_setup_selection", _cancel_selection)
+    config_path = tmp_path / "config.toml"
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard", "--format", "json"],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "next_actions": ["rerun setup wizard when ready to continue"],
+        "outcome": "skipped",
+        "persisted": False,
+    }
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()
+
+
+def test_o2d_wizard_final_confirmation_cancellation_keeps_json_stdout_parseable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_setup, "_interactive_terminal", lambda: True)
+    config_path = tmp_path / "config.toml"
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "setup", "wizard", "--format", "json"],
+        input="vllm_local_default\nlocal/setup-model\nn\nrecommended\n\n",
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["outcome"] == "skipped"
+    assert payload["persisted"] is False
+    assert payload["policy_requirements"]["confirmation"] == "auto"
+    assert "confirm publication below" in result.stderr
+    assert "rerun with --write" not in result.stderr
+    assert not config_path.exists()
+    assert not (tmp_path / "policy.yaml").exists()
 
 
 def test_o2d_policy_residue_is_reported_when_config_publication_fails(
@@ -1037,7 +1100,7 @@ def test_o2d_policy_residue_is_reported_when_config_publication_fails(
     assert not config_path.exists()
 
 
-@pytest.mark.parametrize("occupied", ["config", "policy", "policy_symlink"])
+@pytest.mark.parametrize("occupied", ["config", "policy", "config_symlink", "policy_symlink"])
 def test_o2d_publication_preflight_rejects_existing_or_symlink_artifacts_before_write(
     tmp_path: Path,
     occupied: str,
@@ -1051,9 +1114,10 @@ def test_o2d_publication_preflight_rejects_existing_or_symlink_artifacts_before_
     elif occupied == "policy":
         policy_path.write_text("do not replace\n", encoding="utf-8")
     else:
-        target = tmp_path / "policy-target.yaml"
+        destination = config_path if occupied == "config_symlink" else policy_path
+        target = tmp_path / f"{occupied}-target.yaml"
         target.write_text("do not replace\n", encoding="utf-8")
-        policy_path.symlink_to(target)
+        destination.symlink_to(target)
 
     result = CliRunner().invoke(
         cli,
@@ -1078,9 +1142,66 @@ def test_o2d_publication_preflight_rejects_existing_or_symlink_artifacts_before_
     if occupied == "config":
         assert config_path.read_text(encoding="utf-8") == "schema_version = 1\n"
         assert not policy_path.exists()
+    elif occupied == "config_symlink":
+        assert config_path.is_symlink()
+        assert target.read_text(encoding="utf-8") == "do not replace\n"
+        assert not policy_path.exists()
     else:
         assert not config_path.exists()
         assert policy_path.exists() or policy_path.is_symlink()
+
+
+def test_o2d_publication_rejects_identical_artifact_paths_before_write(tmp_path: Path) -> None:
+    selection_path = tmp_path / "selection.yaml"
+    selection_path.write_text(yaml.safe_dump(_o2d_selection_payload()), encoding="utf-8")
+    shared_path = tmp_path / "policy.yaml"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(shared_path),
+            "setup",
+            "apply",
+            "--selection",
+            str(selection_path),
+            "--skip-probes",
+            "--write",
+            "--format",
+            "json",
+        ],
+        env={"SHISAD_DATA_DIR": str(tmp_path / "data")},
+    )
+
+    assert result.exit_code == 3
+    assert "must be different" in json.loads(result.output)["likely_cause"]
+    assert not shared_path.exists()
+
+
+async def test_o2d_known_config_representation_failure_precedes_policy_write(
+    tmp_path: Path,
+) -> None:
+    selection = cli_setup.CombinedSetupSelection.model_validate(_o2d_selection_payload())
+    result, policy = await cli_setup.evaluate_combined_setup(
+        selection,
+        credential_store=_CredentialStore(),
+        daemon_config=cli_setup.DaemonConfig(data_dir=tmp_path / "data"),
+        model_config=cli_setup.ModelConfig(),
+        config_path=tmp_path / "config.toml",
+        skip_probes=True,
+    )
+    provider = result.provider.model_copy(
+        update={"config_fragment": {"not_a_live_model_field": True}}
+    )
+
+    with pytest.raises(cli_setup.ConfigFileError, match="unknown model field"):
+        cli_setup.publish_combined_setup(
+            result.model_copy(update={"provider": provider}),
+            policy,
+            output_format="json",
+        )
+
+    assert not (tmp_path / "policy.yaml").exists()
 
 
 def test_o2d_unsuccessful_provider_result_cannot_publish(

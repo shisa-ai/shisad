@@ -33,6 +33,7 @@ from shisad.core.config_file import (
     _validate_owner_only_generated_path,
     initialize_config_file,
     load_effective_config,
+    render_config_template,
     selected_config_path,
 )
 from shisad.core.providers.capabilities import AuthMode, ProviderPreset
@@ -233,6 +234,18 @@ class CombinedSetupResult(BaseModel):
     persisted: bool
     next_actions: list[str]
     exit_code: int
+
+
+class SetupWizardSkippedResult(BaseModel):
+    """Typed result for cancellation before a combined selection exists."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal["skipped"] = "skipped"
+    persisted: Literal[False] = False
+    next_actions: list[str] = Field(
+        default_factory=lambda: ["rerun setup wizard when ready to continue"]
+    )
 
 
 class SetupCliError(StructuredCliError):
@@ -553,6 +566,7 @@ async def evaluate_combined_setup(
     exit_code = 3 if 3 in exit_codes else 2 if 2 in exit_codes else 0
     policy_path = config_path.with_name("policy.yaml")
     requirements = {
+        "confirmation": "always" if policy.default_require_confirmation else "auto",
         "semantic_classifier": policy.content_firewall.semantic_classifier.posture,
         "yara": "required" if policy.yara_required else "optional",
     }
@@ -587,8 +601,19 @@ def publish_combined_setup(
         raise ValueError("blocked setup results cannot be published")
     config_path = Path(result.config_path)
     policy_path = Path(result.policy_path)
+    if config_path == policy_path:
+        raise ConfigFileError("selected config and policy paths must be different")
     _validate_owner_only_generated_path(config_path, environ=os.environ, label="config")
     _validate_owner_only_generated_path(policy_path, environ=os.environ, label="policy")
+
+    daemon_values: dict[str, object] = {"policy_path": policy_path}
+    for channel in result.channels:
+        daemon_values.update(channel.config_fragment)
+    section_overrides = {
+        "daemon": daemon_values,
+        "model": result.provider.config_fragment,
+    }
+    render_config_template(section_overrides=section_overrides)
 
     policy_payload = yaml.safe_dump(
         policy.model_dump(mode="json"),
@@ -601,17 +626,11 @@ def publish_combined_setup(
         label="policy",
     )
 
-    daemon_values: dict[str, object] = {"policy_path": policy_path}
-    for channel in result.channels:
-        daemon_values.update(channel.config_fragment)
     try:
         initialize_config_file(
             config_path,
             environ=os.environ,
-            section_overrides={
-                "daemon": daemon_values,
-                "model": result.provider.config_fragment,
-            },
+            section_overrides=section_overrides,
         )
     except ConfigFileError as exc:
         raise SetupPublicationError(
@@ -645,66 +664,78 @@ def _comma_separated_values(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _prompt_channel_selection(channel: ChannelName, *, allow_test: bool) -> ChannelSetupSelection:
+def _prompt_channel_selection(
+    channel: ChannelName,
+    *,
+    allow_test: bool,
+    err: bool = False,
+) -> ChannelSetupSelection:
     values: dict[str, object] = {"channel": channel}
     if channel is ChannelName.MATRIX:
         values.update(
-            access_token_ref=click.prompt("Matrix access-token reference").strip(),
-            homeserver=click.prompt("Matrix homeserver URL").strip(),
-            user_id=click.prompt("Matrix bot user ID").strip(),
-            room_id=click.prompt("Matrix default room ID", default="", show_default=False).strip(),
+            access_token_ref=click.prompt("Matrix access-token reference", err=err).strip(),
+            homeserver=click.prompt("Matrix homeserver URL", err=err).strip(),
+            user_id=click.prompt("Matrix bot user ID", err=err).strip(),
+            room_id=click.prompt(
+                "Matrix default room ID", default="", show_default=False, err=err
+            ).strip(),
         )
     else:
         label = channel.value.capitalize()
-        values["bot_token_ref"] = click.prompt(f"{label} bot-token reference").strip()
+        values["bot_token_ref"] = click.prompt(f"{label} bot-token reference", err=err).strip()
         if channel is ChannelName.SLACK:
-            values["app_token_ref"] = click.prompt("Slack app-token reference").strip()
+            values["app_token_ref"] = click.prompt("Slack app-token reference", err=err).strip()
         values["default_target"] = click.prompt(
             f"{label} default outbound target",
             default="",
             show_default=False,
+            err=err,
         ).strip()
     values["trusted_users"] = _comma_separated_values(
         click.prompt(
             f"{channel.value.capitalize()} trusted user IDs (comma-separated)",
             default="",
             show_default=False,
+            err=err,
         )
     )
     run_test = allow_test and click.confirm(
         f"Send the fixed {channel.value} setup test notice?",
         default=False,
+        err=err,
     )
     values["run_test"] = run_test
     if run_test:
-        values["test_target"] = click.prompt("Explicit test target").strip()
+        values["test_target"] = click.prompt("Explicit test target", err=err).strip()
     return ChannelSetupSelection.model_validate(values)
 
 
-def _prompt_combined_setup_selection() -> tuple[CombinedSetupSelection, bool]:
+def _prompt_combined_setup_selection(*, err: bool = False) -> tuple[CombinedSetupSelection, bool]:
     presets = [preset.value for preset in ProviderPreset] + ["custom"]
-    preset = click.prompt("Provider preset", type=click.Choice(presets)).strip()
-    model_id = click.prompt("Planner model ID", default="", show_default=False).strip()
+    preset = click.prompt("Provider preset", type=click.Choice(presets), err=err).strip()
+    model_id = click.prompt("Planner model ID", default="", show_default=False, err=err).strip()
     provider_values: dict[str, object] = {"preset": preset, "model_id": model_id}
     if preset == "custom":
-        provider_values["base_url"] = click.prompt("Provider base URL").strip()
+        provider_values["base_url"] = click.prompt("Provider base URL", err=err).strip()
         provider_values["auth_mode"] = click.prompt(
             "Provider authentication",
             type=click.Choice([AuthMode.BEARER.value, AuthMode.NONE.value]),
+            err=err,
         )
     auth_required = preset != ProviderPreset.VLLM_LOCAL_DEFAULT.value and (
         preset != "custom" or provider_values.get("auth_mode") == AuthMode.BEARER.value
     )
     if auth_required:
         provider_values["credential_ref"] = click.prompt(
-            "Logical provider credential reference"
+            "Logical provider credential reference", err=err
         ).strip()
-    run_probes = click.confirm("Run live provider and channel probes now?", default=True)
+    run_probes = click.confirm("Run live provider and channel probes now?", default=True, err=err)
 
     profile = PolicyProfile(
         click.prompt(
             "Policy profile",
             type=click.Choice([item.value for item in PolicyProfile]),
+            err=err,
         )
     )
     custom = None
@@ -713,18 +744,21 @@ def _prompt_combined_setup_selection() -> tuple[CombinedSetupSelection, bool]:
             confirmation=click.prompt(
                 "Confirmation posture",
                 type=click.Choice(["auto", "always"]),
+                err=err,
             ),
             semantic_classifier=click.prompt(
                 "Semantic classifier posture",
                 type=click.Choice(["off", "best_effort", "required"]),
+                err=err,
             ),
-            yara=click.prompt("YARA posture", type=click.Choice(["optional", "required"])),
+            yara=click.prompt("YARA posture", type=click.Choice(["optional", "required"]), err=err),
         )
 
     channel_text = click.prompt(
         "Channels (comma-separated matrix, discord, telegram, slack; blank for none)",
         default="",
         show_default=False,
+        err=err,
     )
     channel_names = _comma_separated_values(channel_text)
     try:
@@ -734,7 +768,8 @@ def _prompt_combined_setup_selection() -> tuple[CombinedSetupSelection, bool]:
     if len(set(selected_channels)) != len(selected_channels):
         raise ValueError("each channel may be selected only once")
     channels = [
-        _prompt_channel_selection(channel, allow_test=run_probes) for channel in selected_channels
+        _prompt_channel_selection(channel, allow_test=run_probes, err=err)
+        for channel in selected_channels
     ]
     return (
         CombinedSetupSelection(
@@ -820,28 +855,67 @@ def _emit_channel_result(result: ChannelSetupResult, *, output_format: str) -> N
     click.echo(yaml.safe_dump(result.config_fragment, sort_keys=True).rstrip())
 
 
-def _emit_combined_result(result: CombinedSetupResult, *, output_format: str) -> None:
+def _emit_combined_result(
+    result: CombinedSetupResult,
+    *,
+    output_format: str,
+    err: bool = False,
+) -> None:
+    if output_format == "json":
+        click.echo(
+            json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True),
+            err=err,
+        )
+        return
+    click.echo(f"Provider: {result.provider.outcome.value}", err=err)
+    click.echo(f"Provider readiness: {result.provider.probe.reason}", err=err)
+    click.echo(f"Provider next: {result.provider.probe.next_action}", err=err)
+    click.echo(
+        f"Provider retry allowed: {'yes' if result.provider.retry_allowed else 'no'}",
+        err=err,
+    )
+    click.echo(f"Policy: {result.policy_profile.value}", err=err)
+    click.echo(
+        f"Policy confirmation: {result.policy_requirements.get('confirmation', 'unspecified')}",
+        err=err,
+    )
+    click.echo(
+        "Policy semantic classifier: "
+        f"{result.policy_requirements.get('semantic_classifier', 'unspecified')}",
+        err=err,
+    )
+    click.echo(
+        f"Policy YARA: {result.policy_requirements.get('yara', 'unspecified')}",
+        err=err,
+    )
+    if result.channels:
+        click.echo("Channels:", err=err)
+        for channel in result.channels:
+            click.echo(
+                f"- {channel.channel.value}: {channel.outcome.value}\n"
+                f"  Readiness: {channel.probe.reason}\n"
+                f"  Next: {channel.probe.next_action}\n"
+                f"  Retry allowed: {'yes' if channel.retry_allowed else 'no'}\n"
+                f"  Ingress identity ready: {'yes' if channel.identity_ready else 'no'}\n"
+                f"  Identity next: {channel.identity_next_action}",
+                err=err,
+            )
+    else:
+        click.echo("Channels: none", err=err)
+    click.echo(f"Config path: {safe_cli_text(result.config_path, limit=512)}", err=err)
+    click.echo(f"Policy path: {safe_cli_text(result.policy_path, limit=512)}", err=err)
+    click.echo(f"Setup publication: {result.outcome.value}", err=err)
+    for action in result.next_actions:
+        click.echo(f"Next: {safe_cli_text(action, limit=512)}", err=err)
+
+
+def _emit_wizard_skipped(*, output_format: str) -> None:
+    result = SetupWizardSkippedResult()
     if output_format == "json":
         click.echo(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
         return
-    click.echo(f"Provider: {result.provider.outcome.value}")
-    click.echo(f"Provider next: {result.provider.probe.next_action}")
-    click.echo(f"Policy: {result.policy_profile.value}")
-    if result.channels:
-        click.echo("Channels:")
-        for channel in result.channels:
-            click.echo(
-                f"- {channel.channel.value}: {channel.outcome.value}; "
-                f"retry={'yes' if channel.retry_allowed else 'no'}; "
-                f"next={channel.probe.next_action}"
-            )
-    else:
-        click.echo("Channels: none")
-    click.echo(f"Config path: {safe_cli_text(result.config_path, limit=512)}")
-    click.echo(f"Policy path: {safe_cli_text(result.policy_path, limit=512)}")
-    click.echo(f"Setup publication: {result.outcome.value}")
-    for action in result.next_actions:
-        click.echo(f"Next: {safe_cli_text(action, limit=512)}")
+    click.echo("Setup publication: skipped")
+    click.echo(f"Next: {result.next_actions[0]}")
 
 
 @click.group("setup")
@@ -928,6 +1002,7 @@ def setup_apply(
 def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> None:
     """Interactively compose setup and require final default-no write consent."""
 
+    result: CombinedSetupResult | None = None
     try:
         managed = parse_managed_posture(os.environ)
         if managed:
@@ -946,7 +1021,8 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
             raise ValueError("setup probe timeout must be a number") from None
         if not 0.1 <= timeout_seconds <= 30.0:
             raise ValueError("setup probe timeout must be between 0.1 and 30 seconds")
-        selection, skip_probes = _prompt_combined_setup_selection()
+        json_output = output_format == "json"
+        selection, skip_probes = _prompt_combined_setup_selection(err=json_output)
         store, daemon_config, model_config, config_path = _combined_setup_context(ctx)
         result, policy = asyncio.run(
             evaluate_combined_setup(
@@ -959,10 +1035,21 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
                 timeout_seconds=timeout_seconds,
             )
         )
-        _emit_combined_result(result, output_format=output_format)
+        result = result.model_copy(
+            update={
+                "next_actions": [
+                    "confirm publication below or decline to keep the filesystem unchanged"
+                ]
+            }
+        )
+        _emit_combined_result(result, output_format=output_format, err=json_output)
         if result.exit_code:
             ctx.exit(result.exit_code)
-        if not click.confirm("Publish the displayed config and policy?", default=False):
+        if not click.confirm(
+            "Publish the displayed config and policy?",
+            default=False,
+            err=json_output,
+        ):
             declined = result.model_copy(
                 update={
                     "outcome": CombinedSetupOutcome.SKIPPED,
@@ -976,6 +1063,19 @@ def setup_wizard(ctx: click.Context, timeout_value: str, output_format: str) -> 
             policy,
             output_format=output_format,
         )
+    except click.Abort:
+        if result is None:
+            _emit_wizard_skipped(output_format=output_format)
+        else:
+            cancelled = result.model_copy(
+                update={
+                    "outcome": CombinedSetupOutcome.SKIPPED,
+                    "persisted": False,
+                    "next_actions": ["rerun setup wizard when ready to publish"],
+                }
+            )
+            _emit_combined_result(cancelled, output_format=output_format)
+        return
     except (SetupPostureError, SetupPublicationError):
         raise
     except (ConfigFileError, EnvironmentDetectionError, ValueError) as exc:

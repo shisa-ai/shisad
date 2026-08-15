@@ -469,6 +469,8 @@ def test_f6_init_publishes_one_owner_only_template_without_overwrite(
 
     assert created == destination
     assert destination.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "config-home").stat().st_mode & 0o777 == 0o700
+    assert destination.parent.stat().st_mode & 0o777 == 0o700
     text = destination.read_text(encoding="utf-8")
     assert text.startswith("schema_version = 1\n")
     assert "never-write-this" not in text

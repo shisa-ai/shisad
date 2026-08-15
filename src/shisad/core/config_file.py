@@ -460,12 +460,7 @@ def _initialize_owner_only_generated_file(
         environ=environ,
         label=label,
     )
-    try:
-        destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    except OSError as exc:
-        raise ConfigFileError(
-            f"cannot prepare selected {label} parent: {exc.__class__.__name__}"
-        ) from exc
+    _prepare_owner_only_generated_parent(destination.parent, label=label)
     if destination.parent.is_symlink():
         raise ConfigFileError(f"selected {label} parent is a symlink")
 
@@ -507,6 +502,44 @@ def _initialize_owner_only_generated_file(
             f"cannot finish selected {label} file: {exc.__class__.__name__}"
         ) from exc
     return destination
+
+
+def _prepare_owner_only_generated_parent(parent: Path, *, label: str) -> None:
+    """Create each missing parent explicitly and tighten only directories we create."""
+
+    missing: list[Path] = []
+    cursor = parent
+    while not cursor.exists():
+        if cursor.is_symlink():
+            raise ConfigFileError(f"selected {label} parent is a symlink")
+        missing.append(cursor)
+        ancestor = cursor.parent
+        if ancestor == cursor:
+            break
+        cursor = ancestor
+
+    if not cursor.is_dir():
+        raise ConfigFileError(f"cannot prepare selected {label} parent: NotADirectoryError")
+
+    for directory in reversed(missing):
+        created = False
+        try:
+            directory.mkdir(mode=0o700)
+            created = True
+        except FileExistsError:
+            if directory.is_symlink() or not directory.is_dir():
+                raise ConfigFileError(f"selected {label} parent is not a safe directory") from None
+        except OSError as exc:
+            raise ConfigFileError(
+                f"cannot prepare selected {label} parent: {exc.__class__.__name__}"
+            ) from exc
+        if created:
+            try:
+                directory.chmod(0o700)
+            except OSError as exc:
+                raise ConfigFileError(
+                    f"cannot prepare selected {label} parent: {exc.__class__.__name__}"
+                ) from exc
 
 
 def _validate_owner_only_generated_path(
