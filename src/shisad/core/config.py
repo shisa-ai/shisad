@@ -1078,6 +1078,8 @@ class DaemonConfig(BaseSettings):
                 raise ValueError(
                     f"{raw_field} cannot use both a raw value and a credential reference"
                 )
+        if self.slack_bot_token_ref and self.slack_bot_token_ref == self.slack_app_token_ref:
+            raise ValueError("Slack bot-token and app-token references must be distinct")
         return self
 
     @model_validator(mode="after")

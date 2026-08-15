@@ -398,6 +398,8 @@ def _emit_channel_result(result: ChannelSetupResult, *, output_format: str) -> N
     click.echo(f"Channel setup: {result.outcome.value}")
     click.echo(f"Channel: {result.channel.value}")
     click.echo(f"Probe: {result.probe.reason}")
+    click.echo(f"Next: {result.probe.next_action}")
+    click.echo(f"Retry allowed: {'yes' if result.retry_allowed else 'no'}")
     click.echo(f"Ingress identity ready: {'yes' if result.identity_ready else 'no'}")
     click.echo(f"Identity next: {result.identity_next_action}")
     if result.test_delivery is not None:
@@ -548,9 +550,8 @@ def setup_policy(
 @click.option(
     "--channel",
     "channel_name",
-    type=click.Choice([channel.value for channel in ChannelName]),
     default="",
-    help="One maintained channel to prepare.",
+    help="One maintained channel to prepare: matrix, discord, telegram, or slack.",
 )
 @click.option("--access-token-ref", default="", help="Logical Matrix access-token ref.")
 @click.option("--bot-token-ref", default="", help="Logical bot-token credential ref.")
@@ -596,9 +597,12 @@ def setup_channel(
             timeout_seconds = float(timeout_value)
         except (TypeError, ValueError):
             raise ValueError("channel probe timeout must be a number") from None
-        store, daemon_config = _channel_setup_context(ctx)
+        try:
+            selected_channel = ChannelName(channel_name.strip().lower())
+        except ValueError:
+            raise ValueError("channel must be one of: matrix, discord, telegram, slack") from None
         selection = ChannelSetupSelection(
-            channel=channel_name,
+            channel=selected_channel,
             access_token_ref=access_token_ref,
             bot_token_ref=bot_token_ref,
             app_token_ref=app_token_ref,
@@ -610,6 +614,7 @@ def setup_channel(
             run_test=send_test,
             test_target=test_target,
         )
+        store, daemon_config = _channel_setup_context(ctx)
         result = asyncio.run(
             evaluate_channel_setup(
                 selection,

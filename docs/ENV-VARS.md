@@ -195,10 +195,10 @@ Identity gating:
 
 Each `*_TOKEN_REF` is a logical O2A credential name resolved only for enabled
 adapter construction. It is mutually exclusive with the matching raw token
-field. Missing references and optional channel dependencies degrade that
-channel without blocking the safe core daemon. A connector or test target is
-never an identity grant; configure an explicit channel `*_TRUSTED_USERS` list
-or generic allowlist for ingress.
+field, and Slack bot/app references must be distinct. Missing references and
+optional channel dependencies degrade that channel without blocking the safe
+core daemon. A connector or test target is never an identity grant; configure
+an explicit channel `*_TRUSTED_USERS` list or generic allowlist for ingress.
 
 Discord public-channel rules:
 

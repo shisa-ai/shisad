@@ -16,6 +16,7 @@ from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent, Del
 from shisad.channels.state import ChannelStateStore
 from shisad.core.config import DaemonConfig, validate_credential_reference_name
 from shisad.core.readiness import ReadinessState, ReadinessStatus
+from shisad.core.url_parsing import safe_url_destination
 from shisad.daemon.services import (
     _build_discord_channel,
     _build_matrix_channel,
@@ -126,6 +127,13 @@ class ChannelSetupSelection(BaseModel):
                 raise ValueError("Matrix setup requires " + ", ".join(missing))
             if self.bot_token_ref or self.app_token_ref or self.default_target:
                 raise ValueError("Matrix setup does not accept bot/app refs or a default target")
+            destination = safe_url_destination(self.homeserver)
+            if destination is None or destination.scheme not in {"http", "https"}:
+                raise ValueError("Matrix homeserver URL is malformed")
+            if destination.has_userinfo or destination.parsed.query or destination.parsed.fragment:
+                raise ValueError(
+                    "Matrix homeserver URL cannot contain credentials, a query, or a fragment"
+                )
         else:
             if self.access_token_ref or matrix_values:
                 raise ValueError(f"{self.channel.value} setup does not accept Matrix options")
@@ -134,6 +142,8 @@ class ChannelSetupSelection(BaseModel):
             if self.channel is ChannelName.SLACK:
                 if not self.app_token_ref:
                     raise ValueError("Slack setup requires an app-token reference")
+                if self.bot_token_ref == self.app_token_ref:
+                    raise ValueError("Slack bot-token and app-token references must be distinct")
             elif self.app_token_ref:
                 raise ValueError(f"{self.channel.value} setup does not accept an app-token ref")
         if self.run_test and not self.test_target:
@@ -205,7 +215,9 @@ def build_channel_setup_config(
             "slack_default_channel_id": selection.default_target,
             "slack_trusted_users": trusted,
         }
-    return DaemonConfig.model_validate(fragment), fragment
+    explicit = DaemonConfig.model_construct().model_dump(mode="python")
+    explicit.update(fragment)
+    return DaemonConfig.model_validate(explicit), fragment
 
 
 def _build_setup_channel(
@@ -218,6 +230,7 @@ def _build_setup_channel(
     credentials, diagnostics = _resolve_channel_credential_references(
         config,
         store=credential_store,
+        channels=(selection.channel.value,),
     )
     if diagnostics:
         raise CredentialReferenceError("credential_value_unavailable")
@@ -290,17 +303,15 @@ def adapter_setup_readiness(
 
 
 def _blocked_result(
-    selection: ChannelSetupSelection,
-    fragment: dict[str, object],
+    context: dict[str, object],
     *,
     reason: str,
     next_action: str,
-    identity_ready: bool,
-    identity_next_action: str,
+    retry_allowed: bool = True,
 ) -> ChannelSetupResult:
     return ChannelSetupResult(
+        **context,
         outcome=ChannelSetupOutcome.BLOCKED,
-        channel=selection.channel,
         probe=ReadinessStatus(
             state=ReadinessState.BLOCKED,
             configured=False,
@@ -308,10 +319,7 @@ def _blocked_result(
             next_action=next_action,
             source="channel_setup_config",
         ),
-        identity_ready=identity_ready,
-        identity_next_action=identity_next_action,
-        config_fragment=fragment,
-        retry_allowed=True,
+        retry_allowed=retry_allowed,
         exit_code=3,
     )
 
@@ -328,11 +336,18 @@ def _delivery_projection(result: DeliveryResult, *, target: str) -> ChannelTestD
     )
 
 
-async def _disconnect_setup_channel(
-    channel: Channel,
-    *,
-    timeout_seconds: float,
-) -> str:
+def _unknown_delivery(reason: str, target: str) -> ChannelTestDelivery:
+    return ChannelTestDelivery(
+        attempted=True,
+        sent=False,
+        state="outcome_unknown",
+        outcome_unknown=True,
+        reason=reason,
+        target=target,
+    )
+
+
+async def _disconnect_setup_channel(channel: Channel, *, timeout_seconds: float) -> str:
     disconnect = getattr(channel, "disconnect_strict", channel.disconnect)
     try:
         await asyncio.wait_for(disconnect(), timeout=timeout_seconds)
@@ -379,6 +394,12 @@ async def evaluate_channel_setup(
         if identity_ready
         else f"add an explicit {selection.channel.value} trusted user before ingress use"
     )
+    result_context: dict[str, object] = {
+        "channel": selection.channel,
+        "identity_ready": identity_ready,
+        "identity_next_action": identity_next_action,
+        "config_fragment": fragment,
+    }
     try:
         channel = _build_setup_channel(
             selection,
@@ -387,14 +408,10 @@ async def evaluate_channel_setup(
         )
     except CredentialReferenceError:
         return _blocked_result(
-            selection,
-            fragment,
+            result_context,
             reason="channel_credential_unavailable",
             next_action="enroll or repair the selected logical credential reference",
-            identity_ready=identity_ready,
-            identity_next_action=identity_next_action,
         )
-
     if skip_probe:
         configured = adapter_setup_readiness(selection.channel, channel)
         probe = configured.model_copy(
@@ -417,16 +434,12 @@ async def evaluate_channel_setup(
             }
         )
         return ChannelSetupResult(
+            **result_context,
             outcome=ChannelSetupOutcome.SKIPPED,
-            channel=selection.channel,
             probe=probe,
-            identity_ready=identity_ready,
-            identity_next_action=identity_next_action,
-            config_fragment=fragment,
             retry_allowed=True,
             exit_code=0,
         )
-
     try:
         startup = await _start_channel(
             name=selection.channel.value,
@@ -435,12 +448,10 @@ async def evaluate_channel_setup(
         )
     except RuntimeError:
         return _blocked_result(
-            selection,
-            fragment,
+            result_context,
             reason="channel_probe_cleanup_failed",
             next_action="stop and inspect connector cleanup before retrying setup",
-            identity_ready=identity_ready,
-            identity_next_action=identity_next_action,
+            retry_allowed=False,
         )
     if not startup.active:
         configured = adapter_setup_readiness(selection.channel, channel)
@@ -456,16 +467,12 @@ async def evaluate_channel_setup(
                 source="channel_setup_probe",
             )
         return ChannelSetupResult(
+            **result_context,
             outcome=ChannelSetupOutcome.DEGRADED,
-            channel=selection.channel,
             probe=probe,
-            identity_ready=identity_ready,
-            identity_next_action=identity_next_action,
-            config_fragment=fragment,
             retry_allowed=True,
             exit_code=2,
         )
-
     test_delivery: ChannelTestDelivery | None = None
     try:
         async with _cleanup_started_channel(channel, timeout_seconds=timeout_seconds):
@@ -480,7 +487,7 @@ async def evaluate_channel_setup(
             else:
                 delivery = ChannelDeliveryService(
                     {selection.channel.value: channel},
-                    state_root=state_root / "delivery",
+                    state_root=state_root / "setup-delivery",
                 )
                 try:
                     intent = DeliveryIntent(
@@ -505,13 +512,12 @@ async def evaluate_channel_setup(
                             target=selection.test_target,
                         )
                     except TimeoutError:
-                        test_delivery = ChannelTestDelivery(
-                            attempted=True,
-                            sent=False,
-                            state="outcome_unknown",
-                            outcome_unknown=True,
-                            reason="channel_test_timeout",
-                            target=selection.test_target,
+                        test_delivery = _unknown_delivery(
+                            "channel_test_timeout", selection.test_target
+                        )
+                    except asyncio.CancelledError:
+                        test_delivery = _unknown_delivery(
+                            "channel_test_cancelled", selection.test_target
                         )
                 finally:
                     delivery.close()
@@ -560,23 +566,19 @@ async def evaluate_channel_setup(
                 and not identity_ready
             ):
                 outcome = ChannelSetupOutcome.DEGRADED
-                retry_allowed = True
                 exit_code = 2
             return ChannelSetupResult(
+                **result_context,
                 outcome=outcome,
-                channel=selection.channel,
                 probe=probe,
-                identity_ready=identity_ready,
-                identity_next_action=identity_next_action,
-                config_fragment=fragment,
                 test_delivery=test_delivery,
                 retry_allowed=retry_allowed,
                 exit_code=exit_code,
             )
     except _SetupCleanupError as exc:
         return ChannelSetupResult(
+            **result_context,
             outcome=ChannelSetupOutcome.BLOCKED,
-            channel=selection.channel,
             probe=ReadinessStatus(
                 state=ReadinessState.BLOCKED,
                 configured=True,
@@ -585,9 +587,6 @@ async def evaluate_channel_setup(
                 next_action="stop and inspect connector cleanup before retrying setup",
                 source="channel_setup_probe",
             ),
-            identity_ready=identity_ready,
-            identity_next_action=identity_next_action,
-            config_fragment=fragment,
             test_delivery=test_delivery,
             retry_allowed=False,
             exit_code=3,

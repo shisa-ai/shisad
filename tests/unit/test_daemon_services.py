@@ -201,6 +201,55 @@ def test_o2c_unavailable_enabled_reference_is_redacted_channel_diagnostic() -> N
     assert "channel.discord" not in str(diagnostics)
 
 
+@pytest.mark.asyncio
+async def test_o2c_runtime_resolves_each_channel_immediately_before_its_builder(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    events: list[str] = []
+
+    class _Store:
+        def __init__(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        def resolve(self, name: str) -> str:
+            events.append(f"resolve:{name}")
+            return f"resolved:{name}"
+
+    def _discord_builder(*args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+        events.append("build:discord")
+
+    def _telegram_builder(*args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+        events.append("build:telegram")
+
+    monkeypatch.setattr(services_module, "CredentialReferenceStore", _Store)
+    monkeypatch.setattr(services_module, "_build_discord_channel", _discord_builder)
+    monkeypatch.setattr(services_module, "_build_telegram_channel", _telegram_builder)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        discord_enabled=True,
+        discord_bot_token_ref="channel.discord",
+        telegram_enabled=True,
+        telegram_bot_token_ref="channel.telegram",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        assert events == [
+            "resolve:channel.discord",
+            "build:discord",
+            "resolve:channel.telegram",
+            "build:telegram",
+        ]
+    finally:
+        await services.shutdown()
+
+
 def _write_browser_wrapper(path) -> None:
     path.write_text(
         "\n".join(
@@ -1945,6 +1994,11 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
+        matrix_enabled=True,
+        matrix_homeserver="https://matrix.example",
+        matrix_user_id="@bot:example",
+        matrix_access_token="placeholder-token",
+        matrix_room_id="!room:example",
     )
     with pytest.raises(RuntimeError, match="credential store exploded"):
         await DaemonServices.build(config)
@@ -1989,6 +2043,11 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_unexpected_f
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
+        matrix_enabled=True,
+        matrix_homeserver="https://matrix.example",
+        matrix_user_id="@bot:example",
+        matrix_access_token="placeholder-token",
+        matrix_room_id="!room:example",
     )
     with pytest.raises(KeyError, match="credential store exploded"):
         await DaemonServices.build(config)
@@ -2030,6 +2089,11 @@ async def test_daemon_services_build_rolls_back_when_container_construction_fail
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
+        matrix_enabled=True,
+        matrix_homeserver="https://matrix.example",
+        matrix_user_id="@bot:example",
+        matrix_access_token="placeholder-token",
+        matrix_room_id="!room:example",
     )
     with pytest.raises(RuntimeError, match="services construction exploded"):
         await _ExplodingServices.build(config)

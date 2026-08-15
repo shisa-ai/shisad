@@ -59,6 +59,14 @@ def test_o2c_channel_token_reference_uses_generic_logical_name_grammar(field: st
         DaemonConfig.model_validate({field: "../channel-secret"})
 
 
+def test_o2c_slack_bot_and_app_references_must_be_distinct() -> None:
+    with pytest.raises(ValueError, match="distinct"):
+        DaemonConfig(
+            slack_bot_token_ref="channel.slack.same",
+            slack_app_token_ref="channel.slack.same",
+        )
+
+
 def test_u41_config_precedence_sources_and_secret_redaction(tmp_path: Path) -> None:
     configured_data_dir = tmp_path / "from-toml"
     config_path = _write_config(

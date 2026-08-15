@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -218,6 +219,24 @@ def test_o2c_four_channel_selections_emit_exact_secret_free_fragments(
             },
             "credential reference name",
         ),
+        (
+            {
+                "channel": "slack",
+                "bot_token_ref": "channel.slack.same",
+                "app_token_ref": "channel.slack.same",
+            },
+            "distinct",
+        ),
+        (
+            {
+                "channel": "matrix",
+                "homeserver": "https://user:secret@matrix.example",
+                "user_id": "@bot:example",
+                "room_id": "!room:example",
+                "access_token_ref": "channel.matrix",
+            },
+            "cannot contain credentials",
+        ),
     ],
 )
 def test_o2c_selection_rejects_missing_cross_channel_or_implicit_effect_input(
@@ -226,6 +245,29 @@ def test_o2c_selection_rejects_missing_cross_channel_or_implicit_effect_input(
 ) -> None:
     with pytest.raises(ValueError, match=match):
         channel_setup.ChannelSetupSelection(**kwargs)
+
+
+def test_o2c_fragment_validation_ignores_ambient_channel_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_DISCORD_BOT_TOKEN", "ambient-raw-secret")
+    monkeypatch.setenv("SHISAD_TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_TELEGRAM_BOT_TOKEN_REF", "channel.telegram.ambient")
+    store = _CredentialStore()
+
+    config, fragment = channel_setup.build_channel_setup_config(_selection("discord"))
+    channel_setup._build_setup_channel(
+        _selection("discord"),
+        credential_store=store,
+        state_root=tmp_path,
+    )
+
+    assert config.discord_bot_token == ""
+    assert config.discord_bot_token_ref == "channel.discord"
+    assert config.telegram_enabled is False
+    assert fragment["discord_bot_token_ref"] == "channel.discord"
+    assert store.resolved == ["channel.discord"]
 
 
 @pytest.mark.parametrize(
@@ -319,6 +361,26 @@ async def test_o2c_empty_allowlist_remains_default_deny_and_non_green(
 
 
 @pytest.mark.asyncio
+async def test_o2c_delivered_test_with_empty_allowlist_is_not_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _SetupChannel("discord")
+    monkeypatch.setattr(channel_setup, "_build_setup_channel", lambda *args, **kwargs: fake)
+
+    result = await channel_setup.evaluate_channel_setup(
+        _selection("discord", trusted=False, run_test=True),
+        credential_store=_CredentialStore(),
+        state_root=tmp_path,
+    )
+
+    assert result.outcome is channel_setup.ChannelSetupOutcome.DEGRADED
+    assert result.test_delivery is not None
+    assert result.test_delivery.sent is True
+    assert result.retry_allowed is False
+
+
+@pytest.mark.asyncio
 async def test_o2c_explicit_test_delivery_uses_one_normal_attempt_and_fixed_notice(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -342,6 +404,8 @@ async def test_o2c_explicit_test_delivery_uses_one_normal_attempt_and_fixed_noti
     assert fake.sent_payloads[0][1] is not None
     assert fake.sent_payloads[0][1].recipient == "explicit-target"
     assert fake.disconnect_calls == 1
+    assert not (tmp_path / "delivery").exists()
+    assert (tmp_path / "setup-delivery").is_dir()
 
 
 @pytest.mark.asyncio
@@ -429,6 +493,83 @@ async def test_o2c_cleanup_failure_is_blocked_and_not_safe_to_retry(
 
 
 @pytest.mark.asyncio
+async def test_o2c_startup_cleanup_failure_is_blocked_and_not_safe_to_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _startup_cleanup_failed(**kwargs):
+        _ = kwargs
+        raise RuntimeError("provider startup cleanup detail must not escape")
+
+    monkeypatch.setattr(channel_setup, "_start_channel", _startup_cleanup_failed)
+
+    result = await channel_setup.evaluate_channel_setup(
+        _selection("telegram"),
+        credential_store=_CredentialStore(),
+        state_root=tmp_path,
+    )
+
+    assert result.outcome is channel_setup.ChannelSetupOutcome.BLOCKED
+    assert result.probe.reason == "channel_probe_cleanup_failed"
+    assert result.retry_allowed is False
+    assert "provider startup cleanup detail" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_o2c_delivery_timeout_is_unknown_and_requires_target_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TimeoutChannel(_SetupChannel):
+        async def send(self, message: str, **kwargs):
+            self.send_calls += 1
+            await asyncio.Event().wait()
+
+    fake = _TimeoutChannel("matrix")
+    monkeypatch.setattr(channel_setup, "_build_setup_channel", lambda *args, **kwargs: fake)
+
+    result = await channel_setup.evaluate_channel_setup(
+        _selection("matrix", run_test=True),
+        credential_store=_CredentialStore(),
+        state_root=tmp_path,
+        timeout_seconds=0.1,
+    )
+
+    assert result.test_delivery is not None
+    assert result.test_delivery.reason == "channel_test_timeout"
+    assert result.test_delivery.outcome_unknown is True
+    assert result.retry_allowed is False
+    assert "inspect" in result.probe.next_action
+    assert fake.send_calls == 1
+    assert fake.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_o2c_non_dependency_startup_failure_is_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _startup_failed(**kwargs):
+        _ = kwargs
+        return SimpleNamespace(
+            active=False,
+            diagnostic={"reason_code": "channel.startup_error"},
+        )
+
+    monkeypatch.setattr(channel_setup, "_start_channel", _startup_failed)
+
+    result = await channel_setup.evaluate_channel_setup(
+        _selection("telegram"),
+        credential_store=_CredentialStore(),
+        state_root=tmp_path,
+    )
+
+    assert result.outcome is channel_setup.ChannelSetupOutcome.DEGRADED
+    assert result.probe.reason == "channel_startup_error"
+    assert result.retry_allowed is True
+
+
+@pytest.mark.asyncio
 async def test_o2c_external_test_cancellation_still_cleans_started_connector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -453,8 +594,14 @@ async def test_o2c_external_test_cancellation_still_cleans_started_connector(
     await send_started.wait()
     task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    result = await task
+
+    assert result.outcome is channel_setup.ChannelSetupOutcome.DEGRADED
+    assert result.test_delivery is not None
+    assert result.test_delivery.reason == "channel_test_cancelled"
+    assert result.test_delivery.outcome_unknown is True
+    assert result.retry_allowed is False
+    assert "inspect" in result.probe.next_action
     assert fake.send_calls == 1
     assert fake.disconnect_calls == 1
 
@@ -475,3 +622,29 @@ async def test_o2c_unavailable_reference_blocks_before_connector_activity(
     assert result.probe.reason == "channel_credential_unavailable"
     assert result.exit_code == 3
     assert store.resolved == ["channel.discord"]
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.09, 30.01, float("nan")])
+@pytest.mark.asyncio
+async def test_o2c_probe_timeout_is_finitely_bounded(
+    tmp_path: Path,
+    timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValueError, match=r"between 0\.1 and 30"):
+        await channel_setup.evaluate_channel_setup(
+            _selection("discord"),
+            credential_store=_CredentialStore(),
+            state_root=tmp_path,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+@pytest.mark.asyncio
+async def test_o2c_skip_cannot_be_combined_with_test_delivery(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot be combined"):
+        await channel_setup.evaluate_channel_setup(
+            _selection("discord", run_test=True),
+            credential_store=_CredentialStore(),
+            state_root=tmp_path,
+            skip_probe=True,
+        )

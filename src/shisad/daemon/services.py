@@ -255,30 +255,26 @@ _CHANNEL_CREDENTIAL_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
         ("slack_app_token", "slack_app_token_ref"),
     ),
 }
-_CHANNEL_NONSECRET_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "matrix": ("matrix_homeserver", "matrix_user_id", "matrix_room_id"),
-    "discord": (),
-    "telegram": (),
-    "slack": (),
-}
 
 
 def _resolve_channel_credential_references(
     config: DaemonConfig,
     *,
     store: CredentialReferenceStore,
+    channels: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, Any]]]:
     """Resolve enabled channel tokens for adapter construction only."""
 
     credentials: dict[str, dict[str, str]] = {}
     diagnostics: dict[str, dict[str, Any]] = {}
-    for channel, credential_fields in _CHANNEL_CREDENTIAL_FIELDS.items():
+    for channel in channels or tuple(_CHANNEL_CREDENTIAL_FIELDS):
+        credential_fields = _CHANNEL_CREDENTIAL_FIELDS[channel]
         if not bool(getattr(config, f"{channel}_enabled")):
             continue
-        if any(
-            not str(getattr(config, field)).strip()
-            for field in _CHANNEL_NONSECRET_REQUIREMENTS[channel]
-        ):
+        required = (
+            ("matrix_homeserver", "matrix_user_id", "matrix_room_id") if channel == "matrix" else ()
+        )
+        if any(not str(getattr(config, field)).strip() for field in required):
             diagnostics[channel] = {
                 "status": "degraded",
                 "reason_code": "channel.configuration_incomplete",
@@ -799,10 +795,6 @@ class DaemonServices:
             model_config,
             store=credential_reference_store,
         )
-        channel_credentials, channel_configuration_status = _resolve_channel_credential_references(
-            config,
-            store=credential_reference_store,
-        )
         router = ModelRouter(model_config)
         validate_model_endpoints(model_config, router)
         _validate_security_route_pins(model_config, router)
@@ -873,7 +865,6 @@ class DaemonServices:
             }
             for name in ("matrix", "discord", "telegram", "slack")
         }
-        channel_startup_status.update(channel_configuration_status)
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         control_plane_sidecar: ControlPlaneSidecarHandle | None = None
         mcp_manager: McpClientManager | None = None
@@ -965,10 +956,16 @@ class DaemonServices:
                 )
             channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
-            if "matrix" not in channel_configuration_status:
-                matrix_channel = _build_matrix_channel(
-                    config, credentials=channel_credentials.get("matrix")
+            def _credentials_for_channel(name: str) -> dict[str, str] | None:
+                resolved, diagnostics = _resolve_channel_credential_references(
+                    config, store=credential_reference_store, channels=(name,)
                 )
+                channel_startup_status.update(diagnostics)
+                return None if diagnostics else resolved.get(name)
+
+            credentials = _credentials_for_channel("matrix")
+            if credentials is not None:
+                matrix_channel = _build_matrix_channel(config, credentials=credentials)
             if matrix_channel is not None:
                 startup_result = await _start_channel(
                     name="matrix",
@@ -985,11 +982,12 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            if "discord" not in channel_configuration_status:
+            credentials = _credentials_for_channel("discord")
+            if credentials is not None:
                 discord_channel = _build_discord_channel(
                     config,
                     replay_state_store=channel_state_store,
-                    credentials=channel_credentials.get("discord"),
+                    credentials=credentials,
                 )
             if discord_channel is not None:
                 startup_result = await _start_channel(
@@ -1007,10 +1005,11 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            if "telegram" not in channel_configuration_status:
+            credentials = _credentials_for_channel("telegram")
+            if credentials is not None:
                 telegram_channel = _build_telegram_channel(
                     config,
-                    credentials=channel_credentials.get("telegram"),
+                    credentials=credentials,
                 )
             if telegram_channel is not None:
                 startup_result = await _start_channel(
@@ -1028,10 +1027,9 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            if "slack" not in channel_configuration_status:
-                slack_channel = _build_slack_channel(
-                    config, credentials=channel_credentials.get("slack")
-                )
+            credentials = _credentials_for_channel("slack")
+            if credentials is not None:
+                slack_channel = _build_slack_channel(config, credentials=credentials)
             if slack_channel is not None:
                 startup_result = await _start_channel(
                     name="slack",

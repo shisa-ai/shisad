@@ -76,6 +76,42 @@ def test_o2c_each_adapter_reports_missing_optional_dependency_truthfully(
     assert status.reason == "channel_dependency_unavailable"
 
 
+@pytest.mark.parametrize(
+    ("channel_name", "health"),
+    [
+        ("matrix", {"connected": True, "sync_task_running": True}),
+        ("discord", {"connected": True, "client_active": True}),
+        ("telegram", {"connected": True, "app_active": True}),
+        ("slack", {"connected": True, "socket_mode": True, "socket_task_running": True}),
+    ],
+)
+def test_o2c_shipped_adapter_health_projects_configured_not_verified(
+    channel_name: str,
+    health: dict[str, object],
+) -> None:
+    channel = SimpleNamespace(available=True, health_status=lambda: health)
+
+    status = adapter_setup_readiness(ChannelName(channel_name), channel)
+
+    assert status.state is ReadinessState.CONFIGURED
+    assert status.configured is True
+    assert status.authenticated is False
+    assert status.verified is False
+    assert status.reason == "channel_transport_started_not_verified"
+
+
+def test_o2c_inactive_shipped_adapter_health_projects_degraded() -> None:
+    channel = SimpleNamespace(
+        available=True,
+        health_status=lambda: {"connected": True, "client_active": False},
+    )
+
+    status = adapter_setup_readiness(ChannelName.DISCORD, channel)
+
+    assert status.state is ReadinessState.DEGRADED
+    assert status.reason == "channel_transport_unavailable"
+
+
 def test_channel_identity_map_applies_per_channel_default_trust() -> None:
     identity_map = ChannelIdentityMap(default_trust={"matrix": "trusted"})
     identity_map.bind(

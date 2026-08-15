@@ -490,6 +490,10 @@ client libraries degrade only that channel. For ingress, use the channel's
 `*_TRUSTED_USERS` field (or the generic identity allowlist) explicitly;
 connection or outbound delivery never grants trust.
 
+Matrix homeserver values must be absolute HTTP(S) URLs without embedded
+userinfo, a query, or a fragment. Slack bot-token and app-token references must
+name distinct logical credentials.
+
 `shisad[assistant]` and the local container already contain the channel client
 libraries. For a source checkout, install the matching dependency group:
 

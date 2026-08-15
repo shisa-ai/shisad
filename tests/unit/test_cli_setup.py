@@ -300,6 +300,81 @@ def test_o2c_channel_cli_has_no_raw_token_or_arbitrary_message_option() -> None:
     assert "--message" not in result.output
 
 
+def test_o2c_missing_channel_uses_shared_json_error_without_loading_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_setup,
+        "_channel_setup_context",
+        lambda _ctx: pytest.fail("invalid selection must fail before setup state loads"),
+    )
+
+    result = CliRunner().invoke(cli, ["setup", "channel", "--format", "json"])
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "setup"
+    assert payload["exit_code"] == 3
+    assert "channel" in payload["likely_cause"]
+
+
+def test_o2c_channel_cli_threads_timeout_and_prints_recovery_posture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[float] = []
+    monkeypatch.setattr(
+        cli_setup,
+        "_channel_setup_context",
+        lambda _ctx: (_CredentialStore("unused"), cli_setup.DaemonConfig(data_dir=tmp_path)),
+    )
+
+    async def _evaluate(selection, *, timeout_seconds: float, **kwargs):
+        _ = kwargs
+        captured.append(timeout_seconds)
+        return cli_setup.ChannelSetupResult(
+            outcome=ChannelSetupOutcome.DEGRADED,
+            channel=selection.channel,
+            probe=cli_setup.ReadinessStatus(
+                state=cli_setup.ReadinessState.DEGRADED,
+                configured=True,
+                evidence="live_test_delivery",
+                reason="channel_test_outcome_unknown",
+                next_action="inspect the explicit target before deciding whether to retry",
+                source="channel_setup_delivery",
+            ),
+            identity_ready=True,
+            identity_next_action="none",
+            config_fragment={
+                "discord_enabled": True,
+                "discord_bot_token_ref": "channel.discord",
+            },
+            retry_allowed=False,
+            exit_code=2,
+        )
+
+    monkeypatch.setattr(cli_setup, "evaluate_channel_setup", _evaluate)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "setup",
+            "channel",
+            "--channel",
+            "discord",
+            "--bot-token-ref",
+            "channel.discord",
+            "--timeout",
+            "1.25",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert captured == [1.25]
+    assert "Next: inspect the explicit target" in result.output
+    assert "Retry allowed: no" in result.output
+
+
 async def test_o2b_provider_probe_resolves_once_and_discards_secret_and_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
