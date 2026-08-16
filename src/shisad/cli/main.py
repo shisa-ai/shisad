@@ -44,6 +44,11 @@ from shisad.cli.onboarding import (
 from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
 from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
 from shisad.cli.setup import setup
+from shisad.cli.upgrade import (
+    config_upgrade_command,
+    prepare_config_for_startup,
+    startup_upgrade_lines,
+)
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
@@ -135,6 +140,7 @@ from shisad.core.config_file import (
     UnsupportedConfigSchemaError,
     config_diff_projection,
     config_schema_projection,
+    environment_config_selection,
     environment_projection,
     initialize_config_file,
     load_effective_config,
@@ -829,6 +835,9 @@ def config_group() -> None:
     """Inspect the operator-authored TOML configuration surface."""
 
 
+config_group.add_command(config_upgrade_command)
+
+
 @config_group.command("template")
 def config_template() -> None:
     """Print the generated commented TOML template."""
@@ -922,6 +931,12 @@ def config_diff(output_format: str) -> None:
     help="Explicitly create only the minimal no-prompt config template.",
 )
 @click.option(
+    "--from-env",
+    "from_env",
+    is_flag=True,
+    help="Persist only typed non-secret values selected by environment variables.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["human", "json"]),
@@ -929,13 +944,24 @@ def config_diff(output_format: str) -> None:
     show_default=True,
 )
 @click.pass_context
-def init_config(ctx: click.Context, non_interactive: bool, output_format: str) -> None:
+def init_config(
+    ctx: click.Context,
+    non_interactive: bool,
+    from_env: bool,
+    output_format: str,
+) -> None:
     """Create a minimal commented user config without overwriting existing data."""
 
     selected = (ctx.obj or {}).get("config_path")
     try:
         managed = parse_managed_posture(os.environ)
-        destination = initialize_config_file(selected if isinstance(selected, Path) else None)
+        env_selection = environment_config_selection(os.environ) if from_env else None
+        destination = initialize_config_file(
+            selected if isinstance(selected, Path) else None,
+            section_overrides=(
+                env_selection.section_overrides if env_selection is not None else None
+            ),
+        )
     except (ConfigFileError, EnvironmentDetectionError) as exc:
         raise _config_cli_error(
             what_failed="Could not create operator configuration.",
@@ -946,8 +972,20 @@ def init_config(ctx: click.Context, non_interactive: bool, output_format: str) -
     payload: dict[str, object] = {
         "created": True,
         "path": str(destination),
-        "mode": "non_interactive" if non_interactive else "minimal",
+        "mode": "from_env" if from_env else "non_interactive" if non_interactive else "minimal",
         "managed": managed,
+        "persisted_fields": (
+            sorted(
+                f"{section}.{field}"
+                for section, fields in env_selection.section_overrides.items()
+                for field in fields
+            )
+            if env_selection is not None
+            else []
+        ),
+        "omitted_secret_fields": (
+            list(env_selection.omitted_secret_fields) if env_selection is not None else []
+        ),
         "next_actions": [
             "shisad config validate",
             "shisad config show --format human",
@@ -1485,6 +1523,27 @@ def _start_daemon(
 @click.pass_context
 def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
     """Start the shisad daemon."""
+    root_obj = ctx.find_root().obj
+    configured = root_obj.get("config_path") if isinstance(root_obj, dict) else None
+    selected = selected_config_path(
+        configured if isinstance(configured, Path) else None,
+        environ=os.environ,
+    )
+    try:
+        startup_upgrade = prepare_config_for_startup(
+            selected,
+            managed=parse_managed_posture(os.environ),
+            interactive=bool(sys.stdin.isatty() and sys.stdout.isatty()),
+        )
+    except (ConfigFileError, EnvironmentDetectionError) as exc:
+        raise _config_cli_error(
+            what_failed="Could not prepare operator configuration for startup.",
+            exc=exc,
+            next_action=(f"review {selected} or run: shisad --config {selected} config upgrade"),
+        ) from exc
+    if startup_upgrade is not None:
+        for line in startup_upgrade_lines(startup_upgrade, command_path=selected):
+            _echo(line, fg="yellow")
     config = _get_config()
     if foreground or debug:
         _start_daemon(config=config, foreground=foreground, debug=debug)

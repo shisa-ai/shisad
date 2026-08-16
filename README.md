@@ -168,7 +168,9 @@ inspect the typed TOML surface without starting the daemon:
 ```bash
 shisad
 shisad init --non-interactive
+shisad init --from-env
 shisad config validate
+shisad config upgrade
 shisad config show --format human
 shisad config diff --format human
 shisad config schema --format json
@@ -213,9 +215,23 @@ invokes a model/tool, changes policy, or creates separate tutorial state.
 It is deliberately not a setup wizard: it does not copy ambient secrets,
 configure a provider or policy, create daemon state, or start the daemon. Use
 `--non-interactive` when scripts want to state the existing no-prompt behavior
-explicitly, and root `--config FILE` to select another path. Effective
+explicitly. `--from-env` instead writes only typed, non-default, non-secret
+fields selected by supported environment variables; secret-bearing fields
+remain environment-owned and are named only as omitted fields. Use root
+`--config FILE` to select another path. Effective
 precedence remains command-line override, environment, TOML, then typed
 default; show, diff, env, and validation output redact secret-bearing fields.
+
+Configuration schema `1` is current. `shisad config upgrade` is a no-write
+inspection by default. For a legacy config with no `schema_version`, rerun it
+with `--write` to add only `schema_version = 1`; shisad first preserves the
+exact original in an owner-only `.pre-v1.bak` file, validates a temporary
+candidate, and atomically replaces the config. Interactive unmanaged startup
+may apply that one safe migration with the same visible backup and rollback
+guidance. Managed or non-interactive startup uses the compatible legacy values
+in memory but does not rewrite the operator file; it prints the explicit
+upgrade command instead. Newer, malformed, or explicitly older versions are
+refused without a downgrade attempt.
 
 The O2 credential foundation can keep model-provider secrets out of TOML. A
 logical reference records only backend metadata; the value stays in an

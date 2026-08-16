@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -11,6 +12,46 @@ from shisad.core.api.schema import DoctorCheckResult
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelRouter
 from shisad.daemon.services import _build_provider_diagnostics
+
+
+def test_o4a_managed_legacy_config_stays_nonmutating_and_actionable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    for key in list(os.environ):
+        if key.startswith("SHISAD_"):
+            monkeypatch.delenv(key, raising=False)
+    config_path = tmp_path / "config.toml"
+    data_dir = tmp_path / "data"
+    socket_path = tmp_path / "control.sock"
+    original = (
+        "# legacy operator config\n"
+        "[daemon]\n"
+        f'data_dir = "{data_dir}"\n'
+        f'socket_path = "{socket_path}"\n'
+    )
+    config_path.write_text(original, encoding="utf-8")
+    started = []
+    monkeypatch.setattr(
+        cli_main,
+        "_start_daemon",
+        lambda *, config, foreground, debug: started.append(config),
+    )
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(config_path), "start", "--foreground"],
+        env={"SHISAD_MANAGED": "true"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(started) == 1
+    assert started[0].data_dir == data_dir
+    assert "schema 0 -> 1" in result.output
+    assert "not persisted" in result.output
+    assert "config upgrade --write" in result.output
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not config_path.with_name("config.toml.pre-v1.bak").exists()
 
 
 def test_u41_user_can_inspect_effective_config_without_exposing_secret(

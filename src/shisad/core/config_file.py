@@ -89,6 +89,14 @@ class LoadedConfig:
         return projection
 
 
+@dataclass(frozen=True, slots=True)
+class EnvironmentConfigSelection:
+    """Non-secret, non-default config fields explicitly selected by env."""
+
+    section_overrides: dict[str, dict[str, object]]
+    omitted_secret_fields: tuple[str, ...]
+
+
 def load_config_file(
     path: Path,
     *,
@@ -425,6 +433,40 @@ def environment_projection(
     )
     rows.sort(key=lambda row: str(row["name"]))
     return {"variables": rows}
+
+
+def environment_config_selection(
+    environ: Mapping[str, str],
+) -> EnvironmentConfigSelection:
+    """Select typed non-secret env values that are safe to persist in TOML."""
+
+    loaded = _load_empty_config(environ=dict(environ), cli_overrides=None)
+    defaults = _load_empty_config(environ={}, cli_overrides=None)
+    overrides: dict[str, dict[str, object]] = {}
+    omitted: list[str] = []
+    for section in _SECTIONS:
+        settings = getattr(loaded, section)
+        default_settings = getattr(defaults, section)
+        values = settings.model_dump(mode="json")
+        default_values = default_settings.model_dump(mode="json")
+        for field in settings.__class__.model_fields:
+            if section == "daemon" and field == "config_path":
+                continue
+            source = loaded.sources[section][field]
+            if not source.startswith("env:"):
+                continue
+            qualified = f"{section}.{field}"
+            if field in _NESTED_SECRET_FIELDS or _field_is_secret(field):
+                omitted.append(qualified)
+                continue
+            value = values.get(field)
+            if value == default_values.get(field):
+                continue
+            overrides.setdefault(section, {})[field] = value
+    return EnvironmentConfigSelection(
+        section_overrides=overrides,
+        omitted_secret_fields=tuple(sorted(omitted)),
+    )
 
 
 def initialize_config_file(

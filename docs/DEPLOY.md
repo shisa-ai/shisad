@@ -255,6 +255,36 @@ Before starting the daemon:
 
 ## Data-Root Ownership and State Recovery
 
+### Operator-config migration
+
+The current operator TOML schema is `1`. Inspect an existing config without
+writing it:
+
+```bash
+shisad --config /absolute/path/config.toml config upgrade
+```
+
+A legacy file with no `schema_version` has one known non-breaking migration.
+Persist it explicitly with `config upgrade --write`. Before replacement,
+shisad creates an exact owner-only `config.toml.pre-v1.bak`, validates the
+candidate, and uses same-directory atomic replacement. Stop shisad before
+manually restoring that backup, restore it only to its original config path,
+then run `config validate`.
+
+Interactive unmanaged startup may persist this safe migration and reports the
+backup. Managed or non-interactive startup does not infer write permission: it
+uses the compatible values in memory, reports that persistence is pending, and
+names the explicit command. Schema versions newer than `1`, malformed values,
+and explicit older values are refused without mutation or downgrade. This is
+operator-config recovery only; it is not a data-root backup or package
+rollback claim.
+
+For an env-only deployment that is moving selected non-secret settings into a
+file, use `shisad --config PATH init --from-env`. The generated owner-only file
+contains only typed, non-default fields sourced from supported environment
+variables. Raw API keys, bot tokens, credentials, nested secret-bearing
+objects, and other secret fields are omitted and remain environment-owned.
+
 Only one daemon may own a given `SHISAD_DATA_DIR` at a time. Ownership is
 acquired before stores or control endpoints are opened; a same-root contender
 fails with an actionable error without altering feature state. Separate data

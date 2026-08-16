@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from shisad.cli import main as cli_main
 from shisad.cli import onboarding
 from shisad.cli.onboarding import (
     CheckRequirement,
@@ -19,6 +23,47 @@ from shisad.cli.onboarding import (
     render_welcome,
 )
 from shisad.ui.theme import resolve_ui_posture
+
+
+def test_o4a_init_from_env_is_noninteractive_redacted_and_no_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in list(os.environ):
+        if key.startswith("SHISAD_"):
+            monkeypatch.delenv(key, raising=False)
+    destination = tmp_path / "config.toml"
+    secret = "do-not-write-this-secret"
+    runner = CliRunner()
+
+    first = runner.invoke(
+        cli_main.cli,
+        ["--config", str(destination), "init", "--from-env", "--format", "json"],
+        env={
+            "SHISAD_LOG_LEVEL": "WARNING",
+            "SHISAD_MODEL_MODEL_ID": "provider/model-a",
+            "SHISAD_MODEL_API_KEY": secret,
+        },
+    )
+
+    assert first.exit_code == 0, first.output
+    payload = json.loads(first.output)
+    assert payload["mode"] == "from_env"
+    assert payload["persisted_fields"] == ["daemon.log_level", "model.model_id"]
+    assert payload["omitted_secret_fields"] == ["model.api_key"]
+    text = destination.read_text(encoding="utf-8")
+    assert 'log_level = "WARNING"' in text
+    assert 'model_id = "provider/model-a"' in text
+    assert secret not in text
+
+    second = runner.invoke(
+        cli_main.cli,
+        ["--config", str(destination), "init", "--from-env", "--format", "json"],
+        env={"SHISAD_MODEL_API_KEY": "another-secret"},
+    )
+    assert second.exit_code == 3
+    assert secret not in second.output
+    assert "another-secret" not in second.output
 
 
 @pytest.mark.parametrize(
