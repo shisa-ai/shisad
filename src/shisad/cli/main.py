@@ -25,6 +25,7 @@ import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
+from shisad.cli import tour as tour_module
 from shisad.cli.credentials import credential
 from shisad.cli.lifecycle import (
     BackgroundStartError,
@@ -1031,18 +1032,16 @@ def tui(interactive: bool, plain: bool) -> None:
     click.echo(rendered)
 
 
-@cli.command("chat")
-@click.option("--session", "session_id", default="", help="Attach to existing session ID.")
-@click.option("--user", "-u", default="ops", help="User ID for new session.")
-@click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
-@click.option(
-    "--new",
-    "new_session",
-    is_flag=True,
-    help="Force a fresh session (skip user/workspace binding reuse).",
-)
-def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
-    """Interactive chat with the shisad daemon."""
+def _run_chat(
+    *,
+    session_id: str,
+    user: str,
+    workspace: str,
+    new_session: bool,
+    startup_hint: str | None = None,
+) -> None:
+    """Launch the ordinary chat app with optional display-only metadata."""
+
     if new_session and session_id:
         raise click.ClickException("--new cannot be used together with --session.")
     try:
@@ -1059,33 +1058,61 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
         raise click.ClickException(f"chat TUI import failed: {exc}") from exc
 
     config = _get_config()
-    app = ChatApp(
-        socket_path=config.socket_path,
-        data_dir=config.data_dir,
-        user_id=user,
-        workspace_id=workspace,
-        session_id=session_id or None,
-        reuse_bound_session=not new_session,
-        ui_posture=_get_ui_posture(config),
-    )
+    app_kwargs: dict[str, Any] = {
+        "socket_path": config.socket_path,
+        "data_dir": config.data_dir,
+        "user_id": user,
+        "workspace_id": workspace,
+        "session_id": session_id or None,
+        "reuse_bound_session": not new_session,
+        "ui_posture": _get_ui_posture(config),
+    }
+    if startup_hint is not None:
+        app_kwargs["startup_hint"] = startup_hint
+    app = ChatApp(**app_kwargs)
     app.run()
+
+
+@cli.command("chat")
+@click.option("--session", "session_id", default="", help="Attach to existing session ID.")
+@click.option("--user", "-u", default="ops", help="User ID for new session.")
+@click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
+@click.option(
+    "--new",
+    "new_session",
+    is_flag=True,
+    help="Force a fresh session (skip user/workspace binding reuse).",
+)
+def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
+    """Interactive chat with the shisad daemon."""
+
+    _run_chat(
+        session_id=session_id,
+        user=user,
+        workspace=workspace,
+        new_session=new_session,
+    )
 
 
 @cli.command("tour")
 def tour() -> None:
-    """Preview the deterministic guided tour."""
+    """Show the deterministic guided tour and optionally open ordinary chat."""
 
-    click.echo(
-        "\n".join(
-            [
-                "shisad guided tour",
-                "1. Check runtime health with: shisad status && shisad doctor",
-                "2. Chat normally with: shisad chat",
-                "3. Tool actions follow policy: allow, confirmation, denial, or lockdown.",
-                "4. Review pending actions and runtime state with: shisad tui --interactive",
-                "5. Re-run this guide any time with: shisad tour",
-            ]
-        )
+    click.echo(tour_module.render_tour())
+    if not tour_module.is_interactive_tour():
+        return
+    if not click.confirm(
+        "Open ordinary chat with a suggested first request?",
+        default=False,
+    ):
+        click.echo("Tour complete; no chat session was opened.")
+        return
+    _run_chat(
+        session_id="",
+        user="ops",
+        workspace="default",
+        new_session=False,
+        startup_hint=tour_module.CHAT_SUGGESTION,
     )
 
 

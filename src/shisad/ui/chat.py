@@ -386,6 +386,7 @@ class ChatApp(App[None]):
         session_id: str | None = None,
         reuse_bound_session: bool = True,
         ui_posture: UiPosture | None = None,
+        startup_hint: str | None = None,
     ) -> None:
         self.ui_posture = ui_posture or resolve_ui_posture()
         self.THEME = self.ui_posture.palette
@@ -401,6 +402,7 @@ class ChatApp(App[None]):
         self._workspace_id = workspace_id
         self._session_id = self._normalize_session_id(session_id)
         self._reuse_bound_session = reuse_bound_session
+        self._startup_hint = startup_hint.strip() if startup_hint and startup_hint.strip() else None
         self._reconnected = False
         self._prompt_history: list[str] = []
         self._prompt_history_cursor: int | None = None
@@ -444,6 +446,8 @@ class ChatApp(App[None]):
             self._append_history("Connected.")
             self._append_current_session_status()
             self._replay_recent_transcript_history_best_effort()
+            if self._startup_hint is not None:
+                self._append_history(f"Tour suggestion (not sent): {self._startup_hint}")
             self._start_transcript_polling()
             self._append_history(
                 "Type a message and press Enter. "

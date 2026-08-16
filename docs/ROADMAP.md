@@ -446,7 +446,11 @@ TOTP entry remain deferred to `v0.8.0`.
   exact-child cleanup on startup timeout, and idempotent already-running
   behavior. Foreground/debug paths remain explicit. A successful interactive
   wizard publication offers a finite default-exit next-step menu; automation
-  and managed setup still never prompt or launch a child.
+  and managed setup still never prompt or launch a child. The guided-tour
+  sibling now provides deterministic maintained readiness/policy/dashboard
+  guidance. Noninteractive use is read-only; a TTY-only default-no choice may
+  hand off to ordinary chat with a display-only suggestion that is never sent
+  automatically.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -460,9 +464,9 @@ TOTP entry remain deferred to `v0.8.0`.
   publish selected reference-only config and policy artifacts after explicit
   write authority; managed/non-interactive apply never prompts. Bounded
   background first-start and the interactive post-publication next-step menu
-  are now present; the deterministic full tour, persistent chat state, and
-  channel progress/thread units remain in progress. `init` is still only a
-  minimal template publisher
+  are now present, along with the deterministic guided tour; persistent chat
+  state and channel progress/thread units remain in progress. `init` is still
+  only a minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls

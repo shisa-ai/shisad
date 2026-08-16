@@ -207,6 +207,41 @@ def test_o3a_background_first_start_reports_bounded_health_and_stops_cleanly(
             runner.invoke(cli, ["--config", str(config_path), "stop"])
 
 
+def test_o3b_tour_is_deterministic_and_real_demo_preserves_policy_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import main as cli_main
+    from shisad.cli import tour as tour_module
+
+    config_home = tmp_path / "config-home"
+    launched: list[dict[str, object]] = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setattr(
+        cli_main, "_run_chat", lambda **kwargs: launched.append(kwargs), raising=False
+    )
+
+    result = CliRunner().invoke(cli, ["tour"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert "auto-approved, require confirmation, be denied, or be blocked" in result.output
+    assert (
+        "The normal planner, policy, confirmation, and tool paths remain in effect."
+        in result.output
+    )
+    assert launched == [
+        {
+            "session_id": "",
+            "user": "ops",
+            "workspace": "default",
+            "new_session": False,
+            "startup_hint": tour_module.CHAT_SUGGESTION,
+        }
+    ]
+    assert not config_home.exists()
+
+
 def test_o1_bare_cli_welcome_routes_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

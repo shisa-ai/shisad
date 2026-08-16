@@ -4259,6 +4259,98 @@ def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
     assert launched == [(config.socket_path, config.data_dir / "sessions")]
 
 
+def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_chat",
+        lambda **_kwargs: pytest.fail("noninteractive tour must not launch chat"),
+        raising=False,
+    )
+    runner = CliRunner()
+
+    first = runner.invoke(cli_main.cli, ["tour"])
+    second = runner.invoke(cli_main.cli, ["tour"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert first.output == second.output
+    assert "shisad guided tour" in first.output
+    assert "auto-approved, require confirmation, be denied, or be blocked" in first.output
+    assert "shisad chat" in first.output
+    assert "shisad tui" in first.output
+    assert "shisad status" in first.output
+    assert "shisad doctor" in first.output
+    assert "shisad tour" in first.output
+    assert "Open ordinary chat" not in first.output
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty", "expected"),
+    ((True, True, True), (True, False, False), (False, True, False)),
+)
+def test_o3b_tour_interactivity_requires_both_tty_streams(
+    stdin_tty: bool,
+    stdout_tty: bool,
+    expected: bool,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    stdin = SimpleNamespace(isatty=lambda: stdin_tty)
+    stdout = SimpleNamespace(isatty=lambda: stdout_tty)
+
+    assert tour_module.is_interactive_tour(stdin=stdin, stdout=stdout) is expected
+
+
+def test_o3b_tour_interactive_decline_exits_without_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_chat",
+        lambda **_kwargs: pytest.fail("declining the demo must not launch chat"),
+        raising=False,
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"], input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Open ordinary chat with a suggested first request? [y/N]" in result.output
+    assert "Tour complete; no chat session was opened." in result.output
+
+
+def test_o3b_tour_explicit_demo_uses_ordinary_chat_with_display_only_suggestion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    launched: list[dict[str, object]] = []
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setattr(
+        cli_main, "_run_chat", lambda **kwargs: launched.append(kwargs), raising=False
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert launched == [
+        {
+            "session_id": "",
+            "user": "ops",
+            "workspace": "default",
+            "new_session": False,
+            "startup_hint": tour_module.CHAT_SUGGESTION,
+        }
+    ]
+
+
 def test_restart_default_shuts_down_then_starts_foreground(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

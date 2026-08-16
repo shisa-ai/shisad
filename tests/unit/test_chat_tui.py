@@ -241,6 +241,44 @@ def test_chat_app_can_be_constructed() -> None:
     assert app._workspace_id == "default"
     assert app._session_id is None
     assert app._reuse_bound_session is True
+    assert app._startup_hint is None
+
+
+@pytest.mark.asyncio
+async def test_o3b_chat_tour_suggestion_is_display_only() -> None:
+    suggestion = "Try asking shisad to read a file in your workspace."
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        startup_hint=suggestion,
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_messages = _rendered_static_texts(app, ".status-message")
+
+    assert status_messages.count(f"Tour suggestion (not sent): {suggestion}") == 1
+    fake_client.call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_o3b_chat_handoff_reports_missing_daemon_actionably() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/missing-test.sock"),
+        startup_hint="Try asking shisad to read a file in your workspace.",
+    )
+    app._connect = AsyncMock(side_effect=OSError("offline"))  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_messages = _rendered_static_texts(app, ".status-message")
+
+    assert any("Could not connect to daemon" in message for message in status_messages)
+    assert "Is the daemon running? Try: shisad start --foreground" in status_messages
 
 
 def test_chat_app_with_existing_session() -> None:

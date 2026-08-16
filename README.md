@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, and bounded background first-start/health; the full tutorial and unified chat work remain in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, and a deterministic guided tour; unified chat work remains in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -197,6 +197,13 @@ log path. Repeating it against a reachable daemon is idempotent. Use
 inspection; unsupported native background platforms receive that foreground
 path as actionable guidance. `shisad stop` still shuts down through the control
 API rather than trusting a PID file.
+
+`shisad tour` prints a deterministic, maintained walkthrough of readiness,
+ordinary chat, live policy outcomes, dashboard state, and recovery commands.
+Non-interactive use only prints the guide. On a TTY, an explicit default-no
+choice can open the ordinary chat app with a display-only suggested request;
+the tour never submits that request, invokes a model/tool, changes policy, or
+creates separate tutorial state.
 
 `shisad init` creates one owner-only commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally
