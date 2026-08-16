@@ -61,6 +61,7 @@ class SQLiteMigrationError(RuntimeError):
         from_version: int | None = None,
         to_version: int | None = None,
         backup_path: Path | None = None,
+        backup_preserved: bool = False,
         permissions: str = "not_attempted",
         parent_sync: str = "not_attempted",
     ) -> None:
@@ -72,6 +73,7 @@ class SQLiteMigrationError(RuntimeError):
         self.from_version = from_version
         self.to_version = to_version
         self.backup_path = backup_path
+        self.backup_preserved = backup_preserved
         self.permissions = permissions
         self.parent_sync = parent_sync
 
@@ -87,6 +89,7 @@ class SQLiteMigrationResult:
     from_version: int
     to_version: int
     backup_path: Path | None
+    backup_preserved: bool
     permissions: str
     parent_sync: str
 
@@ -161,6 +164,7 @@ def prepare_versioned_sqlite_database(
     stage = SQLiteMigrationStage.ADMISSION
     from_version: int | None = None
     backup_path: Path | None = None
+    backup_preserved = False
     permissions = "not_attempted"
     parent_sync = "not_attempted"
     inject = fault_injector or (lambda _stage: None)
@@ -209,6 +213,7 @@ def prepare_versioned_sqlite_database(
                 from_version=0,
                 to_version=current_version,
                 backup_path=None,
+                backup_preserved=False,
                 permissions=permissions,
                 parent_sync=parent_sync,
             )
@@ -232,6 +237,7 @@ def prepare_versioned_sqlite_database(
                 from_version=version,
                 to_version=version,
                 backup_path=None,
+                backup_preserved=False,
                 permissions=permissions,
                 parent_sync="not_applicable",
             )
@@ -248,6 +254,7 @@ def prepare_versioned_sqlite_database(
             label=label,
             expected_version=version,
         )
+        backup_preserved = True
         stage = SQLiteMigrationStage.BACKUP_PRESERVED
         inject(stage)
         migrated_from = version
@@ -280,6 +287,7 @@ def prepare_versioned_sqlite_database(
             from_version=migrated_from,
             to_version=version,
             backup_path=backup_path,
+            backup_preserved=True,
             permissions=combine_permission_capabilities(backup_permissions, permissions),
             parent_sync=parent_sync,
         )
@@ -295,6 +303,7 @@ def prepare_versioned_sqlite_database(
             from_version=from_version,
             to_version=current_version,
             backup_path=backup_path,
+            backup_preserved=backup_preserved,
             permissions=permissions,
             parent_sync=parent_sync,
         ) from exc
@@ -310,6 +319,7 @@ def prepare_versioned_sqlite_database(
             from_version=from_version,
             to_version=current_version,
             backup_path=backup_path,
+            backup_preserved=backup_preserved,
             permissions=permissions,
             parent_sync=("failed" if stage is SQLiteMigrationStage.PARENT_SYNC else parent_sync),
         ) from exc
@@ -337,6 +347,7 @@ def _enrich_migration_error(
     from_version: int | None,
     to_version: int,
     backup_path: Path | None,
+    backup_preserved: bool,
     permissions: str,
     parent_sync: str,
 ) -> SQLiteMigrationError:
@@ -348,6 +359,7 @@ def _enrich_migration_error(
         from_version=from_version,
         to_version=to_version,
         backup_path=error.backup_path or backup_path,
+        backup_preserved=error.backup_preserved or backup_preserved,
         permissions=(error.permissions if error.permissions != "not_attempted" else permissions),
         parent_sync=(error.parent_sync if error.parent_sync != "not_attempted" else parent_sync),
     )
@@ -357,29 +369,29 @@ def _sqlite_table_structure(
     connection: sqlite3.Connection,
     table: str,
 ) -> SQLiteTableStructure:
-    table_row = next(
-        (
-            row
-            for row in connection.execute("PRAGMA table_list").fetchall()
-            if str(row[0]) == "main" and str(row[1]) == table
-        ),
-        None,
-    )
-    if table_row is None:
-        raise SQLiteMigrationError(f"SQLite table structure is missing for {table}")
-    quoted_table = _quote_sqlite_identifier(table)
-    foreign_keys = tuple(
-        tuple(row) for row in connection.execute(f"PRAGMA foreign_key_list({quoted_table})")
-    )
     sql_row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone()
-    sql = "" if sql_row is None or sql_row[0] is None else str(sql_row[0])
+    if sql_row is None or sql_row[0] is None:
+        raise SQLiteMigrationError(f"SQLite table structure is missing for {table}")
+    sql = str(sql_row[0])
     constraint_keywords = tuple(
         keyword
         for keyword in _SCHEMA_CONSTRAINT_KEYWORDS
         if re.search(rf"(?i)(?<![A-Z0-9_]){keyword}(?![A-Z0-9_])", sql)
+    )
+    table_row = next(
+        (
+            row
+            for row in _sqlite_table_list_rows(connection)
+            if str(row[0]) == "main" and str(row[1]) == table
+        ),
+        None,
+    )
+    quoted_table = _quote_sqlite_identifier(table)
+    foreign_keys = tuple(
+        tuple(row) for row in connection.execute(f"PRAGMA foreign_key_list({quoted_table})")
     )
     indexes: list[SQLiteIndexStructure] = []
     for row in connection.execute(f"PRAGMA index_list({quoted_table})").fetchall():
@@ -404,12 +416,18 @@ def _sqlite_table_structure(
             )
         )
     return SQLiteTableStructure(
-        without_rowid=bool(table_row[4]),
-        strict=bool(table_row[5]),
+        without_rowid=(
+            bool(table_row[4]) if table_row is not None else "WITHOUT" in constraint_keywords
+        ),
+        strict=(bool(table_row[5]) if table_row is not None else "STRICT" in constraint_keywords),
         foreign_keys=foreign_keys,
         constraint_keywords=constraint_keywords,
         indexes=tuple(sorted(indexes, key=lambda index: index.name)),
     )
+
+
+def _sqlite_table_list_rows(connection: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return [tuple(row) for row in connection.execute("PRAGMA table_list").fetchall()]
 
 
 def _quote_sqlite_identifier(value: str) -> str:
@@ -484,9 +502,18 @@ def _preserve_exact_backup(
                 f"existing {label} migration backup does not match the legacy database"
             )
         _validate_backup(backup, label=label, expected_version=expected_version)
+        try:
+            permissions = _require_permissions(backup, label=f"{label} migration backup")
+        except SQLiteMigrationError as exc:
+            raise SQLiteMigrationError(
+                exc.reason,
+                backup_path=backup,
+                backup_preserved=True,
+                permissions=exc.permissions,
+            ) from exc
         return (
             backup,
-            _require_permissions(backup, label=f"{label} migration backup"),
+            permissions,
             "not_applicable",
         )
 

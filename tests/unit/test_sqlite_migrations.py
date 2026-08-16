@@ -101,10 +101,12 @@ def test_o4b_fresh_memory_and_timeline_initialize_at_explicit_version_one(
     assert memory_result.migrated is False
     assert memory_result.transaction_committed is True
     assert memory_result.backup_path is None
+    assert memory_result.backup_preserved is False
     assert timeline_result.initialized is True
     assert timeline_result.migrated is False
     assert timeline_result.transaction_committed is True
     assert timeline_result.backup_path is None
+    assert timeline_result.backup_preserved is False
     assert _user_version(memory) == 1
     assert _user_version(timeline) == 1
 
@@ -142,6 +144,7 @@ def test_o4b_memory_legacy_migration_preserves_rows_and_exact_backup(
     assert result.from_version == 0
     assert result.to_version == 1
     assert result.backup_path == backup
+    assert result.backup_preserved is True
     assert backup.read_bytes() == original
     assert _user_version(backup) == 0
     assert _user_version(path) == 1
@@ -199,10 +202,11 @@ def test_o4b_interrupted_memory_migration_rolls_back_and_retry_reuses_backup(
         if stage is SQLiteMigrationStage.MIGRATION_APPLIED:
             raise OSError("simulated migration interruption")
 
-    with pytest.raises(SQLiteMigrationError, match="migration_applied"):
+    with pytest.raises(SQLiteMigrationError, match="migration_applied") as excinfo:
         prepare_memory_database(path, fault_injector=_interrupt)
 
     backup = path.with_name("memory.sqlite3.pre-v1.bak")
+    assert excinfo.value.backup_preserved is True
     assert path.read_bytes() == original
     assert backup.read_bytes() == original
     assert _user_version(path) == 0
@@ -275,6 +279,27 @@ def test_o4b_memory_legacy_requires_a_recognized_stable_object(
 
     assert path.read_bytes() == before
     assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
+
+
+def test_o4b_table_list_unavailable_uses_stored_schema_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sqlite_migration, "_sqlite_table_list_rows", lambda _connection: [])
+    memory = tmp_path / "memory" / "memory.sqlite3"
+    timeline = tmp_path / "timeline" / "timeline.sqlite3"
+
+    fresh_memory = prepare_memory_database(memory)
+    fresh_timeline = prepare_timeline_database(timeline)
+    current_memory = prepare_memory_database(memory)
+    current_timeline = prepare_timeline_database(timeline)
+
+    assert fresh_memory.initialized is True
+    assert fresh_timeline.initialized is True
+    assert current_memory.migrated is False
+    assert current_timeline.migrated is False
+    assert _user_version(memory) == 1
+    assert _user_version(timeline) == 1
 
 
 @pytest.mark.parametrize("kind", ["memory", "timeline"])
@@ -450,6 +475,7 @@ def test_o4b_mismatched_migration_backup_is_refused_without_mutation(
     assert excinfo.value.from_version == 0
     assert excinfo.value.to_version == 1
     assert excinfo.value.backup_path == backup
+    assert excinfo.value.backup_preserved is False
     assert path.read_bytes() == before
     assert backup.read_bytes() == b"not the selected legacy database"
     assert _user_version(path) == 0
@@ -489,6 +515,7 @@ def test_o4b_post_commit_failure_exposes_typed_lifecycle_state(
     assert error.from_version == 0
     assert error.to_version == 1
     assert error.backup_path is None
+    assert error.backup_preserved is False
     assert error.permissions in {"supported", "unsupported"}
     assert error.parent_sync == "failed"
     assert _user_version(path) == 1
@@ -511,6 +538,7 @@ def test_o4b_post_commit_permission_failure_exposes_typed_lifecycle_state(
     assert error.from_version == 0
     assert error.to_version == 1
     assert error.backup_path is None
+    assert error.backup_preserved is False
     assert error.permissions == "failed"
     assert error.parent_sync == "not_attempted"
     assert _user_version(path) == 1
@@ -537,6 +565,7 @@ def test_o4b_admission_oserror_is_wrapped_with_typed_lifecycle_state(
     assert error.from_version is None
     assert error.to_version == 1
     assert error.backup_path is None
+    assert error.backup_preserved is False
     assert error.permissions == "not_attempted"
     assert error.parent_sync == "not_attempted"
     assert not path.exists()
@@ -554,6 +583,7 @@ def test_o4b_current_database_is_validated_without_backup_or_mutation(tmp_path: 
     assert result.transaction_committed is False
     assert result.from_version == result.to_version == 1
     assert result.backup_path is None
+    assert result.backup_preserved is False
     assert path.read_bytes() == before
     assert result.permissions in {"supported", "unsupported"}
     assert result.parent_sync in {"supported", "unsupported", "not_applicable"}
