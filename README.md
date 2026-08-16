@@ -344,7 +344,9 @@ events into a bounded live-progress panel for the exact chat session and one
 edited Discord message per target/turn. Progress contains only bounded tool
 identity plus finite lifecycle state—never arguments, values, results, paths,
 URLs, or error prose—and remains best-effort observability separate from final
-delivery. `shisad web-ui` writes a local static
+delivery. An unfiltered `shisad events subscribe` stream includes both raw
+audit events and synthetic `ActionProgress` rows; `--count` counts every
+emitted row. `shisad web-ui` writes a local static
 investigation/export artifact; it is not the planned live operator web
 application. The artifact embeds session, pending-action, alert, and
 egress-review data, so keep it private and remove it when the investigation is

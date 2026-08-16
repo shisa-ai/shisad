@@ -384,6 +384,7 @@ class ChatApp(App[None]):
     PENDING_CLOSE_TIMEOUT_SECONDS = 0.1
     PROGRESS_ACTION_LIMIT = 12
     PROGRESS_TURN_LIMIT = 4
+    PROGRESS_CLOSED_TURN_LIMIT = 32
     PROGRESS_RECONNECT_SECONDS = 0.5
     PROGRESS_CLOSE_TIMEOUT_SECONDS = 0.1
     THEME = get_builtin_theme()
@@ -434,7 +435,9 @@ class ChatApp(App[None]):
         self._transcript_poll_task: asyncio.Task[None] | None = None
         self._pending_poll_task: asyncio.Task[None] | None = None
         self._progress_event_task: asyncio.Task[None] | None = None
+        self._retired_progress_event_tasks: set[asyncio.Task[None]] = set()
         self._progress_lines: dict[str, dict[str, str]] = {}
+        self._closed_progress_turns: dict[str, None] = {}
         self._connection_state = "disconnected"
         self._channel = "cli"
         self._lockdown_level = "normal"
@@ -514,9 +517,11 @@ class ChatApp(App[None]):
     async def on_unmount(self) -> None:
         if self._progress_event_task is not None:
             self._progress_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._progress_event_task
+            self._retired_progress_event_tasks.add(self._progress_event_task)
             self._progress_event_task = None
+        if self._retired_progress_event_tasks:
+            await asyncio.gather(*self._retired_progress_event_tasks, return_exceptions=True)
+            self._retired_progress_event_tasks.clear()
         if self._pending_poll_task is not None:
             self._pending_poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -582,7 +587,7 @@ class ChatApp(App[None]):
                 self._extract_response(result),
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
             )
-            self._clear_all_progress()
+            self._complete_progress_display()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
         self._append_history("")
@@ -924,6 +929,8 @@ class ChatApp(App[None]):
             return
         if progress.session_id != self._active_session_id():
             return
+        if progress.origin_turn_id in self._closed_progress_turns:
+            return
         lines = self._progress_lines.get(progress.origin_turn_id)
         if lines is None:
             if len(self._progress_lines) >= self.PROGRESS_TURN_LIMIT:
@@ -947,12 +954,31 @@ class ChatApp(App[None]):
                 widget.update(text)
 
     def _clear_progress_for_turn(self, origin_turn_id: str) -> None:
+        if origin_turn_id not in self._closed_progress_turns:
+            if len(self._closed_progress_turns) >= self.PROGRESS_CLOSED_TURN_LIMIT:
+                self._closed_progress_turns.pop(next(iter(self._closed_progress_turns)), None)
+            self._closed_progress_turns[origin_turn_id] = None
         self._progress_lines.pop(origin_turn_id, None)
         self._set_progress_panel_text(self._format_progress_panel())
 
     def _clear_all_progress(self) -> None:
         self._progress_lines.clear()
         self._set_progress_panel_text(self._format_progress_panel())
+
+    def _restart_progress_subscription(self) -> None:
+        task = self._progress_event_task
+        if task is None:
+            return
+        task.cancel()
+        self._retired_progress_event_tasks.add(task)
+        task.add_done_callback(self._retired_progress_event_tasks.discard)
+        self._progress_event_task = None
+        self._start_progress_subscription()
+
+    def _complete_progress_display(self) -> None:
+        for origin_turn_id in tuple(self._progress_lines):
+            self._clear_progress_for_turn(origin_turn_id)
+        self._restart_progress_subscription()
 
     def _start_pending_polling(self) -> None:
         if self._pending_poll_task is not None:
@@ -1085,11 +1111,9 @@ class ChatApp(App[None]):
 
     def _clear_pending_panel_for_session_change(self) -> None:
         self._set_pending_panel_text("Checking the new session for pending confirmations.")
+        self._closed_progress_turns.clear()
         self._clear_all_progress()
-        if self._progress_event_task is not None:
-            self._progress_event_task.cancel()
-            self._progress_event_task = None
-            self._start_progress_subscription()
+        self._restart_progress_subscription()
 
     def _poll_transcript_for_async_messages_best_effort(self) -> None:
         try:
@@ -1172,6 +1196,7 @@ class ChatApp(App[None]):
             )
 
     def _poll_transcript_for_async_messages(self) -> None:
+        displayed_final = False
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
             if not entry_id or entry_id in self._displayed_transcript_entry_ids:
@@ -1193,6 +1218,9 @@ class ChatApp(App[None]):
                 ),
             )
             self._append_history("")
+            displayed_final = True
+        if displayed_final:
+            self._complete_progress_display()
 
     def _read_transcript_entries(self) -> list[Mapping[str, Any]]:
         path = self._transcript_path()

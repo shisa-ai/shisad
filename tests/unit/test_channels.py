@@ -918,7 +918,7 @@ async def test_o3e_discord_progress_creates_once_edits_ordered_and_redacted(
         "session_id": "session-1",
         "origin_turn_id": "turn-1",
     }
-    progress_target = DeliveryTarget(channel="discord", recipient="100", thread_id="200")
+    progress_target = DeliveryTarget(channel="discord", recipient=" 100 ", thread_id=" 200 ")
 
     await channel.publish_progress(
         ActionProgressView(
@@ -954,6 +954,76 @@ async def test_o3e_discord_progress_creates_once_edits_ordered_and_redacted(
         "… shell.exec — running",
     ]
     assert "TOP-SECRET" not in target.messages[0].contents[-1]
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3e_discord_progress_coalesces_overlapping_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels.progress import ActionProgressView
+
+    _install_o3d_discord(monkeypatch)
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    class _ProgressMessage:
+        def __init__(self, content: str) -> None:
+            self.contents = [content]
+
+        async def edit(self, *, content: str) -> None:
+            self.contents.append(content)
+
+    class _ProgressTarget(_O3DDiscordTarget):
+        def __init__(self) -> None:
+            super().__init__("200", parent_id="100")
+            self.send_calls = 0
+            self.messages: list[_ProgressMessage] = []
+
+        async def send(self, content: str, **_kwargs: object) -> _ProgressMessage:
+            self.send_calls += 1
+            send_started.set()
+            await release_send.wait()
+            message = _ProgressMessage(content)
+            self.messages.append(message)
+            return message
+
+    target = _ProgressTarget()
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+    channel._client.targets = {200: target}
+    delivery_target = DeliveryTarget(channel="discord", recipient="100", thread_id="200")
+    first = ActionProgressView(
+        session_id="session-1",
+        origin_turn_id="turn-1",
+        action_id="action-1",
+        tool_name="web.fetch",
+        state="running",
+    )
+    second = ActionProgressView(
+        session_id="session-1",
+        origin_turn_id="turn-1",
+        action_id="action-2",
+        tool_name="shell.exec",
+        state="running",
+    )
+
+    first_task = asyncio.create_task(channel.publish_progress(first, target=delivery_target))
+    await send_started.wait()
+    second_task = asyncio.create_task(channel.publish_progress(second, target=delivery_target))
+    await asyncio.sleep(0)
+    try:
+        assert target.send_calls == 1
+    finally:
+        release_send.set()
+        await asyncio.gather(first_task, second_task)
+
+    assert len(target.messages) == 1
+    assert target.messages[0].contents[-1].splitlines() == [
+        "… web.fetch — running",
+        "… shell.exec — running",
+    ]
     await channel.disconnect()
 
 

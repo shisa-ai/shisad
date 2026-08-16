@@ -219,6 +219,47 @@ async def test_o3e_event_wiring_contains_provider_specific_progress_failure() ->
 
 
 @pytest.mark.asyncio
+async def test_o3e_event_wiring_bounds_hanging_progress_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.daemon import event_wiring as event_wiring_module
+
+    class _HangingProgressChannel:
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            del progress, target
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        event_wiring_module,
+        "_PROGRESS_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(  # type: ignore[arg-type]
+        event_bus=_RecordingEventBus(),
+        server=server,
+    )
+    wiring.bind_progress_channels(  # type: ignore[dict-item]
+        {"discord": _HangingProgressChannel()}
+    )
+    event = ToolApproved(
+        session_id=SessionId("session-1"),
+        tool_name=ToolName("web.fetch"),
+        action_id="action-1",
+        origin_turn_id="turn-1",
+        delivery_target={"channel": "discord", "recipient": "100"},
+    )
+
+    await asyncio.wait_for(wiring.forward_event_to_subscribers(event), timeout=0.1)
+
+    assert [payload["event_type"] for payload in server.payloads] == [
+        "ToolApproved",
+        "ActionProgress",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_audit_capability_event_publishes_grant_event() -> None:
     bus = _RecordingEventBus()
     server = _RecordingServer()

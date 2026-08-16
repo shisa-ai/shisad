@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PROGRESS_DELIVERY_TIMEOUT_SECONDS = 1.0
+
 
 class _ChannelIngestHandler(Protocol):
     async def handle_channel_ingest(
@@ -103,7 +105,7 @@ class DaemonEventWiring:
         if not callable(publish_progress):
             return
         try:
-            async with asyncio.timeout(1.0):
+            async with asyncio.timeout(_PROGRESS_DELIVERY_TIMEOUT_SECONDS):
                 await publish_progress(progress, target=target)
         except Exception:
             logger.warning(

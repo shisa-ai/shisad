@@ -513,6 +513,16 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-1",
+                "action_id": "action-1",
+                "tool_name": "web.fetch",
+                "state": "running",
+            }
+        )
         input_widget = app.query_one("#chat-input", TextArea)
         input_widget.focus()
         input_widget.load_text("hello")
@@ -520,6 +530,18 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
         await pilot.pause()
         user_messages = _rendered_static_texts(app, ".user-message")
         assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+        assert app._progress_lines == {}
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-1",
+                "action_id": "action-1",
+                "tool_name": "web.fetch",
+                "state": "succeeded",
+            }
+        )
+        assert app._progress_lines == {}
 
     fake_client.call.assert_awaited_once_with(
         "session.message",
@@ -2240,6 +2262,16 @@ async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_pat
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-async",
+                "action_id": "action-async",
+                "tool_name": "scheduler.run",
+                "state": "running",
+            }
+        )
         with transcript_path.open("a", encoding="utf-8") as handle:
             for row in async_rows:
                 handle.write(json.dumps(row) + "\n")
@@ -2249,6 +2281,18 @@ async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_pat
         await pilot.pause()
 
         rendered = [widget._markdown for widget in app.query(Markdown)]
+        assert app._progress_lines == {}
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-async",
+                "action_id": "action-async",
+                "tool_name": "scheduler.run",
+                "state": "succeeded",
+            }
+        )
+        assert app._progress_lines == {}
 
     assert rendered == ["normal response", "Reminder: first", "Reminder: second"]
 

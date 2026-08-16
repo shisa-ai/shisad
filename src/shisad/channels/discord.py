@@ -53,6 +53,7 @@ _DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 _DISCORD_ACTION_COMPONENT_LIMIT = 5
 _DISCORD_PROGRESS_ACTION_LIMIT = 20
 _DISCORD_PROGRESS_TURN_LIMIT = 32
+_DiscordProgressKey = tuple[str, str, str, str]
 _DISCORD_THREAD_PERMISSION_GUIDANCE = (
     "I couldn't create a Discord thread. Grant Create Public Threads and "
     "Send Messages in Threads permissions, then try again."
@@ -148,8 +149,10 @@ class DiscordChannel(InMemoryChannel):
         self._client: Any | None = None
         self._client_task: asyncio.Task[None] | None = None
         self._pending_interactions: dict[tuple[str, str, str, str, str], Any] = {}
-        self._progress_messages: dict[tuple[str, str, str, str], Any | None] = {}
-        self._progress_lines: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        self._progress_messages: dict[_DiscordProgressKey, Any | None] = {}
+        self._progress_lines: dict[_DiscordProgressKey, dict[str, str]] = {}
+        self._progress_revisions: dict[_DiscordProgressKey, int] = {}
+        self._progress_busy: set[_DiscordProgressKey] = set()
 
     @property
     def available(self) -> bool:
@@ -587,6 +590,8 @@ class DiscordChannel(InMemoryChannel):
         self._pending_interactions.clear()
         self._progress_messages.clear()
         self._progress_lines.clear()
+        self._progress_revisions.clear()
+        self._progress_busy.clear()
         await super().disconnect()
 
     async def disconnect_strict(self) -> None:
@@ -610,6 +615,8 @@ class DiscordChannel(InMemoryChannel):
         self._pending_interactions.clear()
         self._progress_messages.clear()
         self._progress_lines.clear()
+        self._progress_revisions.clear()
+        self._progress_busy.clear()
         await super().disconnect()
 
     async def send(
@@ -683,7 +690,9 @@ class DiscordChannel(InMemoryChannel):
         """Create or edit one bounded safe progress message for a Discord turn."""
         if self._client is None or target.channel != "discord":
             return
-        recipient = (target.thread_id or target.recipient).strip()
+        declared_parent_id = target.recipient.strip()
+        declared_thread_id = target.thread_id.strip()
+        recipient = declared_thread_id or declared_parent_id
         try:
             channel_id = int(recipient)
         except ValueError:
@@ -698,53 +707,74 @@ class DiscordChannel(InMemoryChannel):
                 channel_obj = await fetch_channel(channel_id)
         if channel_obj is None:
             return
-        if target.thread_id:
+        if declared_thread_id:
             parent_id, thread_id = self._delivery_coordinates(channel_obj)
-            if thread_id != target.thread_id or parent_id != target.recipient:
+            if thread_id != declared_thread_id or parent_id != declared_parent_id:
                 return
 
         key = (
             progress.session_id,
             progress.origin_turn_id,
-            target.recipient,
-            target.thread_id,
+            declared_parent_id,
+            declared_thread_id,
         )
         lines = self._progress_lines.get(key)
         if lines is None:
             if len(self._progress_lines) >= _DISCORD_PROGRESS_TURN_LIMIT:
-                oldest = next(iter(self._progress_lines))
+                oldest = next(
+                    (
+                        candidate
+                        for candidate in self._progress_lines
+                        if candidate not in self._progress_busy
+                    ),
+                    None,
+                )
+                if oldest is None:
+                    return
                 self._progress_lines.pop(oldest, None)
                 self._progress_messages.pop(oldest, None)
+                self._progress_revisions.pop(oldest, None)
             lines = {}
             self._progress_lines[key] = lines
         if progress.action_id not in lines and len(lines) >= _DISCORD_PROGRESS_ACTION_LIMIT:
             return
         lines[progress.action_id] = format_action_progress_line(progress)
-        content = "\n".join(lines.values())
+        self._progress_revisions[key] = self._progress_revisions.get(key, 0) + 1
+        if key in self._progress_busy:
+            return
 
+        self._progress_busy.add(key)
         try:
-            if key not in self._progress_messages:
-                send = getattr(channel_obj, "send", None)
-                if not callable(send):
+            while key in self._progress_lines:
+                revision = self._progress_revisions[key]
+                content = "\n".join(self._progress_lines[key].values())
+                if key not in self._progress_messages:
+                    send = getattr(channel_obj, "send", None)
+                    if not callable(send):
+                        return
+                    self._progress_messages[key] = None
+                    message = send(content)
+                    if asyncio.iscoroutine(message):
+                        message = await message
+                    self._progress_messages[key] = message
+                else:
+                    progress_message = self._progress_messages[key]
+                    edit = getattr(progress_message, "edit", None)
+                    if not callable(edit):
+                        return
+                    result = edit(content=content)
+                    if asyncio.iscoroutine(result):
+                        await result
+                if self._progress_revisions.get(key) == revision:
                     return
-                message = send(content)
-                if asyncio.iscoroutine(message):
-                    message = await message
-                self._progress_messages[key] = message
-                return
-            progress_message = self._progress_messages[key]
-            edit = getattr(progress_message, "edit", None)
-            if not callable(edit):
-                return
-            result = edit(content=content)
-            if asyncio.iscoroutine(result):
-                await result
         except _discord_response_exceptions() as exc:
             logger.warning(
                 "Discord progress update failed (state=%s error=%s)",
                 progress.state,
                 exc.__class__.__name__,
             )
+        finally:
+            self._progress_busy.discard(key)
 
     async def _enqueue_approval_interaction(
         self,
