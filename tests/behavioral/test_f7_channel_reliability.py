@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -376,4 +377,96 @@ async def test_o3d_discord_thread_mode_preserves_session_and_delivery_identity(
     assert thread_one.sent == ["result-0"]
     assert thread_two.sent == ["result-2"]
     assert parent.sent == []
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3e_discord_progress_is_ordered_redacted_and_separate_from_result() -> None:
+    from shisad.core.events import ToolApproved, ToolExecuted
+    from shisad.core.types import ToolName
+    from shisad.daemon.event_wiring import DaemonEventWiring
+
+    class _Server:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, Any]] = []
+
+        async def broadcast_event(self, payload: dict[str, Any]) -> None:
+            self.payloads.append(payload)
+
+    class _ProgressDiscord(InMemoryChannel):
+        def __init__(self) -> None:
+            super().__init__(name="discord")
+            self.progress: list[object] = []
+
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            self.progress.append((progress, target))
+
+    server = _Server()
+    channel = _ProgressDiscord()
+    await channel.connect()
+    wiring = DaemonEventWiring(event_bus=SimpleNamespace(), server=server)  # type: ignore[arg-type]
+    wiring.bind_progress_channels({"discord": channel})
+    target = {
+        "channel": "discord",
+        "recipient": "100",
+        "workspace_hint": "guild-1",
+        "thread_id": "200",
+    }
+    events = [
+        ToolApproved(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("web.fetch"),
+            action_id="action-1",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+        ),
+        ToolApproved(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("shell.exec"),
+            action_id="action-2",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+        ),
+        ToolExecuted(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("web.fetch"),
+            action_id="action-1",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+            success=True,
+            details={"body": "TOP-SECRET"},
+        ),
+        ToolExecuted(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("shell.exec"),
+            action_id="action-2",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+            success=False,
+            error="TOP-SECRET",
+        ),
+    ]
+    for event in events:
+        await wiring.forward_event_to_subscribers(event)
+    await channel.send("separate final result", target=DeliveryTarget.model_validate(target))
+
+    safe_payloads = [
+        payload for payload in server.payloads if payload.get("event_type") == "ActionProgress"
+    ]
+    assert [payload["state"] for payload in safe_payloads] == [
+        "running",
+        "running",
+        "succeeded",
+        "failed",
+    ]
+    assert [item[0].action_id for item in channel.progress] == [  # type: ignore[attr-defined]
+        "action-1",
+        "action-2",
+        "action-1",
+        "action-2",
+    ]
+    assert all(item[1].recipient == "100" for item in channel.progress)  # type: ignore[attr-defined]
+    assert "TOP-SECRET" not in json.dumps(safe_payloads)
+    assert "recipient" not in json.dumps(safe_payloads)
+    assert await channel.pop_outgoing() == "separate final result"
     await channel.disconnect()

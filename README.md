@@ -339,7 +339,12 @@ approval posture, and points to `shisad action confirm` or
 `shisad action reject` for an explicit decision without deciding anything
 itself. Pending-state RPC or persistence degradation leaves chat input usable
 and displays a retrying unavailable state instead of treating an unlisted
-action as resolved. `shisad web-ui` writes a local static
+action as resolved. The v0.8.2 development tree also projects typed action
+events into a bounded live-progress panel for the exact chat session and one
+edited Discord message per target/turn. Progress contains only bounded tool
+identity plus finite lifecycle state—never arguments, values, results, paths,
+URLs, or error prose—and remains best-effort observability separate from final
+delivery. `shisad web-ui` writes a local static
 investigation/export artifact; it is not the planned live operator web
 application. The artifact embeds session, pending-action, alert, and
 egress-review data, so keep it private and remove it when the investigation is

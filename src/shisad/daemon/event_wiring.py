@@ -6,7 +6,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
-from shisad.channels.base import Channel
+from shisad.channels.base import Channel, DeliveryTarget
+from shisad.channels.progress import ActionProgressView, project_action_progress
 from shisad.core.api.schema import ChannelIngestParams
 from shisad.core.api.transport import ControlServer
 from shisad.core.events import (
@@ -57,14 +58,59 @@ class DaemonEventWiring:
         self._server = server
         self._loop = asyncio.get_running_loop()
         self._lockdown_manager: LockdownManager | None = None
+        self._progress_channels: dict[str, Channel] = {}
 
     def bind_lockdown_manager(self, manager: LockdownManager) -> None:
         self._lockdown_manager = manager
+
+    def bind_progress_channels(self, channels: dict[str, Channel]) -> None:
+        """Bind active optional adapters after bounded startup completes."""
+        self._progress_channels = dict(channels)
 
     async def forward_event_to_subscribers(self, event: BaseEvent) -> None:
         payload = event.model_dump(mode="json")
         payload["event_type"] = type(event).__name__
         await self._server.broadcast_event(payload)
+        progress = project_action_progress(event)
+        if progress is None:
+            return
+        await self._server.broadcast_event(progress.model_dump(mode="json"))
+        target = self._progress_delivery_target(event)
+        if target is not None:
+            await self._deliver_channel_progress(progress, target=target)
+
+    @staticmethod
+    def _progress_delivery_target(event: BaseEvent) -> DeliveryTarget | None:
+        raw_target = getattr(event, "delivery_target", None)
+        if not isinstance(raw_target, dict):
+            return None
+        try:
+            target = DeliveryTarget.model_validate(raw_target)
+        except (TypeError, ValueError):
+            return None
+        if not target.channel.strip() or not target.recipient.strip():
+            return None
+        return target
+
+    async def _deliver_channel_progress(
+        self,
+        progress: ActionProgressView,
+        *,
+        target: DeliveryTarget,
+    ) -> None:
+        channel = self._progress_channels.get(target.channel)
+        publish_progress = getattr(channel, "publish_progress", None)
+        if not callable(publish_progress):
+            return
+        try:
+            async with asyncio.timeout(1.0):
+                await publish_progress(progress, target=target)
+        except Exception:
+            logger.warning(
+                "Channel progress delivery failed (channel=%s state=%s)",
+                target.channel,
+                progress.state,
+            )
 
     def publish_async(self, event: BaseEvent) -> None:
         event_type = type(event).__name__

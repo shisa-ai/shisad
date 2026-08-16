@@ -1285,6 +1285,7 @@ class DaemonServices:
             }
             pending_action_store = PendingActionStore(config.data_dir / "pending_actions.json")
             pending_action_lifecycle = PendingActionLifecycleService(pending_action_store)
+            event_wiring.bind_progress_channels(channels)
             services = cls(
                 config=config,
                 data_lock=data_lock,

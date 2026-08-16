@@ -23,6 +23,7 @@ from shisad.channels.discord_policy import (
     DiscordChannelPolicyDecision,
     DiscordChannelRule,
 )
+from shisad.channels.progress import ActionProgressView, format_action_progress_line
 from shisad.channels.state import (
     ChannelStateStore,
     ReplayIdentity,
@@ -50,6 +51,8 @@ _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
 _DISCORD_DEFAULT_APPROVAL_ACK = "Approval response received."
 _DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 _DISCORD_ACTION_COMPONENT_LIMIT = 5
+_DISCORD_PROGRESS_ACTION_LIMIT = 20
+_DISCORD_PROGRESS_TURN_LIMIT = 32
 _DISCORD_THREAD_PERMISSION_GUIDANCE = (
     "I couldn't create a Discord thread. Grant Create Public Threads and "
     "Send Messages in Threads permissions, then try again."
@@ -145,6 +148,8 @@ class DiscordChannel(InMemoryChannel):
         self._client: Any | None = None
         self._client_task: asyncio.Task[None] | None = None
         self._pending_interactions: dict[tuple[str, str, str, str, str], Any] = {}
+        self._progress_messages: dict[tuple[str, str, str, str], Any | None] = {}
+        self._progress_lines: dict[tuple[str, str, str, str], dict[str, str]] = {}
 
     @property
     def available(self) -> bool:
@@ -580,6 +585,8 @@ class DiscordChannel(InMemoryChannel):
             self._client_task = None
         self._client = None
         self._pending_interactions.clear()
+        self._progress_messages.clear()
+        self._progress_lines.clear()
         await super().disconnect()
 
     async def disconnect_strict(self) -> None:
@@ -601,6 +608,8 @@ class DiscordChannel(InMemoryChannel):
         self._client_task = None
         self._client = None
         self._pending_interactions.clear()
+        self._progress_messages.clear()
+        self._progress_lines.clear()
         await super().disconnect()
 
     async def send(
@@ -664,6 +673,78 @@ class DiscordChannel(InMemoryChannel):
                             return
             raise RuntimeError("Discord could not resolve the delivery target")
         await super().send(message, target=target, metadata=metadata)
+
+    async def publish_progress(
+        self,
+        progress: ActionProgressView,
+        *,
+        target: DeliveryTarget,
+    ) -> None:
+        """Create or edit one bounded safe progress message for a Discord turn."""
+        if self._client is None or target.channel != "discord":
+            return
+        recipient = (target.thread_id or target.recipient).strip()
+        try:
+            channel_id = int(recipient)
+        except ValueError:
+            return
+        channel_obj = None
+        get_channel = getattr(self._client, "get_channel", None)
+        if callable(get_channel):
+            channel_obj = get_channel(channel_id)
+        if channel_obj is None:
+            fetch_channel = getattr(self._client, "fetch_channel", None)
+            if callable(fetch_channel):
+                channel_obj = await fetch_channel(channel_id)
+        if channel_obj is None:
+            return
+        if target.thread_id:
+            parent_id, thread_id = self._delivery_coordinates(channel_obj)
+            if thread_id != target.thread_id or parent_id != target.recipient:
+                return
+
+        key = (
+            progress.session_id,
+            progress.origin_turn_id,
+            target.recipient,
+            target.thread_id,
+        )
+        lines = self._progress_lines.get(key)
+        if lines is None:
+            if len(self._progress_lines) >= _DISCORD_PROGRESS_TURN_LIMIT:
+                oldest = next(iter(self._progress_lines))
+                self._progress_lines.pop(oldest, None)
+                self._progress_messages.pop(oldest, None)
+            lines = {}
+            self._progress_lines[key] = lines
+        if progress.action_id not in lines and len(lines) >= _DISCORD_PROGRESS_ACTION_LIMIT:
+            return
+        lines[progress.action_id] = format_action_progress_line(progress)
+        content = "\n".join(lines.values())
+
+        try:
+            if key not in self._progress_messages:
+                send = getattr(channel_obj, "send", None)
+                if not callable(send):
+                    return
+                message = send(content)
+                if asyncio.iscoroutine(message):
+                    message = await message
+                self._progress_messages[key] = message
+                return
+            progress_message = self._progress_messages[key]
+            edit = getattr(progress_message, "edit", None)
+            if not callable(edit):
+                return
+            result = edit(content=content)
+            if asyncio.iscoroutine(result):
+                await result
+        except _discord_response_exceptions() as exc:
+            logger.warning(
+                "Discord progress update failed (state=%s error=%s)",
+                progress.state,
+                exc.__class__.__name__,
+            )
 
     async def _enqueue_approval_interaction(
         self,

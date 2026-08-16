@@ -23,6 +23,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
 from shisad import __version__
+from shisad.channels.progress import ActionProgressView, format_action_progress_line
 from shisad.core.api.schema import ActionPendingEntry, ActionPendingResult
 from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal, sanitize_terminal_field
@@ -320,6 +321,13 @@ def _chat_css(theme: ThemePalette, *, color: bool = True) -> str:
         border: round {border};
         padding: 0 1;
     }}
+    #chat-progress {{
+        height: auto;
+        max-height: 14;
+        border: round {border};
+        padding: 0 1;
+        {muted_color}
+    }}
     .chat-turn {{
         height: auto;
         margin: 0 0 1 0;
@@ -374,6 +382,10 @@ class ChatApp(App[None]):
     PENDING_POLL_SECONDS = 0.5
     PENDING_RPC_TIMEOUT_SECONDS = 2.0
     PENDING_CLOSE_TIMEOUT_SECONDS = 0.1
+    PROGRESS_ACTION_LIMIT = 12
+    PROGRESS_TURN_LIMIT = 4
+    PROGRESS_RECONNECT_SECONDS = 0.5
+    PROGRESS_CLOSE_TIMEOUT_SECONDS = 0.1
     THEME = get_builtin_theme()
 
     CSS = _chat_css(THEME)
@@ -421,6 +433,8 @@ class ChatApp(App[None]):
         self._displayed_transcript_entry_ids: set[str] = set()
         self._transcript_poll_task: asyncio.Task[None] | None = None
         self._pending_poll_task: asyncio.Task[None] | None = None
+        self._progress_event_task: asyncio.Task[None] | None = None
+        self._progress_lines: dict[str, dict[str, str]] = {}
         self._connection_state = "disconnected"
         self._channel = "cli"
         self._lockdown_level = "normal"
@@ -438,6 +452,15 @@ class ChatApp(App[None]):
         pending.border_title = "Pending confirmations"
         pending.border_subtitle = "current session"
         yield pending
+        progress = Static(
+            "No action progress for the current turn.",
+            id="chat-progress",
+            classes="shisa-panel",
+            markup=False,
+        )
+        progress.border_title = "Action progress"
+        progress.border_subtitle = "current session"
+        yield progress
         history = VerticalScroll(id="chat-log", can_focus=True, classes="shisa-panel")
         history.border_title = "Transcript"
         history.border_subtitle = "latest"
@@ -471,6 +494,7 @@ class ChatApp(App[None]):
             if self._startup_hint is not None:
                 self._append_history(f"Tour suggestion (not sent): {self._startup_hint}")
             self._start_transcript_polling()
+            self._start_progress_subscription()
             self._set_pending_panel_text("Checking current session for pending confirmations.")
             self._append_history(
                 "Type a message and press Enter. "
@@ -488,6 +512,11 @@ class ChatApp(App[None]):
         self.query_one("#chat-input", TextArea).focus()
 
     async def on_unmount(self) -> None:
+        if self._progress_event_task is not None:
+            self._progress_event_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._progress_event_task
+            self._progress_event_task = None
         if self._pending_poll_task is not None:
             self._pending_poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -553,6 +582,7 @@ class ChatApp(App[None]):
                 self._extract_response(result),
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
             )
+            self._clear_all_progress()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
         self._append_history("")
@@ -853,6 +883,77 @@ class ChatApp(App[None]):
             await asyncio.sleep(0.5)
             self._poll_transcript_for_async_messages_best_effort()
 
+    def _start_progress_subscription(self) -> None:
+        if self._progress_event_task is not None:
+            return
+        self._progress_event_task = asyncio.create_task(self._progress_event_loop())
+
+    async def _progress_event_loop(self) -> None:
+        while True:
+            client: Any | None = None
+            session_id = self._active_session_id()
+            if not session_id:
+                await asyncio.sleep(self.PROGRESS_RECONNECT_SECONDS)
+                continue
+            try:
+                client = await self._connect()
+                await client.subscribe_events(
+                    {"event_type": "ActionProgress", "session_id": session_id}
+                )
+                while session_id == self._active_session_id():
+                    payload = await client.read_event()
+                    if not isinstance(payload, Mapping):
+                        raise TypeError("invalid progress event payload")
+                    self._record_progress_event(payload)
+                    await asyncio.sleep(0)
+            except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+                self._set_progress_panel_text(
+                    "Action progress unavailable; chat remains usable. Reconnecting."
+                )
+                await asyncio.sleep(self.PROGRESS_RECONNECT_SECONDS)
+            finally:
+                if client is not None:
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(max(0.01, self.PROGRESS_CLOSE_TIMEOUT_SECONDS)):
+                            await client.close()
+
+    def _record_progress_event(self, payload: Mapping[str, Any]) -> None:
+        try:
+            progress = ActionProgressView.model_validate(payload)
+        except (TypeError, ValueError):
+            return
+        if progress.session_id != self._active_session_id():
+            return
+        lines = self._progress_lines.get(progress.origin_turn_id)
+        if lines is None:
+            if len(self._progress_lines) >= self.PROGRESS_TURN_LIMIT:
+                self._progress_lines.pop(next(iter(self._progress_lines)), None)
+            lines = {}
+            self._progress_lines[progress.origin_turn_id] = lines
+        if progress.action_id not in lines and len(lines) >= self.PROGRESS_ACTION_LIMIT:
+            return
+        lines[progress.action_id] = format_action_progress_line(progress)
+        self._set_progress_panel_text(self._format_progress_panel())
+
+    def _format_progress_panel(self) -> str:
+        if not self._progress_lines:
+            return "No action progress for the current turn."
+        latest = next(reversed(self._progress_lines.values()))
+        return "\n".join(latest.values())
+
+    def _set_progress_panel_text(self, text: str) -> None:
+        for widget in self.query("#chat-progress"):
+            if isinstance(widget, Static):
+                widget.update(text)
+
+    def _clear_progress_for_turn(self, origin_turn_id: str) -> None:
+        self._progress_lines.pop(origin_turn_id, None)
+        self._set_progress_panel_text(self._format_progress_panel())
+
+    def _clear_all_progress(self) -> None:
+        self._progress_lines.clear()
+        self._set_progress_panel_text(self._format_progress_panel())
+
     def _start_pending_polling(self) -> None:
         if self._pending_poll_task is not None:
             return
@@ -984,6 +1085,11 @@ class ChatApp(App[None]):
 
     def _clear_pending_panel_for_session_change(self) -> None:
         self._set_pending_panel_text("Checking the new session for pending confirmations.")
+        self._clear_all_progress()
+        if self._progress_event_task is not None:
+            self._progress_event_task.cancel()
+            self._progress_event_task = None
+            self._start_progress_subscription()
 
     def _poll_transcript_for_async_messages_best_effort(self) -> None:
         try:

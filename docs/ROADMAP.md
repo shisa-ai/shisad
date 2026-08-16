@@ -461,7 +461,12 @@ TOTP entry remain deferred to `v0.8.0`.
   delivery remains bound to its exact parent/thread coordinates, and session
   reuse includes thread identity so sibling conversations stay isolated.
   Missing thread permission is channel-scoped and actionable; invalid thread
-  targets do not fall back to flat delivery.
+  targets do not fall back to flat delivery. The final sibling adds
+  exact-session local-chat and exact-target Discord action progress from typed
+  lifecycle events. It exposes bounded tool identity and finite state only,
+  edits one Discord progress message per turn, and keeps best-effort progress
+  failure independent from confirmations, execution, and final delivery; raw
+  arguments, results, destinations, and error prose are never projected.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,

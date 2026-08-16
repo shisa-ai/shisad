@@ -22,6 +22,99 @@ def _rendered_static_texts(app: ChatApp, selector: str) -> list[str]:
     ]
 
 
+def test_o3e_chat_progress_filters_session_bounds_lines_and_clears_turn() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    for index in range(ChatApp.PROGRESS_ACTION_LIMIT + 3):
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "session-1",
+                "origin_turn_id": "turn-1",
+                "action_id": f"action-{index}",
+                "tool_name": f"tool.{index}",
+                "state": "running",
+            }
+        )
+    app._record_progress_event(
+        {
+            "event_type": "ActionProgress",
+            "session_id": "other-session",
+            "origin_turn_id": "turn-other",
+            "action_id": "foreign",
+            "tool_name": "secret.tool",
+            "state": "failed",
+        }
+    )
+
+    rendered = app._format_progress_panel()
+    assert len(rendered.splitlines()) == ChatApp.PROGRESS_ACTION_LIMIT
+    assert "foreign" not in rendered
+    assert "secret.tool" not in rendered
+    assert len(app._progress_lines) == 1
+
+    app._clear_progress_for_turn("turn-1")
+    assert app._format_progress_panel() == "No action progress for the current turn."
+
+
+@pytest.mark.asyncio
+async def test_o3e_chat_progress_reconnects_after_malformed_stream_event() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    app.PROGRESS_RECONNECT_SECONDS = 0.01
+    client = AsyncMock()
+    blocked = asyncio.Event()
+    reads = 0
+
+    async def read_event() -> object:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return object()
+        await blocked.wait()
+        return object()
+
+    client.read_event.side_effect = read_event
+    app._connect = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(app._progress_event_loop())
+    try:
+        for _ in range(20):
+            if client.close.await_count:
+                break
+            await asyncio.sleep(0.005)
+        assert client.close.await_count >= 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_o3e_chat_progress_bounds_stream_close_before_reconnect() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    app.PROGRESS_RECONNECT_SECONDS = 0.01
+    app.PROGRESS_CLOSE_TIMEOUT_SECONDS = 0.01
+    client = AsyncMock()
+
+    async def never_closes() -> None:
+        await asyncio.Event().wait()
+
+    client.read_event = AsyncMock(return_value=object())
+    client.close = AsyncMock(side_effect=never_closes)
+    app._connect = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(app._progress_event_loop())
+    try:
+        for _ in range(40):
+            if app._connect.await_count >= 2:  # type: ignore[attr-defined]
+                break
+            await asyncio.sleep(0.005)
+        assert app._connect.await_count >= 2  # type: ignore[attr-defined]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 # ---------------------------------------------------------------------------
 # Message formatting tests
 # ---------------------------------------------------------------------------

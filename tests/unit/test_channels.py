@@ -885,6 +885,79 @@ async def test_o3d_discord_thread_permission_failure_is_actionable_and_bounded(
 
 
 @pytest.mark.asyncio
+async def test_o3e_discord_progress_creates_once_edits_ordered_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels.progress import ActionProgressView
+
+    _install_o3d_discord(monkeypatch)
+
+    class _ProgressMessage:
+        def __init__(self, content: str) -> None:
+            self.contents = [content]
+
+        async def edit(self, *, content: str) -> None:
+            self.contents.append(content)
+
+    class _ProgressTarget(_O3DDiscordTarget):
+        def __init__(self) -> None:
+            super().__init__("200", parent_id="100")
+            self.messages: list[_ProgressMessage] = []
+
+        async def send(self, content: str, **_kwargs: object) -> _ProgressMessage:
+            message = _ProgressMessage(content)
+            self.messages.append(message)
+            return message
+
+    target = _ProgressTarget()
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+    channel._client.targets = {200: target}
+    common = {
+        "session_id": "session-1",
+        "origin_turn_id": "turn-1",
+    }
+    progress_target = DeliveryTarget(channel="discord", recipient="100", thread_id="200")
+
+    await channel.publish_progress(
+        ActionProgressView(
+            **common,
+            action_id="action-1",
+            tool_name="web.fetch",
+            state="running",
+        ),
+        target=progress_target,
+    )
+    await channel.publish_progress(
+        ActionProgressView(
+            **common,
+            action_id="action-2",
+            tool_name="shell.exec",
+            state="running",
+        ),
+        target=progress_target,
+    )
+    await channel.publish_progress(
+        ActionProgressView(
+            **common,
+            action_id="action-1",
+            tool_name="web.fetch",
+            state="succeeded",
+        ),
+        target=progress_target,
+    )
+
+    assert len(target.messages) == 1
+    assert target.messages[0].contents[-1].splitlines() == [
+        "✓ web.fetch — succeeded",
+        "… shell.exec — running",
+    ]
+    assert "TOP-SECRET" not in target.messages[0].contents[-1]
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_discord_channel_registers_dispatchable_on_message_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
