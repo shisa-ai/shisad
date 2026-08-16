@@ -4292,10 +4292,14 @@ def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
 
 
 def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shisad.cli import tour as tour_module
 
+    config_home = tmp_path / "config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
     monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
     monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
     monkeypatch.setattr(
@@ -4323,6 +4327,7 @@ def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
     completion = first.output.split("5. Recovery and next steps", maxsplit=1)[1]
     for command in ("shisad chat", "shisad tui", "shisad status", "shisad doctor", "shisad tour"):
         assert command in completion
+    assert not config_home.exists()
 
 
 def test_o3b_tour_consumes_bounded_o3a_health_without_starting_daemon(
@@ -4379,8 +4384,11 @@ def test_o3b_tour_health_failure_degrades_to_actionable_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from shisad.cli import tour as tour_module
+
     config = _config(tmp_path)
     config.socket_path.touch()
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
     if failure == "config":
         monkeypatch.setattr(
             cli_main,
@@ -4391,7 +4399,13 @@ def test_o3b_tour_health_failure_degrades_to_actionable_unavailable(
         monkeypatch.setattr(cli_main, "_get_config", lambda: config)
         monkeypatch.setattr(cli_main, "_try_status", lambda *_args, **_kwargs: None)
 
-    assert cli_main._inspect_tour_health() is None
+    result = CliRunner().invoke(cli_main.cli, ["tour"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "Current O3A health: unavailable; run shisad start, then shisad status or shisad doctor."
+        in result.output
+    )
 
 
 @pytest.mark.parametrize(
