@@ -29,6 +29,9 @@ from shisad.cli import tour as tour_module
 from shisad.cli.credentials import credential
 from shisad.cli.lifecycle import (
     BackgroundStartError,
+    BackgroundStartResult,
+    _try_doctor,
+    _try_status,
     render_background_start,
     start_background_daemon,
 )
@@ -1058,18 +1061,16 @@ def _run_chat(
         raise click.ClickException(f"chat TUI import failed: {exc}") from exc
 
     config = _get_config()
-    app_kwargs: dict[str, Any] = {
-        "socket_path": config.socket_path,
-        "data_dir": config.data_dir,
-        "user_id": user,
-        "workspace_id": workspace,
-        "session_id": session_id or None,
-        "reuse_bound_session": not new_session,
-        "ui_posture": _get_ui_posture(config),
-    }
-    if startup_hint is not None:
-        app_kwargs["startup_hint"] = startup_hint
-    app = ChatApp(**app_kwargs)
+    app = ChatApp(
+        socket_path=config.socket_path,
+        data_dir=config.data_dir,
+        user_id=user,
+        workspace_id=workspace,
+        session_id=session_id or None,
+        reuse_bound_session=not new_session,
+        ui_posture=_get_ui_posture(config),
+        startup_hint=startup_hint,
+    )
     app.run()
 
 
@@ -1098,7 +1099,7 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
 def tour() -> None:
     """Show the deterministic guided tour and optionally open ordinary chat."""
 
-    click.echo(tour_module.render_tour())
+    click.echo(tour_module.render_tour(health=_inspect_tour_health()))
     if not tour_module.is_interactive_tour():
         return
     if not click.confirm(
@@ -1113,6 +1114,27 @@ def tour() -> None:
         workspace="default",
         new_session=False,
         startup_hint=tour_module.CHAT_SUGGESTION,
+    )
+
+
+def _inspect_tour_health() -> BackgroundStartResult | None:
+    """Read O3A's bounded typed health without starting or mutating the daemon."""
+
+    try:
+        config = _get_config()
+    except (click.ClickException, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if not config.socket_path.exists():
+        return None
+    status_result = _try_status(config, None, timeout_seconds=0.5)
+    if status_result is None:
+        return None
+    return BackgroundStartResult(
+        already_running=True,
+        pid=None,
+        log_path=config.data_dir / "logs" / "daemon.log",
+        status=status_result,
+        doctor=_try_doctor(config, None, timeout_seconds=0.5),
     )
 
 

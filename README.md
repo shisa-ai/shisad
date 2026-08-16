@@ -200,10 +200,12 @@ API rather than trusting a PID file.
 
 `shisad tour` prints a deterministic, maintained walkthrough of readiness,
 ordinary chat, live policy outcomes, dashboard state, and recovery commands.
-Non-interactive use only prints the guide. On a TTY, an explicit default-no
-choice can open the ordinary chat app with a display-only suggested request;
-the tour never submits that request, invokes a model/tool, changes policy, or
-creates separate tutorial state.
+It consumes the bounded typed O3A health projection when a daemon is reachable
+and otherwise keeps the guide usable with explicit start/status/doctor
+recovery. Non-interactive use only prints the guide and that read-only health
+state. On a TTY, an explicit default-no choice can open the ordinary chat app
+with a display-only suggested request; the tour never submits that request,
+invokes a model/tool, changes policy, or creates separate tutorial state.
 
 `shisad init` creates one owner-only commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally

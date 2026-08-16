@@ -40,6 +40,38 @@ def _invoke_ok(runner: CliRunner, args: list[str]) -> Result:
     return result
 
 
+_CHAT_HINT_UNSET = object()
+
+
+def _chat_app_double(captured: dict[str, object]) -> type[object]:
+    class _FakeApp:
+        def __init__(
+            self,
+            *,
+            socket_path: Path,
+            data_dir: Path,
+            user_id: str,
+            workspace_id: str,
+            session_id: str | None,
+            reuse_bound_session: bool,
+            ui_posture: object,
+            startup_hint: str | None | object = _CHAT_HINT_UNSET,
+        ) -> None:
+            captured["socket_path"] = socket_path
+            captured["data_dir"] = data_dir
+            captured["user_id"] = user_id
+            captured["workspace_id"] = workspace_id
+            captured["session_id"] = session_id
+            captured["reuse_bound_session"] = reuse_bound_session
+            captured["ui_posture"] = ui_posture
+            captured["startup_hint"] = startup_hint
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    return _FakeApp
+
+
 def _audit_entry(
     event_id: str,
     session_id: str,
@@ -4265,6 +4297,7 @@ def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
     from shisad.cli import tour as tour_module
 
     monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
     monkeypatch.setattr(
         cli_main,
         "_run_chat",
@@ -4287,6 +4320,78 @@ def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
     assert "shisad doctor" in first.output
     assert "shisad tour" in first.output
     assert "Open ordinary chat" not in first.output
+    completion = first.output.split("5. Recovery and next steps", maxsplit=1)[1]
+    for command in ("shisad chat", "shisad tui", "shisad status", "shisad doctor", "shisad tour"):
+        assert command in completion
+
+
+def test_o3b_tour_consumes_bounded_o3a_health_without_starting_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    probes: list[tuple[str, float]] = []
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_try_status",
+        lambda _config, _rpc, *, timeout_seconds: (
+            probes.append(("status", timeout_seconds))
+            or cli_main.DaemonStatusResult.model_validate(
+                {"status": "running", "readiness": {"provider": {"status": "blocked"}}}
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_try_doctor",
+        lambda _config, _rpc, *, timeout_seconds: (
+            probes.append(("doctor", timeout_seconds))
+            or cli_main.DoctorCheckResult.model_validate(
+                {"status": "degraded", "component": "all", "checks": {}}
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda *_args, **_kwargs: pytest.fail("tour health inspection must not start a daemon"),
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"])
+
+    assert result.exit_code == 0, result.output
+    assert "Current O3A health:" in result.output
+    assert "Health: degraded" in result.output
+    assert "Readiness: provider=blocked" in result.output
+    assert probes == [("status", 0.5), ("doctor", 0.5)]
+
+
+@pytest.mark.parametrize("failure", ("config", "rpc"))
+def test_o3b_tour_health_failure_degrades_to_actionable_unavailable(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    if failure == "config":
+        monkeypatch.setattr(
+            cli_main,
+            "_get_config",
+            lambda: (_ for _ in ()).throw(click.ClickException("invalid config")),
+        )
+    else:
+        monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+        monkeypatch.setattr(cli_main, "_try_status", lambda *_args, **_kwargs: None)
+
+    assert cli_main._inspect_tour_health() is None
 
 
 @pytest.mark.parametrize(
@@ -4312,6 +4417,7 @@ def test_o3b_tour_interactive_decline_exits_without_chat(
     from shisad.cli import tour as tour_module
 
     monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
     monkeypatch.setattr(
         cli_main,
         "_run_chat",
@@ -4327,28 +4433,53 @@ def test_o3b_tour_interactive_decline_exits_without_chat(
 
 
 def test_o3b_tour_explicit_demo_uses_ordinary_chat_with_display_only_suggestion(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shisad.cli import tour as tour_module
 
-    launched: list[dict[str, object]] = []
+    config = _config(tmp_path)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
-    monkeypatch.setattr(
-        cli_main, "_run_chat", lambda **kwargs: launched.append(kwargs), raising=False
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
     )
 
     result = CliRunner().invoke(cli_main.cli, ["tour"], input="y\n")
 
     assert result.exit_code == 0, result.output
-    assert launched == [
-        {
-            "session_id": "",
-            "user": "ops",
-            "workspace": "default",
-            "new_session": False,
-            "startup_hint": tour_module.CHAT_SUGGESTION,
-        }
-    ]
+    assert captured["socket_path"] == config.socket_path
+    assert captured["session_id"] is None
+    assert captured["reuse_bound_session"] is True
+    assert captured["startup_hint"] == tour_module.CHAT_SUGGESTION
+    assert captured["ran"] is True
+
+
+def test_o3b_post_setup_tour_is_explanatory_and_names_daemon_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda *_args, **_kwargs: pytest.fail("explanatory tour must not start a daemon"),
+    )
+
+    @click.command()
+    def _harness() -> None:
+        cli_main._run_post_setup_action("tour")
+
+    result = CliRunner().invoke(_harness)
+
+    assert result.exit_code == 0, result.output
+    assert "shisad guided tour" in result.output
+    assert "start the daemon with shisad start" in result.output
 
 
 def test_restart_default_shuts_down_then_starts_foreground(
@@ -5075,30 +5206,11 @@ def test_chat_command_runs_textual_app(
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     captured: dict[str, object] = {}
 
-    class _FakeApp:
-        def __init__(
-            self,
-            *,
-            socket_path: Path,
-            data_dir: Path,
-            user_id: str,
-            workspace_id: str,
-            session_id: str | None,
-            reuse_bound_session: bool,
-            ui_posture: object,
-        ) -> None:
-            captured["socket_path"] = socket_path
-            captured["data_dir"] = data_dir
-            captured["user_id"] = user_id
-            captured["workspace_id"] = workspace_id
-            captured["session_id"] = session_id
-            captured["reuse_bound_session"] = reuse_bound_session
-            captured["ui_posture"] = ui_posture
-
-        def run(self) -> None:
-            captured["ran"] = True
-
-    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -5113,6 +5225,7 @@ def test_chat_command_runs_textual_app(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] == "sess-123"
     assert captured["reuse_bound_session"] is True
+    assert captured["startup_hint"] is None
     assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 
@@ -5125,30 +5238,11 @@ def test_chat_command_new_forces_fresh_session_binding(
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     captured: dict[str, object] = {}
 
-    class _FakeApp:
-        def __init__(
-            self,
-            *,
-            socket_path: Path,
-            data_dir: Path,
-            user_id: str,
-            workspace_id: str,
-            session_id: str | None,
-            reuse_bound_session: bool,
-            ui_posture: object,
-        ) -> None:
-            captured["socket_path"] = socket_path
-            captured["data_dir"] = data_dir
-            captured["user_id"] = user_id
-            captured["workspace_id"] = workspace_id
-            captured["session_id"] = session_id
-            captured["reuse_bound_session"] = reuse_bound_session
-            captured["ui_posture"] = ui_posture
-
-        def run(self) -> None:
-            captured["ran"] = True
-
-    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -5163,6 +5257,7 @@ def test_chat_command_new_forces_fresh_session_binding(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] is None
     assert captured["reuse_bound_session"] is False
+    assert captured["startup_hint"] is None
     assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 

@@ -448,8 +448,9 @@ TOTP entry remain deferred to `v0.8.0`.
   wizard publication offers a finite default-exit next-step menu; automation
   and managed setup still never prompt or launch a child. The guided-tour
   sibling now provides deterministic maintained readiness/policy/dashboard
-  guidance. Noninteractive use is read-only; a TTY-only default-no choice may
-  hand off to ordinary chat with a display-only suggestion that is never sent
+  guidance plus the bounded typed O3A health projection when reachable.
+  Noninteractive use is read-only; a TTY-only default-no choice may hand off
+  to ordinary chat with a display-only suggestion that is never sent
   automatically.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line

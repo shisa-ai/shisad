@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from click.testing import CliRunner
+from textual.widgets import TextArea
 
 from shisad.channels import setup as channel_setup
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
@@ -16,6 +18,9 @@ from shisad.cli import onboarding
 from shisad.cli.main import cli
 from shisad.core.readiness import ReadinessState, ReadinessStatus
 from shisad.security.policy import PolicyLoader
+from shisad.ui import chat as chat_ui
+from tests.behavioral.test_behavioral_contract import ContractHarness
+from tests.helpers.behavioral import extract_tool_outputs
 
 pytestmark = pytest.mark.first_principles
 
@@ -207,20 +212,19 @@ def test_o3a_background_first_start_reports_bounded_health_and_stops_cleanly(
             runner.invoke(cli, ["--config", str(config_path), "stop"])
 
 
-def test_o3b_tour_is_deterministic_and_real_demo_preserves_policy_path(
-    tmp_path: Path,
+@pytest.mark.asyncio
+async def test_o3b_tour_is_deterministic_and_real_demo_preserves_policy_path(
+    clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shisad.cli import main as cli_main
     from shisad.cli import tour as tour_module
 
-    config_home = tmp_path / "config-home"
-    launched: list[dict[str, object]] = []
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    launched: list[chat_ui.ChatApp] = []
+    monkeypatch.setattr(cli_main, "_get_config", lambda: clean_harness.config)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None, raising=False)
     monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
-    monkeypatch.setattr(
-        cli_main, "_run_chat", lambda **kwargs: launched.append(kwargs), raising=False
-    )
+    monkeypatch.setattr(chat_ui.ChatApp, "run", lambda app: launched.append(app))
 
     result = CliRunner().invoke(cli, ["tour"], input="y\n")
 
@@ -230,16 +234,30 @@ def test_o3b_tour_is_deterministic_and_real_demo_preserves_policy_path(
         "The normal planner, policy, confirmation, and tool paths remain in effect."
         in result.output
     )
-    assert launched == [
-        {
-            "session_id": "",
-            "user": "ops",
-            "workspace": "default",
-            "new_session": False,
-            "startup_hint": tour_module.CHAT_SUGGESTION,
-        }
-    ]
-    assert not config_home.exists()
+    assert len(launched) == 1
+    app = launched[0]
+    assert app._startup_hint == tour_module.CHAT_SUGGESTION
+    replies: list[dict[str, Any]] = []
+    original_refresh = app._refresh_status_from_message_result
+
+    def _capture_reply(reply: dict[str, Any]) -> None:
+        replies.append(reply)
+        original_refresh(reply)
+
+    app._refresh_status_from_message_result = _capture_reply  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        chat_input = app.query_one("#chat-input", TextArea)
+        chat_input.load_text("read README.md")
+        await app.action_submit_prompt()
+        await pilot.pause()
+
+    assert len(replies) == 1
+    reply = replies[0]
+    assert reply["lockdown_level"] == "normal"
+    assert reply["executed_actions"] == 1
+    assert reply["confirmation_required_actions"] == 0
+    assert extract_tool_outputs(reply)["fs.read"][0]["ok"] is True
 
 
 def test_o1_bare_cli_welcome_routes_without_mutation(

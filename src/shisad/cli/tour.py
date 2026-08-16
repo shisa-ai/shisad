@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
+from shisad.cli.lifecycle import BackgroundStartResult, render_background_start
+
 CHAT_SUGGESTION = "Try asking shisad to read a file in your workspace."
 
 _TOUR_SECTIONS = (
@@ -29,18 +31,32 @@ _TOUR_SECTIONS = (
     ),
     (
         "5. Recovery and next steps",
-        "Re-check with shisad status or shisad doctor, start chat with shisad chat, "
-        "and rerun this guide with shisad tour.",
+        "Re-check with shisad status or shisad doctor, inspect with shisad tui, "
+        "start chat with shisad chat, and rerun this guide with shisad tour. If chat "
+        "cannot connect, start the daemon with shisad start.",
     ),
 )
 
 
-def render_tour() -> str:
-    """Render maintained guidance without consulting a model or runtime state."""
+def render_tour(*, health: BackgroundStartResult | None = None) -> str:
+    """Render maintained guidance from optional bounded typed health."""
 
     lines = ["shisad guided tour", ""]
     for title, description in _TOUR_SECTIONS:
         lines.extend((title, f"  {description}", ""))
+        if title == "1. Readiness":
+            if health is None:
+                lines.extend(
+                    (
+                        "  Current O3A health: unavailable; run shisad start, then "
+                        "shisad status or shisad doctor.",
+                        "",
+                    )
+                )
+            else:
+                lines.append("  Current O3A health:")
+                lines.extend(f"    {line}" for line in render_background_start(health))
+                lines.append("")
     lines.extend(
         (
             "The normal planner, policy, confirmation, and tool paths remain in effect.",
