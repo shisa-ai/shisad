@@ -662,6 +662,207 @@ async def test_discord_telegram_slack_fallback_channels_support_inmemory_io(
         await channel.disconnect()
 
 
+class _O3DDiscordIntents:
+    def __init__(self) -> None:
+        self.message_content = False
+
+    @classmethod
+    def default(cls) -> _O3DDiscordIntents:
+        return cls()
+
+
+class _O3DDiscordTarget:
+    def __init__(self, target_id: str, *, parent_id: str = "") -> None:
+        self.id = target_id
+        self.parent_id = parent_id or None
+        self.sent: list[str] = []
+
+    async def send(self, content: str, **_kwargs: object) -> None:
+        self.sent.append(content)
+
+
+class _O3DDiscordMessage:
+    def __init__(
+        self,
+        *,
+        message_id: str,
+        channel: _O3DDiscordTarget,
+        created_thread: _O3DDiscordTarget | None = None,
+        create_error: BaseException | None = None,
+    ) -> None:
+        self.id = message_id
+        self.author = SimpleNamespace(id="user-1", bot=False)
+        self.content = "<@999> keep this conversation isolated"
+        self.guild = SimpleNamespace(id="guild-1", get_thread=lambda _thread_id: None)
+        self.channel = channel
+        self.mentions = [SimpleNamespace(id="999")]
+        self.thread: _O3DDiscordTarget | None = None
+        self._created_thread = created_thread
+        self._create_error = create_error
+        self.created_names: list[str] = []
+        self.replies: list[str] = []
+
+    async def create_thread(self, *, name: str) -> _O3DDiscordTarget:
+        self.created_names.append(name)
+        if self._create_error is not None:
+            raise self._create_error
+        assert self._created_thread is not None
+        self.thread = self._created_thread
+        return self._created_thread
+
+    async def reply(self, content: str) -> None:
+        self.replies.append(content)
+
+
+class _O3DDiscordClient:
+    def __init__(self, *, intents: _O3DDiscordIntents) -> None:
+        self.intents = intents
+        self.user = SimpleNamespace(id="999", name="shisad")
+        self.targets: dict[int, _O3DDiscordTarget] = {}
+
+    def event(self, coro):
+        setattr(self, coro.__name__, coro)
+        return coro
+
+    async def start(self, _token: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    def get_channel(self, channel_id: int) -> _O3DDiscordTarget | None:
+        return self.targets.get(channel_id)
+
+    async def fetch_channel(self, channel_id: int) -> _O3DDiscordTarget | None:
+        return self.targets.get(channel_id)
+
+    async def dispatch(self, message: object) -> None:
+        await self.on_message(message)
+
+
+def _install_o3d_discord(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_O3DDiscordIntents, Client=_O3DDiscordClient),
+    )
+
+
+@pytest.mark.asyncio
+async def test_o3d_discord_thread_mode_creates_and_routes_exact_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_o3d_discord(monkeypatch)
+    parent = _O3DDiscordTarget("100")
+    thread = _O3DDiscordTarget("200", parent_id="100")
+    message = _O3DDiscordMessage(message_id="200", channel=parent, created_thread=thread)
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+    channel._client.targets = {100: parent, 200: thread}
+
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+
+    assert message.created_names == ["shisad-200"]
+    assert received.reply_target == "100"
+    assert received.thread_id == "200"
+    assert received.metadata["discord_channel_id"] == "100"
+    await channel.send(
+        "thread-only reply",
+        target=DeliveryTarget(channel="discord", recipient="100", thread_id="200"),
+    )
+    assert thread.sent == ["thread-only reply"]
+    assert parent.sent == []
+
+    with pytest.raises(RuntimeError, match="could not resolve"):
+        await channel.send(
+            "must not fall back",
+            target=DeliveryTarget(channel="discord", recipient="100", thread_id="201"),
+        )
+    assert parent.sent == []
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3d_discord_existing_thread_reuses_parent_without_nesting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_o3d_discord(monkeypatch)
+    thread = _O3DDiscordTarget("201", parent_id="100")
+    message = _O3DDiscordMessage(message_id="301", channel=thread)
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+
+    assert message.created_names == []
+    assert received.reply_target == "100"
+    assert received.thread_id == "201"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3d_discord_flat_default_never_creates_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_o3d_discord(monkeypatch)
+    parent = _O3DDiscordTarget("100")
+    message = _O3DDiscordMessage(
+        message_id="202",
+        channel=parent,
+        created_thread=_O3DDiscordTarget("202", parent_id="100"),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+
+    assert message.created_names == []
+    assert received.reply_target == "100"
+    assert received.thread_id == ""
+
+    existing_thread = _O3DDiscordTarget("204", parent_id="100")
+    existing_message = _O3DDiscordMessage(message_id="304", channel=existing_thread)
+    await channel._client.dispatch(existing_message)
+    existing_received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert existing_message.created_names == []
+    assert existing_received.reply_target == "204"
+    assert existing_received.thread_id == ""
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3d_discord_thread_permission_failure_is_actionable_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_o3d_discord(monkeypatch)
+    message = _O3DDiscordMessage(
+        message_id="203",
+        channel=_O3DDiscordTarget("100"),
+        create_error=RuntimeError("forbidden private detail"),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _O3DDiscordClient)
+
+    await channel._client.dispatch(message)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+    assert message.replies == [
+        "I couldn't create a Discord thread. Grant Create Public Threads and "
+        "Send Messages in Threads permissions, then try again."
+    ]
+    assert "private detail" not in message.replies[0]
+    assert channel.connected is True
+    await channel.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_discord_channel_registers_dispatchable_on_message_handler(
     monkeypatch: pytest.MonkeyPatch,

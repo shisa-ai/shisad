@@ -558,6 +558,8 @@ uv --no-config sync --frozen --group channels-runtime
 4. Go to **OAuth2** tab → **URL Generator**:
    - Scopes: `bot`
    - Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
+   - Also select `Create Public Threads` and `Send Messages in Threads` when
+     enabling the optional thread mode below.
    - Copy the generated URL and open it to invite the bot to your server.
 5. Get your **Discord user ID**: enable Developer Mode (Settings → Advanced → Developer Mode), right-click your name → **Copy User ID**.
 
@@ -567,6 +569,7 @@ uv --no-config sync --frozen --group channels-runtime
 SHISAD_DISCORD_ENABLED=true
 SHISAD_DISCORD_BOT_TOKEN_REF=channel.discord
 SHISAD_DISCORD_DEFAULT_CHANNEL_ID=<channel-id>
+SHISAD_DISCORD_USE_THREADS=true  # optional; default false
 SHISAD_DISCORD_TRUSTED_USERS='["<your-discord-user-id>"]'
 ```
 
@@ -584,6 +587,13 @@ shisad setup channel --channel discord \
 ```
 
 **Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs currently do not require a mention.
+
+With `SHISAD_DISCORD_USE_THREADS=true`, an addressed parent message creates a
+thread named from its Discord message ID. Follow-up messages and all response,
+approval, and result delivery remain bound to that thread and reuse its
+session. If thread creation is unavailable, the bot reports the required
+permissions in the parent and does not silently continue with flat delivery.
+An unresolved thread target also fails without falling back to the parent.
 
 **Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
 JSON when the bot should also serve a shared Discord channel. Rules are

@@ -343,6 +343,10 @@ class DaemonConfig(BaseSettings):
         default="",
         description="Default Discord channel id for outbound sends.",
     )
+    discord_use_threads: bool = Field(
+        default=False,
+        description="Keep addressed Discord parent-channel conversations in threads.",
+    )
     discord_trusted_users: list[str] = Field(
         default_factory=list,
         description="Discord users considered verified/trusted for policy decisions.",

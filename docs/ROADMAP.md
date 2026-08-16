@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-08-12*
+*Updated: 2026-08-16*
 *Status: Active*
 
 ## Goal
@@ -456,7 +456,12 @@ TOTP entry remain deferred to `v0.8.0`.
   disappear on refresh, session changes clear prior state before another
   query, and RPC/persistence failures degrade without blocking chat. The panel
   is observational only: existing CLI/daemon confirmation routes remain the
-  lifecycle owners.
+  lifecycle owners. The Discord sibling adds a default-off thread mode: an
+  addressed parent message creates or reuses a deterministic Discord thread,
+  delivery remains bound to its exact parent/thread coordinates, and session
+  reuse includes thread identity so sibling conversations stay isolated.
+  Missing thread permission is channel-scoped and actionable; invalid thread
+  targets do not fall back to flat delivery.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,

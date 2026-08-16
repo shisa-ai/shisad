@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 import shisad.daemon.control_handlers as control_handlers_module
 import shisad.daemon.services as services_module
-from shisad.channels.state import ReplayIdentity
+from shisad.channels.state import ChannelStateStore, ReplayIdentity
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.config_file import load_config_file
 from shisad.core.events import EventBus, SessionCreated
@@ -33,6 +33,7 @@ from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.services import (
     DaemonServices,
     _browser_runtime_unavailable_planner_note,
+    _build_discord_channel,
     _build_provider_diagnostics,
     _build_tool_registry,
     _configs_for_daemon,
@@ -199,6 +200,28 @@ def test_o2c_unavailable_enabled_reference_is_redacted_channel_diagnostic() -> N
         }
     }
     assert "channel.discord" not in str(diagnostics)
+
+
+def test_o3d_discord_thread_mode_is_default_false_env_typed_and_wired(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert DaemonConfig(_env_file=None).discord_use_threads is False
+
+    monkeypatch.setenv("SHISAD_DISCORD_USE_THREADS", "true")
+    config = DaemonConfig(
+        _env_file=None,
+        discord_enabled=True,
+        discord_bot_token="token",
+    )
+    channel = _build_discord_channel(
+        config,
+        replay_state_store=ChannelStateStore(tmp_path / "channel-state"),
+    )
+
+    assert config.discord_use_threads is True
+    assert channel is not None
+    assert channel._config.use_threads is True
 
 
 @pytest.mark.asyncio

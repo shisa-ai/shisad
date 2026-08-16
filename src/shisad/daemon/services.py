@@ -1895,6 +1895,7 @@ def _build_discord_channel(
         DiscordConfig(
             bot_token=bot_token,
             default_channel_id=config.discord_default_channel_id,
+            use_threads=config.discord_use_threads,
             guild_workspace_map=dict(config.discord_guild_workspace_map),
             trusted_users=set(config.discord_trusted_users),
             channel_rules=list(config.discord_channel_rules),

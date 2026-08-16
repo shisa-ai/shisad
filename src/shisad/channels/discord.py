@@ -50,6 +50,10 @@ _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
 _DISCORD_DEFAULT_APPROVAL_ACK = "Approval response received."
 _DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 _DISCORD_ACTION_COMPONENT_LIMIT = 5
+_DISCORD_THREAD_PERMISSION_GUIDANCE = (
+    "I couldn't create a Discord thread. Grant Create Public Threads and "
+    "Send Messages in Threads permissions, then try again."
+)
 
 
 def _chunk_discord_message(
@@ -94,6 +98,7 @@ def _chunk_discord_message(
 class DiscordConfig:
     bot_token: str
     default_channel_id: str = ""
+    use_threads: bool = False
     guild_workspace_map: dict[str, str] | None = None
     trusted_users: set[str] | None = None
     channel_rules: list[DiscordChannelRule] | None = None
@@ -167,6 +172,81 @@ class DiscordChannel(InMemoryChannel):
             is not None
         )
 
+    @staticmethod
+    def _delivery_coordinates(channel_obj: Any) -> tuple[str, str]:
+        """Return the parent recipient and optional concrete thread identity."""
+        channel_id = str(getattr(channel_obj, "id", "") or "").strip()
+        parent_id = str(getattr(channel_obj, "parent_id", "") or "").strip()
+        if not parent_id:
+            parent = getattr(channel_obj, "parent", None)
+            parent_id = str(getattr(parent, "id", "") or "").strip()
+        if parent_id:
+            return parent_id, channel_id
+        return channel_id, ""
+
+    def _existing_message_thread(self, message: Any, guild: Any) -> Any | None:
+        thread = getattr(message, "thread", None)
+        if thread is not None and str(getattr(thread, "id", "") or "").strip():
+            return thread
+        message_id = str(getattr(message, "id", "") or "").strip()
+        try:
+            numeric_message_id = int(message_id)
+        except ValueError:
+            return None
+        get_thread = getattr(guild, "get_thread", None)
+        if callable(get_thread):
+            thread = get_thread(numeric_message_id)
+            if thread is not None:
+                return thread
+        return None
+
+    async def _create_message_thread(self, message: Any, guild: Any) -> Any | None:
+        existing = self._existing_message_thread(message, guild)
+        if existing is not None:
+            return existing
+        message_id = str(getattr(message, "id", "") or "").strip()
+        create_thread = getattr(message, "create_thread", None)
+        if not message_id or not callable(create_thread):
+            await _call_discord_response(
+                getattr(message, "reply", None),
+                _DISCORD_THREAD_PERMISSION_GUIDANCE,
+            )
+            logger.warning("Discord thread creation unavailable for addressed message")
+            return None
+        try:
+            thread = create_thread(name=f"shisad-{message_id}"[:100])
+            if asyncio.iscoroutine(thread):
+                thread = await thread
+        except _discord_response_exceptions() as exc:
+            thread = self._existing_message_thread(message, guild)
+            if thread is None and self._client is not None:
+                try:
+                    numeric_message_id = int(message_id)
+                except ValueError:
+                    numeric_message_id = 0
+                get_channel = getattr(self._client, "get_channel", None)
+                if numeric_message_id and callable(get_channel):
+                    thread = get_channel(numeric_message_id)
+            if thread is not None:
+                return thread
+            await _call_discord_response(
+                getattr(message, "reply", None),
+                _DISCORD_THREAD_PERMISSION_GUIDANCE,
+            )
+            logger.warning(
+                "Discord thread creation failed (error=%s)",
+                exc.__class__.__name__,
+            )
+            return None
+        if not str(getattr(thread, "id", "") or "").strip():
+            await _call_discord_response(
+                getattr(message, "reply", None),
+                _DISCORD_THREAD_PERMISSION_GUIDANCE,
+            )
+            logger.warning("Discord thread creation returned no structural thread identity")
+            return None
+        return thread
+
     async def connect(self) -> None:
         await super().connect()
         if discord is None or not self._config.bot_token:
@@ -190,10 +270,17 @@ class DiscordChannel(InMemoryChannel):
                 guild = getattr(message, "guild", None)
                 guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
                 channel_obj = getattr(message, "channel", None)
-                channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
+                event_channel_id = (
+                    str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
+                )
+                channel_id, thread_id = (
+                    self._delivery_coordinates(channel_obj)
+                    if self._config.use_threads
+                    else (event_channel_id, "")
+                )
                 replay_metadata = self._replay_metadata(
                     guild_id=guild_id,
-                    channel_id=channel_id,
+                    channel_id=event_channel_id,
                     event_kind="message",
                     event_id=message_id,
                 )
@@ -302,10 +389,12 @@ class DiscordChannel(InMemoryChannel):
                                         content=content,
                                         message_id=message_id,
                                         reply_target=channel_id,
+                                        thread_id=thread_id,
                                         metadata={
                                             **replay_metadata,
                                             "discord_guild_id": guild_id,
                                             "discord_channel_id": channel_id,
+                                            "discord_thread_id": thread_id,
                                             "addressed": addressed,
                                             "interaction_type": "observed",
                                             "engagement_mode": policy_decision.engagement_mode,
@@ -381,6 +470,11 @@ class DiscordChannel(InMemoryChannel):
                         author_id,
                     )
                     return
+                if self._config.use_threads and guild is not None and not thread_id:
+                    thread = await self._create_message_thread(message, guild)
+                    if thread is None:
+                        return
+                    thread_id = str(getattr(thread, "id", "") or "").strip()
                 workspace_hint = self.workspace_for_guild(guild_id)
                 logger.debug(
                     "Discord ingress accepted "
@@ -408,10 +502,12 @@ class DiscordChannel(InMemoryChannel):
                         content=content,
                         message_id=message_id,
                         reply_target=channel_id,
+                        thread_id=thread_id,
                         metadata={
                             **replay_metadata,
                             "discord_guild_id": guild_id,
                             "discord_channel_id": channel_id,
+                            "discord_thread_id": thread_id,
                             "addressed": True,
                             "interaction_type": "direct",
                             "engagement_mode": "mention-only",
@@ -515,7 +611,8 @@ class DiscordChannel(InMemoryChannel):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         if self._client is not None:
-            recipient = (target.recipient if target is not None else "").strip()
+            thread_recipient = (target.thread_id if target is not None else "").strip()
+            recipient = thread_recipient or (target.recipient if target is not None else "").strip()
             if not recipient:
                 recipient = self._config.default_channel_id
             if recipient:
@@ -576,11 +673,18 @@ class DiscordChannel(InMemoryChannel):
         guild = getattr(interaction, "guild", None)
         guild_id = str(getattr(guild, "id", "")).strip() if guild is not None else ""
         channel_obj = getattr(interaction, "channel", None)
-        channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
+        event_channel_id = (
+            str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
+        )
+        channel_id, thread_id = (
+            self._delivery_coordinates(channel_obj)
+            if self._config.use_threads
+            else (event_channel_id, "")
+        )
         interaction_id = str(getattr(interaction, "id", "")).strip()
         replay_metadata = self._replay_metadata(
             guild_id=guild_id,
-            channel_id=channel_id,
+            channel_id=event_channel_id,
             event_kind="interaction",
             event_id=interaction_id,
         )
@@ -597,10 +701,12 @@ class DiscordChannel(InMemoryChannel):
                     content=content.strip(),
                     message_id=interaction_id,
                     reply_target=channel_id,
+                    thread_id=thread_id,
                     metadata={
                         **replay_metadata,
                         "discord_guild_id": guild_id,
                         "discord_channel_id": channel_id,
+                        "discord_thread_id": thread_id,
                         "addressed": True,
                         "interaction_type": interaction_type,
                         "approval_interaction_type": interaction_type,

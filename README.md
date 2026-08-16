@@ -461,6 +461,8 @@ Auth notes:
 ```bash
 export SHISAD_DISCORD_ENABLED=true
 export SHISAD_DISCORD_BOT_TOKEN="<token>"
+# Optional: create/reuse one Discord thread per addressed parent message.
+export SHISAD_DISCORD_USE_THREADS=true
 
 export SHISAD_TELEGRAM_ENABLED=true
 export SHISAD_TELEGRAM_BOT_TOKEN="<token>"
@@ -472,6 +474,11 @@ export SHISAD_SLACK_APP_TOKEN="<xapp-token>"
 # Default-deny allowlist: channel -> [external_user_id]
 export SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["1234567890"],"telegram":["11111"],"slack":["U12345"]}'
 ```
+
+Discord thread mode defaults off. When enabled, parent-channel mentions create
+a bounded `shisad-<message-id>` thread, later turns in that thread reuse its
+session, and replies never fall back to the parent if the thread cannot be
+resolved. Grant the bot Create Public Threads and Send Messages in Threads.
 
 ### Assistant surfaces
 

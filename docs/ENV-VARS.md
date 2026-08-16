@@ -174,6 +174,7 @@ Discord:
 - `SHISAD_DISCORD_BOT_TOKEN`
 - `SHISAD_DISCORD_BOT_TOKEN_REF`
 - `SHISAD_DISCORD_DEFAULT_CHANNEL_ID`
+- `SHISAD_DISCORD_USE_THREADS`
 - `SHISAD_DISCORD_TRUSTED_USERS`
 - `SHISAD_DISCORD_GUILD_WORKSPACE_MAP`
 - `SHISAD_DISCORD_CHANNEL_RULES`
@@ -210,6 +211,14 @@ core daemon. A connector or test target is never an identity grant; configure
 an explicit channel `*_TRUSTED_USERS` list or generic allowlist for ingress.
 
 Discord public-channel rules:
+
+- `SHISAD_DISCORD_USE_THREADS` is a boolean and defaults to `false`. When
+  enabled, an addressed parent-channel message creates or reuses its Discord
+  message thread; existing thread messages stay in that thread, session reuse
+  includes the exact thread ID, and outbound delivery does not fall back to the
+  parent when a thread target is invalid. The bot needs Create Public Threads
+  and Send Messages in Threads permissions. DMs retain their existing flat
+  behavior.
 
 - `SHISAD_DISCORD_CHANNEL_RULES` accepts a JSON list of rules. Each rule may set
   `guild_id`, `channels`, `exclude_channels`, `mode` (`mention-only`,
