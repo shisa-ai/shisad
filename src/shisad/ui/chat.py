@@ -372,6 +372,8 @@ class ChatApp(App[None]):
     TRANSCRIPT_REPLAY_LIMIT = 50
     PENDING_QUERY_LIMIT = 8
     PENDING_POLL_SECONDS = 0.5
+    PENDING_RPC_TIMEOUT_SECONDS = 2.0
+    PENDING_CLOSE_TIMEOUT_SECONDS = 0.1
     THEME = get_builtin_theme()
 
     CSS = _chat_css(THEME)
@@ -455,6 +457,7 @@ class ChatApp(App[None]):
     async def on_mount(self) -> None:
         self._set_connection_state("connecting")
         self._append_history("Connecting to daemon...")
+        self._start_pending_polling()
         try:
             client = await self._connect()
             try:
@@ -469,7 +472,6 @@ class ChatApp(App[None]):
                 self._append_history(f"Tour suggestion (not sent): {self._startup_hint}")
             self._start_transcript_polling()
             self._set_pending_panel_text("Checking current session for pending confirmations.")
-            self._start_pending_polling()
             self._append_history(
                 "Type a message and press Enter. "
                 "Up/Down recalls prompts. "
@@ -871,16 +873,17 @@ class ChatApp(App[None]):
 
         client: Any | None = None
         try:
-            client = await self._connect()
-            payload = await client.call(
-                "action.pending",
-                params={
-                    "session_id": session_id,
-                    "status": "pending",
-                    "limit": self.PENDING_QUERY_LIMIT,
-                    "include_ui": False,
-                },
-            )
+            async with asyncio.timeout(max(0.01, self.PENDING_RPC_TIMEOUT_SECONDS)):
+                client = await self._connect()
+                payload = await client.call(
+                    "action.pending",
+                    params={
+                        "session_id": session_id,
+                        "status": "pending",
+                        "limit": self.PENDING_QUERY_LIMIT,
+                        "include_ui": False,
+                    },
+                )
             actions = self._validated_pending_actions(payload, session_id=session_id)
         except Exception:
             if session_id == self._active_session_id():
@@ -891,7 +894,8 @@ class ChatApp(App[None]):
         finally:
             if client is not None:
                 with contextlib.suppress(Exception):
-                    await client.close()
+                    async with asyncio.timeout(max(0.01, self.PENDING_CLOSE_TIMEOUT_SECONDS)):
+                        await client.close()
 
         if session_id != self._active_session_id():
             return

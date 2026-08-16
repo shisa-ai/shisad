@@ -1130,6 +1130,111 @@ async def test_o3c_pending_panel_queries_exact_session_and_filters_terminal_rows
 
 
 @pytest.mark.asyncio
+async def test_o3c_pending_poll_recovers_after_mount_time_daemon_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ChatApp, "PENDING_POLL_SECONDS", 0.01, raising=False)
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    fake_client = AsyncMock()
+
+    async def connect_after_mount_failure() -> object:
+        if app._connect.await_count == 1:  # type: ignore[attr-defined]
+            raise OSError("daemon starting")
+        return fake_client
+
+    async def ensure_recovered_session(_client: object) -> None:
+        app._session_id = "sess-recovered"
+
+    async def call(method: str, *, params: object) -> object:
+        assert isinstance(params, dict)
+        if method == "session.message":
+            return {"session_id": "sess-recovered", "response": "chat recovered"}
+        assert method == "action.pending"
+        return {
+            "actions": [
+                {
+                    "confirmation_id": "confirm-after-startup",
+                    "session_id": "sess-recovered",
+                    "status": "pending",
+                    "tool_name": "fs.write",
+                }
+            ],
+            "count": 1,
+        }
+
+    app._connect = AsyncMock(side_effect=connect_after_mount_failure)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock(side_effect=ensure_recovered_session)  # type: ignore[method-assign]
+    fake_client.call = AsyncMock(side_effect=call)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._pending_poll_task is not None
+
+        input_widget = app.query_one("#chat-input", TextArea)
+        input_widget.focus()
+        input_widget.load_text("hello after startup")
+        await app.action_submit_prompt()
+
+        panel = app.query_one("#chat-pending", Static)
+        for _ in range(100):
+            await pilot.pause(0.01)
+            if "confirm-after-startup" in str(panel.renderable):
+                break
+        else:
+            pytest.fail("pending polling did not recover after mount-time daemon failure")
+
+        assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+        assert assistant_messages[-1] == "chat recovered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hung_stage", ["connect", "call", "close"])
+async def test_o3c_pending_refresh_bounds_every_rpc_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    hung_stage: str,
+) -> None:
+    monkeypatch.setattr(ChatApp, "PENDING_RPC_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(ChatApp, "PENDING_CLOSE_TIMEOUT_SECONDS", 0.01, raising=False)
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-current",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(return_value={"actions": [], "count": 0})
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async def never_returns(*_args: object, **_kwargs: object) -> object:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        if hung_stage == "connect":
+            app._connect = AsyncMock(side_effect=never_returns)  # type: ignore[method-assign]
+        elif hung_stage == "call":
+            fake_client.call = AsyncMock(side_effect=never_returns)
+        else:
+            fake_client.close = AsyncMock(side_effect=never_returns)
+
+        await asyncio.wait_for(app._refresh_pending_panel(), timeout=0.2)
+        panel = app.query_one("#chat-pending", Static)
+        rendered = str(panel.renderable)
+
+    if hung_stage == "close":
+        assert rendered == "No pending confirmations."
+    else:
+        assert rendered == ("Pending confirmations unavailable; chat remains usable. Retrying.")
+
+
+@pytest.mark.asyncio
 async def test_o3c_pending_panel_refreshes_without_prompt_and_cancels_serially(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1240,6 +1345,23 @@ async def test_o3c_pending_panel_failure_is_bounded_and_chat_remains_usable() ->
             "Pending confirmations unavailable; chat remains usable. Retrying."
         )
         assert "must-not-render" not in str(panel.renderable)
+
+        fake_client.call = AsyncMock(
+            return_value={
+                "actions": [
+                    {
+                        "confirmation_id": "confirm-recovered",
+                        "session_id": "sess-current",
+                        "status": "pending",
+                        "tool_name": "fs.read",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+        await app._refresh_pending_panel()
+        assert "confirm-recovered" in str(panel.renderable)
+        assert "unavailable" not in str(panel.renderable).lower()
 
         fake_client.call = AsyncMock(return_value={"response": "chat still works"})
         input_widget = app.query_one("#chat-input", TextArea)
