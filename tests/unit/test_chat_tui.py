@@ -507,7 +507,14 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
         session_id="sess-1",
     )
     fake_client = AsyncMock()
-    fake_client.call = AsyncMock(return_value={"response": "Hello from shisad!"})
+
+    async def call(method: str, *, params: object) -> object:
+        if method == "session.message":
+            return {"response": "Hello from shisad!"}
+        assert method == "action.pending"
+        return {"actions": [], "count": 0}
+
+    fake_client.call = AsyncMock(side_effect=call)
     app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
     app._ensure_session = AsyncMock()  # type: ignore[method-assign]
 
@@ -542,11 +549,15 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
             }
         )
         assert app._progress_lines == {}
+        await pilot.pause(ChatApp.PENDING_POLL_SECONDS + 0.05)
 
-    fake_client.call.assert_awaited_once_with(
-        "session.message",
-        params={"session_id": "sess-1", "content": "hello"},
-    )
+    message_calls = [
+        awaited
+        for awaited in fake_client.call.await_args_list
+        if awaited.args == ("session.message",)
+    ]
+    assert len(message_calls) == 1
+    assert message_calls[0].kwargs == {"params": {"session_id": "sess-1", "content": "hello"}}
     assert user_messages[-1] == "you: hello"
     assert assistant_messages[-1] == "Hello from shisad!"
 
