@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, a deterministic guided tour, and session-scoped pending confirmations in chat; remaining unified chat work is in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, a deterministic guided tour, session-scoped pending confirmations, opt-in Discord thread identity, and bounded redacted action progress in chat/Discord |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |

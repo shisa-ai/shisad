@@ -480,10 +480,10 @@ TOTP entry remain deferred to `v0.8.0`.
   publish selected reference-only config and policy artifacts after explicit
   write authority; managed/non-interactive apply never prompts. Bounded
   background first-start and the interactive post-publication next-step menu
-  are now present, along with the deterministic guided tour and session-scoped
-  persistent pending-confirmation state in chat; live progress and channel
-  thread units remain in progress. `init` is still only a minimal template
-  publisher
+  are now present, along with the deterministic guided tour, session-scoped
+  persistent pending-confirmation state in chat, default-off Discord thread
+  identity, and bounded redacted action progress in chat/Discord. `init` is
+  still only a minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls
