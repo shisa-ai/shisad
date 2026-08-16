@@ -451,7 +451,12 @@ TOTP entry remain deferred to `v0.8.0`.
   guidance plus the bounded typed O3A health projection when reachable.
   Noninteractive use is read-only; a TTY-only default-no choice may hand off
   to ordinary chat with a display-only suggestion that is never sent
-  automatically.
+  automatically. The persistent-chat sibling now polls typed, exact-session
+  `action.pending` state into a bounded literal-text panel; terminal actions
+  disappear on refresh, session changes clear prior state before another
+  query, and RPC/persistence failures degrade without blocking chat. The panel
+  is observational only: existing CLI/daemon confirmation routes remain the
+  lifecycle owners.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
@@ -465,9 +470,10 @@ TOTP entry remain deferred to `v0.8.0`.
   publish selected reference-only config and policy artifacts after explicit
   write authority; managed/non-interactive apply never prompts. Bounded
   background first-start and the interactive post-publication next-step menu
-  are now present, along with the deterministic guided tour; persistent chat
-  state and channel progress/thread units remain in progress. `init` is still
-  only a minimal template publisher
+  are now present, along with the deterministic guided tour and session-scoped
+  persistent pending-confirmation state in chat; live progress and channel
+  thread units remain in progress. `init` is still only a minimal template
+  publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls

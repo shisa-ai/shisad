@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from shisad.channels.base import DeliveryTarget
+from shisad.core.api.schema import ActionPendingEntry
 from shisad.core.approval import ConfirmationLevel
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import (
@@ -38,6 +40,49 @@ from shisad.daemon.handlers._impl_session import (
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.firewall import FirewallResult
 from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
+from shisad.ui.chat import ChatApp
+
+
+def test_o3c_chat_pending_projection_omits_sensitive_confirmation_payload() -> None:
+    action = ActionPendingEntry(
+        confirmation_id="confirm-safe",
+        session_id="sess-current",
+        status="pending",
+        tool_name="fs.write\x1b]8;;https://escape.example\x07hidden\x1b]8;;\x07",
+        risk_level="high",
+        required_level="reauthenticated",
+        arguments={"content": "argument-secret"},
+        recovery_result={"stdout": "result-secret"},
+        approval_url="https://approval-secret.example",
+        approval_envelope={"proof": "approval-proof-secret"},
+        status_reason="arbitrary-error-secret",
+    )
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="sess-current")
+
+    rendered = app._format_pending_panel([action])
+
+    assert "confirm-safe" in rendered
+    assert "fs.writehidden" in rendered
+    assert "risk=high" in rendered
+    assert "approval=reauthenticated" in rendered
+    for secret in (
+        "argument-secret",
+        "result-secret",
+        "approval-secret",
+        "approval-proof-secret",
+        "arbitrary-error-secret",
+        "escape.example",
+    ):
+        assert secret not in rendered
+    assert app._bounded_pending_field("x" * 100, fallback="missing", limit=8) == "xxxxxxx…"
+    assert (
+        app._bounded_pending_field(
+            "https://plain-url-secret.example",
+            fallback="unknown",
+            limit=64,
+        )
+        == "unknown"
+    )
 
 
 def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthrough() -> None:

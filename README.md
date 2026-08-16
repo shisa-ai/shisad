@@ -66,7 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, and a deterministic guided tour; unified chat work remains in progress |
+| v0.8.2 (development) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, a deterministic guided tour, and session-scoped pending confirmations in chat; remaining unified chat work is in progress |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -331,11 +331,19 @@ three built-in palettes `shisa-dark`, `shisa-light`, and
 `shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional
 motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
 `NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
-selection is not a supported configuration surface. `shisad web-ui` writes a
-local static investigation/export artifact; it is not the planned live
-operator web application. The artifact embeds session, pending-action, alert,
-and egress-review data, so keep it private and remove it when the investigation
-is complete.
+selection is not a supported configuration surface. In the v0.8.2 development
+tree, chat also polls the daemon's canonical `action.pending` state for the
+current session and keeps a bounded confirmation panel updated without another
+prompt. The panel shows only confirmation IDs plus bounded tool, risk, and
+approval posture, and points to `shisad action confirm` or
+`shisad action reject` for an explicit decision without deciding anything
+itself. Pending-state RPC or persistence degradation leaves chat input usable
+and displays a retrying unavailable state instead of treating an unlisted
+action as resolved. `shisad web-ui` writes a local static
+investigation/export artifact; it is not the planned live operator web
+application. The artifact embeds session, pending-action, alert, and
+egress-review data, so keep it private and remove it when the investigation is
+complete.
 
 Expected CLI failures use exit status 1 for command/user-state errors, 2 for
 daemon-connect/RPC errors, a completed unsuccessful setup-provider probe (and
