@@ -266,10 +266,12 @@ shisad --config /absolute/path/config.toml config upgrade
 
 A legacy file with no `schema_version` has one known non-breaking migration.
 Persist it explicitly with `config upgrade --write`. Before replacement,
-shisad creates an exact owner-only `config.toml.pre-v1.bak`, validates the
-candidate, and uses same-directory atomic replacement. Stop shisad before
-manually restoring that backup, restore it only to its original config path,
-then run `config validate`.
+shisad creates an exact `config.toml.pre-v1.bak`, validates the candidate, and
+uses same-directory atomic replacement. On POSIX it enforces owner-only mode
+and parent-directory synchronization; on other supported platforms the write
+summary reports unavailable capabilities instead of overstating them. Stop
+shisad before manually restoring that backup, restore it only to its original
+config path, then run `config validate`.
 
 Interactive unmanaged startup may persist this safe migration and reports the
 backup. Managed or non-interactive startup does not infer write permission: it
@@ -280,10 +282,12 @@ operator-config recovery only; it is not a data-root backup or package
 rollback claim.
 
 For an env-only deployment that is moving selected non-secret settings into a
-file, use `shisad --config PATH init --from-env`. The generated owner-only file
-contains only typed, non-default fields sourced from supported environment
-variables. Raw API keys, bot tokens, credentials, nested secret-bearing
-objects, and other secret fields are omitted and remain environment-owned.
+file, use `shisad --config PATH init --from-env`. The generated file uses
+owner-only mode on POSIX and reports when equivalent permission tightening is
+unavailable. It contains only typed, non-default fields sourced from supported
+environment variables. Raw API keys, bot tokens, credentials, nested
+secret-bearing objects, and other secret fields are omitted and remain
+environment-owned.
 
 Only one daemon may own a given `SHISAD_DATA_DIR` at a time. Ownership is
 acquired before stores or control endpoints are opened; a same-root contender

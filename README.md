@@ -209,9 +209,11 @@ state. On a TTY, an explicit default-no choice can open the ordinary chat app
 with a display-only suggested request; the tour never submits that request,
 invokes a model/tool, changes policy, or creates separate tutorial state.
 
-`shisad init` creates one owner-only commented template at
+`shisad init` creates one commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally
 `~/.config/shisad/config.toml`) and refuses an existing or symlink destination.
+It enforces owner-only mode on POSIX and reports when equivalent permission
+tightening is unavailable on another supported platform.
 It is deliberately not a setup wizard: it does not copy ambient secrets,
 configure a provider or policy, create daemon state, or start the daemon. Use
 `--non-interactive` when scripts want to state the existing no-prompt behavior
@@ -225,13 +227,14 @@ default; show, diff, env, and validation output redact secret-bearing fields.
 Configuration schema `1` is current. `shisad config upgrade` is a no-write
 inspection by default. For a legacy config with no `schema_version`, rerun it
 with `--write` to add only `schema_version = 1`; shisad first preserves the
-exact original in an owner-only `.pre-v1.bak` file, validates a temporary
-candidate, and atomically replaces the config. Interactive unmanaged startup
-may apply that one safe migration with the same visible backup and rollback
-guidance. Managed or non-interactive startup uses the compatible legacy values
-in memory but does not rewrite the operator file; it prints the explicit
-upgrade command instead. Newer, malformed, or explicitly older versions are
-refused without a downgrade attempt.
+exact original in a `.pre-v1.bak` file, validates a temporary candidate, and
+atomically replaces the config. The write summary reports whether owner-only
+permissions and parent-directory synchronization were supported. Interactive
+unmanaged startup may apply that one safe migration with the same visible
+backup and rollback guidance. Managed or non-interactive startup uses the
+compatible legacy values in memory but does not rewrite the operator file; it
+prints the explicit upgrade command instead. Newer, malformed, or explicitly
+older versions are refused without a downgrade attempt.
 
 The O2 credential foundation can keep model-provider secrets out of TOML. A
 logical reference records only backend metadata; the value stays in an

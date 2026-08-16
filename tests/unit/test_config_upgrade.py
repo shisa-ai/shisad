@@ -40,6 +40,28 @@ def test_o4a_config_upgrade_plan_is_typed_and_finite(tmp_path: Path) -> None:
     assert current_plan.write_required is False
 
 
+def test_o4a_upgrade_validation_preserves_canonical_environment_precedence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[daemon]\ncontrol_plane_startup_timeout_seconds = 0\n",
+        encoding="utf-8",
+    )
+    environ = {"SHISAD_CONTROL_PLANE_STARTUP_TIMEOUT_SECONDS": "2.5"}
+
+    with pytest.raises(ConfigUpgradeError, match="cannot be migrated safely"):
+        plan_config_upgrade(path, environ={})
+
+    plan = plan_config_upgrade(path, environ=environ)
+    result = apply_config_upgrade(path, environ=environ)
+
+    assert plan.status is ConfigUpgradeStatus.SAFE_MIGRATION
+    assert result.changed is True
+    loaded = load_config_file(path, environ=environ)
+    assert loaded.daemon.control_plane_startup_timeout_seconds == 2.5
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -81,8 +103,9 @@ def test_o4a_config_upgrade_preserves_exact_backup_and_validates_replacement(
     assert result.validated is True
     assert result.backup_path == path.with_name("config.toml.pre-v1.bak")
     assert result.backup_path.read_bytes() == original
-    assert result.backup_path.stat().st_mode & 0o777 == 0o600
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert result.backup_path.stat().st_mode & 0o777 == 0o600
+        assert path.stat().st_mode & 0o777 == 0o600
     assert path.read_bytes() == b"schema_version = 1\n" + original
     loaded = load_config_file(path, environ={})
     assert loaded.daemon.log_level == "WARNING"
@@ -117,6 +140,55 @@ def test_o4a_interrupted_replace_keeps_original_and_retry_reuses_exact_backup(
     assert not list(tmp_path.glob(".config.toml.migrate-*"))
 
 
+def test_o4a_post_replace_validation_failure_names_exact_rollback_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "config.toml"
+    original = b"[daemon]\n"
+    path.write_bytes(original)
+    real_load = config_upgrade.load_config_file
+    calls = {"count": 0}
+
+    def _fail_post_replace(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            raise config_file.ConfigFileError("simulated post-replace failure")
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(config_upgrade, "load_config_file", _fail_post_replace)
+
+    with pytest.raises(ConfigUpgradeError, match=r"config\.toml\.pre-v1\.bak"):
+        apply_config_upgrade(path, environ={})
+
+    assert path.read_bytes() == b"schema_version = 1\n" + original
+    assert path.with_name("config.toml.pre-v1.bak").read_bytes() == original
+
+
+def test_o4a_post_replace_sync_failure_is_structured_and_names_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "config.toml"
+    original = b"[daemon]\n"
+    path.write_bytes(original)
+    calls = {"count": 0}
+
+    def _fail_final_sync(_parent: Path) -> str:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated directory sync failure")
+        return "supported"
+
+    monkeypatch.setattr(config_upgrade, "sync_parent_directory", _fail_final_sync)
+
+    with pytest.raises(ConfigUpgradeError, match=r"config\.toml\.pre-v1\.bak"):
+        apply_config_upgrade(path, environ={})
+
+    assert path.read_bytes() == b"schema_version = 1\n" + original
+    assert path.with_name("config.toml.pre-v1.bak").read_bytes() == original
+
+
 def test_o4a_config_upgrade_refuses_symlink_target_and_mismatched_backup(
     tmp_path: Path,
 ) -> None:
@@ -134,6 +206,24 @@ def test_o4a_config_upgrade_refuses_symlink_target_and_mismatched_backup(
         apply_config_upgrade(target)
     assert target.read_text(encoding="utf-8") == "[daemon]\n"
     assert backup.read_text(encoding="utf-8") == "not the original\n"
+
+
+def test_o4a_config_writers_tolerate_missing_posix_descriptor_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(config_file.os, "fchmod")
+    initialized = tmp_path / "initialized.toml"
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text("[daemon]\n", encoding="utf-8")
+
+    config_file.initialize_config_file(initialized, environ={})
+    result = apply_config_upgrade(legacy, environ={})
+
+    assert initialized.exists()
+    assert result.changed is True
+    assert result.permissions in {"supported", "unsupported"}
+    assert load_config_file(legacy, environ={})
 
 
 def test_o4a_env_selection_persists_only_nonsecret_nondefault_typed_values() -> None:
@@ -176,6 +266,8 @@ def test_o4a_config_upgrade_cli_dry_run_then_explicit_write(tmp_path: Path) -> N
     assert plan_payload["status"] == "safe_migration"
     assert plan_payload["changed"] is False
     assert plan_payload["write_requested"] is False
+    assert plan_payload["source_validated"] is True
+    assert plan_payload["migrated_candidate_validated"] is None
     assert path.read_bytes() == original
 
     applied = runner.invoke(
@@ -194,10 +286,33 @@ def test_o4a_config_upgrade_cli_dry_run_then_explicit_write(tmp_path: Path) -> N
     assert applied.exit_code == 0, applied.output
     result_payload = json.loads(applied.output)
     assert result_payload["changed"] is True
-    assert result_payload["validated"] is True
+    assert result_payload["source_validated"] is True
+    assert result_payload["migrated_candidate_validated"] is True
     assert result_payload["from_schema_version"] == 0
     assert result_payload["to_schema_version"] == 1
+    assert result_payload["permissions"] in {"supported", "unsupported"}
+    assert result_payload["parent_sync"] in {"supported", "unsupported"}
     assert path.read_bytes() == b"schema_version = 1\n" + original
+
+
+def test_o4a_config_upgrade_cli_human_write_names_transition_backup_and_rollback(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[daemon]\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(path), "config", "upgrade", "--write"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "schema 0 -> 1" in result.output
+    assert "validation passed" in result.output
+    assert str(path.with_name("config.toml.pre-v1.bak")) in result.output
+    assert "Rollback:" in result.output
+    assert "permissions=" in result.output
+    assert "parent_sync=" in result.output
 
 
 def test_o4a_interactive_unmanaged_startup_persists_safe_migration(tmp_path: Path) -> None:
@@ -211,6 +326,57 @@ def test_o4a_interactive_unmanaged_startup_persists_safe_migration(tmp_path: Pat
     assert result.backup_path is not None
     assert result.backup_path.read_text(encoding="utf-8") == "[daemon]\n"
     assert path.read_text(encoding="utf-8").startswith("schema_version = 1\n")
+
+
+def test_o4a_managed_interactive_startup_never_persists(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    original = "[daemon]\n"
+    path.write_text(original, encoding="utf-8")
+
+    result = prepare_config_for_startup(
+        path,
+        managed=True,
+        interactive=True,
+        environ={},
+    )
+
+    assert result is not None
+    assert result.persisted is False
+    assert path.read_text(encoding="utf-8") == original
+    assert not path.with_name("config.toml.pre-v1.bak").exists()
+
+
+def test_o4a_managed_restart_reports_pending_persistence_before_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("SHISAD_"):
+            monkeypatch.delenv(name)
+    path = tmp_path / "config.toml"
+    data_dir = tmp_path / "data"
+    socket_path = tmp_path / "control.sock"
+    original = f'[daemon]\ndata_dir = "{data_dir}"\nsocket_path = "{socket_path}"\n'
+    path.write_text(original, encoding="utf-8")
+    started = []
+    monkeypatch.setattr(
+        cli_main,
+        "_start_daemon",
+        lambda *, config, foreground, debug, **_kwargs: started.append(config),
+    )
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(path), "restart", "--foreground"],
+        env={"SHISAD_MANAGED": "true"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(started) == 1
+    assert "schema 0 -> 1" in result.output
+    assert "not persisted" in result.output
+    assert "config upgrade --write" in result.output
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_o4a_config_upgrade_cli_refusal_is_structured_and_nonmutating(tmp_path: Path) -> None:
@@ -229,3 +395,16 @@ def test_o4a_config_upgrade_cli_refusal_is_structured_and_nonmutating(tmp_path: 
     assert "schema_version 1" in payload["next_action"]
     assert path.read_text(encoding="utf-8") == original
     assert not path.with_name("config.toml.pre-v1.bak").exists()
+
+
+def test_o4a_missing_config_upgrade_names_init_as_next_action(tmp_path: Path) -> None:
+    path = tmp_path / "missing.toml"
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["--config", str(path), "config", "upgrade", "--format", "json"],
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["next_action"] == f"shisad --config {path} init"

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +35,8 @@ class StartupConfigUpgrade:
     plan: ConfigUpgradePlan
     persisted: bool
     backup_path: Path | None
+    permissions: str
+    parent_sync: str
 
 
 def prepare_config_for_startup(
@@ -40,21 +44,31 @@ def prepare_config_for_startup(
     *,
     managed: bool,
     interactive: bool,
+    environ: Mapping[str, str] | None = None,
 ) -> StartupConfigUpgrade | None:
     """Prepare one existing config before daemon construction."""
 
     if not path.exists() and not path.is_symlink():
         return None
-    plan = plan_config_upgrade(path)
+    effective_environ = dict(os.environ if environ is None else environ)
+    plan = plan_config_upgrade(path, environ=effective_environ)
     if plan.status is ConfigUpgradeStatus.CURRENT:
         return None
     if managed or not interactive:
-        return StartupConfigUpgrade(plan=plan, persisted=False, backup_path=None)
-    result = apply_config_upgrade(path)
+        return StartupConfigUpgrade(
+            plan=plan,
+            persisted=False,
+            backup_path=None,
+            permissions="not_applicable",
+            parent_sync="not_applicable",
+        )
+    result = apply_config_upgrade(path, environ=effective_environ)
     return StartupConfigUpgrade(
         plan=plan,
         persisted=True,
         backup_path=result.backup_path,
+        permissions=result.permissions,
+        parent_sync=result.parent_sync,
     )
 
 
@@ -73,6 +87,7 @@ def startup_upgrade_lines(result: StartupConfigUpgrade, *, command_path: Path) -
     return [
         f"Configuration upgraded: {transition}; validation passed.",
         f"Rollback copy: {safe_backup_path}",
+        (f"Storage capability: permissions={result.permissions} parent_sync={result.parent_sync}."),
         (
             "Rollback: stop shisad, restore that exact copy to "
             f"{safe_path}, then run config validate."
@@ -99,11 +114,13 @@ def config_upgrade_command(ctx: click.Context, write: bool, output_format: str) 
         configured if isinstance(configured, Path) else None,
     )
     try:
-        plan = plan_config_upgrade(path)
+        plan = plan_config_upgrade(path, environ=os.environ)
         result: ConfigUpgradeResult | None = None
         if write and plan.status is ConfigUpgradeStatus.SAFE_MIGRATION:
-            result = apply_config_upgrade(path)
+            result = apply_config_upgrade(path, environ=os.environ)
     except ConfigUpgradeError as exc:
+        missing = not path.exists() and not path.is_symlink()
+        safe_path = shlex.quote(safe_cli_text(path, limit=320))
         raise StructuredCliError(
             CliErrorEnvelope(
                 error_type="config_upgrade",
@@ -114,8 +131,12 @@ def config_upgrade_command(ctx: click.Context, write: bool, output_format: str) 
                     "the config is missing, malformed, unsafe, or uses an unsupported schema."
                 ),
                 next_action=(
-                    "use a compatible shisad version or restore a schema_version 1 config, "
-                    "then rerun config validate"
+                    f"shisad --config {safe_path} init"
+                    if missing
+                    else (
+                        "use a compatible shisad version or restore a schema_version 1 "
+                        "config, then rerun config validate"
+                    )
                 ),
                 technical_details=safe_error_detail(exc),
             ),
@@ -132,7 +153,10 @@ def config_upgrade_command(ctx: click.Context, write: bool, output_format: str) 
         "breaking": plan.breaking,
         "write_requested": write,
         "changed": changed,
-        "validated": True,
+        "source_validated": True,
+        "migrated_candidate_validated": result.validated if result is not None else None,
+        "permissions": result.permissions if result is not None else "not_applicable",
+        "parent_sync": result.parent_sync if result is not None else "not_applicable",
         "backup_path": str(backup_path) if backup_path is not None else None,
         "rollback": (
             f"stop shisad and restore {backup_path} to {path}, then run config validate"
@@ -154,7 +178,13 @@ def config_upgrade_command(ctx: click.Context, write: bool, output_format: str) 
         click.echo("Dry run only; rerun with --write to persist it.")
         return
     for line in startup_upgrade_lines(
-        StartupConfigUpgrade(plan=plan, persisted=True, backup_path=backup_path),
+        StartupConfigUpgrade(
+            plan=plan,
+            persisted=True,
+            backup_path=backup_path,
+            permissions=result.permissions,
+            parent_sync=result.parent_sync,
+        ),
         command_path=path,
     ):
         click.echo(line)

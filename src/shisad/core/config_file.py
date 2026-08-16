@@ -519,7 +519,7 @@ def _initialize_owner_only_generated_file(
         ) from exc
 
     try:
-        os.fchmod(descriptor, 0o600)
+        _tighten_descriptor_permissions(descriptor, 0o600)
         offset = 0
         while offset < len(payload):
             written = os.write(descriptor, payload[offset:])
@@ -544,6 +544,19 @@ def _initialize_owner_only_generated_file(
             f"cannot finish selected {label} file: {exc.__class__.__name__}"
         ) from exc
     return destination
+
+
+def _tighten_descriptor_permissions(descriptor: int, mode: int) -> str:
+    """Tighten an open file descriptor when the host exposes POSIX chmod."""
+
+    descriptor_chmod = getattr(os, "fchmod", None)
+    if os.name != "posix" or not callable(descriptor_chmod):
+        return "unsupported"
+    try:
+        descriptor_chmod(descriptor, mode)
+    except (AttributeError, NotImplementedError):
+        return "unsupported"
+    return "supported"
 
 
 def _prepare_owner_only_generated_parent(parent: Path, *, label: str) -> None:

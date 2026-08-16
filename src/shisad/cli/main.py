@@ -147,6 +147,7 @@ from shisad.core.config_file import (
     render_config_template,
     selected_config_path,
 )
+from shisad.core.storage_platform import tighten_permissions
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
     load_private_key_from_path,
@@ -962,6 +963,9 @@ def init_config(
                 env_selection.section_overrides if env_selection is not None else None
             ),
         )
+        permission_posture = tighten_permissions(destination, 0o600)
+        if permission_posture == "failed":
+            raise ConfigFileError("created config permissions could not be tightened")
     except (ConfigFileError, EnvironmentDetectionError) as exc:
         raise _config_cli_error(
             what_failed="Could not create operator configuration.",
@@ -974,6 +978,7 @@ def init_config(
         "path": str(destination),
         "mode": "from_env" if from_env else "non_interactive" if non_interactive else "minimal",
         "managed": managed,
+        "permissions": permission_posture,
         "persisted_fields": (
             sorted(
                 f"{section}.{field}"
@@ -996,7 +1001,11 @@ def init_config(
         payload,
         output_format=output_format,
         human_lines=[
-            f"Created owner-only config template: {destination}",
+            (
+                f"Created owner-only config template: {destination}"
+                if permission_posture == "supported"
+                else f"Created config template: {destination} (permission tightening unsupported)"
+            ),
             "Next: shisad config validate",
             "Then review values with: shisad config show --format human",
             "This minimal command does not configure providers or policy.",
@@ -1513,16 +1522,9 @@ def _start_daemon(
         _echo("\nShutting down...", fg="yellow")
 
 
-@cli.command()
-@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
-@click.option(
-    "--debug",
-    is_flag=True,
-    help="Run in foreground with DEBUG logging and local autoreload.",
-)
-@click.pass_context
-def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
-    """Start the shisad daemon."""
+def _prepare_config_upgrade_for_daemon_start(ctx: click.Context) -> None:
+    """Apply or report the bounded config migration before daemon construction."""
+
     root_obj = ctx.find_root().obj
     configured = root_obj.get("config_path") if isinstance(root_obj, dict) else None
     selected = selected_config_path(
@@ -1534,6 +1536,7 @@ def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
             selected,
             managed=parse_managed_posture(os.environ),
             interactive=bool(sys.stdin.isatty() and sys.stdout.isatty()),
+            environ=os.environ,
         )
     except (ConfigFileError, EnvironmentDetectionError) as exc:
         raise _config_cli_error(
@@ -1544,6 +1547,19 @@ def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
     if startup_upgrade is not None:
         for line in startup_upgrade_lines(startup_upgrade, command_path=selected):
             _echo(line, fg="yellow")
+
+
+@cli.command()
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Run in foreground with DEBUG logging and local autoreload.",
+)
+@click.pass_context
+def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
+    """Start the shisad daemon."""
+    _prepare_config_upgrade_for_daemon_start(ctx)
     config = _get_config()
     if foreground or debug:
         _start_daemon(config=config, foreground=foreground, debug=debug)
@@ -1587,9 +1603,15 @@ def stop() -> None:
 @click.option(
     "--fresh-config",
     is_flag=True,
-    help="Reload effective config after shutdown before start, without writing a backup.",
+    help="Reload effective config after shutdown; required migrations retain rollback copies.",
 )
-def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
+@click.pass_context
+def restart(
+    ctx: click.Context,
+    foreground: bool,
+    debug: bool,
+    fresh_config: bool,
+) -> None:
     """Restart the shisad daemon."""
     config = _get_config()
 
@@ -1611,9 +1633,12 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         status_config = starting_config
 
     try:
+        phase = "config-upgrade"
+        _prepare_config_upgrade_for_daemon_start(ctx)
         if fresh_config:
+            phase = "fresh-config"
             config = _get_config()
-            _echo("Reloaded effective configuration without writing a backup", fg="cyan")
+            _echo("Reloaded effective configuration", fg="cyan")
 
         def _announce_started(started_config: DaemonConfig) -> None:
             nonlocal status_config
