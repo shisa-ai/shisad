@@ -1,4 +1,4 @@
-"""Integration coverage for the themed chat TUI entry path."""
+"""Behavioral coverage for the themed chat TUI entry path."""
 
 from __future__ import annotations
 
