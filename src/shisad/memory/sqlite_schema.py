@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from shisad.core.sqlite_migration import (
     SQLiteMigrationFaultInjector,
     SQLiteMigrationResult,
     prepare_versioned_sqlite_database,
+    sqlite_table_structure_matches,
 )
 
 MEMORY_DATABASE_SCHEMA_VERSION = 1
@@ -228,47 +230,47 @@ def _validate_memory_schema(
     *,
     require_complete: bool,
 ) -> None:
-    expected = _expected_schema()
-    actual = _schema_objects(connection)
-    unknown = {
-        item for item in actual if item not in expected and not _is_derived_search_object(item)
-    }
-    if unknown:
-        prefix = "current" if require_complete else "unrecognized legacy"
-        raise SQLiteMigrationError(f"memory database has {prefix} schema objects")
-    stable_actual = actual & expected
-    if require_complete and stable_actual != expected:
-        raise SQLiteMigrationError("memory database current schema is incomplete")
-    for object_type, name in stable_actual:
-        if object_type != "table":
-            continue
-        actual_columns = _column_shape(connection, name)
-        expected_columns = _expected_column_shape(name)
-        if require_complete:
-            valid = actual_columns == expected_columns
-        else:
-            valid = bool(actual_columns) and all(
-                expected_columns.get(column) == shape for column, shape in actual_columns.items()
-            )
-        if not valid:
+    with contextlib.closing(_expected_connection()) as expected_connection:
+        expected = _schema_objects(expected_connection)
+        actual = _schema_objects(connection)
+        unknown = {
+            item for item in actual if item not in expected and not _is_derived_search_object(item)
+        }
+        if unknown:
             prefix = "current" if require_complete else "unrecognized legacy"
-            raise SQLiteMigrationError(f"memory database has {prefix} schema for {name}")
+            raise SQLiteMigrationError(f"memory database has {prefix} schema objects")
+        stable_actual = actual & expected
+        if require_complete and stable_actual != expected:
+            raise SQLiteMigrationError("memory database current schema is incomplete")
+        if not require_complete and not stable_actual:
+            raise SQLiteMigrationError("memory database has unrecognized legacy schema objects")
+        for object_type, name in stable_actual:
+            if object_type != "table":
+                continue
+            actual_columns = _column_shape(connection, name)
+            expected_columns = _column_shape(expected_connection, name)
+            if require_complete:
+                valid_columns = actual_columns == expected_columns
+            else:
+                valid_columns = bool(actual_columns) and all(
+                    expected_columns.get(column) == shape
+                    for column, shape in actual_columns.items()
+                )
+            valid_structure = sqlite_table_structure_matches(
+                connection,
+                expected_connection,
+                name,
+                require_complete=require_complete,
+            )
+            if not valid_columns or not valid_structure:
+                prefix = "current" if require_complete else "unrecognized legacy"
+                raise SQLiteMigrationError(f"memory database has {prefix} schema for {name}")
 
 
 def _expected_connection() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
     _apply_memory_schema_v1(connection)
     return connection
-
-
-def _expected_schema() -> set[tuple[str, str]]:
-    with _expected_connection() as connection:
-        return _schema_objects(connection)
-
-
-def _expected_column_shape(table: str) -> dict[str, tuple[str, int, object, int]]:
-    with _expected_connection() as connection:
-        return _column_shape(connection, table)
 
 
 def _schema_objects(connection: sqlite3.Connection) -> set[tuple[str, str]]:
@@ -283,10 +285,10 @@ def _schema_objects(connection: sqlite3.Connection) -> set[tuple[str, str]]:
 def _column_shape(
     connection: sqlite3.Connection,
     table: str,
-) -> dict[str, tuple[str, int, object, int]]:
+) -> dict[str, tuple[str, int, object, int, int]]:
     return {
-        str(row[1]): (str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
-        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        str(row[1]): (str(row[2]).upper(), int(row[3]), row[4], int(row[5]), int(row[6]))
+        for row in connection.execute(f"PRAGMA table_xinfo({table})").fetchall()
     }
 
 

@@ -5,23 +5,44 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from shisad.core.storage_platform import sync_parent_directory, tighten_permissions
+from shisad.core.storage_platform import (
+    combine_permission_capabilities,
+    sync_parent_directory,
+    tighten_permissions,
+)
 
 SQLiteSchemaCallback = Callable[[sqlite3.Connection], None]
+_SCHEMA_CONSTRAINT_KEYWORDS = (
+    "CHECK",
+    "COLLATE",
+    "CONFLICT",
+    "CONSTRAINT",
+    "FOREIGN",
+    "GENERATED",
+    "REFERENCES",
+    "STRICT",
+    "UNIQUE",
+    "WITHOUT",
+)
 
 
 class SQLiteMigrationStage(StrEnum):
-    """Injectable boundaries in the native SQLite migration lifecycle."""
+    """Finite boundaries in the native SQLite migration lifecycle."""
 
+    ADMISSION = "admission"
+    BACKUP = "backup"
     BACKUP_PRESERVED = "backup_preserved"
     MIGRATION_APPLIED = "migration_applied"
     BEFORE_COMMIT = "before_commit"
+    PERMISSIONS = "permissions"
+    PARENT_SYNC = "parent_sync"
 
 
 SQLiteMigrationFaultInjector = Callable[[SQLiteMigrationStage], None]
@@ -29,6 +50,30 @@ SQLiteMigrationFaultInjector = Callable[[SQLiteMigrationStage], None]
 
 class SQLiteMigrationError(RuntimeError):
     """A physical SQLite database could not be admitted safely."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        path: Path | None = None,
+        stage: SQLiteMigrationStage = SQLiteMigrationStage.ADMISSION,
+        transaction_committed: bool = False,
+        from_version: int | None = None,
+        to_version: int | None = None,
+        backup_path: Path | None = None,
+        permissions: str = "not_attempted",
+        parent_sync: str = "not_attempted",
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.path = path
+        self.stage = stage
+        self.transaction_committed = transaction_committed
+        self.from_version = from_version
+        self.to_version = to_version
+        self.backup_path = backup_path
+        self.permissions = permissions
+        self.parent_sync = parent_sync
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +83,59 @@ class SQLiteMigrationResult:
     path: Path
     initialized: bool
     migrated: bool
+    transaction_committed: bool
     from_version: int
     to_version: int
     backup_path: Path | None
     permissions: str
     parent_sync: str
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteIndexStructure:
+    """Finite semantic shape of one SQLite index."""
+
+    name: str
+    unique: bool
+    origin: str
+    partial: bool
+    columns: tuple[tuple[str | None, bool, str, bool], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteTableStructure:
+    """Constraint/index semantics not represented by table column metadata."""
+
+    without_rowid: bool
+    strict: bool
+    foreign_keys: tuple[tuple[object, ...], ...]
+    constraint_keywords: tuple[str, ...]
+    indexes: tuple[SQLiteIndexStructure, ...]
+
+
+def sqlite_table_structure_matches(
+    connection: sqlite3.Connection,
+    expected_connection: sqlite3.Connection,
+    table: str,
+    *,
+    require_complete: bool,
+) -> bool:
+    """Compare finite SQLite constraint/index metadata for one known table."""
+
+    actual = _sqlite_table_structure(connection, table)
+    expected = _sqlite_table_structure(expected_connection, table)
+    if (
+        actual.without_rowid != expected.without_rowid
+        or actual.strict != expected.strict
+        or actual.foreign_keys != expected.foreign_keys
+        or actual.constraint_keywords != expected.constraint_keywords
+    ):
+        return False
+    actual_indexes = {index.name: index for index in actual.indexes}
+    expected_indexes = {index.name: index for index in expected.indexes}
+    if require_complete:
+        return actual_indexes == expected_indexes
+    return all(expected_indexes.get(name) == index for name, index in actual_indexes.items())
 
 
 def prepare_versioned_sqlite_database(
@@ -61,21 +154,26 @@ def prepare_versioned_sqlite_database(
     if current_version < 1:
         raise ValueError("current SQLite schema version must be positive")
     database_path = Path(path)
-    existed = _prepare_database_path(database_path, label=label)
-    if not existed and _migration_backup_exists(database_path):
-        raise SQLiteMigrationError(
-            f"{label} migration backup exists without its database; "
-            "restore or relocate it before fresh initialization"
-        )
-    if existed and database_path.stat().st_size == 0:
-        raise SQLiteMigrationError(f"existing {label} database is empty or unversioned")
-
+    existed: bool | None = None
     connection: sqlite3.Connection | None = None
     in_transaction = False
     committed = False
-    stage: SQLiteMigrationStage | None = None
+    stage = SQLiteMigrationStage.ADMISSION
+    from_version: int | None = None
+    backup_path: Path | None = None
+    permissions = "not_attempted"
+    parent_sync = "not_attempted"
     inject = fault_injector or (lambda _stage: None)
     try:
+        existed = _prepare_database_path(database_path, label=label)
+        if not existed and _migration_backup_exists(database_path):
+            raise SQLiteMigrationError(
+                f"{label} migration backup exists without its database; "
+                "restore or relocate it before fresh initialization"
+            )
+        if existed and database_path.stat().st_size == 0:
+            raise SQLiteMigrationError(f"existing {label} database is empty or unversioned")
+
         connection = sqlite3.connect(database_path, timeout=5.0, isolation_level=None)
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA synchronous = FULL")
@@ -84,6 +182,7 @@ def prepare_versioned_sqlite_database(
         connection.execute("BEGIN IMMEDIATE")
         in_transaction = True
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        from_version = version
         _require_integrity(connection, label=label)
 
         if not existed:
@@ -98,12 +197,15 @@ def prepare_versioned_sqlite_database(
             connection.commit()
             in_transaction = False
             committed = True
+            stage = SQLiteMigrationStage.PERMISSIONS
             permissions = _require_permissions(database_path, label=label)
+            stage = SQLiteMigrationStage.PARENT_SYNC
             parent_sync = sync_parent_directory(database_path.parent)
             return SQLiteMigrationResult(
                 path=database_path,
                 initialized=True,
                 migrated=False,
+                transaction_committed=True,
                 from_version=0,
                 to_version=current_version,
                 backup_path=None,
@@ -120,14 +222,17 @@ def prepare_versioned_sqlite_database(
             validate_current(connection)
             connection.rollback()
             in_transaction = False
+            stage = SQLiteMigrationStage.PERMISSIONS
+            permissions = _require_permissions(database_path, label=label)
             return SQLiteMigrationResult(
                 path=database_path,
                 initialized=False,
                 migrated=False,
+                transaction_committed=False,
                 from_version=version,
                 to_version=version,
                 backup_path=None,
-                permissions=_require_permissions(database_path, label=label),
+                permissions=permissions,
                 parent_sync="not_applicable",
             )
         if version not in migrations:
@@ -136,7 +241,9 @@ def prepare_versioned_sqlite_database(
             )
 
         validate_legacy(connection)
-        backup_path, backup_permissions, backup_parent_sync = _preserve_exact_backup(
+        backup_path = database_path.with_name(f"{database_path.name}.pre-v{version + 1}.bak")
+        stage = SQLiteMigrationStage.BACKUP
+        backup_path, permissions, parent_sync = _preserve_exact_backup(
             database_path,
             label=label,
             expected_version=version,
@@ -162,35 +269,55 @@ def prepare_versioned_sqlite_database(
         connection.commit()
         in_transaction = False
         committed = True
+        stage = SQLiteMigrationStage.PERMISSIONS
+        backup_permissions = permissions
         permissions = _require_permissions(database_path, label=label)
         return SQLiteMigrationResult(
             path=database_path,
             initialized=False,
             migrated=True,
+            transaction_committed=True,
             from_version=migrated_from,
             to_version=version,
             backup_path=backup_path,
-            permissions=_combine_capabilities(backup_permissions, permissions),
-            parent_sync=backup_parent_sync,
+            permissions=combine_permission_capabilities(backup_permissions, permissions),
+            parent_sync=parent_sync,
         )
-    except SQLiteMigrationError:
+    except SQLiteMigrationError as exc:
         if in_transaction and connection is not None:
             with contextlib.suppress(sqlite3.Error):
                 connection.rollback()
-        raise
+        raise _enrich_migration_error(
+            exc,
+            path=database_path,
+            stage=stage,
+            transaction_committed=committed,
+            from_version=from_version,
+            to_version=current_version,
+            backup_path=backup_path,
+            permissions=permissions,
+            parent_sync=parent_sync,
+        ) from exc
     except (OSError, sqlite3.Error) as exc:
         if in_transaction and connection is not None:
             with contextlib.suppress(sqlite3.Error):
                 connection.rollback()
-        boundary = stage.value if stage is not None else "admission"
         raise SQLiteMigrationError(
-            f"{label} database migration failed at {boundary}: {exc.__class__.__name__}"
+            f"{label} database migration failed at {stage.value}: {exc.__class__.__name__}",
+            path=database_path,
+            stage=stage,
+            transaction_committed=committed,
+            from_version=from_version,
+            to_version=current_version,
+            backup_path=backup_path,
+            permissions=permissions,
+            parent_sync=("failed" if stage is SQLiteMigrationStage.PARENT_SYNC else parent_sync),
         ) from exc
     finally:
         if connection is not None:
             with contextlib.suppress(sqlite3.Error):
                 connection.close()
-        if not existed and not committed:
+        if existed is False and not committed:
             for candidate in (
                 database_path,
                 database_path.with_name(f"{database_path.name}-journal"),
@@ -199,6 +326,94 @@ def prepare_versioned_sqlite_database(
             ):
                 with contextlib.suppress(OSError):
                     candidate.unlink()
+
+
+def _enrich_migration_error(
+    error: SQLiteMigrationError,
+    *,
+    path: Path,
+    stage: SQLiteMigrationStage,
+    transaction_committed: bool,
+    from_version: int | None,
+    to_version: int,
+    backup_path: Path | None,
+    permissions: str,
+    parent_sync: str,
+) -> SQLiteMigrationError:
+    return SQLiteMigrationError(
+        error.reason,
+        path=path,
+        stage=stage,
+        transaction_committed=transaction_committed,
+        from_version=from_version,
+        to_version=to_version,
+        backup_path=error.backup_path or backup_path,
+        permissions=(error.permissions if error.permissions != "not_attempted" else permissions),
+        parent_sync=(error.parent_sync if error.parent_sync != "not_attempted" else parent_sync),
+    )
+
+
+def _sqlite_table_structure(
+    connection: sqlite3.Connection,
+    table: str,
+) -> SQLiteTableStructure:
+    table_row = next(
+        (
+            row
+            for row in connection.execute("PRAGMA table_list").fetchall()
+            if str(row[0]) == "main" and str(row[1]) == table
+        ),
+        None,
+    )
+    if table_row is None:
+        raise SQLiteMigrationError(f"SQLite table structure is missing for {table}")
+    quoted_table = _quote_sqlite_identifier(table)
+    foreign_keys = tuple(
+        tuple(row) for row in connection.execute(f"PRAGMA foreign_key_list({quoted_table})")
+    )
+    sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    sql = "" if sql_row is None or sql_row[0] is None else str(sql_row[0])
+    constraint_keywords = tuple(
+        keyword
+        for keyword in _SCHEMA_CONSTRAINT_KEYWORDS
+        if re.search(rf"(?i)(?<![A-Z0-9_]){keyword}(?![A-Z0-9_])", sql)
+    )
+    indexes: list[SQLiteIndexStructure] = []
+    for row in connection.execute(f"PRAGMA index_list({quoted_table})").fetchall():
+        name = str(row[1])
+        quoted_index = _quote_sqlite_identifier(name)
+        columns = tuple(
+            (
+                None if detail[2] is None else str(detail[2]),
+                bool(detail[3]),
+                str(detail[4]),
+                bool(detail[5]),
+            )
+            for detail in connection.execute(f"PRAGMA index_xinfo({quoted_index})").fetchall()
+        )
+        indexes.append(
+            SQLiteIndexStructure(
+                name=name,
+                unique=bool(row[2]),
+                origin=str(row[3]),
+                partial=bool(row[4]),
+                columns=columns,
+            )
+        )
+    return SQLiteTableStructure(
+        without_rowid=bool(table_row[4]),
+        strict=bool(table_row[5]),
+        foreign_keys=foreign_keys,
+        constraint_keywords=constraint_keywords,
+        indexes=tuple(sorted(indexes, key=lambda index: index.name)),
+    )
+
+
+def _quote_sqlite_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _prepare_database_path(path: Path, *, label: str) -> bool:
@@ -296,7 +511,15 @@ def _preserve_exact_backup(
             raise SQLiteMigrationError(f"{label} migration backup is not an exact copy")
         _validate_backup(backup, label=label, expected_version=expected_version)
         permissions = _require_permissions(backup, label=f"{label} migration backup")
-        parent_sync = sync_parent_directory(source.parent)
+        try:
+            parent_sync = sync_parent_directory(source.parent)
+        except OSError as exc:
+            raise SQLiteMigrationError(
+                f"cannot preserve {label} migration backup: {exc.__class__.__name__}",
+                backup_path=backup,
+                permissions=permissions,
+                parent_sync="failed",
+            ) from exc
         return backup, permissions, parent_sync
     except (OSError, sqlite3.Error) as exc:
         if descriptor >= 0:
@@ -347,11 +570,8 @@ def _files_match(left: Path, right: Path) -> bool:
 def _require_permissions(path: Path, *, label: str) -> str:
     permissions = tighten_permissions(path, 0o600)
     if permissions == "failed":
-        raise SQLiteMigrationError(f"{label} permissions could not be tightened")
+        raise SQLiteMigrationError(
+            f"{label} permissions could not be tightened",
+            permissions="failed",
+        )
     return permissions
-
-
-def _combine_capabilities(*states: str) -> str:
-    return (
-        "supported" if states and all(state == "supported" for state in states) else "unsupported"
-    )

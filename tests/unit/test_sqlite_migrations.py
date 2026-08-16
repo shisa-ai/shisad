@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.core.sqlite_migration as sqlite_migration
 from shisad.core.sqlite_migration import SQLiteMigrationError, SQLiteMigrationStage
 from shisad.memory.sqlite_schema import prepare_memory_database
 from shisad.memory.timeline import prepare_timeline_database
@@ -98,9 +99,11 @@ def test_o4b_fresh_memory_and_timeline_initialize_at_explicit_version_one(
 
     assert memory_result.initialized is True
     assert memory_result.migrated is False
+    assert memory_result.transaction_committed is True
     assert memory_result.backup_path is None
     assert timeline_result.initialized is True
     assert timeline_result.migrated is False
+    assert timeline_result.transaction_committed is True
     assert timeline_result.backup_path is None
     assert _user_version(memory) == 1
     assert _user_version(timeline) == 1
@@ -135,6 +138,7 @@ def test_o4b_memory_legacy_migration_preserves_rows_and_exact_backup(
     backup = path.with_name("memory.sqlite3.pre-v1.bak")
     assert result.initialized is False
     assert result.migrated is True
+    assert result.transaction_committed is True
     assert result.from_version == 0
     assert result.to_version == 1
     assert result.backup_path == backup
@@ -251,6 +255,134 @@ def test_o4b_unknown_unversioned_database_refuses_without_mutation(
     assert not path.with_name(f"{path.name}.pre-v1.bak").exists()
 
 
+@pytest.mark.parametrize("derived_only", [False, True])
+def test_o4b_memory_legacy_requires_a_recognized_stable_object(
+    tmp_path: Path,
+    derived_only: bool,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        if derived_only:
+            connection.execute("CREATE TABLE retrieval_lexical(chunk_id TEXT)")
+        else:
+            connection.execute("CREATE TABLE discarded(value TEXT)")
+            connection.execute("DROP TABLE discarded")
+    before = path.read_bytes()
+
+    with pytest.raises(SQLiteMigrationError, match="unrecognized legacy schema"):
+        prepare_memory_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
+
+
+@pytest.mark.parametrize("kind", ["memory", "timeline"])
+def test_o4b_legacy_same_named_index_with_wrong_target_is_refused(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    path = tmp_path / kind / f"{kind}.sqlite3"
+    if kind == "memory":
+        _create_legacy_memory_database(path)
+        index_sql = (
+            "CREATE INDEX idx_memory_events_entry_timestamp ON memory_events(actor, timestamp)"
+        )
+        prepare = prepare_memory_database
+    else:
+        _create_legacy_timeline_database(path)
+        index_sql = "CREATE INDEX idx_timeline_owner_time ON timeline_rows(session_id, timestamp)"
+        prepare = prepare_timeline_database
+    with sqlite3.connect(path) as connection:
+        connection.execute(index_sql)
+    before = path.read_bytes()
+
+    with pytest.raises(SQLiteMigrationError, match="unrecognized legacy schema"):
+        prepare(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name(f"{path.name}.pre-v1.bak").exists()
+
+
+@pytest.mark.parametrize("constraint", ["UNIQUE", "CHECK(length(actor) > 0)"])
+def test_o4b_memory_legacy_with_extra_constraint_is_refused(
+    tmp_path: Path,
+    constraint: str,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            f"""
+            CREATE TABLE memory_events (
+                event_id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL {constraint},
+                ingress_handle_id TEXT,
+                metadata_json TEXT NOT NULL
+            )
+            """
+        )
+    before = path.read_bytes()
+
+    with pytest.raises(SQLiteMigrationError, match="unrecognized legacy schema"):
+        prepare_memory_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
+
+
+def test_o4b_timeline_legacy_with_extra_check_constraint_is_refused(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / "template.sqlite3"
+    _create_legacy_timeline_database(template)
+    with sqlite3.connect(template) as connection:
+        create_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'timeline_rows'"
+            ).fetchone()[0]
+        )
+    path = tmp_path / "timeline" / "timeline.sqlite3"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            create_sql.replace(
+                "content TEXT NOT NULL",
+                "content TEXT NOT NULL CHECK(length(content) > 0)",
+            )
+        )
+    before = path.read_bytes()
+
+    with pytest.raises(SQLiteMigrationError, match="unrecognized legacy schema"):
+        prepare_timeline_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("timeline.sqlite3.pre-v1.bak").exists()
+
+
+def test_o4b_current_same_named_unique_index_with_wrong_semantics_is_refused(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    prepare_memory_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX idx_memory_events_entry_timestamp")
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_memory_events_entry_timestamp "
+            "ON memory_events(entry_id, timestamp)"
+        )
+    before = path.read_bytes()
+
+    with pytest.raises(SQLiteMigrationError, match="current schema"):
+        prepare_memory_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
+
+
 def test_o4b_existing_empty_or_symlink_database_is_refused(tmp_path: Path) -> None:
     empty = tmp_path / "empty" / "memory.sqlite3"
     empty.parent.mkdir()
@@ -299,6 +431,117 @@ def test_o4b_symlink_migration_backup_is_refused_without_mutation(tmp_path: Path
     assert _user_version(path) == 0
 
 
+def test_o4b_mismatched_migration_backup_is_refused_without_mutation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    before = _create_legacy_memory_database(path)
+    backup = path.with_name("memory.sqlite3.pre-v1.bak")
+    backup.write_bytes(b"not the selected legacy database")
+
+    with pytest.raises(
+        SQLiteMigrationError,
+        match="does not match the legacy database",
+    ) as excinfo:
+        prepare_memory_database(path)
+
+    assert excinfo.value.stage is SQLiteMigrationStage.BACKUP
+    assert excinfo.value.transaction_committed is False
+    assert excinfo.value.from_version == 0
+    assert excinfo.value.to_version == 1
+    assert excinfo.value.backup_path == backup
+    assert path.read_bytes() == before
+    assert backup.read_bytes() == b"not the selected legacy database"
+    assert _user_version(path) == 0
+
+
+def test_o4b_corrupt_database_is_refused_without_mutation_or_backup(tmp_path: Path) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    path.parent.mkdir()
+    before = b"not a SQLite database"
+    path.write_bytes(before)
+
+    with pytest.raises(SQLiteMigrationError, match="migration failed at admission"):
+        prepare_memory_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
+
+
+def test_o4b_post_commit_failure_exposes_typed_lifecycle_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+
+    def _fail_parent_sync(_parent: Path) -> str:
+        raise OSError("simulated parent sync failure")
+
+    monkeypatch.setattr(sqlite_migration, "sync_parent_directory", _fail_parent_sync)
+
+    with pytest.raises(SQLiteMigrationError, match="parent_sync") as excinfo:
+        prepare_memory_database(path)
+
+    error = excinfo.value
+    assert error.path == path
+    assert error.stage is SQLiteMigrationStage.PARENT_SYNC
+    assert error.transaction_committed is True
+    assert error.from_version == 0
+    assert error.to_version == 1
+    assert error.backup_path is None
+    assert error.permissions in {"supported", "unsupported"}
+    assert error.parent_sync == "failed"
+    assert _user_version(path) == 1
+
+
+def test_o4b_post_commit_permission_failure_exposes_typed_lifecycle_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    monkeypatch.setattr(sqlite_migration, "tighten_permissions", lambda _path, _mode: "failed")
+
+    with pytest.raises(SQLiteMigrationError, match="permissions") as excinfo:
+        prepare_memory_database(path)
+
+    error = excinfo.value
+    assert error.path == path
+    assert error.stage is SQLiteMigrationStage.PERMISSIONS
+    assert error.transaction_committed is True
+    assert error.from_version == 0
+    assert error.to_version == 1
+    assert error.backup_path is None
+    assert error.permissions == "failed"
+    assert error.parent_sync == "not_attempted"
+    assert _user_version(path) == 1
+
+
+def test_o4b_admission_oserror_is_wrapped_with_typed_lifecycle_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+
+    def _fail_backup_scan(_path: Path) -> bool:
+        raise OSError("simulated directory read failure")
+
+    monkeypatch.setattr(sqlite_migration, "_migration_backup_exists", _fail_backup_scan)
+
+    with pytest.raises(SQLiteMigrationError, match="migration failed at admission") as excinfo:
+        prepare_memory_database(path)
+
+    error = excinfo.value
+    assert error.path == path
+    assert error.stage is SQLiteMigrationStage.ADMISSION
+    assert error.transaction_committed is False
+    assert error.from_version is None
+    assert error.to_version == 1
+    assert error.backup_path is None
+    assert error.permissions == "not_attempted"
+    assert error.parent_sync == "not_attempted"
+    assert not path.exists()
+
+
 def test_o4b_current_database_is_validated_without_backup_or_mutation(tmp_path: Path) -> None:
     path = tmp_path / "memory" / "memory.sqlite3"
     prepare_memory_database(path)
@@ -308,6 +551,7 @@ def test_o4b_current_database_is_validated_without_backup_or_mutation(tmp_path: 
 
     assert result.initialized is False
     assert result.migrated is False
+    assert result.transaction_committed is False
     assert result.from_version == result.to_version == 1
     assert result.backup_path is None
     assert path.read_bytes() == before
