@@ -2953,7 +2953,7 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 user_id=identity_user_id,
                 workspace_id=identity_workspace_id,
-                delivery_thread_id=message.thread_id,
+                delivery_thread_id=(message.thread_id if message.channel == "discord" else None),
             )
             if existing is not None and not public_session:
                 sid = existing.id

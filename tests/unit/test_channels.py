@@ -755,11 +755,18 @@ async def test_o3d_discord_thread_mode_creates_and_routes_exact_thread(
     _install_o3d_discord(monkeypatch)
     parent = _O3DDiscordTarget("100")
     thread = _O3DDiscordTarget("200", parent_id="100")
+    wrong_parent_thread = _O3DDiscordTarget("201", parent_id="101")
+    non_thread_channel = _O3DDiscordTarget("202")
     message = _O3DDiscordMessage(message_id="200", channel=parent, created_thread=thread)
     channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
     await channel.connect()
     assert isinstance(channel._client, _O3DDiscordClient)
-    channel._client.targets = {100: parent, 200: thread}
+    channel._client.targets = {
+        100: parent,
+        200: thread,
+        201: wrong_parent_thread,
+        202: non_thread_channel,
+    }
 
     await channel._client.dispatch(message)
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
@@ -780,7 +787,14 @@ async def test_o3d_discord_thread_mode_creates_and_routes_exact_thread(
             "must not fall back",
             target=DeliveryTarget(channel="discord", recipient="100", thread_id="201"),
         )
+    with pytest.raises(RuntimeError, match="could not resolve"):
+        await channel.send(
+            "must not target a non-thread channel",
+            target=DeliveryTarget(channel="discord", recipient="100", thread_id="202"),
+        )
     assert parent.sent == []
+    assert wrong_parent_thread.sent == []
+    assert non_thread_channel.sent == []
     await channel.disconnect()
 
 
@@ -859,6 +873,13 @@ async def test_o3d_discord_thread_permission_failure_is_actionable_and_bounded(
         "Send Messages in Threads permissions, then try again."
     ]
     assert "private detail" not in message.replies[0]
+    assert channel.connected is True
+
+    existing_thread = _O3DDiscordTarget("204", parent_id="100")
+    recovered_message = _O3DDiscordMessage(message_id="304", channel=existing_thread)
+    await channel._client.dispatch(recovered_message)
+    recovered = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert recovered.thread_id == "204"
     assert channel.connected is True
     await channel.disconnect()
 

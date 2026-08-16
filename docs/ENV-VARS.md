@@ -218,7 +218,8 @@ Discord public-channel rules:
   includes the exact thread ID, and outbound delivery does not fall back to the
   parent when a thread target is invalid. The bot needs Create Public Threads
   and Send Messages in Threads permissions. DMs retain their existing flat
-  behavior.
+  behavior. In thread mode, Discord channel rules are evaluated against and
+  inherited from the parent channel ID rather than the concrete thread ID.
 
 - `SHISAD_DISCORD_CHANNEL_RULES` accepts a JSON list of rules. Each rule may set
   `guild_id`, `channels`, `exclude_channels`, `mode` (`mention-only`,

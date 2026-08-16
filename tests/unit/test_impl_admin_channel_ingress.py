@@ -136,7 +136,7 @@ class _SessionManagerStub:
         channel: str,
         user_id: object,
         workspace_id: object,
-        delivery_thread_id: str = "",
+        delivery_thread_id: str | None = None,
     ) -> object | None:
         self.binding_calls.append(
             {
@@ -305,8 +305,30 @@ def test_o3d_session_binding_matches_exact_delivery_thread() -> None:
             channel="discord",
             user_id=UserId("alice"),
             workspace_id=WorkspaceId("guild-1"),
+            delivery_thread_id="",
         )
         is flat
+    )
+
+    matrix = manager.create(
+        channel="matrix",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("room-1"),
+        metadata={
+            "delivery_target": DeliveryTarget(
+                channel="matrix",
+                recipient="room-1",
+                thread_id="event-1",
+            ).model_dump(mode="json")
+        },
+    )
+    assert (
+        manager.find_by_binding(
+            channel="matrix",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("room-1"),
+        )
+        is matrix
     )
 
 
@@ -347,6 +369,33 @@ async def test_o3d_channel_ingress_passes_thread_to_session_lookup_and_delivery(
         workspace_hint="guild-1",
         thread_id="thread-1",
     )
+
+
+@pytest.mark.asyncio
+async def test_o3d_non_discord_ingress_keeps_session_lookup_thread_agnostic(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    harness._identity_map = ChannelIdentityMap(
+        default_trust={"matrix": "owner"},
+        allowlists={"matrix": {"alice"}},
+    )
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "matrix",
+                "external_user_id": "alice",
+                "workspace_hint": "room-1",
+                "reply_target": "room-1",
+                "thread_id": "event-2",
+                "message_id": "event-2",
+                "content": "continue the existing Matrix conversation",
+            }
+        }
+    )
+
+    assert harness._session_manager.binding_calls[-1]["delivery_thread_id"] is None
 
 
 class _DiscordInteractionAckStub:

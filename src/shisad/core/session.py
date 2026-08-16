@@ -206,10 +206,10 @@ class SessionManager:
         channel: str,
         user_id: UserId,
         workspace_id: WorkspaceId,
-        delivery_thread_id: str = "",
+        delivery_thread_id: str | None = None,
     ) -> Session | None:
         """Find an active session by immutable identity and delivery thread."""
-        requested_thread_id = delivery_thread_id.strip()
+        requested_thread_id = delivery_thread_id.strip() if delivery_thread_id is not None else None
         for session in self._sessions.values():
             if session.state != SessionState.ACTIVE:
                 continue
@@ -221,7 +221,7 @@ class SessionManager:
                 session.channel == channel
                 and session.user_id == user_id
                 and session.workspace_id == workspace_id
-                and session_thread_id == requested_thread_id
+                and (requested_thread_id is None or session_thread_id == requested_thread_id)
             ):
                 return session
         return None

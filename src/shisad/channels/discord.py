@@ -629,6 +629,16 @@ class DiscordChannel(InMemoryChannel):
                         fetch_channel = getattr(self._client, "fetch_channel", None)
                         if callable(fetch_channel):
                             channel_obj = await fetch_channel(channel_id)
+                    if channel_obj is not None and thread_recipient:
+                        resolved_parent_id, resolved_thread_id = self._delivery_coordinates(
+                            channel_obj
+                        )
+                        declared_parent_id = target.recipient.strip() if target is not None else ""
+                        if (
+                            resolved_thread_id != thread_recipient
+                            or resolved_parent_id != declared_parent_id
+                        ):
+                            channel_obj = None
                     if channel_obj is not None:
                         send = getattr(channel_obj, "send", None)
                         if callable(send):

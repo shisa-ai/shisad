@@ -594,6 +594,7 @@ approval, and result delivery remain bound to that thread and reuse its
 session. If thread creation is unavailable, the bot reports the required
 permissions in the parent and does not silently continue with flat delivery.
 An unresolved thread target also fails without falling back to the parent.
+Discord channel rules for a thread are inherited from its parent channel ID.
 
 **Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
 JSON when the bot should also serve a shared Discord channel. Rules are
