@@ -17,6 +17,12 @@ from pydantic import BaseModel, Field
 from shisad.core.context import DEFAULT_EPISODE_GAP_THRESHOLD
 from shisad.core.daemon_notices import strip_daemon_lockdown_notice_suffix
 from shisad.core.session import Session
+from shisad.core.sqlite_migration import (
+    SQLiteMigrationError,
+    SQLiteMigrationFaultInjector,
+    SQLiteMigrationResult,
+    prepare_versioned_sqlite_database,
+)
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import SessionId
 
@@ -60,6 +66,7 @@ _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 _HIGH_SENSITIVITY_TAINTS = frozenset({"credentials", "system"})
 _TIMELINE_REDACTED_CONTENT = "[REDACTED:timeline_sensitive]"
 _ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY = "_archive_imported"
+TIMELINE_DATABASE_SCHEMA_VERSION = 1
 _KNOWN_TIME_PHRASES = (
     "last week",
     "last monday",
@@ -73,6 +80,130 @@ _KNOWN_TIME_PHRASES = (
     "recently",
     "this month",
 )
+
+
+def prepare_timeline_database(
+    path: Path,
+    *,
+    fault_injector: SQLiteMigrationFaultInjector | None = None,
+) -> SQLiteMigrationResult:
+    """Prepare the sole physical schema authority for the timeline index."""
+
+    return prepare_versioned_sqlite_database(
+        path,
+        label="timeline",
+        current_version=TIMELINE_DATABASE_SCHEMA_VERSION,
+        initialize=_apply_timeline_schema_v1,
+        migrations={0: _apply_timeline_schema_v1},
+        validate_current=_validate_current_timeline_schema,
+        validate_legacy=_validate_legacy_timeline_schema,
+        fault_injector=fault_injector,
+    )
+
+
+def _apply_timeline_schema_v1(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS timeline_rows (
+            handle TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            episode_id TEXT NOT NULL,
+            episode_index INTEGER NOT NULL,
+            entry_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            snippet TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            channel_binding TEXT NOT NULL DEFAULT '',
+            visibility TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            evidence_ref_id TEXT NOT NULL,
+            taint_labels TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            source_surface TEXT NOT NULL DEFAULT 'transcript',
+            provenance TEXT NOT NULL DEFAULT 'transcript',
+            related_memory_ids TEXT NOT NULL
+        )
+        """
+    )
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(timeline_rows)")}
+    for name, declaration in (
+        ("channel_binding", "channel_binding TEXT NOT NULL DEFAULT ''"),
+        ("source_surface", "source_surface TEXT NOT NULL DEFAULT 'transcript'"),
+        ("provenance", "provenance TEXT NOT NULL DEFAULT 'transcript'"),
+    ):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE timeline_rows ADD COLUMN {declaration}")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_timeline_owner_time
+        ON timeline_rows(user_id, workspace_id, timestamp)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_timeline_session_episode
+        ON timeline_rows(session_id, episode_index, timestamp)
+        """
+    )
+
+
+def _validate_legacy_timeline_schema(connection: sqlite3.Connection) -> None:
+    _validate_timeline_schema(connection, require_complete=False)
+
+
+def _validate_current_timeline_schema(connection: sqlite3.Connection) -> None:
+    _validate_timeline_schema(connection, require_complete=True)
+
+
+def _validate_timeline_schema(
+    connection: sqlite3.Connection,
+    *,
+    require_complete: bool,
+) -> None:
+    with sqlite3.connect(":memory:") as expected_connection:
+        _apply_timeline_schema_v1(expected_connection)
+        expected_objects = _timeline_schema_objects(expected_connection)
+        expected_columns = _timeline_column_shape(expected_connection)
+    actual_objects = _timeline_schema_objects(connection)
+    if require_complete:
+        valid_objects = actual_objects == expected_objects
+    else:
+        valid_objects = bool(actual_objects) and actual_objects <= expected_objects
+    actual_columns = (
+        _timeline_column_shape(connection) if ("table", "timeline_rows") in actual_objects else {}
+    )
+    if require_complete:
+        valid_columns = actual_columns == expected_columns
+    else:
+        valid_columns = bool(actual_columns) and all(
+            expected_columns.get(column) == shape for column, shape in actual_columns.items()
+        )
+    if not valid_objects or not valid_columns:
+        prefix = "current" if require_complete else "unrecognized legacy"
+        raise SQLiteMigrationError(f"timeline database has {prefix} schema")
+
+
+def _timeline_schema_objects(connection: sqlite3.Connection) -> set[tuple[str, str]]:
+    return {
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+
+
+def _timeline_column_shape(
+    connection: sqlite3.Connection,
+) -> dict[str, tuple[str, int, object, int]]:
+    return {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+        for row in connection.execute("PRAGMA table_info(timeline_rows)").fetchall()
+    }
 
 
 class TimelineResolverMetadata(BaseModel):
@@ -452,62 +583,7 @@ class TimelineIndex:
             return max(0, int(cursor.rowcount))
 
     def _ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS timeline_rows (
-                    handle TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    episode_id TEXT NOT NULL,
-                    episode_index INTEGER NOT NULL,
-                    entry_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    snippet TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    workspace_id TEXT NOT NULL,
-                    channel TEXT NOT NULL,
-                    channel_binding TEXT NOT NULL DEFAULT '',
-                    visibility TEXT NOT NULL,
-                    content_digest TEXT NOT NULL,
-                    evidence_ref_id TEXT NOT NULL,
-                    taint_labels TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    thread_id TEXT NOT NULL,
-                    source_surface TEXT NOT NULL DEFAULT 'transcript',
-                    provenance TEXT NOT NULL DEFAULT 'transcript',
-                    related_memory_ids TEXT NOT NULL
-                )
-                """
-            )
-            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(timeline_rows)")}
-            if "channel_binding" not in columns:
-                conn.execute(
-                    "ALTER TABLE timeline_rows ADD COLUMN channel_binding TEXT NOT NULL DEFAULT ''"
-                )
-            if "source_surface" not in columns:
-                conn.execute(
-                    "ALTER TABLE timeline_rows "
-                    "ADD COLUMN source_surface TEXT NOT NULL DEFAULT 'transcript'"
-                )
-            if "provenance" not in columns:
-                conn.execute(
-                    "ALTER TABLE timeline_rows "
-                    "ADD COLUMN provenance TEXT NOT NULL DEFAULT 'transcript'"
-                )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_timeline_owner_time
-                ON timeline_rows(user_id, workspace_id, timestamp)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_timeline_session_episode
-                ON timeline_rows(session_id, episode_index, timestamp)
-                """
-            )
+        prepare_timeline_database(self._db_path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)

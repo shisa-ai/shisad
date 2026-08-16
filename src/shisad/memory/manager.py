@@ -26,6 +26,7 @@ from shisad.memory.remap import (
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
+from shisad.memory.sqlite_schema import prepare_memory_database
 from shisad.memory.surfaces import (
     ActiveAttentionPack,
     IdentityPack,
@@ -163,7 +164,7 @@ class MemoryManager:
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._storage_dir / "memory.sqlite3"
         self._entries: dict[str, MemoryEntry] = {}
-        self._ensure_entry_schema()
+        prepare_memory_database(self._db_path)
         self._event_store = MemoryEventStore(
             self._db_path,
             legacy_jsonl_path=self._storage_dir / "memory_events.jsonl",
@@ -2442,111 +2443,6 @@ class MemoryManager:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
-
-    def _ensure_entry_schema(self) -> None:
-        with self._connect_db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_entries (
-                    id TEXT PRIMARY KEY,
-                    version INTEGER NOT NULL,
-                    supersedes TEXT,
-                    superseded_by TEXT,
-                    entry_type TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value_json TEXT NOT NULL,
-                    predicate TEXT,
-                    strength TEXT NOT NULL DEFAULT 'moderate',
-                    source_json TEXT NOT NULL,
-                    source_origin TEXT NOT NULL,
-                    channel_trust TEXT NOT NULL,
-                    confirmation_status TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    valid_from TEXT,
-                    valid_to TEXT,
-                    last_verified_at TEXT,
-                    expires_at TEXT,
-                    confidence REAL NOT NULL,
-                    taint_labels_json TEXT NOT NULL,
-                    citation_count INTEGER NOT NULL,
-                    last_cited_at TEXT,
-                    decay_score REAL NOT NULL,
-                    importance_weight REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    workflow_state TEXT,
-                    scope TEXT NOT NULL,
-                    invocation_eligible INTEGER NOT NULL,
-                    ingress_handle_id TEXT,
-                    content_digest TEXT,
-                    conflict_entry_ids_json TEXT NOT NULL DEFAULT '[]',
-                    user_verified INTEGER NOT NULL,
-                    deleted_at TEXT,
-                    quarantined INTEGER NOT NULL
-                )
-                """
-            )
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_entries)")}
-            if "predicate" not in columns:
-                conn.execute("ALTER TABLE memory_entries ADD COLUMN predicate TEXT")
-            if "strength" not in columns:
-                conn.execute(
-                    "ALTER TABLE memory_entries "
-                    "ADD COLUMN strength TEXT NOT NULL DEFAULT 'moderate'"
-                )
-            if "conflict_entry_ids_json" not in columns:
-                conn.execute(
-                    "ALTER TABLE memory_entries "
-                    "ADD COLUMN conflict_entry_ids_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_type_created
-                ON memory_entries (entry_type, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_status_created
-                ON memory_entries (status, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_workflow_created
-                ON memory_entries (workflow_state, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_trust
-                ON memory_entries (source_origin, channel_trust, confirmation_status)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_scope_created
-                ON memory_entries (scope, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_key_type
-                ON memory_entries (entry_type, key)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_supersedes
-                ON memory_entries (supersedes)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_memory_entries_superseded_by
-                ON memory_entries (superseded_by)
-                """
-            )
 
     def _import_legacy_entry_files_if_needed(self) -> None:
         with self._connect_db() as conn:

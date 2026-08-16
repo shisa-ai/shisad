@@ -294,6 +294,29 @@ acquired before stores or control endpoints are opened; a same-root contender
 fails with an actionable error without altering feature state. Separate data
 roots with separate endpoints can run concurrently.
 
+### SQLite schema migration
+
+The replay and delivery databases use strict schema version `1` admission.
+The shared memory and timeline databases also use schema version `1`; when
+startup finds a structurally recognized legacy version-0 database, it creates
+and validates an exact `<database>.pre-v1.bak` before applying the ordered
+migration in one native SQLite transaction. Durable rows are preserved. A
+failed migration leaves the version-0 database and rollback copy intact so a
+later startup can retry against the same bytes.
+
+Startup refuses an empty existing database, an unrecognized or corrupt schema,
+a version newer than this build supports, an unsafe database or backup path, a
+mismatched pre-existing backup, or a backup whose database is missing. It does
+not downgrade or reset uncertain state. Stop the daemon before inspecting or
+restoring a rollback copy, preserve the refused files, and restore the backup
+only to its matching database path. The migration copy protects one physical
+database at one schema boundary; it is not a complete data-root backup.
+
+FTS and fallback lexical indexes in the memory database are derived,
+capability-selected search state. Their presence does not define a separate
+physical schema version. See [the SQLite runbook](runbooks/SQLITE.md) for
+inspection and recovery details.
+
 On supported hard-lock platforms, `.shisad.lock` is intentionally persistent.
 Its presence alone does not mean a daemon is running—the library-managed lock
 held by the live process is authoritative. Check the daemon and finite-store
@@ -321,7 +344,8 @@ shared multi-host data root or active/active deployment.
   and snapshot or copy the entire `SHISAD_DATA_DIR` as one unit. Preserve the
   operator TOML, policy, secrets, external signer/helper configuration, and
   assistant workspace separately because they may live outside that root.
-  shisad does not currently create or validate backups for you.
+  shisad does not currently create or validate full data-root backups for you;
+  per-file pre-migration copies do not replace this procedure.
 - **Restore:** restore a complete trusted snapshot while the daemon is stopped,
   retain its owner-only permissions, then run `shisad doctor check --component
   storage` before accepting new work. Mixing individual state files from

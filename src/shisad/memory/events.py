@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shisad.memory.sqlite_schema import prepare_memory_database
+
 
 class MemoryEvent(BaseModel):
     """Canonical append-only memory event record."""
@@ -32,8 +34,8 @@ class MemoryEventStore:
         self._path = path
         self._legacy_jsonl_path = legacy_jsonl_path or path.with_suffix(".jsonl")
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        prepare_memory_database(self._path)
         with self._connect() as conn:
-            self._ensure_schema(conn)
             self._import_legacy_jsonl_if_needed(conn)
 
     def append(self, event: MemoryEvent) -> MemoryEvent:
@@ -195,34 +197,6 @@ class MemoryEventStore:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         return conn
-
-    @staticmethod
-    def _ensure_schema(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_events (
-                event_id TEXT PRIMARY KEY,
-                entry_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                ingress_handle_id TEXT,
-                metadata_json TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_memory_events_entry_timestamp
-            ON memory_events (entry_id, timestamp)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_memory_events_type_timestamp
-            ON memory_events (event_type, timestamp)
-            """
-        )
 
     def _import_legacy_jsonl_if_needed(self, conn: sqlite3.Connection) -> None:
         if not self._legacy_jsonl_path.exists():
