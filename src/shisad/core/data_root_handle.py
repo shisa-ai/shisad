@@ -102,7 +102,7 @@ _OPEN_EXISTING = 3
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_ID_INFO_CLASS = 18
-_FILE_RENAME_INFO_CLASS = 3
+_FILE_RENAME_INFORMATION_CLASS = 10
 _FILE_DISPOSITION_INFO_CLASS = 4
 
 
@@ -179,6 +179,7 @@ class _WindowsNativeApi:
         self._ntdll: Any = loader("ntdll", use_last_error=True)
         self._kernel32.CreateFileW.restype = ctypes.c_void_p
         self._ntdll.NtCreateFile.restype = ctypes.c_long
+        self._ntdll.NtSetInformationFile.restype = ctypes.c_long
         self._ntdll.RtlNtStatusToDosError.restype = ctypes.c_uint32
 
     def open_root(self, path: Path) -> int:
@@ -303,7 +304,7 @@ class _WindowsNativeApi:
             self._raise_last_error("rooted entry could not be removed")
 
     def rename(self, handle: int, root: int | None, destination: str) -> None:
-        name_type = ctypes.c_wchar * (len(destination) + 1)
+        name_type = ctypes.c_wchar * (len(destination) + 2)
 
         class _FileRenameInfo(ctypes.Structure):
             _fields_ = [
@@ -318,16 +319,16 @@ class _WindowsNativeApi:
         info.root_directory = ctypes.c_void_p(root)
         info.file_name_length = len(destination.encode("utf-16-le"))
         info.file_name = destination
-        if not self._kernel32.SetFileInformationByHandle(
+        io_status = _IoStatusBlock()
+        status = self._ntdll.NtSetInformationFile(
             ctypes.c_void_p(handle),
-            _FILE_RENAME_INFO_CLASS,
+            ctypes.byref(io_status),
             ctypes.byref(info),
             ctypes.sizeof(info),
-        ):
-            code = int(ctypes.get_last_error())  # type: ignore[attr-defined, unused-ignore]
-            if code in {80, 183}:
-                raise FileExistsError(code, "publication destination exists", destination)
-            self._raise_last_error("verified artifact could not be published atomically")
+            _FILE_RENAME_INFORMATION_CLASS,
+        )
+        if int(status) < 0:
+            self._raise_nt_error(int(status), "verified artifact could not be published atomically")
 
     def close(self, handle: int) -> None:
         if handle:
@@ -504,7 +505,7 @@ class _WindowsRootHandle(_RootContext):
         destination_name = _single_name(destination)
         handle = self._api.from_fd(verified_descriptor)
         self._require_handle(handle, expected_identity, directory=False)
-        self._api.rename(handle, None, destination_name)
+        self._api.rename(handle, self._handle, destination_name)
         self.require_path_identity()
 
     def sync(self) -> str:

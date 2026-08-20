@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 from pathlib import Path, PurePosixPath
 
@@ -45,6 +46,39 @@ class _FakeWindowsApi:
         self.calls.append(("close", handle))
 
 
+class _RenamePrefix(ctypes.Structure):
+    _fields_ = [
+        ("replace_if_exists", ctypes.c_ubyte),
+        ("root_directory", ctypes.c_void_p),
+        ("file_name_length", ctypes.c_uint32),
+    ]
+
+
+class _FakeNtdll:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int | None, int, int, int]] = []
+
+    def NtSetInformationFile(
+        self,
+        handle: ctypes.c_void_p,
+        _io_status: object,
+        information: object,
+        information_size: int,
+        information_class: int,
+    ) -> int:
+        prefix = ctypes.cast(information, ctypes.POINTER(_RenamePrefix)).contents
+        self.calls.append(
+            (
+                int(handle.value or 0),
+                prefix.root_directory,
+                int(prefix.file_name_length),
+                information_size,
+                information_class,
+            )
+        )
+        return 0
+
+
 def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: Path) -> None:
     api = _FakeWindowsApi()
     root = data_root_handle_module._WindowsRootHandle(
@@ -76,8 +110,23 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
     assert int(publish_open[3]["desired_access"]) & data_root_handle_module._DELETE
     assert publish_open[3]["share_delete"] is False
     assert ("from_fd", 3) in api.calls
-    assert ("rename", 3, None, "snapshot.shisad-backup") in api.calls
+    assert ("rename", 3, 1, "snapshot.shisad-backup") in api.calls
     assert len([call for call in api.calls if call[:3] == ("open", 1, "temporary")]) == 1
+
+
+def test_o4cp_windows_native_rename_uses_rooted_nt_information() -> None:
+    api = object.__new__(data_root_handle_module._WindowsNativeApi)
+    ntdll = _FakeNtdll()
+    api._ntdll = ntdll
+
+    api.rename(3, 1, "x")
+
+    assert len(ntdll.calls) == 1
+    handle, root, name_length, information_size, information_class = ntdll.calls[0]
+    assert (handle, root) == (3, 1)
+    assert name_length == len("x".encode("utf-16-le"))
+    assert information_size >= ctypes.sizeof(_RenamePrefix) + name_length
+    assert information_class == data_root_handle_module._FILE_RENAME_INFORMATION_CLASS
 
 
 def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Path) -> None:
