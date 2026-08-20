@@ -46,6 +46,7 @@ from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_
 from shisad.core.readiness import aggregate_config_readiness, configured_route_readiness
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.soul import load_effective_persona_text
+from shisad.core.sqlite_migration import SQLiteMigrationResult
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
@@ -75,7 +76,8 @@ from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, Ret
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.memory.runtime_wiring import build_memory_runtime_components
-from shisad.memory.timeline import TimelineIndex
+from shisad.memory.sqlite_schema import prepare_memory_database
+from shisad.memory.timeline import TimelineIndex, prepare_timeline_database
 from shisad.scheduler.manager import SchedulerManager
 from shisad.security.control_plane.sidecar import (
     ControlPlaneGateway,
@@ -668,6 +670,23 @@ class _ChannelStartupResult:
     diagnostic: dict[str, Any]
 
 
+def _storage_upgrade_status(result: SQLiteMigrationResult) -> dict[str, object]:
+    """Project one physical preparation result without re-running its authority."""
+
+    return {
+        "path": str(result.path),
+        "initialized": result.initialized,
+        "migrated": result.migrated,
+        "transaction_committed": result.transaction_committed,
+        "from_version": result.from_version,
+        "to_version": result.to_version,
+        "backup_path": str(result.backup_path) if result.backup_path is not None else None,
+        "backup_preserved": result.backup_preserved,
+        "permissions": result.permissions,
+        "parent_sync": result.parent_sync,
+    }
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -715,6 +734,7 @@ class DaemonServices:
     ingestion: IngestionPipeline
     memory_manager: MemoryManager
     timeline_index: TimelineIndex
+    storage_upgrades: dict[str, dict[str, object]]
     scheduler: SchedulerManager
     skill_manager: SkillManager
     coding_manager: CodingAgentManager
@@ -1097,6 +1117,9 @@ class DaemonServices:
                 connect_path_proxy=connect_path_proxy,
                 checkpoint_store=checkpoint_store,
             )
+            memory_upgrade = prepare_memory_database(
+                config.data_dir / "memory_entries" / "memory.sqlite3"
+            )
             memory_components = build_memory_runtime_components(
                 config.data_dir,
                 firewall=firewall,
@@ -1109,6 +1132,9 @@ class DaemonServices:
             )
             ingestion = memory_components.ingestion
             memory_manager = memory_components.memory_manager
+            timeline_upgrade = prepare_timeline_database(
+                config.data_dir / "timeline" / "timeline.sqlite3"
+            )
             timeline_index = TimelineIndex(
                 config.data_dir / "timeline",
                 transcript_store=transcript_store,
@@ -1329,6 +1355,10 @@ class DaemonServices:
                 ingestion=ingestion,
                 memory_manager=memory_manager,
                 timeline_index=timeline_index,
+                storage_upgrades={
+                    "memory": _storage_upgrade_status(memory_upgrade),
+                    "timeline": _storage_upgrade_status(timeline_upgrade),
+                },
                 scheduler=scheduler,
                 skill_manager=skill_manager,
                 coding_manager=coding_manager,

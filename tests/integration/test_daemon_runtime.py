@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from contextlib import suppress
 from pathlib import Path
 
@@ -47,6 +48,15 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
         await client.connect()
         status = await client.call("daemon.status")
         assert status["status"] == "running"
+        assert set(status["storage_upgrades"]) == {"memory", "timeline"}
+        for upgrade in status["storage_upgrades"].values():
+            assert upgrade["initialized"] is True
+            assert upgrade["migrated"] is False
+            assert upgrade["transaction_committed"] is True
+            assert upgrade["from_version"] == 0
+            assert upgrade["to_version"] == 1
+            assert upgrade["backup_path"] is None
+            assert upgrade["backup_preserved"] is False
         assert set(status["readiness"]) >= {
             "provider",
             "channels",
@@ -70,6 +80,86 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
             }
             for row in status["readiness"].values()
         )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_o4c_status_retains_first_legacy_migration_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    memory = data_dir / "memory_entries" / "memory.sqlite3"
+    timeline = data_dir / "timeline" / "timeline.sqlite3"
+    memory.parent.mkdir(parents=True)
+    timeline.parent.mkdir(parents=True)
+    with sqlite3.connect(memory) as connection:
+        connection.execute(
+            """
+            CREATE TABLE memory_events (
+                event_id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                ingress_handle_id TEXT,
+                metadata_json TEXT NOT NULL
+            )
+            """
+        )
+    with sqlite3.connect(timeline) as connection:
+        connection.execute(
+            """
+            CREATE TABLE timeline_rows (
+                handle TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                episode_index INTEGER NOT NULL,
+                entry_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                snippet TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                content_digest TEXT NOT NULL,
+                evidence_ref_id TEXT NOT NULL,
+                taint_labels TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                related_memory_ids TEXT NOT NULL
+            )
+            """
+        )
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        status = await client.call("daemon.status")
+        for name, upgrade in status["storage_upgrades"].items():
+            assert name in {"memory", "timeline"}
+            assert upgrade["initialized"] is False
+            assert upgrade["migrated"] is True
+            assert upgrade["transaction_committed"] is True
+            assert upgrade["from_version"] == 0
+            assert upgrade["to_version"] == 1
+            assert upgrade["backup_preserved"] is True
+            assert Path(upgrade["backup_path"]).exists()
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

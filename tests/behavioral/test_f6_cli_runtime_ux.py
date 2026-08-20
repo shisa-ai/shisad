@@ -614,3 +614,50 @@ def test_o2c_explicit_cli_test_delivery_uses_the_shipped_surface_once(
     assert injected.sent[0][1].recipient == "channel-456"
     assert "round trip" not in result.output.lower()
     assert not (tmp_path / "config" / "shisad" / "config.toml").exists()
+
+
+def test_o4c_backup_restore_round_trip_is_offline_verified_and_actionable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "data"
+    representative = {
+        "sessions/state/session.json": b'{"session":"durable"}\n',
+        "checkpoints/cp.json": b'{"checkpoint":"bounded"}\n',
+        "pending_actions.json": b'{"status":"outcome_unknown"}\n',
+        "tasks/task.json": b'{"schedule":"daily"}\n',
+        "memory_entries/memory.sqlite3": b"memory-state",
+        "timeline/timeline.sqlite3": b"timeline-state",
+        "channels/state/replay.sqlite3": b"replay-state",
+        "channels/delivery/outbox.sqlite3": b"delivery-state",
+        "audit.jsonl": b'{"event_id":"audit-1"}\n',
+    }
+    for relative, payload in representative.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(source))
+    archive = tmp_path / "operator-copy.shisad-backup"
+    restored = tmp_path / "restored"
+    runner = CliRunner()
+
+    backup_result = runner.invoke(
+        cli,
+        ["data", "backup", str(archive), "--format", "json"],
+    )
+    assert backup_result.exit_code == 0, backup_result.output
+    backup = json.loads(backup_result.output)
+    assert backup["verified"] is True
+    assert backup["sensitive_archive"] is True
+
+    restore_result = runner.invoke(
+        cli,
+        ["data", "restore", str(archive), "--destination", str(restored)],
+    )
+    assert restore_result.exit_code == 0, restore_result.output
+    for relative, payload in representative.items():
+        assert (restored / relative).read_bytes() == payload
+    assert "shisad start" in restore_result.output
+    assert "shisad status" in restore_result.output
+    assert "shisad doctor" in restore_result.output
+    assert "offline health is not yet verified" in restore_result.output.lower()

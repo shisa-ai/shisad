@@ -54,6 +54,36 @@ The copy is one database's pre-migration state, not a transactionally
 consistent backup of the whole data root. Prefer restoring a complete trusted
 data-root snapshot when other state may also have changed.
 
+## Full Data-Root Recovery
+
+For a consistent operator recovery point, stop the daemon and back up the
+configured data root as one manifest-verified archive:
+
+```bash
+shisad data backup /operator-controlled/shisad-data.shisad-backup
+```
+
+This archive includes the memory and timeline databases, their safe in-root
+companions, and all other regular files and directories under the data root.
+It excludes the root `.shisad.lock` and every path outside the root. A symlink
+or special file causes the whole operation to refuse. The archive is owner-only
+where supported and is not encrypted, so store it as sensitive data.
+
+Restore never replaces or merges an active root. Keep the old root, stop the
+daemon, and name an absent or empty destination explicitly:
+
+```bash
+shisad data restore /operator-controlled/shisad-data.shisad-backup \
+  --destination /absolute/path/to/restored-data
+```
+
+The command verifies the complete manifest, member set, sizes, and SHA-256
+digests before creating payload files. After selecting the restored root in
+configuration, run `shisad start`, `shisad status`, and
+`shisad doctor check --component storage`. If runtime validation fails, stop
+the daemon and restore another verified archive into a new empty destination;
+do not combine individual databases or WAL companions across backups.
+
 ## Verify
 
 After the daemon starts, check the runtime component:

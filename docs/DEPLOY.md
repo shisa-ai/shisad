@@ -341,15 +341,36 @@ shared multi-host data root or active/active deployment.
 ### Backup, upgrade, and uninstall boundaries
 
 - **Backup:** stop the daemon that owns the data root, verify it is stopped,
-  and snapshot or copy the entire `SHISAD_DATA_DIR` as one unit. Preserve the
-  operator TOML, policy, secrets, external signer/helper configuration, and
-  assistant workspace separately because they may live outside that root.
-  shisad does not currently create or validate full data-root backups for you;
-  per-file pre-migration copies do not replace this procedure.
-- **Restore:** restore a complete trusted snapshot while the daemon is stopped,
-  retain its owner-only permissions, then run `shisad doctor check --component
-  storage` before accepting new work. Mixing individual state files from
-  different snapshots is not a supported recovery procedure.
+  and create a manifest-verified backup without overwriting an existing
+  artifact:
+
+  ```bash
+  shisad data backup /operator-controlled/shisad-2026-08-20.shisad-backup
+  ```
+
+  The command uses the configured `SHISAD_DATA_DIR`, refuses a held daemon
+  lock, symlinks, and special files, and includes every safe directory and
+  regular file except the root `.shisad.lock`. The single-file archive is
+  owner-only where supported but is **not encrypted**; keep it in
+  operator-controlled storage. Preserve the operator TOML, policy, environment
+  secrets, external signer/helper configuration, external msgvault roots, and
+  assistant workspace separately because they may live outside the data root.
+  Per-database pre-migration copies do not replace this full-root backup.
+- **Restore:** keep the existing root intact, stop shisad, and restore only into
+  an absent or empty explicitly named destination:
+
+  ```bash
+  shisad data restore /operator-controlled/shisad-2026-08-20.shisad-backup \
+    --destination /absolute/path/to/restored-data
+  ```
+
+  Restore verifies the canonical manifest and every payload before writing,
+  never merges with existing state, and removes payload it created if a later
+  step fails. Point the selected configuration at the restored root, then run
+  `shisad start`, `shisad status`, and `shisad doctor check --component all`.
+  Offline verification is not a runtime health claim. To roll back, stop the
+  daemon and restore a different verified backup into another absent or empty
+  root; mixing individual files from different backups is unsupported.
 - **Upgrade:** take the stopped-daemon backup first, install the reviewed wheel
   or image, and start exactly one daemon against the existing root. Run
   `shisad doctor check --component all` before enabling unattended work. An

@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from shisad.cli import tour as tour_module
 from shisad.cli.credentials import credential
+from shisad.cli.data import data
 from shisad.cli.lifecycle import (
     BackgroundStartError,
     BackgroundStartResult,
@@ -828,6 +829,7 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
 
 
 cli.add_command(credential)
+cli.add_command(data)
 cli.add_command(setup)
 
 

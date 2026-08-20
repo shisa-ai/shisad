@@ -2313,6 +2313,7 @@ class DevCloseResult(BaseModel):
 
 class DaemonStatusResult(BaseModel):
     status: str
+    storage_upgrades: dict[str, dict[str, Any]] = Field(default_factory=dict)
     sessions_active: int = 0
     audit_entries: int = 0
     policy_hash: str = ""
