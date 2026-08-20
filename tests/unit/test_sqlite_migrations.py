@@ -14,6 +14,27 @@ from shisad.memory.sqlite_schema import prepare_memory_database
 from shisad.memory.timeline import prepare_timeline_database
 
 
+class _NoTableXinfoConnection(sqlite3.Connection):
+    def execute(  # type: ignore[override]
+        self,
+        sql: str,
+        parameters: tuple[object, ...] = (),
+    ) -> sqlite3.Cursor:
+        if sql.strip().lower().startswith("pragma table_xinfo"):
+            return super().execute("SELECT NULL WHERE 0")
+        return super().execute(sql, parameters)
+
+
+def _disable_table_xinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    connect = sqlite3.connect
+
+    def connect_without_table_xinfo(*args: object, **kwargs: object) -> sqlite3.Connection:
+        kwargs["factory"] = _NoTableXinfoConnection
+        return connect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sqlite3, "connect", connect_without_table_xinfo)
+
+
 def _create_legacy_memory_database(path: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as connection:
@@ -300,6 +321,51 @@ def test_o4b_table_list_unavailable_uses_stored_schema_flags(
     assert current_timeline.migrated is False
     assert _user_version(memory) == 1
     assert _user_version(timeline) == 1
+
+
+@pytest.mark.parametrize("kind", ["memory", "timeline"])
+def test_o4b_table_xinfo_unavailable_uses_table_info_for_all_admission_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    fresh = tmp_path / "fresh" / f"{kind}.sqlite3"
+    legacy = tmp_path / "legacy" / f"{kind}.sqlite3"
+    if kind == "memory":
+        _create_legacy_memory_database(legacy)
+        prepare = prepare_memory_database
+    else:
+        _create_legacy_timeline_database(legacy)
+        prepare = prepare_timeline_database
+    _disable_table_xinfo(monkeypatch)
+
+    fresh_result = prepare(fresh)
+    current_result = prepare(fresh)
+    legacy_result = prepare(legacy)
+
+    assert fresh_result.initialized is True
+    assert current_result.migrated is False
+    assert legacy_result.migrated is True
+    assert _user_version(fresh) == 1
+    assert _user_version(legacy) == 1
+
+
+def test_o4b_table_xinfo_unavailable_still_rejects_wrong_current_memory_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "memory" / "memory.sqlite3"
+    prepare_memory_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE memory_events ADD COLUMN unexpected TEXT")
+    before = path.read_bytes()
+    _disable_table_xinfo(monkeypatch)
+
+    with pytest.raises(SQLiteMigrationError, match="current schema"):
+        prepare_memory_database(path)
+
+    assert path.read_bytes() == before
+    assert not path.with_name("memory.sqlite3.pre-v1.bak").exists()
 
 
 @pytest.mark.parametrize("kind", ["memory", "timeline"])

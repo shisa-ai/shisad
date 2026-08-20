@@ -11,6 +11,7 @@ from shisad.core.sqlite_migration import (
     SQLiteMigrationFaultInjector,
     SQLiteMigrationResult,
     prepare_versioned_sqlite_database,
+    sqlite_table_column_shape,
     sqlite_table_structure_matches,
 )
 
@@ -247,8 +248,8 @@ def _validate_memory_schema(
         for object_type, name in stable_actual:
             if object_type != "table":
                 continue
-            actual_columns = _column_shape(connection, name)
-            expected_columns = _column_shape(expected_connection, name)
+            actual_columns = sqlite_table_column_shape(connection, name)
+            expected_columns = sqlite_table_column_shape(expected_connection, name)
             if require_complete:
                 valid_columns = actual_columns == expected_columns
             else:
@@ -279,16 +280,6 @@ def _schema_objects(connection: sqlite3.Connection) -> set[tuple[str, str]]:
         for row in connection.execute(
             "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
         ).fetchall()
-    }
-
-
-def _column_shape(
-    connection: sqlite3.Connection,
-    table: str,
-) -> dict[str, tuple[str, int, object, int, int]]:
-    return {
-        str(row[1]): (str(row[2]).upper(), int(row[3]), row[4], int(row[5]), int(row[6]))
-        for row in connection.execute(f"PRAGMA table_xinfo({table})").fetchall()
     }
 
 

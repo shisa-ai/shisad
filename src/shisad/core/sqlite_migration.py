@@ -141,6 +141,28 @@ def sqlite_table_structure_matches(
     return all(expected_indexes.get(name) == index for name, index in actual_indexes.items())
 
 
+def sqlite_table_column_shape(
+    connection: sqlite3.Connection,
+    table: str,
+) -> dict[str, tuple[str, int, object, int, int]]:
+    """Return normalized column metadata across supported SQLite libraries."""
+
+    quoted_table = _quote_sqlite_identifier(table)
+    rows = connection.execute(f"PRAGMA table_xinfo({quoted_table})").fetchall()
+    if not rows:
+        rows = connection.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+    return {
+        str(row[1]): (
+            str(row[2]).upper(),
+            int(row[3]),
+            row[4],
+            int(row[5]),
+            int(row[6]) if len(row) > 6 else 0,
+        )
+        for row in rows
+    }
+
+
 def prepare_versioned_sqlite_database(
     path: Path,
     *,

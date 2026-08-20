@@ -23,6 +23,7 @@ from shisad.core.sqlite_migration import (
     SQLiteMigrationFaultInjector,
     SQLiteMigrationResult,
     prepare_versioned_sqlite_database,
+    sqlite_table_column_shape,
     sqlite_table_structure_matches,
 )
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
@@ -170,14 +171,14 @@ def _validate_timeline_schema(
     with contextlib.closing(sqlite3.connect(":memory:")) as expected_connection:
         _apply_timeline_schema_v1(expected_connection)
         expected_objects = _timeline_schema_objects(expected_connection)
-        expected_columns = _timeline_column_shape(expected_connection)
+        expected_columns = sqlite_table_column_shape(expected_connection, "timeline_rows")
         actual_objects = _timeline_schema_objects(connection)
         if require_complete:
             valid_objects = actual_objects == expected_objects
         else:
             valid_objects = bool(actual_objects) and actual_objects <= expected_objects
         actual_columns = (
-            _timeline_column_shape(connection)
+            sqlite_table_column_shape(connection, "timeline_rows")
             if ("table", "timeline_rows") in actual_objects
             else {}
         )
@@ -204,15 +205,6 @@ def _timeline_schema_objects(connection: sqlite3.Connection) -> set[tuple[str, s
         for row in connection.execute(
             "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
         ).fetchall()
-    }
-
-
-def _timeline_column_shape(
-    connection: sqlite3.Connection,
-) -> dict[str, tuple[str, int, object, int, int]]:
-    return {
-        str(row[1]): (str(row[2]).upper(), int(row[3]), row[4], int(row[5]), int(row[6]))
-        for row in connection.execute("PRAGMA table_xinfo(timeline_rows)").fetchall()
     }
 
 
