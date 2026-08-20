@@ -30,6 +30,10 @@ class _FakeWindowsApi:
     def metadata(self, handle: int) -> data_root_handle_module.EntryMetadata:
         return self.metadata_by_handle[handle]
 
+    def into_fd(self, handle: int, flags: int) -> int:
+        self.calls.append(("into_fd", handle, flags))
+        return handle
+
     def rename(self, handle: int, root: int, destination: str) -> None:
         self.calls.append(("rename", handle, root, destination))
 
@@ -60,6 +64,28 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
     publish_open = next(call for call in api.calls if call[:3] == ("open", 1, "temporary"))
     assert publish_open[3]["share_delete"] is True
     assert ("rename", 3, 1, "snapshot.shisad-backup") in api.calls
+
+
+def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Path) -> None:
+    api = _FakeWindowsApi()
+    root = data_root_handle_module._WindowsRootHandle(
+        tmp_path,
+        1,
+        (7, 1),
+        api,  # type: ignore[arg-type]
+    )
+
+    descriptor = root.open_file(
+        PurePosixPath("state.json"),
+        os.O_RDONLY,
+        expected_identity=(7, 3),
+    )
+
+    assert descriptor == 3
+    open_call = next(call for call in api.calls if call[:3] == ("open", 1, "state.json"))
+    desired_access = int(open_call[3]["desired_access"])
+    assert desired_access & data_root_handle_module._GENERIC_READ
+    assert desired_access & data_root_handle_module._SYNCHRONIZE
 
 
 @_POSIX_ONLY

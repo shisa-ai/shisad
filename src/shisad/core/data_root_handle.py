@@ -391,6 +391,7 @@ class _WindowsRootHandle(_RootContext):
         access = _GENERIC_READ if flags & os.O_WRONLY == 0 else _GENERIC_WRITE
         if flags & os.O_RDWR:
             access = _GENERIC_READ | _GENERIC_WRITE
+        access |= _SYNCHRONIZE
         handle = self._open_relative_leaf(
             relative, access, _FILE_OPEN, directory=False, share_delete=True
         )
