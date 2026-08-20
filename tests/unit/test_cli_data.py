@@ -60,6 +60,7 @@ def test_o4c_data_backup_restore_json_and_human_guidance(
     assert json_restore["destination"] == str(json_restored)
     assert json_restore["directory_count"] == 2
     assert json_restore["offline_health_verified"] is False
+    assert json_restore["sensitive_archive"] is True
 
     human_archive = tmp_path / "human-snapshot.shisad-backup"
     backup_result = runner.invoke(cli, ["data", "backup", str(human_archive)])

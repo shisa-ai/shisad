@@ -262,8 +262,10 @@ def test_o4c_restore_rejects_boolean_owner_mode_before_writing(tmp_path: Path) -
     assert not destination.exists()
 
 
-def test_o4c_restore_rejects_non_utc_manifest_timestamp_before_writing(
+@pytest.mark.parametrize("timestamp", ["2026-08-20T00:00:00", "2026-08-20Z"])
+def test_o4c_restore_rejects_non_utc_or_date_only_manifest_timestamp_before_writing(
     tmp_path: Path,
+    timestamp: str,
 ) -> None:
     source = tmp_path / "source"
     _representative_root(source)
@@ -271,7 +273,7 @@ def test_o4c_restore_rejects_non_utc_manifest_timestamp_before_writing(
     create_data_backup(source, archive)
 
     def set_naive_timestamp(manifest: dict[str, object]) -> None:
-        manifest["created_at"] = "2026-08-20T00:00:00"
+        manifest["created_at"] = timestamp
 
     _rewrite_manifest(archive, set_naive_timestamp)
     destination = tmp_path / "restored"
@@ -446,6 +448,141 @@ def test_o4c_restore_refuses_destination_replacement_while_acquiring_lock(
     assert not [path for path in replacement.iterdir() if path.name != ".shisad.lock"]
 
 
+def test_o4c_restore_pins_root_before_acquiring_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    original_open_root = data_backup_module._open_restore_root
+    original_acquire = FileLock.acquire
+    root_opened = False
+
+    def observe_root(path: Path, identity: tuple[int, int]) -> int:
+        nonlocal root_opened
+        root_opened = True
+        return original_open_root(path, identity)
+
+    def require_root_first(lock: FileLock, *args: object, **kwargs: object) -> object:
+        assert root_opened
+        return original_acquire(lock, *args, **kwargs)
+
+    monkeypatch.setattr(data_backup_module, "_open_restore_root", observe_root)
+    monkeypatch.setattr(FileLock, "acquire", require_root_first)
+
+    assert restore_data_backup(archive, destination).verified is True
+
+
+def test_o4c_restore_open_failure_removes_its_new_empty_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+
+    def fail_open(_path: Path, _identity: tuple[int, int]) -> int:
+        raise DataBackupError("injected root-open failure")
+
+    monkeypatch.setattr(data_backup_module, "_open_restore_root", fail_open)
+
+    with pytest.raises(DataBackupError, match=r"root-open failure"):
+        restore_data_backup(archive, destination)
+
+    assert not destination.exists()
+
+
+def test_o4c_restore_never_follows_replaced_intermediate_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    displaced = tmp_path / "displaced-sessions"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_mkdir = os.mkdir
+    replaced = False
+
+    def replace_parent(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal replaced
+        if not replaced and os.fsdecode(path) in {"sessions/state", "state"}:
+            live_parent = destination / "sessions"
+            live_parent.rename(displaced)
+            live_parent.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        original_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", replace_parent)
+
+    with pytest.raises(DataBackupError, match=r"restore|unsafe|link|changed"):
+        restore_data_backup(archive, destination)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_o4c_restore_uses_safe_path_fallback_without_directory_fd_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    files = _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    original_open = os.open
+
+    def windows_style_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if flags & int(getattr(os, "O_DIRECTORY", 0)) or dir_fd is not None:
+            raise NotImplementedError("directory descriptors unavailable")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "supports_dir_fd", set())
+    monkeypatch.setattr(os, "open", windows_style_open)
+
+    result = restore_data_backup(archive, destination)
+
+    assert result.verified is True
+    assert {path: (destination / path).read_bytes() for path in files} == files
+
+
+def test_o4c_restore_rejects_archive_symlink_without_nofollow_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    archive_link = tmp_path / "snapshot-link.shisad-backup"
+    archive_link.symlink_to(archive)
+    monkeypatch.setattr(data_backup_module, "hardened_open_flags", lambda flags: flags)
+
+    with pytest.raises(DataBackupError, match=r"archive|symlink|regular"):
+        restore_data_backup(archive_link, tmp_path / "restored")
+
+    assert not (tmp_path / "restored").exists()
+
+
 def test_o4c_restore_reads_archive_through_one_open_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -503,6 +640,7 @@ def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
     original_tighten = data_backup_module._tighten_descriptor
+    original_chmod = os.chmod
     calls = 0
 
     def fail_after_restricting_child(descriptor: int, mode: int) -> str:
@@ -517,6 +655,19 @@ def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
 
     monkeypatch.setattr(data_backup_module, "_tighten_descriptor", fail_after_restricting_child)
 
+    def unsupported_nofollow_chmod(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if dir_fd is not None and not follow_symlinks:
+            raise ValueError("fchmodat nofollow unavailable")
+        original_chmod(path, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "chmod", unsupported_nofollow_chmod)
+
     try:
         with pytest.raises(DataBackupError, match=r"permission|restore"):
             restore_data_backup(archive, destination)
@@ -525,3 +676,30 @@ def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
         for restricted in (destination / "channels" / "delivery",):
             if restricted.exists():
                 os.chmod(restricted, 0o700)
+
+
+def test_o4c_backup_refuses_if_published_inode_was_not_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    original_link = os.link
+
+    def replace_before_link(
+        source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        **kwargs: object,
+    ) -> None:
+        temporary = Path(source_path)
+        temporary.unlink()
+        temporary.write_bytes(b"unverified replacement")
+        original_link(source_path, destination_path, **kwargs)
+
+    monkeypatch.setattr(os, "link", replace_before_link)
+
+    with pytest.raises(DataBackupError, match=r"publish|verified|changed"):
+        create_data_backup(source, archive)
+
+    assert not archive.exists()

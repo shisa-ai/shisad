@@ -671,12 +671,10 @@ class _ChannelStartupResult:
 
 
 def _storage_upgrade_status(result: SQLiteMigrationResult) -> dict[str, object]:
-    """Project one physical preparation result without re-running its authority."""
-
-    status: dict[str, object] = asdict(result)
-    status["path"] = str(result.path)
-    status["backup_path"] = str(result.backup_path) if result.backup_path is not None else None
-    return status
+    return asdict(result) | {
+        "path": str(result.path),
+        "backup_path": str(result.backup_path) if result.backup_path is not None else None,
+    }
 
 
 @dataclass(slots=True)

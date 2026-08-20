@@ -52,17 +52,14 @@ def data_backup(ctx: click.Context, destination: Path, output_format: str) -> No
         result = create_data_backup(source, destination)
     except ConfigFileError as exc:
         raise _data_cli_error(
-            operation="backup",
-            exc=exc,
-            output_format=output_format,
-            next_action="review the selected config, then rerun the data backup",
+            "backup", exc, output_format, "review the selected config, then rerun the data backup"
         ) from exc
     except DataBackupError as exc:
         raise _data_cli_error(
-            operation="backup",
-            exc=exc,
-            output_format=output_format,
-            next_action="stop shisad, correct the reported path, then rerun data backup",
+            "backup",
+            exc,
+            output_format,
+            "stop shisad, correct the reported path, then rerun data backup",
         ) from exc
     _emit_backup(result, output_format=output_format)
 
@@ -83,10 +80,10 @@ def data_restore(backup: Path, destination: Path, output_format: str) -> None:
         result = restore_data_backup(backup, destination)
     except DataBackupError as exc:
         raise _data_cli_error(
-            operation="restore",
-            exc=exc,
-            output_format=output_format,
-            next_action=(
+            "restore",
+            exc,
+            output_format,
+            (
                 "stop shisad, select an absent or empty destination, verify the backup, "
                 "then rerun data restore"
             ),
@@ -95,7 +92,6 @@ def data_restore(backup: Path, destination: Path, output_format: str) -> None:
 
 
 def _data_cli_error(
-    *,
     operation: str,
     exc: BaseException,
     output_format: str,
@@ -116,17 +112,8 @@ def _data_cli_error(
 
 
 def _emit_backup(result: DataBackupResult, *, output_format: str) -> None:
-    payload: dict[str, object] = {
-        "backup_id": result.backup_id,
+    payload = _transfer_payload(result) | {
         "source": str(result.source),
-        "destination": str(result.destination),
-        "source_root_fingerprint": result.source_root_fingerprint,
-        "file_count": result.file_count,
-        "directory_count": result.directory_count,
-        "total_bytes": result.total_bytes,
-        "verified": result.verified,
-        "permissions": result.permissions,
-        "parent_sync": result.parent_sync,
         "sensitive_archive": True,
         "next_actions": [
             "store the archive in operator-controlled storage",
@@ -136,34 +123,23 @@ def _emit_backup(result: DataBackupResult, *, output_format: str) -> None:
     if output_format == "json":
         click.echo(json.dumps(payload, sort_keys=True))
         return
-    click.echo(f"Verified backup {result.backup_id}: {safe_cli_text(result.destination)}")
-    click.echo(f"Source: {safe_cli_text(result.source)}")
     click.echo(
+        f"Verified backup {result.backup_id}: {safe_cli_text(result.destination)}\n"
+        f"Source: {safe_cli_text(result.source)}\n"
         f"Included {result.file_count} files and {result.directory_count} directories "
-        f"({result.total_bytes} bytes)."
-    )
-    click.echo(
-        f"Storage capability: permissions={result.permissions} parent_sync={result.parent_sync}."
-    )
-    click.echo("Sensitive archive: keep this owner-only file in operator-controlled storage.")
-    click.echo(
+        f"({result.total_bytes} bytes).\n"
+        f"Storage capability: permissions={result.permissions} "
+        f"parent_sync={result.parent_sync}.\n"
+        "Sensitive archive: keep this owner-only file in operator-controlled storage.\n"
         f"Restore: shisad data restore {safe_cli_text(result.destination)} "
         "--destination <empty-data-root>"
     )
 
 
 def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
-    payload: dict[str, object] = {
-        "backup_id": result.backup_id,
+    payload = _transfer_payload(result) | {
         "archive": str(result.archive),
-        "destination": str(result.destination),
-        "source_root_fingerprint": result.source_root_fingerprint,
-        "file_count": result.file_count,
-        "directory_count": result.directory_count,
-        "total_bytes": result.total_bytes,
-        "verified": result.verified,
-        "permissions": result.permissions,
-        "parent_sync": result.parent_sync,
+        "sensitive_archive": True,
         "offline_health_verified": False,
         "next_actions": ["shisad start", "shisad status", "shisad doctor"],
         "rollback": "stop shisad and restore a different verified backup into a new empty root",
@@ -172,22 +148,26 @@ def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
         click.echo(json.dumps(payload, sort_keys=True))
         return
     click.echo(
-        f"Verified backup {result.backup_id} restored to {safe_cli_text(result.destination)}."
-    )
-    click.echo(f"Archive: {safe_cli_text(result.archive)}")
-    click.echo(f"Source-root fingerprint: {result.source_root_fingerprint}")
-    click.echo(
+        f"Verified backup {result.backup_id} restored to "
+        f"{safe_cli_text(result.destination)}.\n"
+        f"Archive: {safe_cli_text(result.archive)}\n"
+        f"Source-root fingerprint: {result.source_root_fingerprint}\n"
         f"Restored {result.file_count} files and {result.directory_count} directories "
-        f"({result.total_bytes} bytes)."
+        f"({result.total_bytes} bytes).\n"
+        f"Storage capability: permissions={result.permissions} "
+        f"parent_sync={result.parent_sync}.\n"
+        "Sensitive archive: retain the owner-controlled backup for rollback.\n"
+        "Offline health is not yet verified.\nNext: shisad start\nThen: shisad status\n"
+        "Finally: shisad doctor\nRollback: stop shisad and restore a different verified backup "
+        "into a new empty root."
     )
-    click.echo(
-        f"Storage capability: permissions={result.permissions} parent_sync={result.parent_sync}."
+
+
+def _transfer_payload(result: DataBackupResult | DataRestoreResult) -> dict[str, object]:
+    names = (
+        "backup_id file_count directory_count total_bytes verified permissions parent_sync "
+        "source_root_fingerprint"
     )
-    click.echo("Sensitive archive: retain the owner-controlled backup for rollback.")
-    click.echo("Offline health is not yet verified.")
-    click.echo("Next: shisad start")
-    click.echo("Then: shisad status")
-    click.echo("Finally: shisad doctor")
-    click.echo(
-        "Rollback: stop shisad and restore a different verified backup into a new empty root."
-    )
+    return {name: getattr(result, name) for name in names.split()} | {
+        "destination": str(result.destination)
+    }
