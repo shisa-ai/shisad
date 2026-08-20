@@ -13,6 +13,7 @@ import pytest
 from filelock import FileLock
 
 import shisad.core.data_backup as data_backup_module
+import shisad.core.data_root_handle as data_root_handle_module
 from shisad.core.data_backup import (
     DataBackupError,
     create_data_backup,
@@ -163,32 +164,31 @@ def test_o4c_backup_refuses_traversal_and_entry_inspection_errors(
     source = tmp_path / "source"
     _representative_root(source)
     archive = tmp_path / "snapshot.shisad-backup"
-    original_walk = os.walk
+    original_listdir = data_root_handle_module._PosixRootHandle.listdir
 
-    def unreadable_walk(
-        root: Path,
-        *,
-        followlinks: bool,
-        onerror: Callable[[OSError], None] | None = None,
-    ) -> object:
-        assert onerror is not None
-        onerror(PermissionError("unreadable subtree"))
-        return iter(())
+    def unreadable_listdir(
+        _root: data_root_handle_module._PosixRootHandle,
+        _relative: PurePosixPath = data_root_handle_module._ROOT,
+    ) -> tuple[str, ...]:
+        raise data_root_handle_module.RootHandleError("unreadable subtree")
 
-    monkeypatch.setattr(os, "walk", unreadable_walk)
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "listdir", unreadable_listdir)
     with pytest.raises(DataBackupError, match=r"scan|travers|inspect"):
         create_data_backup(source, archive)
     assert not archive.exists()
 
-    monkeypatch.setattr(os, "walk", original_walk)
-    original_lstat = Path.lstat
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "listdir", original_listdir)
+    original_metadata = data_root_handle_module._PosixRootHandle.metadata
 
-    def unreadable_lstat(path: Path) -> os.stat_result:
-        if path.name == "audit.jsonl":
-            raise PermissionError("entry inspection failed")
-        return original_lstat(path)
+    def unreadable_metadata(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+    ) -> data_root_handle_module.EntryMetadata:
+        if relative.name == "audit.jsonl":
+            raise data_root_handle_module.RootHandleError("entry inspection failed")
+        return original_metadata(root, relative)
 
-    monkeypatch.setattr(Path, "lstat", unreadable_lstat)
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "metadata", unreadable_metadata)
     with pytest.raises(DataBackupError, match=r"scan|travers|inspect"):
         create_data_backup(source, archive)
     assert not archive.exists()
@@ -219,6 +219,67 @@ def test_o4c_backup_refuses_source_replacement_while_acquiring_lock(
     monkeypatch.setattr(FileLock, "acquire", replace_source)
 
     with pytest.raises(DataBackupError, match=r"changed|replaced|unsafe"):
+        create_data_backup(source, archive)
+
+    assert not archive.exists()
+
+
+def test_o4cp_backup_pins_source_root_before_acquiring_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    original_open_root = data_backup_module.open_root
+    original_acquire = FileLock.acquire
+    source_opened = False
+
+    def observe_root(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal source_opened
+        if path == source:
+            source_opened = True
+        return original_open_root(path, *args, **kwargs)
+
+    def require_source_first(lock: FileLock, *args: object, **kwargs: object) -> object:
+        if Path(lock.lock_file) == source / ".shisad.lock":
+            assert source_opened
+        return original_acquire(lock, *args, **kwargs)
+
+    monkeypatch.setattr(data_backup_module, "open_root", observe_root)
+    monkeypatch.setattr(FileLock, "acquire", require_source_first)
+
+    assert create_data_backup(source, archive).verified is True
+
+
+def test_o4cp_backup_never_follows_replaced_source_intermediate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    displaced = tmp_path / "displaced-sessions"
+    original_open_file = data_root_handle_module._PosixRootHandle.open_file
+    replaced = False
+
+    def replace_before_open(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        flags: int,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> int:
+        nonlocal replaced
+        if not replaced and relative == PurePosixPath("sessions/state/session-1.json"):
+            (source / "sessions").rename(displaced)
+            (source / "sessions").symlink_to(displaced, target_is_directory=True)
+            replaced = True
+        return original_open_file(root, relative, flags, expected_identity=expected_identity)
+
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "open_file", replace_before_open)
+
+    with pytest.raises(DataBackupError, match=r"source|unsafe|link|changed"):
         create_data_backup(source, archive)
 
     assert not archive.exists()
@@ -534,35 +595,21 @@ def test_o4c_restore_never_follows_replaced_intermediate_directory(
     assert list(outside.iterdir()) == []
 
 
-def test_o4c_restore_uses_safe_path_fallback_without_directory_fd_support(
+def test_o4cp_restore_refuses_without_root_relative_capability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "source"
-    files = _representative_root(source)
+    _representative_root(source)
     archive = tmp_path / "snapshot.shisad-backup"
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
-    original_open = os.open
-
-    def windows_style_open(
-        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        flags: int,
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> int:
-        if flags & int(getattr(os, "O_DIRECTORY", 0)) or dir_fd is not None:
-            raise NotImplementedError("directory descriptors unavailable")
-        return original_open(path, flags, mode)
-
     monkeypatch.setattr(os, "supports_dir_fd", set())
-    monkeypatch.setattr(os, "open", windows_style_open)
 
-    result = restore_data_backup(archive, destination)
+    with pytest.raises(DataBackupError, match=r"root-relative|unavailable"):
+        restore_data_backup(archive, destination)
 
-    assert result.verified is True
-    assert {path: (destination / path).read_bytes() for path in files} == files
+    assert not destination.exists()
 
 
 def test_o4c_restore_rejects_archive_symlink_without_nofollow_flag(
@@ -640,33 +687,22 @@ def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
     original_tighten = data_backup_module._tighten_descriptor
-    original_chmod = os.chmod
     calls = 0
 
-    def fail_after_restricting_child(descriptor: int, mode: int) -> str:
+    def fail_after_restricting_child(
+        descriptor: int,
+        mode: int,
+    ) -> str:
         nonlocal calls
         calls += 1
-        if calls == 12:
+        if calls == 1:
             os.fchmod(descriptor, 0)
             return "supported"
-        if calls == 13:
+        if calls == 2:
             return "failed"
         return original_tighten(descriptor, mode)
 
     monkeypatch.setattr(data_backup_module, "_tighten_descriptor", fail_after_restricting_child)
-
-    def unsupported_nofollow_chmod(
-        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        mode: int,
-        *,
-        dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        if dir_fd is not None and not follow_symlinks:
-            raise ValueError("fchmodat nofollow unavailable")
-        original_chmod(path, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
-
-    monkeypatch.setattr(os, "chmod", unsupported_nofollow_chmod)
 
     try:
         with pytest.raises(DataBackupError, match=r"permission|restore"):
@@ -685,19 +721,27 @@ def test_o4c_backup_refuses_if_published_inode_was_not_verified(
     source = tmp_path / "source"
     _representative_root(source)
     archive = tmp_path / "snapshot.shisad-backup"
-    original_link = os.link
+    original_publish = data_root_handle_module._PosixRootHandle.publish
 
-    def replace_before_link(
-        source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        destination_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        **kwargs: object,
+    def replace_before_publish(
+        root: data_root_handle_module._PosixRootHandle,
+        temporary: PurePosixPath,
+        destination: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int],
     ) -> None:
-        temporary = Path(source_path)
-        temporary.unlink()
-        temporary.write_bytes(b"unverified replacement")
-        original_link(source_path, destination_path, **kwargs)
+        root.unlink(temporary, expected_identity=expected_identity)
+        descriptor = root.create_file(temporary, 0o600)
+        with os.fdopen(descriptor, "wb") as replacement:
+            replacement.write(b"unverified replacement")
+        original_publish(
+            root,
+            temporary,
+            destination,
+            expected_identity=expected_identity,
+        )
 
-    monkeypatch.setattr(os, "link", replace_before_link)
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "publish", replace_before_publish)
 
     with pytest.raises(DataBackupError, match=r"publish|verified|changed"):
         create_data_backup(source, archive)

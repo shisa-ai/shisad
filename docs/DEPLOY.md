@@ -356,6 +356,10 @@ shared multi-host data root or active/active deployment.
   secrets, external signer/helper configuration, external msgvault roots, and
   assistant workspace separately because they may live outside the data root.
   Per-database pre-migration copies do not replace this full-root backup.
+  Source traversal and archive publication remain bound to opened root/parent
+  handles on supported local POSIX and Windows filesystems. If the host cannot
+  provide root-relative no-follow operations, backup refuses rather than using
+  a check-then-open pathname fallback.
 - **Restore:** keep the existing root intact, stop shisad, and restore only into
   an absent or empty explicitly named destination:
 
@@ -366,7 +370,10 @@ shared multi-host data root or active/active deployment.
 
   Restore verifies the canonical manifest and every payload before writing,
   never merges with existing state, and removes payload it created if a later
-  step fails. Point the selected configuration at the restored root, then run
+  step fails. Each component is opened or created relative to a pinned root;
+  Windows reparse points and POSIX links are refused instead of followed. A
+  host without the required native rooted primitive fails before payload
+  mutation. Point the selected configuration at the restored root, then run
   `shisad start`, `shisad status`, and `shisad doctor check --component all`.
   Offline verification is not a runtime health claim. To roll back, stop the
   daemon and restore a different verified backup into another absent or empty
