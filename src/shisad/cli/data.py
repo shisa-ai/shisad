@@ -140,6 +140,7 @@ def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
     payload = _transfer_payload(result) | {
         "archive": str(result.archive),
         "sensitive_archive": True,
+        "sensitive_archive_handling": "retain in operator-controlled storage",
         "offline_health_verified": False,
         "next_actions": ["shisad start", "shisad status", "shisad doctor"],
         "rollback": "stop shisad and restore a different verified backup into a new empty root",

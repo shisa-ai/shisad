@@ -163,8 +163,6 @@ def restore_data_backup(
     *,
     fault_injector: Callable[[PurePosixPath], None] | None = None,
 ) -> DataRestoreResult:
-    """Verify a complete backup, then restore it into an absent or empty root."""
-
     archive_path = Path(archive)
     destination_path = Path(destination)
     created_root, root_identity = _prepare_restore_root(destination_path)
