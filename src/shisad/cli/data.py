@@ -22,6 +22,14 @@ from shisad.core.data_backup import (
     restore_data_backup,
 )
 
+_OUTPUT_FORMAT = click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+
 
 @click.group()
 def data() -> None:
@@ -30,13 +38,7 @@ def data() -> None:
 
 @data.command("backup")
 @click.argument("destination", type=click.Path(path_type=Path))
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["human", "json"]),
-    default="human",
-    show_default=True,
-)
+@_OUTPUT_FORMAT
 @click.pass_context
 def data_backup(ctx: click.Context, destination: Path, output_format: str) -> None:
     """Back up the configured data root while the daemon is stopped."""
@@ -73,13 +75,7 @@ def data_backup(ctx: click.Context, destination: Path, output_format: str) -> No
     type=click.Path(path_type=Path),
     help="Absent or empty data root to restore; never inferred implicitly.",
 )
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["human", "json"]),
-    default="human",
-    show_default=True,
-)
+@_OUTPUT_FORMAT
 def data_restore(backup: Path, destination: Path, output_format: str) -> None:
     """Verify and restore a backup without starting or stopping shisad."""
 
@@ -141,11 +137,19 @@ def _emit_backup(result: DataBackupResult, *, output_format: str) -> None:
         click.echo(json.dumps(payload, sort_keys=True))
         return
     click.echo(f"Verified backup {result.backup_id}: {safe_cli_text(result.destination)}")
-    click.echo(f"Included {result.file_count} files ({result.total_bytes} bytes).")
+    click.echo(f"Source: {safe_cli_text(result.source)}")
+    click.echo(
+        f"Included {result.file_count} files and {result.directory_count} directories "
+        f"({result.total_bytes} bytes)."
+    )
     click.echo(
         f"Storage capability: permissions={result.permissions} parent_sync={result.parent_sync}."
     )
     click.echo("Sensitive archive: keep this owner-only file in operator-controlled storage.")
+    click.echo(
+        f"Restore: shisad data restore {safe_cli_text(result.destination)} "
+        "--destination <empty-data-root>"
+    )
 
 
 def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
@@ -170,7 +174,16 @@ def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
     click.echo(
         f"Verified backup {result.backup_id} restored to {safe_cli_text(result.destination)}."
     )
-    click.echo(f"Restored {result.file_count} files ({result.total_bytes} bytes).")
+    click.echo(f"Archive: {safe_cli_text(result.archive)}")
+    click.echo(f"Source-root fingerprint: {result.source_root_fingerprint}")
+    click.echo(
+        f"Restored {result.file_count} files and {result.directory_count} directories "
+        f"({result.total_bytes} bytes)."
+    )
+    click.echo(
+        f"Storage capability: permissions={result.permissions} parent_sync={result.parent_sync}."
+    )
+    click.echo("Sensitive archive: retain the owner-controlled backup for rollback.")
     click.echo("Offline health is not yet verified.")
     click.echo("Next: shisad start")
     click.echo("Then: shisad status")

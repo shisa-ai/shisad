@@ -36,14 +36,47 @@ def test_o4c_data_backup_restore_json_and_human_guidance(
     assert backup["destination"] == str(archive)
     assert backup["sensitive_archive"] is True
     assert backup["file_count"] == 1
+    assert backup["directory_count"] == 2
+    assert backup["permissions"] in {"supported", "unsupported"}
+    assert backup["parent_sync"] in {"supported", "unsupported", "failed"}
     assert "backup_id" in backup
+
+    json_restored = tmp_path / "json-restored"
+    json_restore_result = runner.invoke(
+        cli,
+        [
+            "data",
+            "restore",
+            str(archive),
+            "--destination",
+            str(json_restored),
+            "--format",
+            "json",
+        ],
+    )
+    assert json_restore_result.exit_code == 0, json_restore_result.output
+    json_restore = json.loads(json_restore_result.output)
+    assert json_restore["archive"] == str(archive)
+    assert json_restore["destination"] == str(json_restored)
+    assert json_restore["directory_count"] == 2
+    assert json_restore["offline_health_verified"] is False
+
+    human_archive = tmp_path / "human-snapshot.shisad-backup"
+    backup_result = runner.invoke(cli, ["data", "backup", str(human_archive)])
+    assert backup_result.exit_code == 0, backup_result.output
+    assert str(source) in backup_result.output
+    assert str(human_archive) in backup_result.output
+    assert "2 directories" in backup_result.output
+    assert "shisad data restore" in backup_result.output
+    assert "permissions=" in backup_result.output
+    assert "Sensitive archive" in backup_result.output
 
     restore_result = runner.invoke(
         cli,
         [
             "data",
             "restore",
-            str(archive),
+            str(human_archive),
             "--destination",
             str(restored),
         ],
@@ -54,6 +87,11 @@ def test_o4c_data_backup_restore_json_and_human_guidance(
     assert "shisad status" in restore_result.output
     assert "shisad doctor" in restore_result.output
     assert "offline health is not yet verified" in restore_result.output.lower()
+    assert str(human_archive) in restore_result.output
+    assert str(restored) in restore_result.output
+    assert "2 directories" in restore_result.output
+    assert "permissions=" in restore_result.output
+    assert "Sensitive archive" in restore_result.output
     assert (restored / "sessions" / "state" / "session.json").read_bytes() == state.read_bytes()
 
 

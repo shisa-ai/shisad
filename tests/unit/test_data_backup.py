@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from filelock import FileLock
 
+import shisad.core.data_backup as data_backup_module
 from shisad.core.data_backup import (
     DataBackupError,
     create_data_backup,
@@ -155,6 +156,74 @@ def test_o4c_backup_refuses_lock_contention_unsafe_entries_and_destinations(
         create_data_backup(source, source / "nested.shisad-backup")
 
 
+def test_o4c_backup_refuses_traversal_and_entry_inspection_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    original_walk = os.walk
+
+    def unreadable_walk(
+        root: Path,
+        *,
+        followlinks: bool,
+        onerror: Callable[[OSError], None] | None = None,
+    ) -> object:
+        assert onerror is not None
+        onerror(PermissionError("unreadable subtree"))
+        return iter(())
+
+    monkeypatch.setattr(os, "walk", unreadable_walk)
+    with pytest.raises(DataBackupError, match=r"scan|travers|inspect"):
+        create_data_backup(source, archive)
+    assert not archive.exists()
+
+    monkeypatch.setattr(os, "walk", original_walk)
+    original_lstat = Path.lstat
+
+    def unreadable_lstat(path: Path) -> os.stat_result:
+        if path.name == "audit.jsonl":
+            raise PermissionError("entry inspection failed")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", unreadable_lstat)
+    with pytest.raises(DataBackupError, match=r"scan|travers|inspect"):
+        create_data_backup(source, archive)
+    assert not archive.exists()
+
+
+def test_o4c_backup_refuses_source_replacement_while_acquiring_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    displaced = tmp_path / "displaced-source"
+    replacement = tmp_path / "replacement-source"
+    replacement.mkdir()
+    (replacement / "foreign").write_bytes(b"not-source-state")
+    archive = tmp_path / "snapshot.shisad-backup"
+    original_acquire = FileLock.acquire
+    replaced = False
+
+    def replace_source(lock: FileLock, *args: object, **kwargs: object) -> object:
+        nonlocal replaced
+        if not replaced and Path(lock.lock_file) == source / ".shisad.lock":
+            source.rename(displaced)
+            source.symlink_to(replacement, target_is_directory=True)
+            replaced = True
+        return original_acquire(lock, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", replace_source)
+
+    with pytest.raises(DataBackupError, match=r"changed|replaced|unsafe"):
+        create_data_backup(source, archive)
+
+    assert not archive.exists()
+
+
 def test_o4c_restore_verifies_tamper_before_writing(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _representative_root(source)
@@ -259,6 +328,31 @@ def test_o4c_restore_rejects_reserved_root_lock_record_before_writing(tmp_path: 
     assert not destination.exists()
 
 
+def test_o4c_restore_rejects_windows_drive_relative_record_before_writing(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+
+    def set_drive_relative_path(manifest: dict[str, object]) -> None:
+        entries = manifest["entries"]
+        assert isinstance(entries, list)
+        for entry in entries:
+            if entry["path"] == "empty-owned-directory":
+                entry["path"] = "C:escape"
+                break
+        entries.sort(key=lambda entry: entry["path"])
+
+    _rewrite_manifest(archive, set_drive_relative_path)
+
+    with pytest.raises(DataBackupError, match=r"path|manifest"):
+        restore_data_backup(archive, tmp_path / "restored")
+
+    assert not (tmp_path / "restored").exists()
+
+
 @pytest.mark.parametrize(
     ("member", "compression"),
     [
@@ -306,7 +400,80 @@ def test_o4c_restore_refuses_nonempty_or_locked_destination(tmp_path: Path) -> N
         restore_data_backup(archive, locked)
 
 
-def test_o4c_restore_failure_cleans_created_payload(tmp_path: Path) -> None:
+def test_o4c_restore_retains_an_empty_root_and_normal_lock(tmp_path: Path) -> None:
+    source = tmp_path / "empty-source"
+    source.mkdir()
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+
+    result = restore_data_backup(archive, destination)
+
+    assert result.file_count == 0
+    assert result.directory_count == 0
+    assert destination.is_dir()
+    assert (destination / ".shisad.lock").is_file()
+
+
+def test_o4c_restore_refuses_destination_replacement_while_acquiring_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    displaced = tmp_path / "displaced-destination"
+    replacement = tmp_path / "replacement-destination"
+    replacement.mkdir()
+    original_acquire = FileLock.acquire
+    replaced = False
+
+    def replace_destination(lock: FileLock, *args: object, **kwargs: object) -> object:
+        nonlocal replaced
+        if not replaced and Path(lock.lock_file) == destination / ".shisad.lock":
+            destination.rename(displaced)
+            destination.symlink_to(replacement, target_is_directory=True)
+            replaced = True
+        return original_acquire(lock, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", replace_destination)
+
+    with pytest.raises(DataBackupError, match=r"changed|replaced|unsafe"):
+        restore_data_backup(archive, destination)
+
+    assert not [path for path in replacement.iterdir() if path.name != ".shisad.lock"]
+
+
+def test_o4c_restore_reads_archive_through_one_open_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    original_zip_file = zipfile.ZipFile
+
+    def descriptor_zip_file(file: object, *args: object, **kwargs: object) -> zipfile.ZipFile:
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if mode == "r":
+            assert hasattr(file, "read") and not isinstance(file, (str, os.PathLike))
+        return original_zip_file(file, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile, "ZipFile", descriptor_zip_file)
+
+    result = restore_data_backup(archive, tmp_path / "restored")
+
+    assert result.verified is True
+
+
+@pytest.mark.parametrize("failure", [OSError("I/O interruption"), RuntimeError("helper failed")])
+def test_o4c_restore_failure_cleans_created_payload(
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
     source = tmp_path / "source"
     _representative_root(source)
     archive = tmp_path / "snapshot.shisad-backup"
@@ -317,10 +484,44 @@ def test_o4c_restore_failure_cleans_created_payload(tmp_path: Path) -> None:
     def fail_after_first_file(relative: PurePosixPath) -> None:
         calls.append(relative)
         if len(calls) == 2:
-            raise OSError("injected restore interruption")
+            raise failure
 
-    with pytest.raises(DataBackupError, match=r"restore|interruption"):
+    with pytest.raises(DataBackupError, match=r"restore|interruption|helper"):
         restore_data_backup(archive, destination, fault_injector=fail_after_first_file)
 
     assert calls
     assert not destination.exists() or _payload_paths(destination) == set()
+
+
+def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    original_tighten = data_backup_module._tighten_descriptor
+    calls = 0
+
+    def fail_after_restricting_child(descriptor: int, mode: int) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 12:
+            os.fchmod(descriptor, 0)
+            return "supported"
+        if calls == 13:
+            return "failed"
+        return original_tighten(descriptor, mode)
+
+    monkeypatch.setattr(data_backup_module, "_tighten_descriptor", fail_after_restricting_child)
+
+    try:
+        with pytest.raises(DataBackupError, match=r"permission|restore"):
+            restore_data_backup(archive, destination)
+        assert not destination.exists() or _payload_paths(destination) == set()
+    finally:
+        for restricted in (destination / "channels" / "delivery",):
+            if restricted.exists():
+                os.chmod(restricted, 0o700)

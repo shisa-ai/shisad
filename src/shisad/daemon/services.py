@@ -8,7 +8,7 @@ import hashlib
 import logging
 import os
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -673,18 +673,10 @@ class _ChannelStartupResult:
 def _storage_upgrade_status(result: SQLiteMigrationResult) -> dict[str, object]:
     """Project one physical preparation result without re-running its authority."""
 
-    return {
-        "path": str(result.path),
-        "initialized": result.initialized,
-        "migrated": result.migrated,
-        "transaction_committed": result.transaction_committed,
-        "from_version": result.from_version,
-        "to_version": result.to_version,
-        "backup_path": str(result.backup_path) if result.backup_path is not None else None,
-        "backup_preserved": result.backup_preserved,
-        "permissions": result.permissions,
-        "parent_sync": result.parent_sync,
-    }
+    status: dict[str, object] = asdict(result)
+    status["path"] = str(result.path)
+    status["backup_path"] = str(result.backup_path) if result.backup_path is not None else None
+    return status
 
 
 @dataclass(slots=True)

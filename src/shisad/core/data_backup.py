@@ -10,9 +10,9 @@ import uuid
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from filelock import FileLock, Timeout
 
@@ -29,40 +29,42 @@ _PAYLOAD_PREFIX = "data/"
 _LOCK_NAME = ".shisad.lock"
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 _COPY_CHUNK_BYTES = 1024 * 1024
-
-DataRestoreFaultInjector = Callable[[PurePosixPath], None]
+_MANIFEST_FIELDS = frozenset(
+    "backup_id created_at entries excluded format_version source_root_fingerprint".split()  # noqa: SIM905
+)
 
 
 class DataBackupError(RuntimeError):
     """A data-root backup or restore was refused or failed safely."""
 
 
+def _close_descriptor(descriptor: int) -> None:
+    if descriptor >= 0:
+        with suppress(OSError):
+            os.close(descriptor)
+
+
 @dataclass(frozen=True, slots=True)
-class DataBackupResult:
+class _DataTransferResult:
     backup_id: str
+    destination: Path
+    source_root_fingerprint: str
+    file_count: int
+    directory_count: int
+    total_bytes: int
+    verified: bool
+    permissions: str
+    parent_sync: str
+
+
+@dataclass(frozen=True, slots=True)
+class DataBackupResult(_DataTransferResult):
     source: Path
-    destination: Path
-    source_root_fingerprint: str
-    file_count: int
-    directory_count: int
-    total_bytes: int
-    verified: bool
-    permissions: str
-    parent_sync: str
 
 
 @dataclass(frozen=True, slots=True)
-class DataRestoreResult:
-    backup_id: str
+class DataRestoreResult(_DataTransferResult):
     archive: Path
-    destination: Path
-    source_root_fingerprint: str
-    file_count: int
-    directory_count: int
-    total_bytes: int
-    verified: bool
-    permissions: str
-    parent_sync: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,15 +74,6 @@ class _Entry:
     mode: int
     size: int
     sha256: str | None
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "mode": self.mode,
-            "path": self.path.as_posix(),
-            "sha256": self.sha256,
-            "size": self.size,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,29 +92,14 @@ class _Manifest:
     source_root_fingerprint: str
     entries: tuple[_Entry, ...]
 
-    @property
-    def files(self) -> tuple[_Entry, ...]:
-        return tuple(entry for entry in self.entries if entry.kind == "file")
-
-    @property
-    def directories(self) -> tuple[_Entry, ...]:
-        return tuple(entry for entry in self.entries if entry.kind == "directory")
-
-    @property
-    def total_bytes(self) -> int:
-        return sum(entry.size for entry in self.files)
+    def select(self, kind: str) -> tuple[_Entry, ...]:
+        return tuple(entry for entry in self.entries if entry.kind == kind)
 
     def as_payload(self) -> dict[str, object]:
-        return {
-            "backup_id": self.backup_id,
-            "created_at": self.created_at,
-            "entries": [entry.as_payload() for entry in self.entries],
-            "excluded": [
-                ".shisad.lock",
-                "paths_outside_data_root",
-            ],
+        return asdict(self) | {
+            "entries": [asdict(entry) | {"path": entry.path.as_posix()} for entry in self.entries],
+            "excluded": [".shisad.lock", "paths_outside_data_root"],
             "format_version": _FORMAT_VERSION,
-            "source_root_fingerprint": self.source_root_fingerprint,
         }
 
 
@@ -130,7 +108,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
 
     source_path = Path(source)
     destination_path = Path(destination)
-    _validate_backup_paths(source_path, destination_path)
+    source_identity = _validate_backup_paths(source_path, destination_path)
     lock = FileLock(str(source_path / _LOCK_NAME), timeout=0)
     try:
         lock.acquire(timeout=0)
@@ -142,6 +120,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
     temporary = destination_path.with_name(f".{destination_path.name}.{uuid.uuid4().hex}.tmp")
     published = False
     try:
+        _require_directory_identity(source_path, source_identity)
         source_entries = _scan_source(source_path)
         manifest, permissions = _write_backup(
             source_path,
@@ -151,6 +130,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
         with _verified_archive(temporary) as (_bundle, verified):
             if verified != manifest:
                 raise DataBackupError("completed backup manifest did not verify")
+        _require_directory_identity(source_path, source_identity)
         try:
             os.link(temporary, destination_path)
         except FileExistsError:
@@ -169,9 +149,9 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
             source=source_path,
             destination=destination_path,
             source_root_fingerprint=manifest.source_root_fingerprint,
-            file_count=len(manifest.files),
-            directory_count=len(manifest.directories),
-            total_bytes=manifest.total_bytes,
+            file_count=len(manifest.select("file")),
+            directory_count=len(manifest.select("directory")),
+            total_bytes=sum(entry.size for entry in manifest.select("file")),
             verified=True,
             permissions=permissions,
             parent_sync=parent_sync,
@@ -187,18 +167,19 @@ def restore_data_backup(
     archive: Path,
     destination: Path,
     *,
-    fault_injector: DataRestoreFaultInjector | None = None,
+    fault_injector: Callable[[PurePosixPath], None] | None = None,
 ) -> DataRestoreResult:
     """Verify a complete backup, then restore it into an absent or empty root."""
 
     archive_path = Path(archive)
     destination_path = Path(destination)
-    _validate_archive_path(archive_path)
-    created_root, lock_preexisted = _prepare_restore_root(destination_path)
+    created_root, root_identity = _prepare_restore_root(destination_path)
     lock = FileLock(str(destination_path / _LOCK_NAME), timeout=0)
     acquired = False
-    created_files: list[Path] = []
-    created_directories: list[Path] = []
+    succeeded = False
+    root_descriptor = -1
+    created_files: list[PurePosixPath] = []
+    created_directories: list[PurePosixPath] = []
     try:
         try:
             lock.acquire(timeout=0)
@@ -207,54 +188,68 @@ def restore_data_backup(
             raise DataBackupError("restore root is locked; stop shisad before restore") from None
         except OSError as exc:
             raise DataBackupError("data-root lock could not be acquired for restore") from exc
-        if _restore_payload_children(destination_path):
+        root_descriptor = _open_restore_root(destination_path, root_identity)
+        if [name for name in os.listdir(root_descriptor) if name != _LOCK_NAME]:
             raise DataBackupError("restore destination must be empty")
         with _verified_archive(archive_path) as (bundle, manifest):
             permissions = _restore_verified_entries(
                 bundle,
                 manifest,
-                destination_path,
+                root_descriptor,
                 created_files=created_files,
                 created_directories=created_directories,
                 fault_injector=fault_injector,
             )
+        _require_directory_identity(destination_path, root_identity)
         try:
             parent_sync = sync_parent_directory(destination_path)
         except OSError:
             parent_sync = "failed"
-        return DataRestoreResult(
+        result = DataRestoreResult(
             backup_id=manifest.backup_id,
             archive=archive_path,
             destination=destination_path,
             source_root_fingerprint=manifest.source_root_fingerprint,
-            file_count=len(manifest.files),
-            directory_count=len(manifest.directories),
-            total_bytes=manifest.total_bytes,
+            file_count=len(manifest.select("file")),
+            directory_count=len(manifest.select("directory")),
+            total_bytes=sum(entry.size for entry in manifest.select("file")),
             verified=True,
             permissions=permissions,
             parent_sync=parent_sync,
         )
-    except DataBackupError:
-        _cleanup_restore_payload(created_files, created_directories)
-        raise
-    except (OSError, zipfile.BadZipFile) as exc:
-        _cleanup_restore_payload(created_files, created_directories)
+        lock.release()
+        acquired = False
+        flags = hardened_open_flags(os.O_WRONLY | os.O_CREAT)
+        artifact = os.open(_LOCK_NAME, flags, 0o600, dir_fd=root_descriptor)
+        os.close(artifact)
+        succeeded = True
+        return result
+    except Exception as exc:
+        if root_descriptor >= 0:
+            _cleanup_restore_payload(root_descriptor, created_files, created_directories)
+        if isinstance(exc, DataBackupError):
+            raise
         raise DataBackupError(f"data restore failed safely: {exc}") from exc
     finally:
         if acquired:
             lock.release()
-        if created_root and not created_files and not created_directories:
+        if not succeeded and root_descriptor >= 0 and created_root:
             with suppress(OSError):
-                (destination_path / _LOCK_NAME).unlink()
-            with suppress(OSError):
+                os.unlink(_LOCK_NAME, dir_fd=root_descriptor)
+        if root_descriptor >= 0:
+            _close_descriptor(root_descriptor)
+        if not succeeded and created_root:
+            with suppress(DataBackupError, OSError):
+                _require_directory_identity(destination_path, root_identity)
                 destination_path.rmdir()
-        elif not lock_preexisted and not _restore_payload_children(destination_path):
-            with suppress(OSError):
-                (destination_path / _LOCK_NAME).unlink()
 
 
-def _validate_backup_paths(source: Path, destination: Path) -> None:
-    if source.is_symlink() or not source.exists() or not source.is_dir():
+def _validate_backup_paths(source: Path, destination: Path) -> tuple[int, int]:
+    try:
+        source_metadata = source.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise DataBackupError("backup source could not be inspected") from exc
+    if not stat.S_ISDIR(source_metadata.st_mode):
         raise DataBackupError("backup source must be an existing non-symlink data root")
     lock_path = source / _LOCK_NAME
     if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
@@ -268,27 +263,26 @@ def _validate_backup_paths(source: Path, destination: Path) -> None:
     destination_resolved = destination.resolve(strict=False)
     if destination_resolved.is_relative_to(source_resolved):
         raise DataBackupError("backup destination cannot be inside the data root")
+    return source_metadata.st_dev, source_metadata.st_ino
 
 
-def _validate_archive_path(archive: Path) -> None:
-    if archive.is_symlink() or not archive.exists():
-        raise DataBackupError("backup archive must be an existing non-symlink regular file")
+def _require_directory_identity(path: Path, identity: tuple[int, int]) -> None:
     try:
-        mode = archive.stat(follow_symlinks=False).st_mode
+        metadata = path.stat(follow_symlinks=False)
     except OSError as exc:
-        raise DataBackupError("backup archive could not be inspected") from exc
-    if not stat.S_ISREG(mode):
-        raise DataBackupError("backup archive must be a regular file")
+        raise DataBackupError("data-root directory identity changed") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != identity:
+        raise DataBackupError("data-root directory identity changed")
 
 
-def _prepare_restore_root(destination: Path) -> tuple[bool, bool]:
+def _prepare_restore_root(destination: Path) -> tuple[bool, tuple[int, int]]:
     if destination.is_symlink():
         raise DataBackupError("restore destination cannot be a symlink")
     created = False
     if destination.exists():
         if not destination.is_dir():
             raise DataBackupError("restore destination must be an absent or empty directory")
-        if _restore_payload_children(destination):
+        if any(path.name != _LOCK_NAME for path in destination.iterdir()):
             raise DataBackupError("restore destination must be empty")
     else:
         if destination.parent.is_symlink() or not destination.parent.is_dir():
@@ -296,58 +290,80 @@ def _prepare_restore_root(destination: Path) -> tuple[bool, bool]:
         destination.mkdir(mode=0o700)
         created = True
     lock_path = destination / _LOCK_NAME
-    lock_preexisted = lock_path.exists() or lock_path.is_symlink()
     if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
         if created:
             with suppress(OSError):
                 destination.rmdir()
         raise DataBackupError("restore lock path is unsafe")
-    return created, lock_preexisted
+    metadata = destination.stat(follow_symlinks=False)
+    return created, (metadata.st_dev, metadata.st_ino)
 
 
-def _restore_payload_children(destination: Path) -> list[Path]:
-    if not destination.exists():
-        return []
-    return [path for path in destination.iterdir() if path.name != _LOCK_NAME]
+def _open_restore_root(destination: Path, identity: tuple[int, int]) -> int:
+    flags = hardened_open_flags(os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)))
+    try:
+        descriptor = os.open(destination, flags)
+    except OSError as exc:
+        raise DataBackupError("restore destination was replaced or became unsafe") from exc
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != identity:
+        os.close(descriptor)
+        raise DataBackupError("restore destination was replaced or became unsafe")
+    return descriptor
+
+
+def _tighten_descriptor(descriptor: int, mode: int) -> str:
+    if os.name != "posix" or not hasattr(os, "fchmod"):
+        return "unsupported"
+    try:
+        os.fchmod(descriptor, mode)
+    except (AttributeError, NotImplementedError):
+        return "unsupported"
+    except OSError:
+        return "failed"
+    return "supported"
 
 
 def _scan_source(root: Path) -> tuple[_SourceEntry, ...]:
     entries: list[_SourceEntry] = []
-    for current_text, directory_names, file_names in os.walk(root, followlinks=False):
+    for current_text, directory_names, file_names in os.walk(
+        root, followlinks=False, onerror=_raise_scan_error
+    ):
         current = Path(current_text)
         directory_names.sort()
         file_names.sort()
         for name in directory_names:
-            path = current / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise DataBackupError(f"unsafe data-root entry: {path.relative_to(root)}")
-            entries.append(
-                _SourceEntry(
-                    path=PurePosixPath(path.relative_to(root).as_posix()),
-                    kind="directory",
-                    mode=stat.S_IMODE(metadata.st_mode) & 0o700,
-                    device=metadata.st_dev,
-                    inode=metadata.st_ino,
-                )
-            )
+            entries.append(_scan_source_entry(root, current / name, "directory"))
         for name in file_names:
             if current == root and name == _LOCK_NAME:
                 continue
-            path = current / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-                raise DataBackupError(f"unsafe data-root entry: {path.relative_to(root)}")
-            entries.append(
-                _SourceEntry(
-                    path=PurePosixPath(path.relative_to(root).as_posix()),
-                    kind="file",
-                    mode=stat.S_IMODE(metadata.st_mode) & 0o700,
-                    device=metadata.st_dev,
-                    inode=metadata.st_ino,
-                )
-            )
+            entries.append(_scan_source_entry(root, current / name, "file"))
     return tuple(sorted(entries, key=lambda entry: entry.path.as_posix()))
+
+
+def _scan_source_entry(root: Path, path: Path, kind: str) -> _SourceEntry:
+    metadata = _source_metadata(path)
+    expected_type = stat.S_ISDIR if kind == "directory" else stat.S_ISREG
+    if not expected_type(metadata.st_mode):
+        raise DataBackupError(f"unsafe data-root entry: {path.relative_to(root)}")
+    return _SourceEntry(
+        PurePosixPath(path.relative_to(root).as_posix()),
+        kind,
+        stat.S_IMODE(metadata.st_mode) & 0o700,
+        metadata.st_dev,
+        metadata.st_ino,
+    )
+
+
+def _raise_scan_error(exc: OSError) -> None:
+    raise DataBackupError(f"data-root scan failed: {exc}") from exc
+
+
+def _source_metadata(path: Path) -> os.stat_result:
+    try:
+        return path.lstat()
+    except OSError as exc:
+        raise DataBackupError(f"data-root entry inspection failed: {path.name}") from exc
 
 
 def _write_backup(
@@ -400,9 +416,7 @@ def _write_backup(
     except (OSError, zipfile.BadZipFile) as exc:
         raise DataBackupError(f"backup creation failed safely: {exc}") from exc
     finally:
-        if descriptor >= 0:
-            with suppress(OSError):
-                os.close(descriptor)
+        _close_descriptor(descriptor)
 
 
 def _write_source_file(
@@ -419,7 +433,6 @@ def _write_source_file(
             or before.st_dev != entry.device
             or before.st_ino != entry.inode
             or stat.S_IMODE(before.st_mode) & 0o700 != entry.mode
-            or not path.resolve(strict=True).is_relative_to(source.resolve(strict=True))
         ):
             raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
         digest = hashlib.sha256()
@@ -447,24 +460,17 @@ def _write_source_file(
             sha256=digest.hexdigest(),
         )
     finally:
-        if descriptor >= 0:
-            with suppress(OSError):
-                os.close(descriptor)
+        _close_descriptor(descriptor)
 
 
 def _verify_source_directory(source: Path, entry: _SourceEntry) -> None:
     path = source / Path(entry.path.as_posix())
-    try:
-        metadata = path.lstat()
-        safe = path.resolve(strict=True).is_relative_to(source.resolve(strict=True))
-    except OSError as exc:
-        raise DataBackupError(f"data-root entry changed during backup: {entry.path}") from exc
+    metadata = _source_metadata(path)
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or metadata.st_dev != entry.device
         or metadata.st_ino != entry.inode
         or stat.S_IMODE(metadata.st_mode) & 0o700 != entry.mode
-        or not safe
     ):
         raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
 
@@ -488,13 +494,29 @@ def _canonical_manifest(manifest: _Manifest) -> bytes:
 
 
 @contextmanager
-def _verified_archive(archive: Path) -> Iterator[tuple[zipfile.ZipFile, _Manifest]]:
-    _validate_archive_path(archive)
+def _open_archive(archive: Path) -> Iterator[zipfile.ZipFile]:
     try:
-        bundle = zipfile.ZipFile(archive, "r", allowZip64=True)
-    except (OSError, zipfile.BadZipFile) as exc:
+        archive_file = open(archive, "rb", opener=_hardened_opener)  # noqa: SIM115
+    except OSError as exc:
         raise DataBackupError("backup archive is invalid") from exc
-    with bundle:
+    with archive_file:
+        if not stat.S_ISREG(os.fstat(archive_file.fileno()).st_mode):
+            raise DataBackupError("backup archive must be a non-symlink regular file")
+        try:
+            bundle = zipfile.ZipFile(archive_file, "r", allowZip64=True)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise DataBackupError("backup archive is invalid") from exc
+        with bundle:
+            yield bundle
+
+
+def _hardened_opener(path: str, flags: int) -> int:
+    return os.open(path, hardened_open_flags(flags))
+
+
+@contextmanager
+def _verified_archive(archive: Path) -> Iterator[tuple[zipfile.ZipFile, _Manifest]]:
+    with _open_archive(archive) as bundle:
         try:
             infos = bundle.infolist()
             names = [info.filename for info in infos]
@@ -519,16 +541,14 @@ def _verified_archive(archive: Path) -> Iterator[tuple[zipfile.ZipFile, _Manifes
             if manifest_bytes != _canonical_manifest(manifest):
                 raise DataBackupError("backup manifest is not canonical")
             expected_names = {_MANIFEST_NAME} | {
-                f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}" for entry in manifest.files
+                f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}" for entry in manifest.select("file")
             }
             if set(names) != expected_names:
                 raise DataBackupError("backup contains an unexpected or missing member")
-            for entry in manifest.files:
+            for entry in manifest.select("file"):
                 info = bundle.getinfo(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}")
                 if info.file_size != entry.size or _zip_digest(bundle, info) != entry.sha256:
                     raise DataBackupError("backup payload size or digest does not match manifest")
-        except DataBackupError:
-            raise
         except (OSError, json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             raise DataBackupError("backup archive or manifest is invalid") from exc
         yield bundle, manifest
@@ -548,6 +568,7 @@ def _validate_relative_path(value: str) -> PurePosixPath:
         not value
         or "\\" in value
         or path.is_absolute()
+        or bool(PureWindowsPath(value).drive)
         or path.as_posix() != value
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
@@ -557,14 +578,7 @@ def _validate_relative_path(value: str) -> PurePosixPath:
 
 def _parse_manifest(payload: bytes) -> _Manifest:
     raw = json.loads(payload.decode("utf-8"))
-    if not isinstance(raw, dict) or set(raw) != {
-        "backup_id",
-        "created_at",
-        "entries",
-        "excluded",
-        "format_version",
-        "source_root_fingerprint",
-    }:
+    if not isinstance(raw, dict) or set(raw) != _MANIFEST_FIELDS:
         raise DataBackupError("backup manifest structure is invalid")
     if type(raw["format_version"]) is not int or raw["format_version"] != _FORMAT_VERSION:
         raise DataBackupError("backup format version is unsupported")
@@ -573,22 +587,21 @@ def _parse_manifest(payload: bytes) -> _Manifest:
         backup_id = str(uuid.UUID(str(raw["backup_id"])))
         if not isinstance(created_at, str) or not created_at.endswith("Z"):
             raise ValueError
-        timestamp = datetime.fromisoformat(created_at.removesuffix("Z") + "+00:00")
-        if timestamp.tzinfo != UTC:
-            raise ValueError
+        datetime.fromisoformat(created_at.removesuffix("Z") + "+00:00")
     except ValueError as exc:
         raise DataBackupError("backup identity or timestamp is invalid") from exc
     fingerprint = raw["source_root_fingerprint"]
-    if not isinstance(fingerprint, str):
-        raise DataBackupError("backup source-root fingerprint is invalid")
-    if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in fingerprint)
+    ):
         raise DataBackupError("backup source-root fingerprint is invalid")
     if raw["excluded"] != [".shisad.lock", "paths_outside_data_root"]:
         raise DataBackupError("backup exclusion declaration is invalid")
-    raw_entries = raw["entries"]
-    if not isinstance(raw_entries, list):
+    if not isinstance(raw["entries"], list):
         raise DataBackupError("backup entries must be a list")
-    entries = tuple(_parse_entry(item) for item in raw_entries)
+    entries = tuple(_parse_entry(item) for item in raw["entries"])
     paths = [entry.path.as_posix() for entry in entries]
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise DataBackupError("backup manifest paths must be sorted and unique")
@@ -597,12 +610,7 @@ def _parse_manifest(payload: bytes) -> _Manifest:
         for parent in entry.path.parents:
             if parent != PurePosixPath(".") and kinds.get(parent.as_posix()) != "directory":
                 raise DataBackupError("backup manifest parent structure is invalid")
-    return _Manifest(
-        backup_id=backup_id,
-        created_at=created_at,
-        source_root_fingerprint=fingerprint,
-        entries=entries,
-    )
+    return _Manifest(backup_id, created_at, fingerprint, entries)
 
 
 def _parse_entry(raw: object) -> _Entry:
@@ -644,68 +652,78 @@ def _zip_digest(bundle: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
 def _restore_verified_entries(
     bundle: zipfile.ZipFile,
     manifest: _Manifest,
-    destination: Path,
+    root_descriptor: int,
     *,
-    created_files: list[Path],
-    created_directories: list[Path],
-    fault_injector: DataRestoreFaultInjector | None,
+    created_files: list[PurePosixPath],
+    created_directories: list[PurePosixPath],
+    fault_injector: Callable[[PurePosixPath], None] | None,
 ) -> str:
-    permission_states = [tighten_permissions(destination, 0o700)]
-    for entry in manifest.directories:
-        target = destination / Path(entry.path.as_posix())
-        if target.is_symlink() or target.exists():
-            raise DataBackupError(f"restore target already exists: {entry.path}")
-        target.mkdir(mode=0o700)
-        created_directories.append(target)
-    for entry in manifest.files:
-        target = destination / Path(entry.path.as_posix())
-        if not target.parent.resolve(strict=True).is_relative_to(destination.resolve(strict=True)):
-            raise DataBackupError("restore target escaped the destination")
+    permission_states = [_tighten_descriptor(root_descriptor, 0o700)]
+    if permission_states[-1] == "failed":
+        raise DataBackupError("restored root permissions could not be applied")
+    for entry in manifest.select("directory"):
+        try:
+            os.mkdir(entry.path.as_posix(), mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            raise DataBackupError(f"restore target already exists: {entry.path}") from None
+        created_directories.append(entry.path)
+    file_flags = hardened_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    for entry in manifest.select("file"):
         descriptor = -1
         digest = hashlib.sha256()
         size = 0
         try:
-            descriptor = os.open(
-                target,
-                hardened_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
-                0o600,
-            )
-            created_files.append(target)
+            descriptor = os.open(entry.path.as_posix(), file_flags, 0o600, dir_fd=root_descriptor)
+            created_files.append(entry.path)
             info = bundle.getinfo(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}")
-            with bundle.open(info, "r") as source:
+            with (
+                bundle.open(info, "r") as source,
+                os.fdopen(descriptor, "wb", closefd=False) as target,
+            ):
                 while chunk := source.read(_COPY_CHUNK_BYTES):
-                    view = memoryview(chunk)
-                    while view:
-                        written = os.write(descriptor, view)
-                        if written <= 0:
-                            raise OSError("restore write made no progress")
-                        view = view[written:]
+                    target.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
+                target.flush()
+            if size != entry.size or digest.hexdigest() != entry.sha256:
+                raise DataBackupError(f"restored payload verification failed: {entry.path}")
+            permission = _tighten_descriptor(descriptor, entry.mode)
+            if permission == "failed":
+                raise DataBackupError("restored owner permissions could not be applied")
+            permission_states.append(permission)
             os.fsync(descriptor)
         finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
-        if size != entry.size or digest.hexdigest() != entry.sha256:
-            raise DataBackupError(f"restored payload verification failed: {entry.path}")
-        permission_states.append(tighten_permissions(target, entry.mode))
+            _close_descriptor(descriptor)
         if fault_injector is not None:
             fault_injector(entry.path)
-    for entry in sorted(manifest.directories, key=lambda item: len(item.path.parts), reverse=True):
-        target = destination / Path(entry.path.as_posix())
-        permission_states.append(tighten_permissions(target, entry.mode))
-    if "failed" in permission_states:
-        raise DataBackupError("restored owner permissions could not be applied")
+    directory_flags = hardened_open_flags(os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)))
+    for entry in sorted(
+        manifest.select("directory"), key=lambda item: len(item.path.parts), reverse=True
+    ):
+        descriptor = os.open(entry.path.as_posix(), directory_flags, dir_fd=root_descriptor)
+        try:
+            permission = _tighten_descriptor(descriptor, entry.mode)
+        finally:
+            os.close(descriptor)
+        if permission == "failed":
+            raise DataBackupError("restored owner permissions could not be applied")
+        permission_states.append(permission)
     return combine_permission_capabilities(*permission_states)
 
 
-def _cleanup_restore_payload(files: list[Path], directories: list[Path]) -> None:
+def _cleanup_restore_payload(
+    root_descriptor: int,
+    files: list[PurePosixPath],
+    directories: list[PurePosixPath],
+) -> None:
+    for path in sorted(directories, key=lambda item: len(item.parts)):
+        with suppress(OSError, ValueError, NotImplementedError):
+            os.chmod(path.as_posix(), 0o700, dir_fd=root_descriptor, follow_symlinks=False)
     for path in reversed(files):
         with suppress(OSError):
-            path.unlink()
+            os.unlink(path.as_posix(), dir_fd=root_descriptor)
     for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
         with suppress(OSError):
-            path.rmdir()
+            os.rmdir(path.as_posix(), dir_fd=root_descriptor)
     files.clear()
     directories.clear()
