@@ -287,6 +287,11 @@ class _WindowsNativeApi:
             )
         )
 
+    def from_fd(self, descriptor: int) -> int:
+        import msvcrt
+
+        return int(msvcrt.get_osfhandle(descriptor))  # type: ignore[attr-defined, unused-ignore]
+
     def delete(self, handle: int) -> None:
         disposition = _FileDispositionInfo(1)
         if not self._kernel32.SetFileInformationByHandle(
@@ -297,7 +302,7 @@ class _WindowsNativeApi:
         ):
             self._raise_last_error("rooted entry could not be removed")
 
-    def rename(self, handle: int, root: int, destination: str) -> None:
+    def rename(self, handle: int, root: int | None, destination: str) -> None:
         name_type = ctypes.c_wchar * (len(destination) + 1)
 
         class _FileRenameInfo(ctypes.Structure):
@@ -387,13 +392,20 @@ class _WindowsRootHandle(_RootContext):
         flags: int,
         *,
         expected_identity: Identity | None = None,
+        for_publication: bool = False,
     ) -> int:
         access = _GENERIC_READ if flags & os.O_WRONLY == 0 else _GENERIC_WRITE
         if flags & os.O_RDWR:
             access = _GENERIC_READ | _GENERIC_WRITE
         access |= _SYNCHRONIZE
+        if for_publication:
+            access |= _DELETE
         handle = self._open_relative_leaf(
-            relative, access, _FILE_OPEN, directory=False, share_delete=True
+            relative,
+            access,
+            _FILE_OPEN,
+            directory=False,
+            share_delete=not for_publication,
         )
         try:
             self._require_handle(handle, expected_identity, directory=False)
@@ -486,22 +498,14 @@ class _WindowsRootHandle(_RootContext):
         destination: PurePosixPath,
         *,
         expected_identity: Identity,
+        verified_descriptor: int,
     ) -> None:
-        temporary_name = _single_name(temporary)
+        _single_name(temporary)
         destination_name = _single_name(destination)
-        handle = self._open_relative_leaf(
-            PurePosixPath(temporary_name),
-            _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_OPEN,
-            directory=False,
-            share_delete=True,
-        )
-        try:
-            self._require_handle(handle, expected_identity, directory=False)
-            self._api.rename(handle, self._handle, destination_name)
-            self.require_path_identity()
-        finally:
-            self._api.close(handle)
+        handle = self._api.from_fd(verified_descriptor)
+        self._require_handle(handle, expected_identity, directory=False)
+        self._api.rename(handle, None, destination_name)
+        self.require_path_identity()
 
     def sync(self) -> str:
         return "unsupported"
@@ -679,7 +683,9 @@ class _PosixRootHandle(_RootContext):
         flags: int,
         *,
         expected_identity: Identity | None = None,
+        for_publication: bool = False,
     ) -> int:
+        del for_publication
         descriptor = self._open_entry(relative, flags, directory=False)
         metadata = os.fstat(descriptor)
         if expected_identity is not None and _identity(metadata) != expected_identity:
@@ -781,7 +787,9 @@ class _PosixRootHandle(_RootContext):
         destination: PurePosixPath,
         *,
         expected_identity: Identity,
+        verified_descriptor: int,
     ) -> None:
+        del verified_descriptor
         temporary_name = _single_name(temporary)
         destination_name = _single_name(destination)
         self.require_path_identity()

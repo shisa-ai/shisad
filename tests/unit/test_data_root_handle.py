@@ -34,7 +34,11 @@ class _FakeWindowsApi:
         self.calls.append(("into_fd", handle, flags))
         return handle
 
-    def rename(self, handle: int, root: int, destination: str) -> None:
+    def from_fd(self, descriptor: int) -> int:
+        self.calls.append(("from_fd", descriptor))
+        return descriptor
+
+    def rename(self, handle: int, root: int | None, destination: str) -> None:
         self.calls.append(("rename", handle, root, destination))
 
     def close(self, handle: int) -> None:
@@ -51,10 +55,17 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
     )
 
     assert root.create_directory(PurePosixPath("nested"), 0o700) == (7, 2)
+    descriptor = root.open_file(
+        PurePosixPath("temporary"),
+        os.O_RDONLY,
+        expected_identity=(7, 3),
+        for_publication=True,
+    )
     root.publish(
         PurePosixPath("temporary"),
         PurePosixPath("snapshot.shisad-backup"),
         expected_identity=(7, 3),
+        verified_descriptor=descriptor,
     )
 
     create_call = api.calls[0]
@@ -62,8 +73,11 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
     assert create_call[3]["disposition"] == data_root_handle_module._FILE_CREATE
     assert create_call[3]["directory"] is True
     publish_open = next(call for call in api.calls if call[:3] == ("open", 1, "temporary"))
-    assert publish_open[3]["share_delete"] is True
-    assert ("rename", 3, 1, "snapshot.shisad-backup") in api.calls
+    assert int(publish_open[3]["desired_access"]) & data_root_handle_module._DELETE
+    assert publish_open[3]["share_delete"] is False
+    assert ("from_fd", 3) in api.calls
+    assert ("rename", 3, None, "snapshot.shisad-backup") in api.calls
+    assert len([call for call in api.calls if call[:3] == ("open", 1, "temporary")]) == 1
 
 
 def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Path) -> None:
@@ -159,12 +173,18 @@ def test_o4cp_root_handle_publishes_verified_sibling_exclusively(tmp_path: Path)
             target.flush()
             os.fsync(target.fileno())
         identity = root.metadata(PurePosixPath("temporary")).identity
-
-        root.publish(
-            PurePosixPath("temporary"),
-            PurePosixPath("snapshot.shisad-backup"),
-            expected_identity=identity,
+        descriptor = root.open_file(
+            PurePosixPath("temporary"), os.O_RDONLY, expected_identity=identity
         )
+        try:
+            root.publish(
+                PurePosixPath("temporary"),
+                PurePosixPath("snapshot.shisad-backup"),
+                expected_identity=identity,
+                verified_descriptor=descriptor,
+            )
+        finally:
+            os.close(descriptor)
 
     assert (parent / "snapshot.shisad-backup").read_bytes() == b"verified"
     assert not (parent / "temporary").exists()
@@ -173,11 +193,18 @@ def test_o4cp_root_handle_publishes_verified_sibling_exclusively(tmp_path: Path)
         descriptor = root.create_file(PurePosixPath("temporary"), 0o600)
         os.close(descriptor)
         identity = root.metadata(PurePosixPath("temporary")).identity
-        root.publish(
-            PurePosixPath("temporary"),
-            PurePosixPath("snapshot.shisad-backup"),
-            expected_identity=identity,
+        descriptor = root.open_file(
+            PurePosixPath("temporary"), os.O_RDONLY, expected_identity=identity
         )
+        try:
+            root.publish(
+                PurePosixPath("temporary"),
+                PurePosixPath("snapshot.shisad-backup"),
+                expected_identity=identity,
+                verified_descriptor=descriptor,
+            )
+        finally:
+            os.close(descriptor)
 
 
 @_POSIX_ONLY
@@ -222,11 +249,21 @@ def test_o4cp_windows_root_handle_round_trip_and_exclusive_publication(tmp_path:
         with os.fdopen(descriptor, "wb") as target:
             target.write(b"published")
         temporary_identity = root.metadata(temporary).identity
-        root.publish(
+        descriptor = root.open_file(
             temporary,
-            PurePosixPath("snapshot.shisad-backup"),
+            os.O_RDONLY,
             expected_identity=temporary_identity,
+            for_publication=True,
         )
+        try:
+            root.publish(
+                temporary,
+                PurePosixPath("snapshot.shisad-backup"),
+                expected_identity=temporary_identity,
+                verified_descriptor=descriptor,
+            )
+        finally:
+            os.close(descriptor)
 
         root.unlink(PurePosixPath("nested/state.json"), expected_identity=file_identity)
         root.rmdir(PurePosixPath("nested"), expected_identity=directory_identity)

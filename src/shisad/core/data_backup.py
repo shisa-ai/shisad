@@ -146,7 +146,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                     destination_path.parent / temporary.name,
                     root=publication_root,
                     relative=temporary,
-                ) as (_bundle, verified, verified_identity):
+                ) as (_bundle, verified, verified_identity, verified_descriptor):
                     _ensure(verified == manifest, "completed backup manifest did not verify")
                     _ensure(
                         verified_identity == temporary_identity,
@@ -158,6 +158,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                             temporary,
                             destination_name,
                             expected_identity=verified_identity,
+                            verified_descriptor=verified_descriptor,
                         )
                     except FileExistsError:
                         raise DataBackupError(
@@ -211,7 +212,12 @@ def restore_data_backup(
         root_listing = root.listdir()
         if any(name != _LOCK_NAME for name in root_listing):
             raise DataBackupError("restore destination must be empty")
-        with _verified_archive(archive_path) as (bundle, manifest, _archive_identity):
+        with _verified_archive(archive_path) as (
+            bundle,
+            manifest,
+            _archive_identity,
+            _verified_descriptor,
+        ):
             permissions = _restore_verified_entries(
                 bundle,
                 manifest,
@@ -481,7 +487,7 @@ def _open_archive(
     *,
     root: RootHandle | None = None,
     relative: PurePosixPath | None = None,
-) -> Iterator[tuple[zipfile.ZipFile, Identity]]:
+) -> Iterator[tuple[zipfile.ZipFile, Identity, int]]:
     archive_file: IO[bytes]
     try:
         if root is None:
@@ -501,7 +507,12 @@ def _open_archive(
             archive_file = cast(
                 IO[bytes],
                 os.fdopen(
-                    root.open_file(relative, os.O_RDONLY, expected_identity=expected_identity),
+                    root.open_file(
+                        relative,
+                        os.O_RDONLY,
+                        expected_identity=expected_identity,
+                        for_publication=True,
+                    ),
                     "rb",
                 ),
             )
@@ -517,7 +528,7 @@ def _open_archive(
         except (OSError, zipfile.BadZipFile) as exc:
             raise DataBackupError("backup archive is invalid") from exc
         with bundle:
-            yield bundle, identity
+            yield bundle, identity, archive_file.fileno()
 
 
 @contextmanager
@@ -526,8 +537,12 @@ def _verified_archive(
     *,
     root: RootHandle | None = None,
     relative: PurePosixPath | None = None,
-) -> Iterator[tuple[zipfile.ZipFile, _Manifest, tuple[int, int]]]:
-    with _open_archive(archive, root=root, relative=relative) as (bundle, identity):
+) -> Iterator[tuple[zipfile.ZipFile, _Manifest, tuple[int, int], int]]:
+    with _open_archive(archive, root=root, relative=relative) as (
+        bundle,
+        identity,
+        descriptor,
+    ):
         try:
             infos = bundle.infolist()
             names = [info.filename for info in infos]
@@ -564,7 +579,7 @@ def _verified_archive(
                     raise DataBackupError("backup payload size or digest does not match manifest")
         except (OSError, json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             raise DataBackupError("backup archive or manifest is invalid") from exc
-        yield bundle, manifest, identity
+        yield bundle, manifest, identity, descriptor
 
 
 def _validate_relative_path(value: str) -> PurePosixPath:

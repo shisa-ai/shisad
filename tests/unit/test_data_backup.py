@@ -729,6 +729,7 @@ def test_o4c_backup_refuses_if_published_inode_was_not_verified(
         destination: PurePosixPath,
         *,
         expected_identity: tuple[int, int],
+        verified_descriptor: int,
     ) -> None:
         root.unlink(temporary, expected_identity=expected_identity)
         descriptor = root.create_file(temporary, 0o600)
@@ -739,6 +740,7 @@ def test_o4c_backup_refuses_if_published_inode_was_not_verified(
             temporary,
             destination,
             expected_identity=expected_identity,
+            verified_descriptor=verified_descriptor,
         )
 
     monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "publish", replace_before_publish)
