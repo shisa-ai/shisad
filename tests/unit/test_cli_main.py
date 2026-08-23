@@ -3554,6 +3554,71 @@ def test_o4d_audit_verify_json_reports_both_streams_without_paths(
     assert "path" not in result.output
 
 
+def test_o4d_audit_verify_human_reports_complete_lifecycle_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify"])
+
+    assert result.exit_code == 0, result.output
+    assert "main: state=verified" in result.output
+    assert "archives=0" in result.output
+    assert "reason=none" in result.output
+    assert "permissions=" in result.output
+    assert "parent_sync=" in result.output
+    assert str(config.data_dir) not in result.output
+
+
+def test_o4d_audit_verify_human_sanitizes_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text("{not-json}\n", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify"])
+
+    assert result.exit_code != 0
+    assert "main: state=unavailable" in result.output
+    assert "reason=audit.verification_failed" in result.output
+    assert "archives=0" in result.output
+    assert str(config.data_dir) not in result.output
+    assert "not-json" not in result.output
+
+
+def test_o4d_audit_query_sanitizes_post_admission_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
+
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def fail_query(self: AuditLog, **_kwargs: object) -> list[dict[str, object]]:
+        raise AuditIntegrityError(f"raced path: {self.log_path}")
+
+    monkeypatch.setattr(AuditLog, "query", fail_query)
+    result = CliRunner().invoke(cli_main.cli, ["audit", "query", "--all"])
+
+    assert result.exit_code != 0
+    assert "audit integrity verification failed" in result.output
+    assert str(config.data_dir) not in result.output
+
+
 def test_m9_audit_query_rejects_all_with_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

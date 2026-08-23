@@ -104,6 +104,8 @@ class AuditSegmentStore:
         self._permission_capability = "unknown"
         self._parent_sync_capability = "unknown"
         self._verification = SegmentVerification((), 0, 0)
+        self._read_only = not admit
+        self._active_file_hasher = hashlib.sha256()
 
         if max_segment_bytes < 1 or max_archives < 1:
             raise ValueError("audit segment limits must be positive")
@@ -152,6 +154,10 @@ class AuditSegmentStore:
                 self.mark_unavailable("audit.verification_failed")
             raise
         self._verification = verified
+        if self._read_only:
+            self._inspect_read_only_state()
+        else:
+            self._reset_active_hasher()
         return verified
 
     def iter_rows(self) -> Iterator[str]:
@@ -176,8 +182,27 @@ class AuditSegmentStore:
                 if active_size + len(row) > self.max_segment_bytes:
                     self.mark_unavailable("audit.row_oversize")
                     raise AuditUnavailableError("audit.row_oversize")
+            active = self._verification.segments[-1]
+            expected_terminal = self._verify_row(payload, active.terminal_hash)
+            if expected_terminal != terminal_hash:
+                self.mark_unavailable("audit.append_verification_failed")
+                raise AuditUnavailableError("audit.append_verification_failed")
             self._append_bytes(row)
-            self._verification = self._verify_all()
+            self._active_file_hasher.update(row)
+            updated_active = SegmentInfo(
+                path=self.path,
+                sequence=active.sequence,
+                file_hash=self._active_file_hasher.hexdigest(),
+                terminal_hash=terminal_hash,
+                entry_count=active.entry_count + 1,
+                byte_count=active.byte_count + len(row),
+                legacy=active.legacy,
+            )
+            self._verification = SegmentVerification(
+                (*self._verification.segments[:-1], updated_active),
+                self._verification.entry_count + 1,
+                self._verification.retained_bytes + len(row),
+            )
             if self._state == "retention_degraded":
                 self._reason_code = "audit.retention_delete_failed"
         except AuditUnavailableError:
@@ -188,9 +213,6 @@ class AuditSegmentStore:
         except OSError:
             self.mark_unavailable("audit.append_failed")
             raise
-        if self._verification.segments[-1].terminal_hash != terminal_hash:
-            self.mark_unavailable("audit.append_verification_failed")
-            raise AuditUnavailableError("audit.append_verification_failed")
 
     def reset_for_test(self) -> None:
         """Remove this stream's segments for the existing explicit test reset."""
@@ -201,6 +223,7 @@ class AuditSegmentStore:
         self._state = "verified"
         self._reason_code = ""
         self._verification = SegmentVerification((), 0, 0)
+        self._active_file_hasher = hashlib.sha256()
 
     @property
     def _pending_path(self) -> Path:
@@ -209,6 +232,7 @@ class AuditSegmentStore:
     def _admit(self) -> None:
         if self._present(self.path) and self._present(self._pending_path):
             raise AuditIntegrityError("unexpected pending successor beside active segment")
+        self._discard_partial_unpublished_successor()
         verified = self.verify(latch=False)
         for info in verified.segments:
             self._record_permission(info.path)
@@ -221,6 +245,33 @@ class AuditSegmentStore:
         self._verification = verified
         self._prune_archives()
         self._verification = self.verify(latch=False)
+
+    def _discard_partial_unpublished_successor(self) -> None:
+        if self._present(self.path) or not self._present(self._pending_path):
+            return
+        raw = self._pending_path.read_bytes()
+        if raw and raw.endswith(b"\n"):
+            return
+        self._pending_path.unlink()
+        self._parent_sync_capability = sync_parent_directory(self.path.parent)
+
+    def _inspect_read_only_state(self) -> None:
+        if self._state == "unavailable":
+            return
+        self._state = "verified"
+        self._reason_code = ""
+        if self._present(self._pending_path):
+            self._state = "recovery_pending"
+            self._reason_code = "audit.successor_recovery_pending"
+            return
+        if len(self._archive_paths()) > self.max_archives:
+            self._state = "retention_degraded"
+            self._reason_code = "audit.retention_delete_failed"
+
+    def _reset_active_hasher(self) -> None:
+        self._active_file_hasher = hashlib.sha256()
+        if self._present(self.path):
+            self._active_file_hasher.update(self.path.read_bytes())
 
     def _archive_paths(self) -> list[tuple[Path, int]]:
         pattern = re.compile(
@@ -258,6 +309,8 @@ class AuditSegmentStore:
                     raise AuditIntegrityError("segment terminal-hash link mismatch")
             elif info.sequence > 0 and self._read_header(path) is None:
                 raise AuditIntegrityError("retained segment missing versioned header")
+            if not infos and path == self.path and info.sequence > 0:
+                raise AuditIntegrityError("active audit segment immediate predecessor is missing")
             if filename_sequence >= 0 and info.sequence != filename_sequence:
                 raise AuditIntegrityError("archive filename/header sequence mismatch")
             infos.append(info)
@@ -395,7 +448,13 @@ class AuditSegmentStore:
             return
         previous = self._verification.segments[-1] if self._verification.segments else None
         self._publish_successor(previous)
-        self._verification = self._verify_all()
+        active = self._verify_segment(self.path, filename_sequence=-1)
+        self._verification = SegmentVerification(
+            (*self._verification.segments, active),
+            self._verification.entry_count,
+            self._verification.retained_bytes + active.byte_count,
+        )
+        self._reset_active_hasher()
 
     def _publish_successor(self, previous: SegmentInfo | None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -489,23 +548,57 @@ class AuditSegmentStore:
                 legacy=active.legacy,
             )
         )
-        self._verification = self._verify_all()
+        archived = SegmentInfo(
+            path=archive,
+            sequence=active.sequence,
+            file_hash=active.file_hash,
+            terminal_hash=active.terminal_hash,
+            entry_count=active.entry_count,
+            byte_count=active.byte_count,
+            legacy=active.legacy,
+        )
+        successor = self._verify_segment(self.path, filename_sequence=-1)
+        self._verification = SegmentVerification(
+            (*self._verification.segments[:-1], archived, successor),
+            self._verification.entry_count,
+            self._verification.retained_bytes + successor.byte_count,
+        )
+        self._reset_active_hasher()
         self._prune_archives()
-        self._verification = self._verify_all()
 
     def _prune_archives(self) -> None:
         archives = self._archive_paths()
         excess = len(archives) - self.max_archives
         if excess <= 0:
             return
+        removed: set[Path] = set()
         for path, _sequence in archives[:excess]:
             try:
                 path.unlink()
+                removed.add(path)
                 self._parent_sync_capability = sync_parent_directory(path.parent)
             except OSError:
+                if removed:
+                    retained = tuple(
+                        info for info in self._verification.segments if info.path not in removed
+                    )
+                    self._verification = SegmentVerification(
+                        retained,
+                        sum(info.entry_count for info in retained),
+                        sum(info.byte_count for info in retained),
+                    )
                 self._state = "retention_degraded"
                 self._reason_code = "audit.retention_delete_failed"
                 return
+        if removed:
+            retained = tuple(
+                info for info in self._verification.segments if info.path not in removed
+            )
+            self._verification = SegmentVerification(
+                retained,
+                sum(info.entry_count for info in retained),
+                sum(info.byte_count for info in retained),
+            )
         if self._state == "retention_degraded":
             self._state = "verified"
             self._reason_code = ""

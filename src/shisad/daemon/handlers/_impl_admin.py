@@ -1536,8 +1536,11 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
-        from shisad.core.audit_segments import AuditIntegrityError
-        from shisad.security.control_plane.audit import ControlPlaneAuditLog
+        from shisad.security.control_plane.engine import CONTROL_PLANE_AUDIT_STATUS_KEY
+        from shisad.security.control_plane.sidecar import (
+            ControlPlaneRpcError,
+            ControlPlaneUnavailableError,
+        )
 
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
         readiness = await AdminImplMixin._collect_doctor_checks(
@@ -1548,11 +1551,36 @@ class AdminImplMixin(HandlerMixinBase):
         )
         channel_startup_status = getattr(self._services, "channel_startup_status", {})
         try:
-            control_plane_audit = ControlPlaneAuditLog(
-                self._config.data_dir / "control_plane" / "audit.jsonl",
-                _read_only=True,
-            ).lifecycle_status
-        except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+            raw_control_plane_audit = await self._control_plane.execution_status(
+                idempotency_key=CONTROL_PLANE_AUDIT_STATUS_KEY
+            )
+            parsed_control_plane_audit = json.loads(raw_control_plane_audit)
+            if not isinstance(parsed_control_plane_audit, dict):
+                raise ValueError("invalid control-plane audit status")
+            required_audit_fields = {
+                "stream",
+                "state",
+                "reason_code",
+                "verified",
+                "segment_count",
+                "archive_count",
+                "entry_count",
+                "retained_bytes",
+                "permission_capability",
+                "parent_sync_capability",
+            }
+            if set(parsed_control_plane_audit) != required_audit_fields:
+                raise ValueError("invalid control-plane audit status schema")
+            control_plane_audit = parsed_control_plane_audit
+        except (
+            ControlPlaneRpcError,
+            ControlPlaneUnavailableError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+        ):
             control_plane_audit = {
                 "stream": "control_plane",
                 "state": "unavailable",

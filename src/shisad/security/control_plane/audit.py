@@ -95,6 +95,9 @@ class ControlPlaneAuditLog:
             verified = self._segments.verify()
         except (AuditIntegrityError, OSError, UnicodeError, ValueError) as exc:
             return (False, self._entry_count, str(exc))
+        status = self._segments.lifecycle_status
+        if not status["verified"]:
+            return (False, verified.entry_count, str(status["reason_code"]))
         return (True, verified.entry_count, "")
 
     def query(
@@ -103,9 +106,6 @@ class ControlPlaneAuditLog:
         event_type: str | None = None,
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        valid, _count, error = self.verify_chain()
-        if not valid:
-            raise AuditIntegrityError(error)
         rows: list[dict[str, Any]] = []
         for text in self._segments.iter_rows():
             entry = ControlPlaneAuditEntry.model_validate_json(text)

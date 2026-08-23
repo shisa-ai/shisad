@@ -83,7 +83,10 @@ Retention cleanup failure preserves history and reports degradation; integrity
 or persistence failure makes the owning audit authority unavailable. The main
 event path persists before subscriber effects and requests daemon shutdown on
 failure, while the control plane refuses later decisions. The runtime does not
-silently reset, truncate, or replace a failed chain.
+silently reset, truncate, or replace a failed chain. Control-plane state
+changes are preceded by a durable audit record or write-ahead intent, and
+`daemon.status` reads the live sidecar audit state rather than reconstructing a
+second view from disk.
 
 **5. Stateless context is a security primitive.** LLMs have no persistent memory between turns. We have complete, deterministic control over what the model "knows" at every turn. The model cannot hide state, cannot remember something we've removed, and cannot resist a context rollback. This enables: checkpoint rollback to pre-contamination state, context forking for isolated task agents, selective context construction and taint quarantine, clean-room sessions provably free of tainted content, and differential execution to empirically test whether content is influencing behavior.
 

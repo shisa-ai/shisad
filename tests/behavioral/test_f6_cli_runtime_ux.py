@@ -705,7 +705,7 @@ def test_o4d_audit_lifecycle_is_verified_bounded_and_actionable(
     assert status["ok"] is True
     assert set(status["streams"]) == {"main", "control_plane"}
     assert all(row["verified"] is True for row in status["streams"].values())
-    assert all(row["archive_count"] <= 4 for row in status["streams"].values())
+    assert all(1 <= row["archive_count"] <= 4 for row in status["streams"].values())
     assert "path" not in verified.output
     assert queried.exit_code == 0, queried.output
     retained = json.loads(queried.output)

@@ -16,6 +16,11 @@ from shisad.core.config import DaemonConfig
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.daemon.runner import run_daemon
+from shisad.security.control_plane.schema import Origin
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneRpcError,
+    ControlPlaneSidecarClient,
+)
 from tests.helpers.daemon import (
     clear_remote_provider_env,
 )
@@ -109,6 +114,65 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
             for row in status["readiness"].values()
         )
     finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_o4d_daemon_status_reports_live_control_plane_audit_latch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    control_plane = ControlPlaneSidecarClient(config.data_dir / "control_plane" / "sidecar.sock")
+    audit_path = config.data_dir / "control_plane" / "audit.jsonl"
+    origin = Origin(
+        session_id="o4d-live-latch",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+        trust_level="untrusted",
+    )
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        await control_plane.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal="read a file",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=2,
+            capabilities={Capability.FILE_READ},
+        )
+        audit_path.chmod(0o400)
+        with pytest.raises(ControlPlaneRpcError):
+            await control_plane.begin_precontent_plan(
+                session_id="o4d-live-latch-failure",
+                goal="read another file",
+                origin=origin.model_copy(update={"session_id": "o4d-live-latch-failure"}),
+                ttl_seconds=300,
+                max_actions=2,
+                capabilities={Capability.FILE_READ},
+            )
+        audit_path.chmod(0o600)
+
+        status = await client.call("daemon.status")
+        assert status["audit"]["control_plane"]["state"] == "unavailable"
+        assert status["audit"]["control_plane"]["reason_code"] == "audit.append_failed"
+        assert status["audit"]["control_plane"]["verified"] is False
+    finally:
+        if audit_path.exists():
+            audit_path.chmod(0o600)
         with suppress(Exception):
             await client.call("daemon.shutdown")
         await client.close()

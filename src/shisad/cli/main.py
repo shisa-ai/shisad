@@ -2451,13 +2451,18 @@ def audit_query(
     except ValueError as e:
         click.echo(f"Invalid --since value: {e}", err=True)
         sys.exit(1)
-    results = log.query(
-        since=since_dt,
-        event_type=event_type,
-        session_id=resolved_session_id or None,
-        actor=actor,
-        limit=limit,
-    )
+    try:
+        results = log.query(
+            since=since_dt,
+            event_type=event_type,
+            session_id=resolved_session_id or None,
+            actor=actor,
+            limit=limit,
+        )
+    except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+        raise click.ClickException(
+            "audit integrity verification failed; stop the daemon and run `shisad audit verify`"
+        ) from None
 
     if as_json:
         click.echo(json.dumps(results, sort_keys=True))
@@ -2542,8 +2547,12 @@ def audit_verify(as_json: bool, data_dir_override: Path | None) -> None:
     else:
         for stream, status in statuses.items():
             click.echo(
-                f"{stream}: {status['state']}; {status['entry_count']} entries, "
-                f"{status['segment_count']} segments, {status['retained_bytes']} retained bytes"
+                f"{stream}: state={status['state']}; verified={status['verified']}; "
+                f"entries={status['entry_count']}; segments={status['segment_count']}; "
+                f"archives={status['archive_count']}; retained_bytes={status['retained_bytes']}; "
+                f"reason={status['reason_code'] or 'none'}; "
+                f"permissions={status['permission_capability']}; "
+                f"parent_sync={status['parent_sync_capability']}"
             )
     if not ok:
         raise click.ClickException("audit integrity verification failed")

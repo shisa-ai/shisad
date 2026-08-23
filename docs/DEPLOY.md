@@ -925,6 +925,11 @@ archives plus the active segment. A retention deletion failure preserves the
 uncertain archive and reports degraded retention instead of discarding audit
 history.
 
+While the daemon is running, `daemon.status` reports the live main and
+control-plane audit owners, including a latched unavailable state. The
+human-readable `audit verify` output includes state, counts, archive count,
+reason code, and permission/directory-sync capability without exposing paths.
+
 Inspect retained audit state while the daemon is stopped:
 
 ```bash
@@ -939,8 +944,9 @@ or start a replacement chain automatically. Stop the daemon, preserve the data
 root, run `shisad audit verify`, and restore a known-good whole-data-root backup
 when verification fails. A main-stream persistence failure prevents event
 subscriber dispatch and requests daemon shutdown. A control-plane persistence
-failure rejects later control-plane decisions. Neither path continues through
-an unaudited fallback.
+failure cannot precede an unrecorded control-plane state change: state-changing
+operations record their event or a write-ahead intent first, and later
+decisions are rejected. Neither path continues through an unaudited fallback.
 
 ---
 

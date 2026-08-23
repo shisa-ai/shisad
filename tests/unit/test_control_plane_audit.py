@@ -40,6 +40,52 @@ def test_o4d_unavailable_audit_rejects_control_plane_before_state_change(
     assert engine.active_plan_hash(origin.session_id) == ""
 
 
+def test_o4d_first_completion_failure_retains_write_ahead_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-o4d-first-failure")
+    origin = Origin(
+        session_id="s-o4d-first-failure",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+        trust_level="untrusted",
+    )
+    real_append = engine.audit.append
+
+    def fail_after_intent(**kwargs: object) -> None:
+        if kwargs.get("event_type") == "plan_committed":
+            raise OSError("completion write failed")
+        real_append(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(engine.audit, "append", fail_after_intent)
+    with pytest.raises(OSError, match="completion write failed"):
+        engine.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal="read a file",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=2,
+            capabilities={Capability.FILE_READ},
+        )
+
+    assert engine.active_plan_hash(origin.session_id)
+    rows = engine.audit.query(session_id=origin.session_id)
+    assert [row["event_type"] for row in rows] == ["plan_commit_requested"]
+
+
+def test_o4d_reserved_execution_status_returns_live_audit_lifecycle(tmp_path: Path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-o4d-live-status")
+    engine.audit._segments.mark_unavailable("audit.append_failed")
+
+    payload = json.loads(engine.execution_status(idempotency_key="\x00shisad.audit.lifecycle.v1"))
+
+    assert payload["state"] == "unavailable"
+    assert payload["reason_code"] == "audit.append_failed"
+    assert payload["verified"] is False
+
+
 def test_m6_control_plane_audit_missing_file_verify_is_ok(tmp_path: Path) -> None:
     path = tmp_path / "control-plane-audit.jsonl"
     log = ControlPlaneAuditLog(path)

@@ -160,6 +160,9 @@ class AuditLog:
             verified = self._segments.verify()
         except (AuditIntegrityError, OSError, UnicodeError, ValueError) as exc:
             return (False, self._entry_count, str(exc))
+        status = self._segments.lifecycle_status
+        if not status["verified"]:
+            return (False, verified.entry_count, str(status["reason_code"]))
         return (True, verified.entry_count, "")
 
     def query(
@@ -173,10 +176,6 @@ class AuditLog:
         tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
-        valid, _count, error = self.verify_chain()
-        if not valid:
-            raise AuditIntegrityError(error)
-
         max_results = max(1, int(limit))
         if tail:
             results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
@@ -213,8 +212,8 @@ class AuditLog:
         for line in self._segments.iter_rows():
             entry = AuditEntry.model_validate_json(line)
             existing_hash = self._event_hashes.get(entry.event_id)
-            if existing_hash is not None and existing_hash != entry.data_hash:
-                raise AuditIntegrityError("audit_event_id_payload_conflict")
+            if existing_hash is not None:
+                raise AuditIntegrityError("duplicate event ID in retained audit log")
             self._event_hashes[entry.event_id] = entry.data_hash
         verified = self._segments.verification
         self._entry_count = verified.entry_count
