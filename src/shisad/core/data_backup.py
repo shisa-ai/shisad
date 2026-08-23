@@ -15,9 +15,17 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, cast
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
-from shisad.core.data_root_handle import Identity, RootHandle, RootHandleError, open_root
+from shisad.core.data_root_handle import (
+    EntryMetadata,
+    Identity,
+    RootHandle,
+    RootHandleError,
+    RootHandleNotFound,
+    open_root,
+)
+from shisad.core.data_root_lock import RootedFileLock
 from shisad.core.storage_platform import (
     combine_permission_capabilities,
     hardened_open_flags,
@@ -82,15 +90,6 @@ class _Entry:
 
 
 @dataclass(frozen=True, slots=True)
-class _SourceEntry:
-    path: PurePosixPath
-    kind: str
-    mode: int
-    device: int
-    inode: int
-
-
-@dataclass(frozen=True, slots=True)
 class _Manifest:
     backup_id: str
     created_at: str
@@ -111,15 +110,34 @@ class _Manifest:
 def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
     source_path = Path(source)
     destination_path = Path(destination)
-    source_identity = _validate_backup_paths(source_path, destination_path)
+    resolved_source, source_fingerprint = _validate_backup_source(source_path)
     temporary = PurePosixPath(f".{destination_path.name}.{uuid.uuid4().hex}.tmp")
     destination_name = PurePosixPath(destination_path.name)
-    lock = FileLock(str(source_path / _LOCK_NAME), timeout=0)
+    temporary_started = False
+    non_atomic_cleanup = False
     try:
         with (
-            open_root(source_path, expected_identity=source_identity) as source_root,
+            open_root(source_path) as source_root,
             open_root(destination_path.parent) as publication_root,
         ):
+            non_atomic_cleanup = not publication_root.supports_atomic_cleanup
+            publication_root.require_path_identity()
+            try:
+                resolved_parent = destination_path.parent.resolve(strict=True)
+            except OSError as exc:
+                raise DataBackupError("backup destination parent could not be inspected") from exc
+            publication_root.require_path_identity()
+            if (resolved_parent / destination_name.name).is_relative_to(resolved_source):
+                raise DataBackupError("backup destination cannot be inside the data root")
+            try:
+                publication_root.metadata(destination_name)
+            except RootHandleNotFound:
+                pass
+            except RootHandleError as exc:
+                raise DataBackupError("backup destination is unsafe") from exc
+            else:
+                raise DataBackupError("backup destination exists; refusing to overwrite")
+            lock = RootedFileLock(source_path, root=source_root, timeout=0)
             try:
                 source_root.require_path_identity()
                 lock.acquire(timeout=0)
@@ -131,16 +149,13 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                 source_root.require_path_identity()
                 lock_metadata = source_root.metadata(PurePosixPath(_LOCK_NAME))
                 _ensure(not lock_metadata.is_directory, "data-root lock path is unsafe")
-                source_fingerprint = hashlib.sha256(
-                    str(source_path.resolve(strict=True)).encode()
-                ).hexdigest()
                 source_root.require_path_identity()
+                temporary_started = True
                 manifest, permissions, temporary_identity = _write_backup(
                     source_root,
                     publication_root,
                     temporary,
                     source_fingerprint,
-                    _scan_source(source_root),
                 )
                 with _verified_archive(
                     destination_path.parent / temporary.name,
@@ -164,6 +179,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                         raise DataBackupError(
                             "backup destination exists; refusing to overwrite"
                         ) from None
+                temporary_started = False
                 try:
                     parent_sync = publication_root.sync()
                 except RootHandleError:
@@ -178,9 +194,22 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                 # fmt: on
             finally:
                 lock.release()
-                with suppress(OSError, RootHandleError):
-                    publication_root.unlink(temporary)
-    except RootHandleError as exc:
+                if publication_root.supports_atomic_cleanup:
+                    with suppress(OSError, RootHandleError):
+                        publication_root.unlink(temporary)
+    except DataBackupError as exc:
+        if temporary_started and non_atomic_cleanup:
+            raise DataBackupError(
+                f"{exc}; temporary or published backup residue may be retained in "
+                f"{destination_path.parent}"
+            ) from exc
+        raise
+    except (OSError, RootHandleError) as exc:
+        if temporary_started and non_atomic_cleanup:
+            raise DataBackupError(
+                "data backup failed safely; temporary or published backup residue may be "
+                f"retained in {destination_path.parent}: {exc}"
+            ) from exc
         raise DataBackupError(f"data backup failed safely: {exc}") from exc
 
 
@@ -192,180 +221,138 @@ def restore_data_backup(
 ) -> DataRestoreResult:
     archive_path = Path(archive)
     destination_path = Path(destination)
-    created_root, root_identity = _prepare_restore_root(destination_path)
-    lock = FileLock(str(destination_path / _LOCK_NAME), timeout=0)
-    succeeded = False
-    root: RootHandle | None = None
-    created_files: list[tuple[PurePosixPath, Identity]] = []
-    created_directories: list[tuple[PurePosixPath, Identity, int]] = []
-    try:
-        root = _open_restore_root(destination_path, root_identity)
+    destination_name = PurePosixPath(destination_path.name)
+    with _verified_archive(archive_path) as (
+        bundle,
+        manifest,
+        _archive_identity,
+        _verified_descriptor,
+    ):
         try:
-            lock.acquire(timeout=0)
-        except Timeout:
-            raise DataBackupError("restore root is locked; stop shisad before restore") from None
-        except OSError as exc:
-            raise DataBackupError("data-root lock could not be acquired for restore") from exc
-        _require_directory_identity(destination_path, root_identity)
-        lock_metadata = root.metadata(PurePosixPath(_LOCK_NAME))
-        _ensure(not lock_metadata.is_directory, "restore lock path is unsafe")
-        root_listing = root.listdir()
-        if any(name != _LOCK_NAME for name in root_listing):
-            raise DataBackupError("restore destination must be empty")
-        with _verified_archive(archive_path) as (
-            bundle,
-            manifest,
-            _archive_identity,
-            _verified_descriptor,
-        ):
-            permissions = _restore_verified_entries(
-                bundle,
-                manifest,
-                root,
-                created_files=created_files,
-                created_directories=created_directories,
-                fault_injector=fault_injector,
-            )
-        root.require_path_identity()
-        try:
-            parent_sync = root.sync()
-        except RootHandleError:
-            parent_sync = "failed"
-        # fmt: off
-        result = DataRestoreResult(
-            manifest.backup_id, destination_path, manifest.source_root_fingerprint,
-            len(manifest.select("file")), len(manifest.select("directory")),
-            sum(entry.size for entry in manifest.select("file")), True, permissions,
-            parent_sync, archive_path,
-        )
-        # fmt: on
-        lock.release()
-        artifact = root.ensure_file(PurePosixPath(_LOCK_NAME), 0o600)
-        os.close(artifact)
-        succeeded = True
-        return result
-    except Exception as exc:
-        if root is not None:
-            _cleanup_restore_payload(root, created_files, created_directories)
-        raise DataBackupError(f"data restore failed safely: {exc}") from exc
-    finally:
-        lock.release()
-        if not succeeded and created_root:
-            with suppress(DataBackupError, OSError, RootHandleError):
-                _require_directory_identity(destination_path, root_identity)
-                if root is not None:
-                    root.unlink(PurePosixPath(_LOCK_NAME))
+            publication_root = open_root(destination_path.parent)
+        except RootHandleError as exc:
+            raise DataBackupError("restore destination parent is unsafe or unavailable") from exc
+        with publication_root:
+            created_root = False
+            root: RootHandle | None = None
+            lock: RootedFileLock | None = None
+            succeeded = False
+            try:
+                publication_root.require_path_identity()
+                created_root, root = _prepare_restore_root(publication_root, destination_name)
+                root_identity = root.identity
+                lock = RootedFileLock(destination_path, root=root, timeout=0)
+                try:
+                    lock.acquire(timeout=0)
+                except Timeout:
+                    raise DataBackupError(
+                        "restore root is locked; stop shisad before restore"
+                    ) from None
+                except OSError as exc:
+                    raise DataBackupError(
+                        "data-root lock could not be acquired for restore"
+                    ) from exc
+                lock_metadata = root.metadata(PurePosixPath(_LOCK_NAME))
+                _ensure(not lock_metadata.is_directory, "restore lock path is unsafe")
+                root_listing = root.listdir()
+                if any(name != _LOCK_NAME for name in root_listing):
+                    raise DataBackupError("restore destination must be empty")
+                permissions = _restore_verified_entries(
+                    bundle,
+                    manifest,
+                    root,
+                    fault_injector=fault_injector,
+                )
+                root.require_path_identity()
+                publication_root.require_path_identity()
+                try:
+                    parent_sync = root.sync()
+                except RootHandleError:
+                    parent_sync = "failed"
+                # fmt: off
+                result = DataRestoreResult(
+                    manifest.backup_id, destination_path, manifest.source_root_fingerprint,
+                    len(manifest.select("file")), len(manifest.select("directory")),
+                    sum(entry.size for entry in manifest.select("file")), True, permissions,
+                    parent_sync, archive_path,
+                )
+                # fmt: on
+                succeeded = True
+                return result
+            except Exception as exc:
+                residue = (
+                    f"; partial destination retained at {destination_path}"
+                    if root is not None and not root.supports_atomic_cleanup
+                    else ""
+                )
+                raise DataBackupError(f"data restore failed safely{residue}: {exc}") from exc
+            finally:
+                if lock is not None:
+                    lock_identity = lock.identity
+                    lock.release()
                 else:
-                    (destination_path / _LOCK_NAME).unlink()
-        if root is not None:
-            root.close()
-        for _path, _identity, descriptor in created_directories:
-            _close_descriptor(descriptor)
-        if not succeeded and created_root:
-            with suppress(DataBackupError, OSError):
-                _require_directory_identity(destination_path, root_identity)
-                destination_path.rmdir()
+                    lock_identity = None
+                if root is not None:
+                    if (
+                        not succeeded
+                        and created_root
+                        and root.supports_atomic_cleanup
+                        and lock_identity is not None
+                    ):
+                        with suppress(OSError, RootHandleError):
+                            root.unlink(
+                                PurePosixPath(_LOCK_NAME),
+                                expected_identity=lock_identity,
+                            )
+                    root.close()
+                if (
+                    not succeeded
+                    and created_root
+                    and root is not None
+                    and root.supports_atomic_cleanup
+                ):
+                    with suppress(OSError, RootHandleError):
+                        publication_root.rmdir(destination_name, expected_identity=root_identity)
 
 
-def _validate_backup_paths(source: Path, destination: Path) -> tuple[int, int]:
+def _validate_backup_source(source: Path) -> tuple[Path, str]:
     try:
         source_metadata = source.stat(follow_symlinks=False)
+        resolved_source = source.resolve(strict=True)
     except OSError as exc:
         raise DataBackupError("backup source could not be inspected") from exc
     if not stat.S_ISDIR(source_metadata.st_mode):
         raise DataBackupError("backup source must be an existing non-symlink data root")
-    lock_path = source / _LOCK_NAME
-    if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
-        raise DataBackupError("data-root lock path is unsafe")
-    if destination.exists() or destination.is_symlink():
-        raise DataBackupError("backup destination exists; refusing to overwrite")
-    parent = destination.parent
-    if parent.is_symlink() or not parent.is_dir():
-        raise DataBackupError("backup destination parent must be an existing safe directory")
-    if destination.resolve(strict=False).is_relative_to(source.resolve(strict=True)):
-        raise DataBackupError("backup destination cannot be inside the data root")
-    return source_metadata.st_dev, source_metadata.st_ino
+    fingerprint = hashlib.sha256(str(resolved_source).encode()).hexdigest()
+    return resolved_source, fingerprint
 
 
-def _require_directory_identity(path: Path, identity: tuple[int, int]) -> None:
+def _prepare_restore_root(
+    publication_root: RootHandle,
+    destination: PurePosixPath,
+) -> tuple[bool, RootHandle]:
     try:
-        metadata = path.stat(follow_symlinks=False)
-    except OSError as exc:
-        raise DataBackupError("data-root directory identity changed") from exc
-    if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != identity:
-        raise DataBackupError("data-root directory identity changed")
-
-
-def _prepare_restore_root(destination: Path) -> tuple[bool, tuple[int, int]]:
-    _ensure(not destination.is_symlink(), "restore destination cannot be a symlink")
-    created = not destination.exists()
-    if not created:
-        if not destination.is_dir():
-            raise DataBackupError("restore destination must be an absent or empty directory")
-        if any(path.name != _LOCK_NAME for path in destination.iterdir()):
-            raise DataBackupError("restore destination must be empty")
-    else:
-        if destination.parent.is_symlink() or not destination.parent.is_dir():
-            raise DataBackupError("restore destination parent must be an existing safe directory")
-        destination.mkdir(mode=0o700)
-    lock_path = destination / _LOCK_NAME
-    if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
-        if created:
-            with suppress(OSError):
-                destination.rmdir()
-        raise DataBackupError("restore lock path is unsafe")
-    metadata = destination.stat(follow_symlinks=False)
-    return created, (metadata.st_dev, metadata.st_ino)
-
-
-def _open_restore_root(destination: Path, identity: Identity) -> RootHandle:
-    return open_root(destination, expected_identity=identity)
-
-
-def _tighten_descriptor(descriptor: int, mode: int) -> str:
-    if os.name != "posix" or not hasattr(os, "fchmod"):
-        return "unsupported"
-    try:
-        os.fchmod(descriptor, mode)
-    except (AttributeError, NotImplementedError):
-        return "unsupported"
-    except OSError:
-        return "failed"
-    return "supported"
-
-
-def _scan_source(root: RootHandle) -> tuple[_SourceEntry, ...]:
-    entries: list[_SourceEntry] = []
-    pending = [PurePosixPath(".")]
-    while pending:
-        current = pending.pop()
+        root = publication_root.open_child_directory(destination)
+        created = False
+    except RootHandleNotFound:
         try:
-            names = root.listdir(current)
+            identity = publication_root.create_directory(destination, 0o700)
+            root = publication_root.open_child_directory(destination, expected_identity=identity)
+        except FileExistsError:
+            raise DataBackupError(
+                "restore destination changed while it was being prepared"
+            ) from None
         except RootHandleError as exc:
-            raise DataBackupError(f"data-root scan failed at: {current}") from exc
-        for name in reversed(names):
-            if current == PurePosixPath(".") and name == _LOCK_NAME:
-                continue
-            relative = PurePosixPath(name) if current == PurePosixPath(".") else current / name
-            entry = _scan_source_entry(root, relative)
-            entries.append(entry)
-            if entry.kind == "directory":
-                pending.append(relative)
-    return tuple(sorted(entries, key=lambda entry: entry.path.as_posix()))
-
-
-def _scan_source_entry(root: RootHandle, path: PurePosixPath) -> _SourceEntry:
-    try:
-        metadata = root.metadata(path)
-    except RootHandleError as exc:
-        raise DataBackupError(f"data-root entry inspection failed: {path}") from exc
-    return _SourceEntry(
-        path,
-        "directory" if metadata.is_directory else "file",
-        metadata.mode,
-        metadata.identity[0],
-        metadata.identity[1],
-    )
+            raise DataBackupError("restore destination could not be created safely") from exc
+        created = True
+    except (FileExistsError, RootHandleError) as exc:
+        raise DataBackupError(
+            "restore destination must be an absent or empty ordinary directory"
+        ) from exc
+    if any(name != _LOCK_NAME for name in root.listdir()):
+        root.close()
+        raise DataBackupError("restore destination must be empty")
+    return created, root
 
 
 def _write_backup(
@@ -373,7 +360,6 @@ def _write_backup(
     publication_root: RootHandle,
     temporary: PurePosixPath,
     source_fingerprint: str,
-    source_entries: tuple[_SourceEntry, ...],
 ) -> tuple[_Manifest, str, Identity]:
     descriptor = -1
     entries: list[_Entry] = []
@@ -388,28 +374,18 @@ def _write_backup(
                 compression=zipfile.ZIP_STORED,
                 allowZip64=True,
             ) as bundle:
-                for source_entry in source_entries:
-                    if source_entry.kind == "directory":
-                        _verify_source_directory(source, source_entry)
-                        entries.append(
-                            _Entry(source_entry.path, "directory", source_entry.mode, 0, None)
-                        )
-                        continue
-                    entries.append(_write_source_file(bundle, source, source_entry))
+                _write_source_tree(bundle, source, PurePosixPath("."), entries)
                 manifest = _Manifest(
                     str(uuid.uuid4()),
                     datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     source_fingerprint,
-                    tuple(entries),
+                    tuple(sorted(entries, key=lambda entry: entry.path.as_posix())),
                 )
                 with bundle.open(_zip_info(_MANIFEST_NAME, 0o600), "w") as target:
                     target.write(_canonical_manifest(manifest))
             archive_file.flush()
             os.fsync(archive_file.fileno())
-            temporary_identity = (
-                os.fstat(archive_file.fileno()).st_dev,
-                os.fstat(archive_file.fileno()).st_ino,
-            )
+            temporary_identity = publication_root.descriptor_identity(archive_file.fileno())
         _ensure(temporary_identity is not None, "backup temporary identity is unavailable")
         permissions = publication_root.chmod(temporary, 0o600, expected_identity=temporary_identity)
         _ensure(permissions != "failed", "backup archive permissions could not be tightened")
@@ -423,23 +399,24 @@ def _write_backup(
 def _write_source_file(
     bundle: zipfile.ZipFile,
     source: RootHandle,
-    entry: _SourceEntry,
+    name: PurePosixPath,
+    archive_path: PurePosixPath,
+    metadata: EntryMetadata,
 ) -> _Entry:
     descriptor = source.open_file(
-        entry.path,
+        name,
         os.O_RDONLY,
-        expected_identity=(entry.device, entry.inode),
+        expected_identity=metadata.identity,
     )
     try:
         before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_dev != entry.device
-            or before.st_ino != entry.inode
-            or stat.S_IMODE(before.st_mode) & 0o700 != entry.mode
+            or source.descriptor_identity(descriptor) != metadata.identity
+            or stat.S_IMODE(before.st_mode) & 0o700 != metadata.mode
         ):
-            raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
-        info = _zip_info(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}", entry.mode)
+            raise DataBackupError(f"data-root entry changed during backup: {archive_path}")
+        info = _zip_info(f"{_PAYLOAD_PREFIX}{archive_path.as_posix()}", metadata.mode)
         with os.fdopen(descriptor, "rb") as source_file, bundle.open(info, "w") as target:
             descriptor = -1
             size, digest = _copy_digest(source_file, target)
@@ -450,23 +427,41 @@ def _write_source_file(
             or before.st_mtime_ns != after.st_mtime_ns
             or before.st_mode != after.st_mode
         ):
-            raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
-        current = source.metadata(entry.path)
-        if current.identity != (entry.device, entry.inode) or current.mode != entry.mode:
-            raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
-        return _Entry(entry.path, "file", entry.mode, size, digest)
+            raise DataBackupError(f"data-root entry changed during backup: {archive_path}")
+        current = source.metadata(name)
+        if current.identity != metadata.identity or current.mode != metadata.mode:
+            raise DataBackupError(f"data-root entry changed during backup: {archive_path}")
+        return _Entry(archive_path, "file", metadata.mode, size, digest)
     finally:
         _close_descriptor(descriptor)
 
 
-def _verify_source_directory(source: RootHandle, entry: _SourceEntry) -> None:
-    metadata = source.metadata(entry.path)
-    if (
-        not metadata.is_directory
-        or metadata.identity != (entry.device, entry.inode)
-        or metadata.mode != entry.mode
-    ):
-        raise DataBackupError(f"data-root entry changed during backup: {entry.path}")
+def _write_source_tree(
+    bundle: zipfile.ZipFile,
+    source: RootHandle,
+    prefix: PurePosixPath,
+    entries: list[_Entry],
+) -> None:
+    try:
+        names = source.listdir()
+    except RootHandleError as exc:
+        raise DataBackupError(f"data-root scan failed at: {prefix}") from exc
+    for raw_name in names:
+        if prefix == PurePosixPath(".") and raw_name == _LOCK_NAME:
+            continue
+        name = PurePosixPath(raw_name)
+        archive_path = name if prefix == PurePosixPath(".") else prefix / name
+        try:
+            metadata = source.metadata(name)
+        except RootHandleError as exc:
+            raise DataBackupError(f"data-root entry inspection failed: {archive_path}") from exc
+        if metadata.is_directory:
+            entries.append(_Entry(archive_path, "directory", metadata.mode, 0, None))
+            with source.open_child_directory(name, expected_identity=metadata.identity) as child:
+                _write_source_tree(bundle, child, archive_path, entries)
+                child.require_path_identity()
+            continue
+        entries.append(_write_source_file(bundle, source, name, archive_path, metadata))
 
 
 def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
@@ -520,7 +515,11 @@ def _open_archive(
         raise DataBackupError("backup archive is invalid") from exc
     with archive_file:
         metadata = os.fstat(archive_file.fileno())
-        identity = metadata.st_dev, metadata.st_ino
+        identity = (
+            root.descriptor_identity(archive_file.fileno())
+            if root is not None
+            else (metadata.st_dev, metadata.st_ino)
+        )
         if not stat.S_ISREG(metadata.st_mode) or identity != expected_identity:
             raise DataBackupError("backup archive must be a non-symlink regular file")
         try:
@@ -669,78 +668,96 @@ def _restore_verified_entries(
     manifest: _Manifest,
     root: RootHandle,
     *,
-    created_files: list[tuple[PurePosixPath, Identity]],
-    created_directories: list[tuple[PurePosixPath, Identity, int]],
     fault_injector: Callable[[PurePosixPath], None] | None,
 ) -> str:
     root_permission = root.chmod(PurePosixPath("."), 0o700, expected_identity=root.identity)
     permission_states = [root_permission]
     _ensure(permission_states[-1] != "failed", "restored root permissions failed")
-    for entry in manifest.select("directory"):
-        try:
-            identity = root.create_directory(entry.path, 0o700)
-        except (FileExistsError, RootHandleError):
-            raise DataBackupError(f"restore target already exists: {entry.path}") from None
-        descriptor = (
-            root.open_directory(entry.path, expected_identity=identity)
-            if os.name == "posix"
-            else -1
+    children: dict[PurePosixPath, list[_Entry]] = {}
+    for entry in manifest.entries:
+        parent = (
+            PurePosixPath(".")
+            if len(entry.path.parts) == 1
+            else PurePosixPath(*entry.path.parts[:-1])
         )
-        created_directories.append((entry.path, identity, descriptor))
-    for entry in manifest.select("file"):
-        descriptor = -1
-        try:
-            descriptor = root.create_file(entry.path, 0o600)
-            metadata = os.fstat(descriptor)
-            identity = metadata.st_dev, metadata.st_ino
-            created_files.append((entry.path, identity))
-            with (
-                bundle.open(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}", "r") as source,
-                os.fdopen(descriptor, "wb", closefd=False) as target,
-            ):
-                size, digest = _copy_digest(source, target)
-                target.flush()
-            if size != entry.size or digest != entry.sha256:
-                raise DataBackupError(f"restored payload verification failed: {entry.path}")
-            permission = root.chmod(entry.path, entry.mode, expected_identity=identity)
-            _ensure(permission != "failed", "restored owner permissions failed")
-            permission_states.append(permission)
-            os.fsync(descriptor)
-        finally:
-            _close_descriptor(descriptor)
-        if fault_injector is not None:
-            fault_injector(entry.path)
-    try:
-        for entry in sorted(
-            manifest.select("directory"), key=lambda item: len(item.path.parts), reverse=True
-        ):
-            identity, descriptor = next(
-                (identity, descriptor)
-                for path, identity, descriptor in created_directories
-                if path == entry.path
-            )
-            permission = _tighten_descriptor(descriptor, entry.mode)
-            _ensure(permission != "failed", "restored owner permissions failed")
-            permission_states.append(permission)
-    except Exception:
-        for _path, _identity, descriptor in created_directories:
-            _tighten_descriptor(descriptor, 0o700)
-        raise
+        children.setdefault(parent, []).append(entry)
+    _restore_directory_entries(
+        bundle,
+        root,
+        PurePosixPath("."),
+        children,
+        permission_states,
+        fault_injector,
+    )
     return combine_permission_capabilities(*permission_states)
 
 
-def _cleanup_restore_payload(
+def _restore_directory_entries(
+    bundle: zipfile.ZipFile,
     root: RootHandle,
-    files: list[tuple[PurePosixPath, Identity]],
-    directories: list[tuple[PurePosixPath, Identity, int]],
+    prefix: PurePosixPath,
+    children: dict[PurePosixPath, list[_Entry]],
+    permission_states: list[str],
+    fault_injector: Callable[[PurePosixPath], None] | None,
 ) -> None:
-    for _path, _identity, descriptor in directories:
-        _tighten_descriptor(descriptor, 0o700)
-    for path, identity in reversed(files):
-        with suppress(OSError, RootHandleError):
-            root.unlink(path, expected_identity=identity)
-    for path, identity, _descriptor in sorted(
-        directories, key=lambda item: len(item[0].parts), reverse=True
-    ):
-        with suppress(OSError, RootHandleError):
-            root.rmdir(path, expected_identity=identity)
+    created_files: list[tuple[PurePosixPath, Identity]] = []
+    created_directories: list[tuple[PurePosixPath, Identity]] = []
+    try:
+        for entry in children.get(prefix, []):
+            name = PurePosixPath(entry.path.name)
+            if entry.kind == "directory":
+                try:
+                    identity = root.create_directory(name, 0o700)
+                except FileExistsError:
+                    raise DataBackupError(f"restore target already exists: {entry.path}") from None
+                except RootHandleError as exc:
+                    raise DataBackupError(
+                        f"restore directory could not be created safely: {entry.path}"
+                    ) from exc
+                created_directories.append((name, identity))
+                with root.open_child_directory(name, expected_identity=identity) as child:
+                    _restore_directory_entries(
+                        bundle,
+                        child,
+                        entry.path,
+                        children,
+                        permission_states,
+                        fault_injector,
+                    )
+                    permission = child.chmod(
+                        PurePosixPath("."), entry.mode, expected_identity=identity
+                    )
+                    _ensure(permission != "failed", "restored owner permissions failed")
+                    permission_states.append(permission)
+                    child.require_path_identity()
+                continue
+            descriptor = -1
+            try:
+                descriptor = root.create_file(name, 0o600)
+                identity = root.descriptor_identity(descriptor)
+                created_files.append((name, identity))
+                with (
+                    bundle.open(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}", "r") as source,
+                    os.fdopen(descriptor, "wb", closefd=False) as target,
+                ):
+                    size, digest = _copy_digest(source, target)
+                    target.flush()
+                if size != entry.size or digest != entry.sha256:
+                    raise DataBackupError(f"restored payload verification failed: {entry.path}")
+                permission = root.chmod(name, entry.mode, expected_identity=identity)
+                _ensure(permission != "failed", "restored owner permissions failed")
+                permission_states.append(permission)
+                os.fsync(descriptor)
+            finally:
+                _close_descriptor(descriptor)
+            if fault_injector is not None:
+                fault_injector(entry.path)
+    except Exception:
+        if root.supports_atomic_cleanup:
+            for name, identity in reversed(created_files):
+                with suppress(OSError, RootHandleError):
+                    root.unlink(name, expected_identity=identity)
+            for name, identity in reversed(created_directories):
+                with suppress(OSError, RootHandleError):
+                    root.rmdir(name, expected_identity=identity)
+        raise

@@ -319,8 +319,10 @@ inspection and recovery details.
 
 On supported hard-lock platforms, `.shisad.lock` is intentionally persistent.
 Its presence alone does not mean a daemon is running—the library-managed lock
-held by the live process is authoritative. Check the daemon and finite-store
-posture with:
+held by the live process is authoritative. Daemon startup, backup, and restore
+all open this same regular child relative to a pinned data-root handle and
+verify that the locked descriptor has that child's identity. Check the daemon
+and finite-store posture with:
 
 ```bash
 shisad doctor check --component storage
@@ -356,10 +358,15 @@ shared multi-host data root or active/active deployment.
   secrets, external signer/helper configuration, external msgvault roots, and
   assistant workspace separately because they may live outside the data root.
   Per-database pre-migration copies do not replace this full-root backup.
-  Source traversal and archive publication remain bound to opened root/parent
-  handles on supported local POSIX and Windows filesystems. If the host cannot
-  provide root-relative no-follow operations, backup refuses rather than using
-  a check-then-open pathname fallback.
+  Source traversal keeps each directory open while enumerating and opening its
+  direct children, and archive publication is relative to an already-open
+  destination parent. Windows enumerates the opened directory handle rather
+  than reconstructing a pathname. If the host cannot provide these native
+  rooted operations, backup refuses instead of using a check-then-open pathname
+  fallback. On POSIX, an interrupted failure may retain a disclosed temporary
+  or published artifact in the destination directory: preserve the reported
+  residue, inspect it manually, and remove it only after identifying the exact
+  object. This avoids deleting a concurrently substituted name.
 - **Restore:** keep the existing root intact, stop shisad, and restore only into
   an absent or empty explicitly named destination:
 
@@ -368,16 +375,25 @@ shared multi-host data root or active/active deployment.
     --destination /absolute/path/to/restored-data
   ```
 
-  Restore verifies the canonical manifest and every payload before writing,
-  never merges with existing state, and removes payload it created if a later
-  step fails. Each component is opened or created relative to a pinned root;
-  Windows reparse points and POSIX links are refused instead of followed. A
-  host without the required native rooted primitive fails before payload
-  mutation. Point the selected configuration at the restored root, then run
+  Restore verifies the canonical manifest and every payload before writing and
+  never merges with existing state. It pins the destination parent and creates
+  every nested child relative to its live parent handle; Windows reparse points
+  and POSIX links are refused instead of followed. Windows can remove only
+  handles whose identity it created and verified after a later failure. POSIX
+  cannot portably delete by verified inode, so a failure retains and reports a
+  partial destination instead of risking deletion of a replacement. Preserve
+  that residue for inspection or remove the exact operator-verified tree. A
+  host without the required native rooted primitive refuses actionably. Point
+  the selected configuration at the restored root, then run
   `shisad start`, `shisad status`, and `shisad doctor check --component all`.
   Offline verification is not a runtime health claim. To roll back, stop the
   daemon and restore a different verified backup into another absent or empty
   root; mixing individual files from different backups is unsupported.
+
+These rooted operations and the lifecycle lock coordinate ordinary local
+shisad processes on one host. They are not a distributed lease and do not
+claim protection from an administrator, a compromised host, or unrestricted
+malicious native code running as the same user.
 - **Upgrade:** take the stopped-daemon backup first, install the reviewed wheel
   or image, and start exactly one daemon against the existing root. Run
   `shisad doctor check --component all` before enabling unattended work. An

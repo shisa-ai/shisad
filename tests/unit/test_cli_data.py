@@ -9,7 +9,9 @@ import pytest
 from click.testing import CliRunner
 from filelock import FileLock
 
+import shisad.cli.data as data_cli_module
 from shisad.cli.main import cli
+from shisad.core.data_backup import DataBackupError
 
 
 def test_o4c_data_backup_restore_json_and_human_guidance(
@@ -120,3 +122,28 @@ def test_o4c_data_backup_lock_failure_is_structured_and_nonmutating(
     assert payload["exit_code"] == 3
     assert "stop" in payload["next_action"].lower()
     assert not archive.exists()
+
+
+def test_drh1_backup_residue_refusal_uses_the_existing_json_error_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "data"
+    source.mkdir()
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(source))
+
+    def refuse_with_residue(_source: Path, _destination: Path) -> object:
+        raise DataBackupError("temporary backup residue retained at an operator path")
+
+    monkeypatch.setattr(data_cli_module, "create_data_backup", refuse_with_residue)
+
+    result = CliRunner().invoke(
+        cli,
+        ["data", "backup", str(tmp_path / "snapshot.shisad-backup"), "--format", "json"],
+    )
+
+    assert result.exit_code == 3
+    payload = json.loads(result.output)
+    assert payload["error_type"] == "data_backup"
+    assert "residue retained" in payload["technical_details"]
+    assert "Traceback" not in result.output

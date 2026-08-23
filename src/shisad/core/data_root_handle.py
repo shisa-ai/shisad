@@ -1,8 +1,7 @@
-"""Root-bound filesystem operations for data backup and restore."""
+"""Platform-neutral rooted-directory interface and POSIX implementation."""
 
 from __future__ import annotations
 
-import ctypes
 import errno
 import os
 import stat
@@ -11,7 +10,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import TracebackType
-from typing import Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any, Self
 
 Identity = tuple[int, int]
 _ROOT = PurePosixPath(".")
@@ -20,6 +19,10 @@ _POSIX_REQUIRED_DIR_FD = (os.open, os.stat, os.mkdir, os.unlink, os.rmdir, os.li
 
 class RootHandleError(RuntimeError):
     """A rooted filesystem operation was unavailable or became unsafe."""
+
+
+class RootHandleNotFound(RootHandleError):
+    """A direct rooted child did not exist."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,568 +56,29 @@ def open_root(path: Path, *, expected_identity: Identity | None = None) -> RootH
     """Open a non-link directory with a fail-closed supported backend."""
 
     if os.name == "nt":
-        return _open_windows_root(Path(path), expected_identity)
+        from shisad.core.data_root_windows import open_windows_root
+
+        return open_windows_root(Path(path), expected_identity)
     if os.name != "posix":
         raise RootHandleError("root-relative filesystem operations are unavailable")
     return _PosixRootHandle.open(Path(path), expected_identity)
 
 
-def _open_windows_root(path: Path, expected_identity: Identity | None) -> RootHandle:
-    try:
-        api = _WindowsNativeApi()
-        handle = api.open_root(path)
-        metadata = api.metadata(handle)
-        if not metadata.is_directory or (
-            expected_identity is not None and metadata.identity != expected_identity
-        ):
-            api.close(handle)
-            raise RootHandleError("root directory identity changed or was replaced")
-        return _WindowsRootHandle(path, handle, metadata.identity, api)
-    except RootHandleError:
-        raise
-    except OSError as exc:
-        raise RootHandleError("native Windows root-relative open failed") from exc
-
-
-_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
-_FILE_ATTRIBUTE_DEVICE = 0x00000040
-_FILE_ATTRIBUTE_NORMAL = 0x00000080
-_FILE_ATTRIBUTE_READONLY = 0x00000001
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
-_FILE_LIST_DIRECTORY = 0x00000001
-_FILE_READ_ATTRIBUTES = 0x00000080
-_DELETE = 0x00010000
-_SYNCHRONIZE = 0x00100000
-_GENERIC_READ = 0x80000000
-_GENERIC_WRITE = 0x40000000
-_FILE_SHARE_READ = 0x00000001
-_FILE_SHARE_WRITE = 0x00000002
-_FILE_SHARE_DELETE = 0x00000004
-_FILE_OPEN = 0x00000001
-_FILE_CREATE = 0x00000002
-_FILE_OPEN_IF = 0x00000003
-_FILE_DIRECTORY_FILE = 0x00000001
-_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
-_FILE_NON_DIRECTORY_FILE = 0x00000040
-_FILE_OPEN_REPARSE_POINT = 0x00200000
-_OBJ_CASE_INSENSITIVE = 0x00000040
-_OPEN_EXISTING = 3
-_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_FILE_ID_INFO_CLASS = 18
-_FILE_RENAME_INFORMATION_CLASS = 10
-_FILE_DISPOSITION_INFO_CLASS = 4
-
-
-class _FileTime(ctypes.Structure):
-    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
-
-
-class _ByHandleFileInformation(ctypes.Structure):
-    _fields_ = [
-        ("attributes", ctypes.c_uint32),
-        ("creation_time", _FileTime),
-        ("access_time", _FileTime),
-        ("write_time", _FileTime),
-        ("volume_serial", ctypes.c_uint32),
-        ("size_high", ctypes.c_uint32),
-        ("size_low", ctypes.c_uint32),
-        ("link_count", ctypes.c_uint32),
-        ("file_index_high", ctypes.c_uint32),
-        ("file_index_low", ctypes.c_uint32),
-    ]
-
-
-class _FileId128(ctypes.Structure):
-    _fields_ = [("identifier", ctypes.c_ubyte * 16)]
-
-
-class _FileIdInfo(ctypes.Structure):
-    _fields_ = [("volume_serial", ctypes.c_uint64), ("file_id", _FileId128)]
-
-
-class _UnicodeString(ctypes.Structure):
-    _fields_ = [
-        ("length", ctypes.c_uint16),
-        ("maximum_length", ctypes.c_uint16),
-        ("buffer", ctypes.c_wchar_p),
-    ]
-
-
-class _ObjectAttributes(ctypes.Structure):
-    _fields_ = [
-        ("length", ctypes.c_uint32),
-        ("root_directory", ctypes.c_void_p),
-        ("object_name", ctypes.POINTER(_UnicodeString)),
-        ("attributes", ctypes.c_uint32),
-        ("security_descriptor", ctypes.c_void_p),
-        ("security_quality_of_service", ctypes.c_void_p),
-    ]
-
-
-class _IoStatusValue(ctypes.Union):
-    _fields_: ClassVar[Any] = [
-        ("status", ctypes.c_long),
-        ("pointer", ctypes.c_void_p),
-    ]
-
-
-class _IoStatusBlock(ctypes.Structure):
-    _anonymous_ = ("value",)
-    _fields_ = [("value", _IoStatusValue), ("information", ctypes.c_size_t)]
-
-
-class _FileDispositionInfo(ctypes.Structure):
-    _fields_ = [("delete_file", ctypes.c_int32)]
-
-
-class _WindowsNativeApi:
-    """Minimal documented Windows file-handle surface loaded at runtime."""
-
-    def __init__(self) -> None:
-        loader = getattr(ctypes, "WinDLL", None)
-        if loader is None:
-            raise RootHandleError("native Windows root-relative operations are unavailable")
-        self._kernel32: Any = loader("kernel32", use_last_error=True)
-        self._ntdll: Any = loader("ntdll", use_last_error=True)
-        self._kernel32.CreateFileW.restype = ctypes.c_void_p
-        self._ntdll.NtCreateFile.restype = ctypes.c_long
-        self._ntdll.NtSetInformationFile.restype = ctypes.c_long
-        self._ntdll.RtlNtStatusToDosError.restype = ctypes.c_uint32
-
-    def open_root(self, path: Path) -> int:
-        handle = self._kernel32.CreateFileW(
-            ctypes.c_wchar_p(str(path)),
-            _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-            None,
-            _OPEN_EXISTING,
-            _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
-            None,
-        )
-        invalid = ctypes.c_void_p(-1).value
-        if handle in {None, invalid}:
-            self._raise_last_error("root directory could not be opened")
-        assert handle is not None
-        return int(handle)
-
-    def open_relative(
-        self,
-        parent: int,
-        name: str,
-        *,
-        desired_access: int,
-        disposition: int,
-        directory: bool | None,
-        share_delete: bool = False,
-    ) -> int:
-        buffer = ctypes.create_unicode_buffer(name)
-        length = len(name.encode("utf-16-le"))
-        unicode_name = _UnicodeString(length, length + 2, ctypes.cast(buffer, ctypes.c_wchar_p))
-        attributes = _ObjectAttributes(
-            ctypes.sizeof(_ObjectAttributes),
-            ctypes.c_void_p(parent),
-            ctypes.pointer(unicode_name),
-            _OBJ_CASE_INSENSITIVE,
-            None,
-            None,
-        )
-        io_status = _IoStatusBlock()
-        options = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_OPEN_REPARSE_POINT
-        if directory is True:
-            options |= _FILE_DIRECTORY_FILE
-        elif directory is False:
-            options |= _FILE_NON_DIRECTORY_FILE
-        handle = ctypes.c_void_p()
-        share = _FILE_SHARE_READ | _FILE_SHARE_WRITE
-        if share_delete:
-            share |= _FILE_SHARE_DELETE
-        status = self._ntdll.NtCreateFile(
-            ctypes.byref(handle),
-            desired_access,
-            ctypes.byref(attributes),
-            ctypes.byref(io_status),
-            None,
-            _FILE_ATTRIBUTE_NORMAL,
-            share,
-            disposition,
-            options,
-            None,
-            0,
-        )
-        if int(status) < 0:
-            self._raise_nt_error(int(status), f"rooted entry could not be opened: {name}")
-        if handle.value is None:
-            raise RootHandleError("native Windows returned an invalid rooted handle")
-        return int(handle.value)
-
-    def metadata(self, handle: int) -> EntryMetadata:
-        basic = _ByHandleFileInformation()
-        if not self._kernel32.GetFileInformationByHandle(
-            ctypes.c_void_p(handle), ctypes.byref(basic)
-        ):
-            self._raise_last_error("rooted handle metadata is unavailable")
-        file_id = _FileIdInfo()
-        if not self._kernel32.GetFileInformationByHandleEx(
-            ctypes.c_void_p(handle),
-            _FILE_ID_INFO_CLASS,
-            ctypes.byref(file_id),
-            ctypes.sizeof(file_id),
-        ):
-            self._raise_last_error("rooted handle identity is unavailable")
-        attributes = int(basic.attributes)
-        if attributes & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DEVICE):
-            raise RootHandleError("rooted entry is a reparse point or special file")
-        is_directory = bool(attributes & _FILE_ATTRIBUTE_DIRECTORY)
-        mode = 0o700 if is_directory else 0o400 if attributes & _FILE_ATTRIBUTE_READONLY else 0o600
-        size = (int(basic.size_high) << 32) | int(basic.size_low)
-        write_ticks = (int(basic.write_time.high) << 32) | int(basic.write_time.low)
-        identifier = int.from_bytes(bytes(file_id.file_id.identifier), "little")
-        return EntryMetadata(
-            (int(file_id.volume_serial), identifier),
-            mode,
-            size,
-            write_ticks * 100,
-            is_directory,
-        )
-
-    def into_fd(self, handle: int, flags: int) -> int:
-        import msvcrt
-
-        return int(
-            msvcrt.open_osfhandle(  # type: ignore[attr-defined, unused-ignore]
-                handle,
-                flags | os.O_BINARY,  # type: ignore[attr-defined, unused-ignore]
-            )
-        )
-
-    def from_fd(self, descriptor: int) -> int:
-        import msvcrt
-
-        return int(msvcrt.get_osfhandle(descriptor))  # type: ignore[attr-defined, unused-ignore]
-
-    def delete(self, handle: int) -> None:
-        disposition = _FileDispositionInfo(1)
-        if not self._kernel32.SetFileInformationByHandle(
-            ctypes.c_void_p(handle),
-            _FILE_DISPOSITION_INFO_CLASS,
-            ctypes.byref(disposition),
-            ctypes.sizeof(disposition),
-        ):
-            self._raise_last_error("rooted entry could not be removed")
-
-    def rename(self, handle: int, root: int | None, destination: str) -> None:
-        name_type = ctypes.c_wchar * (len(destination) + 2)
-
-        class _FileRenameInfo(ctypes.Structure):
-            _fields_ = [
-                ("replace_if_exists", ctypes.c_ubyte),
-                ("root_directory", ctypes.c_void_p),
-                ("file_name_length", ctypes.c_uint32),
-                ("file_name", name_type),
-            ]
-
-        info = _FileRenameInfo()
-        info.replace_if_exists = 0
-        info.root_directory = ctypes.c_void_p(root)
-        info.file_name_length = len(destination.encode("utf-16-le"))
-        info.file_name = destination
-        io_status = _IoStatusBlock()
-        status = self._ntdll.NtSetInformationFile(
-            ctypes.c_void_p(handle),
-            ctypes.byref(io_status),
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-            _FILE_RENAME_INFORMATION_CLASS,
-        )
-        if int(status) < 0:
-            self._raise_nt_error(int(status), "verified artifact could not be published atomically")
-
-    def close(self, handle: int) -> None:
-        if handle:
-            self._kernel32.CloseHandle(ctypes.c_void_p(handle))
-
-    def _raise_nt_error(self, status: int, message: str) -> None:
-        code = int(self._ntdll.RtlNtStatusToDosError(status))
-        if code in {80, 183}:
-            raise FileExistsError(code, message)
-        error = ctypes.WinError(code)  # type: ignore[attr-defined, unused-ignore]
-        raise OSError(code, f"{message}: {error}")
-
-    @staticmethod
-    def _raise_last_error(message: str) -> None:
-        code = int(ctypes.get_last_error())  # type: ignore[attr-defined, unused-ignore]
-        error = ctypes.WinError(code)  # type: ignore[attr-defined, unused-ignore]
-        raise OSError(code, f"{message}: {error}")
-
-
-class _WindowsRootHandle(_RootContext):
+class _PosixRootHandle(_RootContext):
     def __init__(
         self,
         path: Path,
-        handle: int,
+        descriptor: int,
         identity: Identity,
-        api: _WindowsNativeApi,
+        *,
+        anchor: _PosixRootHandle | None = None,
+        anchor_name: PurePosixPath | None = None,
     ) -> None:
-        self.path = path
-        self._handle = handle
-        self.identity = identity
-        self._api = api
-
-    def close(self) -> None:
-        if self._handle:
-            handle, self._handle = self._handle, 0
-            self._api.close(handle)
-
-    def require_path_identity(self) -> None:
-        if self._api.metadata(self._handle).identity != self.identity:
-            raise RootHandleError("root directory identity changed or was replaced")
-
-    def listdir(self, relative: PurePosixPath = _ROOT) -> tuple[str, ...]:
-        if relative == _ROOT:
-            self.require_path_identity()
-            return tuple(sorted(os.listdir(self.path)))
-        with self._parent(relative) as (name, parent):
-            handle = self._open_child(parent, name, directory=True)
-            try:
-                return tuple(sorted(os.listdir(self.path / Path(relative.as_posix()))))
-            finally:
-                self._api.close(handle)
-
-    def metadata(self, relative: PurePosixPath) -> EntryMetadata:
-        if relative == _ROOT:
-            return self._api.metadata(self._handle)
-        with self._entry_handle(relative, directory=None) as handle:
-            return self._api.metadata(handle)
-
-    def open_file(
-        self,
-        relative: PurePosixPath,
-        flags: int,
-        *,
-        expected_identity: Identity | None = None,
-        for_publication: bool = False,
-    ) -> int:
-        access = _GENERIC_READ if flags & os.O_WRONLY == 0 else _GENERIC_WRITE
-        if flags & os.O_RDWR:
-            access = _GENERIC_READ | _GENERIC_WRITE
-        access |= _SYNCHRONIZE
-        if for_publication:
-            access |= _DELETE
-        handle = self._open_relative_leaf(
-            relative,
-            access,
-            _FILE_OPEN,
-            directory=False,
-            share_delete=not for_publication,
-        )
-        try:
-            self._require_handle(handle, expected_identity, directory=False)
-            return self._api.into_fd(handle, flags)
-        except Exception:
-            self._api.close(handle)
-            raise
-
-    def open_directory(
-        self,
-        relative: PurePosixPath,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> int:
-        handle = self._open_relative_leaf(
-            relative,
-            _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_OPEN,
-            directory=True,
-        )
-        try:
-            self._require_handle(handle, expected_identity, directory=True)
-            return self._api.into_fd(handle, os.O_RDONLY)
-        except Exception:
-            self._api.close(handle)
-            raise
-
-    def create_file(self, relative: PurePosixPath, mode: int) -> int:
-        del mode
-        handle = self._open_relative_leaf(
-            relative,
-            _GENERIC_READ | _GENERIC_WRITE | _SYNCHRONIZE,
-            _FILE_CREATE,
-            directory=False,
-        )
-        return self._api.into_fd(handle, os.O_RDWR)
-
-    def ensure_file(self, relative: PurePosixPath, mode: int) -> int:
-        del mode
-        handle = self._open_relative_leaf(
-            relative, _GENERIC_WRITE | _SYNCHRONIZE, _FILE_OPEN_IF, directory=False
-        )
-        return self._api.into_fd(handle, os.O_WRONLY)
-
-    def create_directory(self, relative: PurePosixPath, mode: int) -> Identity:
-        del mode
-        handle = self._open_relative_leaf(
-            relative,
-            _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_CREATE,
-            directory=True,
-        )
-        try:
-            return self._require_handle(handle, None, directory=True).identity
-        finally:
-            self._api.close(handle)
-
-    def chmod(
-        self,
-        relative: PurePosixPath,
-        mode: int,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> str:
-        del mode
-        metadata = self.metadata(relative)
-        if expected_identity is not None and metadata.identity != expected_identity:
-            raise RootHandleError(f"rooted entry changed during operation: {relative}")
-        return "unsupported"
-
-    def unlink(
-        self,
-        relative: PurePosixPath,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> None:
-        self._remove(relative, expected_identity, directory=False)
-
-    def rmdir(
-        self,
-        relative: PurePosixPath,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> None:
-        self._remove(relative, expected_identity, directory=True)
-
-    def publish(
-        self,
-        temporary: PurePosixPath,
-        destination: PurePosixPath,
-        *,
-        expected_identity: Identity,
-        verified_descriptor: int,
-    ) -> None:
-        _single_name(temporary)
-        destination_name = _single_name(destination)
-        handle = self._api.from_fd(verified_descriptor)
-        self._require_handle(handle, expected_identity, directory=False)
-        self._api.rename(handle, self._handle, destination_name)
-        self.require_path_identity()
-
-    def sync(self) -> str:
-        return "unsupported"
-
-    def _remove(
-        self,
-        relative: PurePosixPath,
-        expected_identity: Identity | None,
-        *,
-        directory: bool,
-    ) -> None:
-        handle = self._open_relative_leaf(
-            relative,
-            _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_OPEN,
-            directory=directory,
-            share_delete=True,
-        )
-        try:
-            self._require_handle(handle, expected_identity, directory=directory)
-            self._api.delete(handle)
-        finally:
-            self._api.close(handle)
-
-    def _open_relative_leaf(
-        self,
-        relative: PurePosixPath,
-        desired_access: int,
-        disposition: int,
-        *,
-        directory: bool | None,
-        share_delete: bool = False,
-    ) -> int:
-        with self._parent(relative) as (name, parent):
-            return self._api.open_relative(
-                parent,
-                name,
-                desired_access=desired_access,
-                disposition=disposition,
-                directory=directory,
-                share_delete=share_delete,
-            )
-
-    def _open_child(self, parent: int, name: str, *, directory: bool) -> int:
-        return self._api.open_relative(
-            parent,
-            name,
-            desired_access=_FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            disposition=_FILE_OPEN,
-            directory=directory,
-        )
-
-    @contextmanager
-    def _entry_handle(self, relative: PurePosixPath, *, directory: bool | None) -> Iterator[int]:
-        handle = self._open_relative_leaf(
-            relative,
-            _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-            _FILE_OPEN,
-            directory=directory,
-        )
-        try:
-            yield handle
-        finally:
-            self._api.close(handle)
-
-    @contextmanager
-    def _parent(self, relative: PurePosixPath) -> Iterator[tuple[str, int]]:
-        parts = _windows_parts(relative)
-        opened: list[int] = []
-        parent = self._handle
-        try:
-            for part in parts[:-1]:
-                parent = self._open_child(parent, part, directory=True)
-                opened.append(parent)
-            yield parts[-1], parent
-        except OSError as exc:
-            raise RootHandleError(f"rooted path contains an unsafe component: {relative}") from exc
-        finally:
-            for handle in reversed(opened):
-                self._api.close(handle)
-
-    def _require_handle(
-        self,
-        handle: int,
-        expected_identity: Identity | None,
-        *,
-        directory: bool,
-    ) -> EntryMetadata:
-        metadata = self._api.metadata(handle)
-        if metadata.is_directory != directory or (
-            expected_identity is not None and metadata.identity != expected_identity
-        ):
-            raise RootHandleError("rooted entry identity or type changed")
-        return metadata
-
-
-def _windows_parts(relative: PurePosixPath) -> tuple[str, ...]:
-    parts = _relative_parts(relative)
-    if any("\\" in part or ":" in part for part in parts):
-        raise RootHandleError("Windows rooted path contains an unsafe component")
-    return parts
-
-
-class _PosixRootHandle(_RootContext):
-    def __init__(self, path: Path, descriptor: int, identity: Identity) -> None:
         self.path = path
         self._descriptor = descriptor
         self.identity = identity
+        self._anchor = anchor
+        self._anchor_name = anchor_name
 
     @classmethod
     def open(cls, path: Path, expected_identity: Identity | None) -> _PosixRootHandle:
@@ -649,7 +113,19 @@ class _PosixRootHandle(_RootContext):
             with suppress(OSError):
                 os.close(descriptor)
 
+    @property
+    def supports_atomic_cleanup(self) -> bool:
+        return False
+
     def require_path_identity(self) -> None:
+        if self._anchor is not None and self._anchor_name is not None:
+            try:
+                current = self._anchor.metadata(self._anchor_name)
+            except RootHandleError as exc:
+                raise RootHandleError("root directory identity changed or was replaced") from exc
+            if current.identity != self.identity:
+                raise RootHandleError("root directory identity changed or was replaced")
+            return
         try:
             metadata = self.path.stat(follow_symlinks=False)
         except OSError as exc:
@@ -666,12 +142,38 @@ class _PosixRootHandle(_RootContext):
         finally:
             os.close(descriptor)
 
+    def open_child_directory(
+        self,
+        relative: PurePosixPath,
+        *,
+        expected_identity: Identity | None = None,
+    ) -> _PosixRootHandle:
+        name = _single_name(relative)
+        descriptor = self._open_entry(PurePosixPath(name), os.O_RDONLY, directory=True)
+        try:
+            metadata = os.fstat(descriptor)
+            identity = _identity(metadata)
+            if expected_identity is not None and identity != expected_identity:
+                raise RootHandleError("root directory identity changed or was replaced")
+            return _PosixRootHandle(
+                self.path / name,
+                descriptor,
+                identity,
+                anchor=self,
+                anchor_name=PurePosixPath(name),
+            )
+        except Exception:
+            os.close(descriptor)
+            raise
+
     def metadata(self, relative: PurePosixPath) -> EntryMetadata:
         if relative == _ROOT:
             return _entry_metadata(os.fstat(self._descriptor))
         with self._parent(relative) as (name, parent):
             try:
                 metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise RootHandleNotFound(f"rooted entry does not exist: {relative}") from exc
             except OSError as exc:
                 raise RootHandleError(f"rooted entry could not be inspected: {relative}") from exc
         if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
@@ -693,6 +195,11 @@ class _PosixRootHandle(_RootContext):
             os.close(descriptor)
             raise RootHandleError(f"rooted entry changed during operation: {relative}")
         return descriptor
+
+    def descriptor_identity(self, descriptor: int) -> Identity:
+        """Return the backend identity for an already-open rooted descriptor."""
+
+        return _identity(os.fstat(descriptor))
 
     def open_directory(
         self,
@@ -728,6 +235,8 @@ class _PosixRootHandle(_RootContext):
             try:
                 os.mkdir(name, mode=mode, dir_fd=parent)
                 descriptor = os.open(name, _directory_flags(), dir_fd=parent)
+            except FileExistsError:
+                raise
             except (NotImplementedError, OSError) as exc:
                 raise RootHandleError(f"rooted directory could not be created: {relative}") from exc
         try:
@@ -747,7 +256,7 @@ class _PosixRootHandle(_RootContext):
     ) -> str:
         descriptor = (
             os.dup(self._descriptor)
-            if relative == PurePosixPath(".")
+            if relative == _ROOT
             else self._open_entry(relative, os.O_RDONLY, directory=None)
         )
         try:
@@ -766,20 +275,10 @@ class _PosixRootHandle(_RootContext):
         finally:
             os.close(descriptor)
 
-    def unlink(
-        self,
-        relative: PurePosixPath,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> None:
+    def unlink(self, relative: PurePosixPath, *, expected_identity: Identity | None = None) -> None:
         self._remove(relative, expected_identity, directory=False)
 
-    def rmdir(
-        self,
-        relative: PurePosixPath,
-        *,
-        expected_identity: Identity | None = None,
-    ) -> None:
+    def rmdir(self, relative: PurePosixPath, *, expected_identity: Identity | None = None) -> None:
         self._remove(relative, expected_identity, directory=True)
 
     def publish(
@@ -806,17 +305,10 @@ class _PosixRootHandle(_RootContext):
             raise
         except OSError as exc:
             raise RootHandleError("verified artifact could not be published atomically") from exc
-        try:
-            if self.metadata(destination).identity != expected_identity:
-                with suppress(OSError, RootHandleError):
-                    self.unlink(destination)
-                raise RootHandleError("published artifact is not the verified file")
-            self.unlink(temporary, expected_identity=expected_identity)
-            self.require_path_identity()
-        except Exception:
-            with suppress(OSError, RootHandleError):
-                self.unlink(destination, expected_identity=expected_identity)
-            raise
+        if self.metadata(destination).identity != expected_identity:
+            raise RootHandleError("published artifact is not the verified file")
+        self.unlink(temporary, expected_identity=expected_identity)
+        self.require_path_identity()
 
     def sync(self) -> str:
         try:
@@ -834,7 +326,7 @@ class _PosixRootHandle(_RootContext):
         return "supported"
 
     def _open_directory(self, relative: PurePosixPath) -> int:
-        if relative == PurePosixPath("."):
+        if relative == _ROOT:
             return os.dup(self._descriptor)
         return self._open_entry(relative, os.O_RDONLY, directory=True)
 
@@ -847,15 +339,15 @@ class _PosixRootHandle(_RootContext):
         directory: bool | None,
     ) -> int:
         with self._parent(relative) as (name, parent):
-            open_flags = (
-                flags
-                | os.O_NOFOLLOW  # type: ignore[attr-defined, unused-ignore]
-                | getattr(os, "O_CLOEXEC", 0)
-            )
+            open_flags = flags | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)  # type: ignore[attr-defined, unused-ignore]
             if directory is True:
                 open_flags |= os.O_DIRECTORY  # type: ignore[attr-defined, unused-ignore]
             try:
                 descriptor = os.open(name, open_flags, mode, dir_fd=parent)
+            except FileNotFoundError as exc:
+                raise RootHandleNotFound(f"rooted entry does not exist: {relative}") from exc
+            except FileExistsError:
+                raise
             except (NotImplementedError, OSError) as exc:
                 raise RootHandleError(f"rooted entry is unsafe or unavailable: {relative}") from exc
         metadata = os.fstat(descriptor)
@@ -917,13 +409,12 @@ def _directory_flags() -> int:
 
 
 def _relative_parts(relative: PurePosixPath) -> tuple[str, ...]:
-    if (
-        relative == PurePosixPath(".")
-        or relative.is_absolute()
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
+    if not isinstance(relative, PurePosixPath):
+        raise RootHandleError("rooted path must use canonical POSIX components")
+    parts = relative.parts
+    if not parts or relative.is_absolute() or any(part in {"", ".", ".."} for part in parts):
         raise RootHandleError("rooted path is not a safe relative path")
-    return relative.parts
+    return parts
 
 
 def _single_name(relative: PurePosixPath) -> str:
@@ -947,4 +438,9 @@ def _entry_metadata(metadata: os.stat_result) -> EntryMetadata:
     )
 
 
-RootHandle = _PosixRootHandle | _WindowsRootHandle
+if TYPE_CHECKING:
+    from shisad.core.data_root_windows import _WindowsRootHandle
+
+    type RootHandle = _PosixRootHandle | _WindowsRootHandle
+else:
+    RootHandle = Any

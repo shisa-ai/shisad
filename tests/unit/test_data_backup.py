@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import stat
 import zipfile
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -19,6 +22,8 @@ from shisad.core.data_backup import (
     create_data_backup,
     restore_data_backup,
 )
+from shisad.core.data_root_handle import RootHandleError
+from shisad.core.data_root_lock import RootedFileLock
 
 
 def _representative_root(root: Path) -> dict[str, bytes]:
@@ -205,10 +210,10 @@ def test_o4c_backup_refuses_source_replacement_while_acquiring_lock(
     replacement.mkdir()
     (replacement / "foreign").write_bytes(b"not-source-state")
     archive = tmp_path / "snapshot.shisad-backup"
-    original_acquire = FileLock.acquire
+    original_acquire = RootedFileLock.acquire
     replaced = False
 
-    def replace_source(lock: FileLock, *args: object, **kwargs: object) -> object:
+    def replace_source(lock: RootedFileLock, *args: object, **kwargs: object) -> object:
         nonlocal replaced
         if not replaced and Path(lock.lock_file) == source / ".shisad.lock":
             source.rename(displaced)
@@ -216,7 +221,7 @@ def test_o4c_backup_refuses_source_replacement_while_acquiring_lock(
             replaced = True
         return original_acquire(lock, *args, **kwargs)
 
-    monkeypatch.setattr(FileLock, "acquire", replace_source)
+    monkeypatch.setattr(RootedFileLock, "acquire", replace_source)
 
     with pytest.raises(DataBackupError, match=r"changed|replaced|unsafe"):
         create_data_backup(source, archive)
@@ -269,13 +274,24 @@ def test_o4cp_backup_never_follows_replaced_source_intermediate(
         flags: int,
         *,
         expected_identity: tuple[int, int] | None = None,
+        for_publication: bool = False,
     ) -> int:
         nonlocal replaced
-        if not replaced and relative == PurePosixPath("sessions/state/session-1.json"):
-            (source / "sessions").rename(displaced)
-            (source / "sessions").symlink_to(displaced, target_is_directory=True)
+        if (
+            not replaced
+            and root.path == source / "sessions" / "state"
+            and relative == PurePosixPath("session-1.json")
+        ):
+            (source / "sessions" / "state" / "session-1.json").rename(displaced)
+            (source / "sessions" / "state" / "session-1.json").symlink_to(displaced)
             replaced = True
-        return original_open_file(root, relative, flags, expected_identity=expected_identity)
+        return original_open_file(
+            root,
+            relative,
+            flags,
+            expected_identity=expected_identity,
+            for_publication=for_publication,
+        )
 
     monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "open_file", replace_before_open)
 
@@ -283,6 +299,192 @@ def test_o4cp_backup_never_follows_replaced_source_intermediate(
         create_data_backup(source, archive)
 
     assert not archive.exists()
+
+
+def test_drh1_backup_walks_nested_state_through_live_child_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    displaced = tmp_path / "displaced-sessions"
+    replacement = tmp_path / "replacement-sessions"
+    replacement.mkdir()
+    (replacement / "foreign.json").write_bytes(b"foreign-state")
+    original_open_child = data_root_handle_module._PosixRootHandle.open_child_directory
+    replaced = False
+
+    def replace_after_open(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> data_root_handle_module._PosixRootHandle:
+        nonlocal replaced
+        child = original_open_child(root, relative, expected_identity=expected_identity)
+        if root.path == source and relative == PurePosixPath("sessions") and not replaced:
+            (source / "sessions").rename(displaced)
+            (source / "sessions").symlink_to(replacement, target_is_directory=True)
+            replaced = True
+        return child
+
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "open_child_directory",
+        replace_after_open,
+    )
+
+    with suppress(DataBackupError):
+        create_data_backup(source, archive)
+
+    assert replaced
+    if archive.exists():
+        with zipfile.ZipFile(archive) as bundle:
+            assert bundle.read("data/sessions/state/session-1.json") == b'{"session":"one"}\n'
+            assert "data/sessions/foreign.json" not in bundle.namelist()
+
+
+def test_drh1_backup_refuses_publication_parent_path_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    publication_parent = tmp_path / "archives"
+    publication_parent.mkdir()
+    displaced = tmp_path / "displaced-archives"
+    destination = publication_parent / "snapshot.shisad-backup"
+    original_open_root = data_backup_module.open_root
+    replaced = False
+
+    def replace_after_open(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal replaced
+        root = original_open_root(path, *args, **kwargs)
+        if path == publication_parent and not replaced:
+            publication_parent.rename(displaced)
+            publication_parent.mkdir()
+            replaced = True
+        return root
+
+    monkeypatch.setattr(data_backup_module, "open_root", replace_after_open)
+
+    with pytest.raises(DataBackupError, match=r"parent|changed|replaced|safely"):
+        create_data_backup(source, destination)
+
+    assert replaced
+    assert list(publication_parent.iterdir()) == []
+    assert not (displaced / destination.name).exists()
+
+
+def test_drh1_backup_projects_source_fingerprint_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    destination = tmp_path / "snapshot.shisad-backup"
+    original_resolve = Path.resolve
+
+    def fail_source_resolve(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == source:
+            raise OSError("fingerprint path unavailable")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_source_resolve)
+
+    with pytest.raises(DataBackupError, match=r"source|inspect|fingerprint"):
+        create_data_backup(source, destination)
+
+    assert not destination.exists()
+
+
+def test_drh1_backup_pins_parent_before_final_destination_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "data"
+    source.mkdir()
+    (source / "state.json").write_bytes(b"state")
+    archive = tmp_path / "archives" / "snapshot.shisad-backup"
+    archive.parent.mkdir()
+    original_resolve = Path.resolve
+
+    def reject_final_destination_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == archive:
+            pytest.fail("final archive child inspected before its parent was pinned")
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", reject_final_destination_resolve)
+
+    result = create_data_backup(source, archive)
+
+    assert result.destination == archive
+
+
+def test_drh1_backup_source_file_uses_backend_descriptor_identity(tmp_path: Path) -> None:
+    source_path = tmp_path / "state.json"
+    source_path.write_bytes(b"native-identity")
+    native_identity = (91, 92)
+    mode = stat.S_IMODE(source_path.stat().st_mode) & 0o700
+    entry_metadata = data_root_handle_module.EntryMetadata(
+        native_identity,
+        mode,
+        source_path.stat().st_size,
+        source_path.stat().st_mtime_ns,
+        False,
+    )
+
+    class NativeIdentityRoot:
+        def open_file(
+            self,
+            _name: PurePosixPath,
+            _flags: int,
+            *,
+            expected_identity: tuple[int, int] | None = None,
+        ) -> int:
+            assert expected_identity == native_identity
+            return os.open(source_path, os.O_RDONLY)
+
+        def descriptor_identity(self, _descriptor: int) -> tuple[int, int]:
+            return native_identity
+
+        def metadata(self, _name: PurePosixPath) -> object:
+            return entry_metadata
+
+    target = io.BytesIO()
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as bundle:
+        entry = data_backup_module._write_source_file(
+            bundle,
+            NativeIdentityRoot(),  # type: ignore[arg-type]
+            PurePosixPath("state.json"),
+            PurePosixPath("state.json"),
+            entry_metadata,
+        )
+
+    assert entry.sha256 == hashlib.sha256(b"native-identity").hexdigest()
+
+
+def test_drh1_posix_backup_failure_reports_retained_temporary_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX residue contract")
+    source = tmp_path / "data"
+    source.mkdir()
+    (source / "state.json").write_bytes(b"state")
+    archive = tmp_path / "snapshot.shisad-backup"
+
+    def fail_source_walk(*_args: object, **_kwargs: object) -> None:
+        raise OSError("injected source walk failure")
+
+    monkeypatch.setattr(data_backup_module, "_write_source_tree", fail_source_walk)
+
+    with pytest.raises(DataBackupError, match=r"retained|residue"):
+        create_data_backup(source, archive)
+
+    assert list(tmp_path.glob(f".{archive.name}.*.tmp"))
 
 
 def test_o4c_restore_verifies_tamper_before_writing(tmp_path: Path) -> None:
@@ -490,10 +692,10 @@ def test_o4c_restore_refuses_destination_replacement_while_acquiring_lock(
     displaced = tmp_path / "displaced-destination"
     replacement = tmp_path / "replacement-destination"
     replacement.mkdir()
-    original_acquire = FileLock.acquire
+    original_acquire = RootedFileLock.acquire
     replaced = False
 
-    def replace_destination(lock: FileLock, *args: object, **kwargs: object) -> object:
+    def replace_destination(lock: RootedFileLock, *args: object, **kwargs: object) -> object:
         nonlocal replaced
         if not replaced and Path(lock.lock_file) == destination / ".shisad.lock":
             destination.rename(displaced)
@@ -501,7 +703,7 @@ def test_o4c_restore_refuses_destination_replacement_while_acquiring_lock(
             replaced = True
         return original_acquire(lock, *args, **kwargs)
 
-    monkeypatch.setattr(FileLock, "acquire", replace_destination)
+    monkeypatch.setattr(RootedFileLock, "acquire", replace_destination)
 
     with pytest.raises(DataBackupError, match=r"changed|replaced|unsafe"):
         restore_data_backup(archive, destination)
@@ -518,26 +720,35 @@ def test_o4c_restore_pins_root_before_acquiring_lock(
     archive = tmp_path / "snapshot.shisad-backup"
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
-    original_open_root = data_backup_module._open_restore_root
-    original_acquire = FileLock.acquire
+    original_open_child = data_root_handle_module._PosixRootHandle.open_child_directory
+    original_acquire = RootedFileLock.acquire
     root_opened = False
 
-    def observe_root(path: Path, identity: tuple[int, int]) -> int:
+    def observe_root(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> data_root_handle_module._PosixRootHandle:
         nonlocal root_opened
-        root_opened = True
-        return original_open_root(path, identity)
+        child = original_open_child(root, relative, expected_identity=expected_identity)
+        if relative == PurePosixPath(destination.name):
+            root_opened = True
+        return child
 
-    def require_root_first(lock: FileLock, *args: object, **kwargs: object) -> object:
+    def require_root_first(lock: RootedFileLock, *args: object, **kwargs: object) -> object:
         assert root_opened
         return original_acquire(lock, *args, **kwargs)
 
-    monkeypatch.setattr(data_backup_module, "_open_restore_root", observe_root)
-    monkeypatch.setattr(FileLock, "acquire", require_root_first)
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle, "open_child_directory", observe_root
+    )
+    monkeypatch.setattr(RootedFileLock, "acquire", require_root_first)
 
     assert restore_data_backup(archive, destination).verified is True
 
 
-def test_o4c_restore_open_failure_removes_its_new_empty_root(
+def test_drh1_restore_open_failure_retains_its_new_empty_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -547,15 +758,32 @@ def test_o4c_restore_open_failure_removes_its_new_empty_root(
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
 
-    def fail_open(_path: Path, _identity: tuple[int, int]) -> int:
-        raise DataBackupError("injected root-open failure")
+    original_open_child = data_root_handle_module._PosixRootHandle.open_child_directory
+    attempts = 0
 
-    monkeypatch.setattr(data_backup_module, "_open_restore_root", fail_open)
+    def fail_created_root_open(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> data_root_handle_module._PosixRootHandle:
+        nonlocal attempts
+        if relative == PurePosixPath(destination.name):
+            attempts += 1
+            if attempts == 2:
+                raise RootHandleError("injected root-open failure")
+        return original_open_child(root, relative, expected_identity=expected_identity)
 
-    with pytest.raises(DataBackupError, match=r"root-open failure"):
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "open_child_directory",
+        fail_created_root_open,
+    )
+
+    with pytest.raises(DataBackupError, match=r"created safely|root-open failure"):
         restore_data_backup(archive, destination)
 
-    assert not destination.exists()
+    assert destination.is_dir()
 
 
 def test_o4c_restore_never_follows_replaced_intermediate_directory(
@@ -593,6 +821,86 @@ def test_o4c_restore_never_follows_replaced_intermediate_directory(
         restore_data_backup(archive, destination)
 
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor binding contract")
+def test_drh1_restore_writes_nested_state_through_live_parent_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    restore_parent = tmp_path / "restore-parent"
+    restore_parent.mkdir()
+    destination = restore_parent / "restored"
+    displaced = tmp_path / "displaced-sessions"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open_child = data_root_handle_module._PosixRootHandle.open_child_directory
+    replaced = False
+
+    def replace_after_open(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> data_root_handle_module._PosixRootHandle:
+        nonlocal replaced
+        child = original_open_child(root, relative, expected_identity=expected_identity)
+        if root.path == destination and relative == PurePosixPath("sessions") and not replaced:
+            (destination / "sessions").rename(displaced)
+            (destination / "sessions").symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return child
+
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "open_child_directory",
+        replace_after_open,
+    )
+
+    with pytest.raises(DataBackupError, match=r"changed|replaced|restore|retained"):
+        restore_data_backup(archive, destination)
+
+    assert replaced
+    assert list(outside.iterdir()) == []
+    assert (displaced / "state" / "session-1.json").read_bytes() == b'{"session":"one"}\n'
+
+
+def test_drh1_restore_refuses_destination_parent_path_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    restore_parent = tmp_path / "restore-parent"
+    restore_parent.mkdir()
+    displaced = tmp_path / "displaced-restore-parent"
+    destination = restore_parent / "restored"
+    original_open_root = data_backup_module.open_root
+    replaced = False
+
+    def replace_after_open(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal replaced
+        root = original_open_root(path, *args, **kwargs)
+        if path == restore_parent and not replaced:
+            restore_parent.rename(displaced)
+            restore_parent.mkdir()
+            replaced = True
+        return root
+
+    monkeypatch.setattr(data_backup_module, "open_root", replace_after_open)
+
+    with pytest.raises(DataBackupError, match=r"parent|changed|replaced|retained"):
+        restore_data_backup(archive, destination)
+
+    assert replaced
+    assert list(restore_parent.iterdir()) == []
+    assert not (displaced / "restored").exists()
 
 
 def test_o4cp_restore_refuses_without_root_relative_capability(
@@ -654,7 +962,7 @@ def test_o4c_restore_reads_archive_through_one_open_descriptor(
 
 
 @pytest.mark.parametrize("failure", [OSError("I/O interruption"), RuntimeError("helper failed")])
-def test_o4c_restore_failure_cleans_created_payload(
+def test_drh1_posix_restore_failure_retains_actionable_residue(
     tmp_path: Path,
     failure: Exception,
 ) -> None:
@@ -670,14 +978,22 @@ def test_o4c_restore_failure_cleans_created_payload(
         if len(calls) == 2:
             raise failure
 
-    with pytest.raises(DataBackupError, match=r"restore|interruption|helper"):
+    with pytest.raises(
+        DataBackupError,
+        match=r"restore|interruption|helper|retained|residue",
+    ) as caught:
         restore_data_backup(archive, destination, fault_injector=fail_after_first_file)
 
     assert calls
-    assert not destination.exists() or _payload_paths(destination) == set()
+    if os.name == "posix":
+        assert destination.exists()
+        assert _payload_paths(destination)
+        assert "retained" in str(caught.value) or "residue" in str(caught.value)
+    else:
+        assert not destination.exists() or _payload_paths(destination) == set()
 
 
-def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
+def test_drh1_restore_permission_failure_retains_posix_residue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -686,32 +1002,30 @@ def test_o4c_restore_reopens_restricted_directories_before_failure_cleanup(
     archive = tmp_path / "snapshot.shisad-backup"
     create_data_backup(source, archive)
     destination = tmp_path / "restored"
-    original_tighten = data_backup_module._tighten_descriptor
-    calls = 0
+    original_chmod = data_root_handle_module._PosixRootHandle.chmod
+    failed = False
 
-    def fail_after_restricting_child(
-        descriptor: int,
+    def fail_child_permission(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
         mode: int,
+        *,
+        expected_identity: tuple[int, int] | None = None,
     ) -> str:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            os.fchmod(descriptor, 0)
-            return "supported"
-        if calls == 2:
+        nonlocal failed
+        if root.path != destination and relative == PurePosixPath(".") and not failed:
+            failed = True
             return "failed"
-        return original_tighten(descriptor, mode)
+        return original_chmod(root, relative, mode, expected_identity=expected_identity)
 
-    monkeypatch.setattr(data_backup_module, "_tighten_descriptor", fail_after_restricting_child)
+    monkeypatch.setattr(data_root_handle_module._PosixRootHandle, "chmod", fail_child_permission)
 
-    try:
-        with pytest.raises(DataBackupError, match=r"permission|restore"):
-            restore_data_backup(archive, destination)
-        assert not destination.exists() or _payload_paths(destination) == set()
-    finally:
-        for restricted in (destination / "channels" / "delivery",):
-            if restricted.exists():
-                os.chmod(restricted, 0o700)
+    with pytest.raises(DataBackupError, match=r"permission|restore|retained"):
+        restore_data_backup(archive, destination)
+
+    assert failed
+    assert destination.exists()
+    assert _payload_paths(destination)
 
 
 def test_o4c_backup_refuses_if_published_inode_was_not_verified(
@@ -748,4 +1062,4 @@ def test_o4c_backup_refuses_if_published_inode_was_not_verified(
     with pytest.raises(DataBackupError, match=r"publish|verified|changed"):
         create_data_backup(source, archive)
 
-    assert not archive.exists()
+    assert archive.read_bytes() == b"unverified replacement"

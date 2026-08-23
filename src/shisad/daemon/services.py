@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
+from filelock import BaseFileLock, SoftFileLock, Timeout
 
 from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.channels.base import Channel
@@ -32,6 +32,7 @@ from shisad.core.config import (
     effective_credential_reference_paths,
 )
 from shisad.core.config_file import load_effective_config
+from shisad.core.data_root_lock import RootedFileLock
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
 from shisad.core.host_matching import host_matches
@@ -763,7 +764,7 @@ class DaemonServices:
     async def build(cls, config: DaemonConfig) -> DaemonServices:
         """Acquire data-root ownership before constructing mutable services."""
         config.data_dir.mkdir(parents=True, exist_ok=True)
-        data_lock = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+        data_lock = RootedFileLock(config.data_dir, timeout=0)
         try:
             data_lock.acquire(timeout=0)
         except Timeout:

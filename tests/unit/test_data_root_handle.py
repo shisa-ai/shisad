@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 import shisad.core.data_root_handle as data_root_handle_module
+import shisad.core.data_root_windows as data_root_windows_module
 from shisad.core.data_root_handle import RootHandleError, open_root
 
 _POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX backend contract")
@@ -81,7 +82,7 @@ class _FakeNtdll:
 
 def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: Path) -> None:
     api = _FakeWindowsApi()
-    root = data_root_handle_module._WindowsRootHandle(
+    root = data_root_windows_module._WindowsRootHandle(
         tmp_path,
         1,
         (7, 1),
@@ -104,10 +105,10 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
 
     create_call = api.calls[0]
     assert create_call[:3] == ("open", 1, "nested")
-    assert create_call[3]["disposition"] == data_root_handle_module._FILE_CREATE
+    assert create_call[3]["disposition"] == data_root_windows_module._FILE_CREATE
     assert create_call[3]["directory"] is True
     publish_open = next(call for call in api.calls if call[:3] == ("open", 1, "temporary"))
-    assert int(publish_open[3]["desired_access"]) & data_root_handle_module._DELETE
+    assert int(publish_open[3]["desired_access"]) & data_root_windows_module._DELETE
     assert publish_open[3]["share_delete"] is False
     assert ("from_fd", 3) in api.calls
     assert ("rename", 3, 1, "snapshot.shisad-backup") in api.calls
@@ -115,7 +116,7 @@ def test_o4cp_windows_backend_uses_atomic_relative_create_and_publish(tmp_path: 
 
 
 def test_o4cp_windows_native_rename_uses_rooted_nt_information() -> None:
-    api = object.__new__(data_root_handle_module._WindowsNativeApi)
+    api = object.__new__(data_root_windows_module._WindowsNativeApi)
     ntdll = _FakeNtdll()
     api._ntdll = ntdll
 
@@ -126,12 +127,12 @@ def test_o4cp_windows_native_rename_uses_rooted_nt_information() -> None:
     assert (handle, root) == (3, 1)
     assert name_length == len("x".encode("utf-16-le"))
     assert information_size >= ctypes.sizeof(_RenamePrefix) + name_length
-    assert information_class == data_root_handle_module._FILE_RENAME_INFORMATION_CLASS
+    assert information_class == data_root_windows_module._FILE_RENAME_INFORMATION_CLASS
 
 
 def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Path) -> None:
     api = _FakeWindowsApi()
-    root = data_root_handle_module._WindowsRootHandle(
+    root = data_root_windows_module._WindowsRootHandle(
         tmp_path,
         1,
         (7, 1),
@@ -147,8 +148,8 @@ def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Pat
     assert descriptor == 3
     open_call = next(call for call in api.calls if call[:3] == ("open", 1, "state.json"))
     desired_access = int(open_call[3]["desired_access"])
-    assert desired_access & data_root_handle_module._GENERIC_READ
-    assert desired_access & data_root_handle_module._SYNCHRONIZE
+    assert desired_access & data_root_windows_module._GENERIC_READ
+    assert desired_access & data_root_windows_module._SYNCHRONIZE
 
 
 @_POSIX_ONLY
@@ -188,6 +189,36 @@ def test_o4cp_root_handle_never_follows_replaced_intermediate(
                 os.O_RDONLY,
                 expected_identity=expected,
             )
+
+
+@_POSIX_ONLY
+def test_drh1_open_child_directory_stays_bound_after_name_replacement(
+    tmp_path: Path,
+) -> None:
+    root_path = tmp_path / "root"
+    nested = root_path / "sessions"
+    nested.mkdir(parents=True)
+    (nested / "state.json").write_bytes(b"bound-state")
+    displaced = tmp_path / "displaced-sessions"
+
+    with (
+        open_root(root_path) as root,
+        root.open_child_directory(
+            PurePosixPath("sessions"),
+            expected_identity=root.metadata(PurePosixPath("sessions")).identity,
+        ) as child,
+    ):
+        nested.rename(displaced)
+        nested.mkdir()
+        (nested / "state.json").write_bytes(b"replacement-state")
+
+        descriptor = child.open_file(PurePosixPath("state.json"), os.O_RDONLY)
+        with os.fdopen(descriptor, "rb") as source:
+            assert source.read() == b"bound-state"
+        with pytest.raises(RootHandleError, match=r"identity|changed|replaced"):
+            child.require_path_identity()
+
+    assert (nested / "state.json").read_bytes() == b"replacement-state"
 
 
 @_POSIX_ONLY
@@ -257,6 +288,50 @@ def test_o4cp_root_handle_publishes_verified_sibling_exclusively(tmp_path: Path)
 
 
 @_POSIX_ONLY
+def test_drh1_publication_mismatch_never_deletes_the_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "archives"
+    parent.mkdir()
+    destination = PurePosixPath("snapshot.shisad-backup")
+
+    with open_root(parent) as root:
+        descriptor = root.create_file(PurePosixPath("temporary"), 0o600)
+        with os.fdopen(descriptor, "wb") as target:
+            target.write(b"verified")
+        expected = root.metadata(PurePosixPath("temporary")).identity
+        descriptor = root.open_file(
+            PurePosixPath("temporary"), os.O_RDONLY, expected_identity=expected
+        )
+        original_metadata = root.metadata
+        replaced = False
+
+        def replace_published_name(relative: PurePosixPath) -> object:
+            nonlocal replaced
+            if relative == destination and not replaced:
+                (parent / destination.name).unlink()
+                (parent / destination.name).write_bytes(b"replacement")
+                replaced = True
+            return original_metadata(relative)
+
+        monkeypatch.setattr(root, "metadata", replace_published_name)
+        try:
+            with pytest.raises(RootHandleError, match=r"verified|published|identity"):
+                root.publish(
+                    PurePosixPath("temporary"),
+                    destination,
+                    expected_identity=expected,
+                    verified_descriptor=descriptor,
+                )
+        finally:
+            os.close(descriptor)
+
+    assert replaced
+    assert (parent / destination.name).read_bytes() == b"replacement"
+
+
+@_POSIX_ONLY
 def test_o4cp_root_handle_refuses_missing_posix_capability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,19 +354,23 @@ def test_o4cp_windows_root_handle_round_trip_and_exclusive_publication(tmp_path:
 
     with open_root(root_path) as root:
         directory_identity = root.create_directory(PurePosixPath("nested"), 0o700)
-        descriptor = root.create_file(PurePosixPath("nested/state.json"), 0o600)
-        with os.fdopen(descriptor, "wb") as target:
-            target.write(b"windows-rooted-state")
-            target.flush()
-            os.fsync(target.fileno())
-        file_identity = root.metadata(PurePosixPath("nested/state.json")).identity
-        descriptor = root.open_file(
-            PurePosixPath("nested/state.json"),
-            os.O_RDONLY,
-            expected_identity=file_identity,
-        )
-        with os.fdopen(descriptor, "rb") as source:
-            assert source.read() == b"windows-rooted-state"
+        with root.open_child_directory(
+            PurePosixPath("nested"), expected_identity=directory_identity
+        ) as child:
+            descriptor = child.create_file(PurePosixPath("state.json"), 0o600)
+            with os.fdopen(descriptor, "wb") as target:
+                target.write(b"windows-rooted-state")
+                target.flush()
+                os.fsync(target.fileno())
+            file_identity = child.metadata(PurePosixPath("state.json")).identity
+            descriptor = child.open_file(
+                PurePosixPath("state.json"),
+                os.O_RDONLY,
+                expected_identity=file_identity,
+            )
+            with os.fdopen(descriptor, "rb") as source:
+                assert source.read() == b"windows-rooted-state"
+            child.unlink(PurePosixPath("state.json"), expected_identity=file_identity)
 
         temporary = PurePosixPath("temporary")
         descriptor = root.create_file(temporary, 0o600)
@@ -314,7 +393,6 @@ def test_o4cp_windows_root_handle_round_trip_and_exclusive_publication(tmp_path:
         finally:
             os.close(descriptor)
 
-        root.unlink(PurePosixPath("nested/state.json"), expected_identity=file_identity)
         root.rmdir(PurePosixPath("nested"), expected_identity=directory_identity)
 
     assert (root_path / "snapshot.shisad-backup").read_bytes() == b"published"

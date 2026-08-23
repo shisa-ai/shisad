@@ -173,13 +173,25 @@ reported according to host/filesystem capability. shisad does not claim
 universal power-loss durability or universal POSIX owner, descriptor, or mount
 semantics.
 
-One maintained-library file lock gives a running daemon exclusive ownership of
-its local data root. This is a same-host process-coordination boundary, not a
-distributed lease, and does not defend against administrators, root, a
-compromised host, or unrestricted malicious native code running as the same
-user. A persistent `.shisad.lock` file is normal and does not by itself mean
-that a process currently holds the lock. Independent data roots remain usable
-concurrently.
+One maintained-library file lock gives a running daemon, backup, or restore
+exclusive ownership of its local data root. Each owner opens the same regular
+`.shisad.lock` child relative to a pinned data-root handle, applies the existing
+OS advisory lock, and verifies that the acquired descriptor has the rooted
+child's identity. The lock artifact is persistent, so its presence alone does
+not mean a process currently holds it. This is a same-host process-coordination
+boundary, not a distributed lease, and does not defend against administrators,
+root, a compromised host, or unrestricted malicious native code running as the
+same user. Independent data roots remain usable concurrently.
+
+Stopped-daemon backup and restore keep consequential traversal, creation, and
+publication relative to opened directory handles on supported local POSIX and
+Windows filesystems. Windows enumerates and, during failure cleanup, deletes
+through verified native handles. Portable POSIX cannot conditionally unlink a
+mutable name by inode; when safe ownership cannot be preserved, failure leaves
+actionably reported backup or partial-restore residue rather than risking
+deletion of a concurrently substituted object. This is a failure postcondition,
+not a claim of universal atomic cleanup, hostile same-user isolation, or
+multi-host coordination.
 
 Malformed, checksum-mismatched, or future-version state is preserved and
 degrades only its owning component. shisad does not silently replace it with an

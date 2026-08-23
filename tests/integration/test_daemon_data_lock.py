@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from filelock import FileLock, SoftFileLock, Timeout
@@ -14,6 +14,8 @@ from shisad.channels.base import InMemoryChannel
 from shisad.channels.telegram import TelegramChannel
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.data_root_handle import open_root
+from shisad.core.data_root_lock import RootedFileLock
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
 from tests.helpers.daemon import clear_remote_provider_env, wait_for_socket
@@ -33,6 +35,36 @@ def test_filelock_zero_timeout_is_portable_and_reacquirable(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_drh1_daemon_build_holds_the_rooted_lock_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, root="rooted", socket_name="rooted.sock")
+    observed = False
+
+    async def observe_lock(
+        cls: type[DaemonServices],
+        built_config: DaemonConfig,
+        data_lock: object,
+    ) -> DaemonServices:
+        nonlocal observed
+        assert cls is DaemonServices
+        assert built_config is config
+        assert isinstance(data_lock, RootedFileLock)
+        with open_root(config.data_dir) as root:
+            assert data_lock.identity == root.metadata(PurePosixPath(".shisad.lock")).identity
+        observed = True
+        raise RuntimeError("observed rooted lock")
+
+    monkeypatch.setattr(DaemonServices, "_build_locked", classmethod(observe_lock))
+
+    with pytest.raises(RuntimeError, match="observed rooted lock"):
+        await DaemonServices.build(config)
+
+    assert observed
+
+
+@pytest.mark.asyncio
 async def test_data_root_lock_error_is_redacted_before_service_construction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -44,7 +76,7 @@ async def test_data_root_lock_error_is_redacted_before_service_construction(
     config = _config(tmp_path, root="private-data", socket_name="control.sock")
     monkeypatch.setattr(
         services_module,
-        "FileLock",
+        "RootedFileLock",
         lambda *_args, **_kwargs: _BrokenLock(),
     )
 
