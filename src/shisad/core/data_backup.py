@@ -10,7 +10,7 @@ import uuid
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, cast
@@ -89,6 +89,15 @@ class _Entry:
     sha256: str | None
 
 
+@dataclass(slots=True)
+class _RestoreCleanupLedger:
+    files: list[tuple[PurePosixPath, Identity]] = field(default_factory=list)
+    directories: list[tuple[PurePosixPath, Identity, _RestoreCleanupLedger]] = field(
+        default_factory=list
+    )
+    uncertain_creation: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class _Manifest:
     backup_id: str
@@ -110,14 +119,21 @@ class _Manifest:
 def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
     source_path = Path(source)
     destination_path = Path(destination)
-    resolved_source, source_fingerprint = _validate_backup_source(source_path)
+    resolved_source, source_fingerprint, source_identity = _validate_backup_source(source_path)
     temporary = PurePosixPath(f".{destination_path.name}.{uuid.uuid4().hex}.tmp")
     destination_name = PurePosixPath(destination_path.name)
     temporary_started = False
     non_atomic_cleanup = False
+    cleanup_residue = False
+    temporary_identity: Identity | None = None
+
+    def record_temporary_identity(identity: Identity) -> None:
+        nonlocal temporary_identity
+        temporary_identity = identity
+
     try:
         with (
-            open_root(source_path) as source_root,
+            open_root(source_path, expected_identity=source_identity) as source_root,
             open_root(destination_path.parent) as publication_root,
         ):
             non_atomic_cleanup = not publication_root.supports_atomic_cleanup
@@ -156,6 +172,7 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                     publication_root,
                     temporary,
                     source_fingerprint,
+                    on_temporary_created=record_temporary_identity,
                 )
                 with _verified_archive(
                     destination_path.parent / temporary.name,
@@ -194,18 +211,26 @@ def create_data_backup(source: Path, destination: Path) -> DataBackupResult:
                 # fmt: on
             finally:
                 lock.release()
-                if publication_root.supports_atomic_cleanup:
-                    with suppress(OSError, RootHandleError):
-                        publication_root.unlink(temporary)
+                if publication_root.supports_atomic_cleanup and temporary_started:
+                    if temporary_identity is None:
+                        cleanup_residue = True
+                    else:
+                        try:
+                            publication_root.unlink(
+                                temporary,
+                                expected_identity=temporary_identity,
+                            )
+                        except (OSError, RootHandleError):
+                            cleanup_residue = True
     except DataBackupError as exc:
-        if temporary_started and non_atomic_cleanup:
+        if temporary_started and (non_atomic_cleanup or cleanup_residue):
             raise DataBackupError(
                 f"{exc}; temporary or published backup residue may be retained in "
                 f"{destination_path.parent}"
             ) from exc
         raise
     except (OSError, RootHandleError) as exc:
-        if temporary_started and non_atomic_cleanup:
+        if temporary_started and (non_atomic_cleanup or cleanup_residue):
             raise DataBackupError(
                 "data backup failed safely; temporary or published backup residue may be "
                 f"retained in {destination_path.parent}: {exc}"
@@ -315,7 +340,7 @@ def restore_data_backup(
                         publication_root.rmdir(destination_name, expected_identity=root_identity)
 
 
-def _validate_backup_source(source: Path) -> tuple[Path, str]:
+def _validate_backup_source(source: Path) -> tuple[Path, str, Identity]:
     try:
         source_metadata = source.stat(follow_symlinks=False)
         resolved_source = source.resolve(strict=True)
@@ -324,7 +349,7 @@ def _validate_backup_source(source: Path) -> tuple[Path, str]:
     if not stat.S_ISDIR(source_metadata.st_mode):
         raise DataBackupError("backup source must be an existing non-symlink data root")
     fingerprint = hashlib.sha256(str(resolved_source).encode()).hexdigest()
-    return resolved_source, fingerprint
+    return resolved_source, fingerprint, (source_metadata.st_dev, source_metadata.st_ino)
 
 
 def _prepare_restore_root(
@@ -335,6 +360,7 @@ def _prepare_restore_root(
         root = publication_root.open_child_directory(destination)
         created = False
     except RootHandleNotFound:
+        identity: Identity | None = None
         try:
             identity = publication_root.create_directory(destination, 0o700)
             root = publication_root.open_child_directory(destination, expected_identity=identity)
@@ -343,13 +369,32 @@ def _prepare_restore_root(
                 "restore destination changed while it was being prepared"
             ) from None
         except RootHandleError as exc:
-            raise DataBackupError("restore destination could not be created safely") from exc
+            retained = identity is not None
+            if identity is not None and publication_root.supports_atomic_cleanup:
+                try:
+                    publication_root.rmdir(destination, expected_identity=identity)
+                    retained = False
+                except (OSError, RootHandleError):
+                    pass
+            residue = (
+                f"; partial destination retained at {publication_root.path / destination.name}"
+                if retained
+                else ""
+            )
+            raise DataBackupError(
+                f"restore destination could not be created safely{residue}"
+            ) from exc
         created = True
     except (FileExistsError, RootHandleError) as exc:
         raise DataBackupError(
             "restore destination must be an absent or empty ordinary directory"
         ) from exc
-    if any(name != _LOCK_NAME for name in root.listdir()):
+    try:
+        nonempty = any(name != _LOCK_NAME for name in root.listdir())
+    except BaseException:
+        root.close()
+        raise
+    if nonempty:
         root.close()
         raise DataBackupError("restore destination must be empty")
     return created, root
@@ -360,12 +405,16 @@ def _write_backup(
     publication_root: RootHandle,
     temporary: PurePosixPath,
     source_fingerprint: str,
+    *,
+    on_temporary_created: Callable[[Identity], None],
 ) -> tuple[_Manifest, str, Identity]:
     descriptor = -1
     entries: list[_Entry] = []
     temporary_identity: Identity | None = None
     try:
         descriptor = publication_root.create_file(temporary, 0o600)
+        temporary_identity = publication_root.descriptor_identity(descriptor)
+        on_temporary_created(temporary_identity)
         with os.fdopen(descriptor, "w+b") as archive_file:
             descriptor = -1
             with zipfile.ZipFile(
@@ -385,7 +434,10 @@ def _write_backup(
                     target.write(_canonical_manifest(manifest))
             archive_file.flush()
             os.fsync(archive_file.fileno())
-            temporary_identity = publication_root.descriptor_identity(archive_file.fileno())
+            _ensure(
+                publication_root.descriptor_identity(archive_file.fileno()) == temporary_identity,
+                "backup temporary identity changed",
+            )
         _ensure(temporary_identity is not None, "backup temporary identity is unavailable")
         permissions = publication_root.chmod(temporary, 0o600, expected_identity=temporary_identity)
         _ensure(permissions != "failed", "backup archive permissions could not be tightened")
@@ -681,14 +733,21 @@ def _restore_verified_entries(
             else PurePosixPath(*entry.path.parts[:-1])
         )
         children.setdefault(parent, []).append(entry)
-    _restore_directory_entries(
-        bundle,
-        root,
-        PurePosixPath("."),
-        children,
-        permission_states,
-        fault_injector,
-    )
+    cleanup = _RestoreCleanupLedger()
+    try:
+        _restore_directory_entries(
+            bundle,
+            root,
+            PurePosixPath("."),
+            children,
+            permission_states,
+            fault_injector,
+            cleanup,
+        )
+    except Exception as exc:
+        if root.supports_atomic_cleanup and not _cleanup_restore_entries(root, cleanup):
+            raise DataBackupError(f"{exc}; partial destination retained at {root.path}") from exc
+        raise
     return combine_permission_capabilities(*permission_states)
 
 
@@ -699,65 +758,83 @@ def _restore_directory_entries(
     children: dict[PurePosixPath, list[_Entry]],
     permission_states: list[str],
     fault_injector: Callable[[PurePosixPath], None] | None,
+    cleanup: _RestoreCleanupLedger,
 ) -> None:
-    created_files: list[tuple[PurePosixPath, Identity]] = []
-    created_directories: list[tuple[PurePosixPath, Identity]] = []
-    try:
-        for entry in children.get(prefix, []):
-            name = PurePosixPath(entry.path.name)
-            if entry.kind == "directory":
-                try:
-                    identity = root.create_directory(name, 0o700)
-                except FileExistsError:
-                    raise DataBackupError(f"restore target already exists: {entry.path}") from None
-                except RootHandleError as exc:
-                    raise DataBackupError(
-                        f"restore directory could not be created safely: {entry.path}"
-                    ) from exc
-                created_directories.append((name, identity))
-                with root.open_child_directory(name, expected_identity=identity) as child:
-                    _restore_directory_entries(
-                        bundle,
-                        child,
-                        entry.path,
-                        children,
-                        permission_states,
-                        fault_injector,
-                    )
-                    permission = child.chmod(
-                        PurePosixPath("."), entry.mode, expected_identity=identity
-                    )
-                    _ensure(permission != "failed", "restored owner permissions failed")
-                    permission_states.append(permission)
-                    child.require_path_identity()
-                continue
-            descriptor = -1
+    for entry in children.get(prefix, []):
+        name = PurePosixPath(entry.path.name)
+        if entry.kind == "directory":
+            try:
+                identity = root.create_directory(name, 0o700)
+            except FileExistsError:
+                raise DataBackupError(f"restore target already exists: {entry.path}") from None
+            except RootHandleError as exc:
+                raise DataBackupError(
+                    f"restore directory could not be created safely: {entry.path}"
+                ) from exc
+            child_cleanup = _RestoreCleanupLedger()
+            cleanup.directories.append((name, identity, child_cleanup))
+            with root.open_child_directory(name, expected_identity=identity) as child:
+                _restore_directory_entries(
+                    bundle,
+                    child,
+                    entry.path,
+                    children,
+                    permission_states,
+                    fault_injector,
+                    child_cleanup,
+                )
+                permission = child.chmod(PurePosixPath("."), entry.mode, expected_identity=identity)
+                _ensure(permission != "failed", "restored owner permissions failed")
+                permission_states.append(permission)
+                child.require_path_identity()
+            continue
+        descriptor = -1
+        try:
             try:
                 descriptor = root.create_file(name, 0o600)
                 identity = root.descriptor_identity(descriptor)
-                created_files.append((name, identity))
-                with (
-                    bundle.open(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}", "r") as source,
-                    os.fdopen(descriptor, "wb", closefd=False) as target,
-                ):
-                    size, digest = _copy_digest(source, target)
-                    target.flush()
-                if size != entry.size or digest != entry.sha256:
-                    raise DataBackupError(f"restored payload verification failed: {entry.path}")
-                permission = root.chmod(name, entry.mode, expected_identity=identity)
-                _ensure(permission != "failed", "restored owner permissions failed")
-                permission_states.append(permission)
-                os.fsync(descriptor)
-            finally:
-                _close_descriptor(descriptor)
-            if fault_injector is not None:
-                fault_injector(entry.path)
-    except Exception:
-        if root.supports_atomic_cleanup:
-            for name, identity in reversed(created_files):
-                with suppress(OSError, RootHandleError):
-                    root.unlink(name, expected_identity=identity)
-            for name, identity in reversed(created_directories):
-                with suppress(OSError, RootHandleError):
-                    root.rmdir(name, expected_identity=identity)
-        raise
+            except Exception:
+                cleanup.uncertain_creation = True
+                raise
+            cleanup.files.append((name, identity))
+            with (
+                bundle.open(f"{_PAYLOAD_PREFIX}{entry.path.as_posix()}", "r") as source,
+                os.fdopen(descriptor, "wb", closefd=False) as target,
+            ):
+                size, digest = _copy_digest(source, target)
+                target.flush()
+            if size != entry.size or digest != entry.sha256:
+                raise DataBackupError(f"restored payload verification failed: {entry.path}")
+            permission = root.chmod(name, entry.mode, expected_identity=identity)
+            _ensure(permission != "failed", "restored owner permissions failed")
+            permission_states.append(permission)
+            os.fsync(descriptor)
+        finally:
+            _close_descriptor(descriptor)
+        if fault_injector is not None:
+            fault_injector(entry.path)
+
+
+def _cleanup_restore_entries(root: RootHandle, cleanup: _RestoreCleanupLedger) -> bool:
+    complete = not cleanup.uncertain_creation
+    for name, identity in reversed(cleanup.files):
+        try:
+            root.unlink(name, expected_identity=identity)
+        except (OSError, RootHandleError):
+            complete = False
+    for name, identity, child_cleanup in reversed(cleanup.directories):
+        try:
+            child = root.open_child_directory(name, expected_identity=identity)
+        except (OSError, RootHandleError):
+            complete = False
+            continue
+        try:
+            if not _cleanup_restore_entries(child, child_cleanup):
+                complete = False
+        finally:
+            child.close()
+        try:
+            root.rmdir(name, expected_identity=identity)
+        except (OSError, RootHandleError):
+            complete = False
+    return complete

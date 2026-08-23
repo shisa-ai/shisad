@@ -74,6 +74,26 @@ def test_drh1_windows_descriptor_conversion_failure_closes_native_handle(
     assert closed == [17]
 
 
+def test_drh1_windows_unexpected_descriptor_conversion_failure_closes_native_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenMsvcrt:
+        @staticmethod
+        def open_osfhandle(_handle: int, _flags: int) -> int:
+            raise RuntimeError("injected conversion failure")
+
+    api = object.__new__(data_root_windows_module._WindowsNativeApi)
+    closed: list[int] = []
+    monkeypatch.setattr(data_root_windows_module, "msvcrt", BrokenMsvcrt())
+    monkeypatch.setattr(os, "O_BINARY", 0, raising=False)
+    monkeypatch.setattr(api, "close", closed.append)
+
+    with pytest.raises(data_root_handle_module.RootHandleError, match=r"descriptor|unavailable"):
+        api.into_fd(19, os.O_RDONLY)
+
+    assert closed == [19]
+
+
 def test_drh1_windows_descriptor_identity_uses_native_handle_metadata(tmp_path: Path) -> None:
     api = _FakeWindowsApi()
     root = data_root_windows_module._WindowsRootHandle(
@@ -108,9 +128,7 @@ def test_drh1_windows_root_metadata_permissions_and_lifecycle(tmp_path: Path) ->
 
 def test_drh1_windows_failed_delete_closes_the_verified_handle_once(tmp_path: Path) -> None:
     api = _FakeWindowsApi()
-    api.metadata_by_handle[2] = data_root_handle_module.EntryMetadata(
-        (7, 2), 0o600, 0, 0, False
-    )
+    api.metadata_by_handle[2] = data_root_handle_module.EntryMetadata((7, 2), 0o600, 0, 0, False)
 
     def fail_delete(_handle: int) -> None:
         raise data_root_handle_module.RootHandleError("delete failed")

@@ -37,11 +37,13 @@ class RootedFileLock(BaseFileLock):
         return self._identity
 
     def _acquire(self) -> None:
-        root = self._borrowed_root or open_root(self._data_root)
-        owns_root = self._borrowed_root is None
+        root = self._borrowed_root
+        owns_root = root is None
         descriptor = -1
         locked = False
         try:
+            if root is None:
+                root = open_root(self._data_root)
             descriptor = root.ensure_file(_LOCK_NAME, 0o600)
             metadata = os.fstat(descriptor)
             identity = root.descriptor_identity(descriptor)
@@ -69,7 +71,7 @@ class RootedFileLock(BaseFileLock):
                 if locked:
                     self._unlock_descriptor(descriptor)
                 os.close(descriptor)
-            if owns_root and self._active_root is not root:
+            if owns_root and root is not None and self._active_root is not root:
                 root.close()
 
     def _release(self) -> None:

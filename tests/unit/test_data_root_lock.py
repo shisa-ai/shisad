@@ -7,7 +7,8 @@ from pathlib import Path, PurePosixPath
 import pytest
 from filelock import FileLock, Timeout
 
-from shisad.core.data_root_handle import open_root
+import shisad.core.data_root_lock as data_root_lock_module
+from shisad.core.data_root_handle import RootHandleError, open_root
 from shisad.core.data_root_lock import RootedFileLock
 
 
@@ -63,3 +64,18 @@ def test_drh1_rooted_lock_rejects_child_replacement_after_os_lock(
 
     assert displaced.is_file()
     assert (data_root / ".shisad.lock").read_bytes() == b"replacement"
+
+
+def test_drh1_owned_root_open_failure_uses_the_lock_error_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_root = tmp_path / "private-root"
+
+    def fail_open(_path: Path) -> object:
+        raise RootHandleError(f"unsafe root: {private_root}")
+
+    monkeypatch.setattr(data_root_lock_module, "open_root", fail_open)
+
+    with pytest.raises(OSError, match="rooted lifecycle-lock acquisition failed"):
+        RootedFileLock(private_root, timeout=0).acquire(timeout=0)

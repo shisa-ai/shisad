@@ -763,7 +763,11 @@ class DaemonServices:
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
         """Acquire data-root ownership before constructing mutable services."""
-        config.data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            config.data_dir = config.data_dir.resolve(strict=True)
+        except OSError:
+            raise RuntimeError("daemon data root could not be prepared") from None
         data_lock = RootedFileLock(config.data_dir, timeout=0)
         try:
             data_lock.acquire(timeout=0)

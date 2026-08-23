@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
@@ -59,6 +60,40 @@ async def test_drh1_daemon_build_holds_the_rooted_lock_identity(
     monkeypatch.setattr(DaemonServices, "_build_locked", classmethod(observe_lock))
 
     with pytest.raises(RuntimeError, match="observed rooted lock"):
+        await DaemonServices.build(config)
+
+    assert observed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlinked data-root compatibility")
+@pytest.mark.asyncio
+async def test_drh1_daemon_build_canonicalizes_a_symlinked_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "canonical-root"
+    target.mkdir()
+    configured = tmp_path / "configured-root"
+    configured.symlink_to(target, target_is_directory=True)
+    config = _config(tmp_path, root=configured.name, socket_name="canonical.sock")
+    observed = False
+
+    async def observe_canonical_root(
+        cls: type[DaemonServices],
+        built_config: DaemonConfig,
+        data_lock: object,
+    ) -> DaemonServices:
+        nonlocal observed
+        assert cls is DaemonServices
+        assert built_config is config
+        assert built_config.data_dir == target.resolve(strict=True)
+        assert isinstance(data_lock, RootedFileLock)
+        observed = True
+        raise RuntimeError("observed canonical root")
+
+    monkeypatch.setattr(DaemonServices, "_build_locked", classmethod(observe_canonical_root))
+
+    with pytest.raises(RuntimeError, match="observed canonical root"):
         await DaemonServices.build(config)
 
     assert observed

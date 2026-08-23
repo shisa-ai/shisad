@@ -267,7 +267,7 @@ class _WindowsNativeApi:
                     flags | os.O_BINARY,  # type: ignore[attr-defined, unused-ignore]
                 )
             )
-        except (AttributeError, OSError) as exc:
+        except Exception as exc:
             self.close(handle)
             raise RootHandleError("native Windows descriptor conversion is unavailable") from exc
 

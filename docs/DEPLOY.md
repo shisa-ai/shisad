@@ -390,10 +390,11 @@ shared multi-host data root or active/active deployment.
   daemon and restore a different verified backup into another absent or empty
   root; mixing individual files from different backups is unsupported.
 
-These rooted operations and the lifecycle lock coordinate ordinary local
-shisad processes on one host. They are not a distributed lease and do not
-claim protection from an administrator, a compromised host, or unrestricted
-malicious native code running as the same user.
+  These rooted operations and the lifecycle lock coordinate ordinary local
+  shisad processes on one host. They are not a distributed lease and do not
+  claim protection from an administrator, a compromised host, or unrestricted
+  malicious native code running as the same user.
+
 - **Upgrade:** take the stopped-daemon backup first, install the reviewed wheel
   or image, and start exactly one daemon against the existing root. Run
   `shisad doctor check --component all` before enabling unattended work. An

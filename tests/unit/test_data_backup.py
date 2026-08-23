@@ -22,7 +22,7 @@ from shisad.core.data_backup import (
     create_data_backup,
     restore_data_backup,
 )
-from shisad.core.data_root_handle import RootHandleError
+from shisad.core.data_root_handle import RootHandleError, RootHandleNotFound
 from shisad.core.data_root_lock import RootedFileLock
 
 
@@ -237,7 +237,7 @@ def test_o4cp_backup_pins_source_root_before_acquiring_lock(
     _representative_root(source)
     archive = tmp_path / "snapshot.shisad-backup"
     original_open_root = data_backup_module.open_root
-    original_acquire = FileLock.acquire
+    original_acquire = RootedFileLock.acquire
     source_opened = False
 
     def observe_root(path: Path, *args: object, **kwargs: object) -> object:
@@ -246,15 +246,43 @@ def test_o4cp_backup_pins_source_root_before_acquiring_lock(
             source_opened = True
         return original_open_root(path, *args, **kwargs)
 
-    def require_source_first(lock: FileLock, *args: object, **kwargs: object) -> object:
+    def require_source_first(lock: RootedFileLock, *args: object, **kwargs: object) -> object:
         if Path(lock.lock_file) == source / ".shisad.lock":
             assert source_opened
         return original_acquire(lock, *args, **kwargs)
 
     monkeypatch.setattr(data_backup_module, "open_root", observe_root)
-    monkeypatch.setattr(FileLock, "acquire", require_source_first)
+    monkeypatch.setattr(RootedFileLock, "acquire", require_source_first)
 
     assert create_data_backup(source, archive).verified is True
+
+
+def test_drh1_backup_binds_the_validated_source_identity_to_root_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _representative_root(source)
+    archive = tmp_path / "snapshot.shisad-backup"
+    source_identity = (source.stat().st_dev, source.stat().st_ino)
+    original_open_root = data_backup_module.open_root
+    observed = False
+
+    def observe_identity(
+        path: Path,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> object:
+        nonlocal observed
+        if path == source:
+            assert expected_identity == source_identity
+            observed = True
+        return original_open_root(path, expected_identity=expected_identity)
+
+    monkeypatch.setattr(data_backup_module, "open_root", observe_identity)
+
+    assert create_data_backup(source, archive).verified is True
+    assert observed
 
 
 def test_o4cp_backup_never_follows_replaced_source_intermediate(
@@ -485,6 +513,57 @@ def test_drh1_posix_backup_failure_reports_retained_temporary_residue(
         create_data_backup(source, archive)
 
     assert list(tmp_path.glob(f".{archive.name}.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="atomic cleanup identity injection")
+def test_drh1_atomic_backup_cleanup_refuses_a_replacement_temporary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "data"
+    source.mkdir()
+    (source / "state.json").write_bytes(b"state")
+    archive = tmp_path / "snapshot.shisad-backup"
+    original_unlink = data_root_handle_module._PosixRootHandle.unlink
+    cleanup_identities: list[tuple[int, int] | None] = []
+
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "supports_atomic_cleanup",
+        property(lambda _root: True),
+    )
+
+    def fail_source_walk(*_args: object, **_kwargs: object) -> None:
+        raise OSError("injected source walk failure")
+
+    def replace_before_cleanup(
+        root: data_root_handle_module._PosixRootHandle,
+        relative: PurePosixPath,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        if relative.name.endswith(".tmp"):
+            cleanup_identities.append(expected_identity)
+            temporary = root.path / relative.name
+            temporary.rename(root.path / f"{relative.name}.original")
+            temporary.write_bytes(b"replacement")
+        original_unlink(root, relative, expected_identity=expected_identity)
+
+    monkeypatch.setattr(data_backup_module, "_write_source_tree", fail_source_walk)
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "unlink",
+        replace_before_cleanup,
+    )
+
+    with pytest.raises(DataBackupError, match="source walk failure") as caught:
+        create_data_backup(source, archive)
+
+    replacements = list(tmp_path.glob(f".{archive.name}.*.tmp"))
+    assert cleanup_identities and cleanup_identities[0] is not None
+    assert len(replacements) == 1
+    assert replacements[0].read_bytes() == b"replacement"
+    assert "retained" in str(caught.value) or "residue" in str(caught.value)
 
 
 def test_o4c_restore_verifies_tamper_before_writing(tmp_path: Path) -> None:
@@ -780,10 +859,86 @@ def test_drh1_restore_open_failure_retains_its_new_empty_root(
         fail_created_root_open,
     )
 
-    with pytest.raises(DataBackupError, match=r"created safely|root-open failure"):
+    with pytest.raises(
+        DataBackupError,
+        match=rf"partial destination retained at {destination}",
+    ):
         restore_data_backup(archive, destination)
 
     assert destination.is_dir()
+
+
+def test_drh1_prepare_restore_root_closes_handle_when_initial_listdir_fails() -> None:
+    class FailingRoot:
+        closed = 0
+
+        def listdir(self) -> tuple[str, ...]:
+            raise RootHandleError("injected enumeration failure")
+
+        def close(self) -> None:
+            self.closed += 1
+
+    root = FailingRoot()
+
+    class PublicationRoot:
+        def open_child_directory(self, _destination: PurePosixPath) -> FailingRoot:
+            return root
+
+    with pytest.raises(RootHandleError, match="enumeration failure"):
+        data_backup_module._prepare_restore_root(  # type: ignore[arg-type]
+            PublicationRoot(),
+            PurePosixPath("restored"),
+        )
+
+    assert root.closed == 1
+
+
+def test_drh1_prepare_restore_root_removes_created_atomic_root_when_open_fails(
+    tmp_path: Path,
+) -> None:
+    identity = (7, 11)
+
+    class PublicationRoot:
+        supports_atomic_cleanup = True
+
+        def __init__(self) -> None:
+            self.path = tmp_path
+            self.open_attempts = 0
+            self.removed: list[tuple[PurePosixPath, tuple[int, int] | None]] = []
+
+        def open_child_directory(
+            self,
+            _destination: PurePosixPath,
+            *,
+            expected_identity: tuple[int, int] | None = None,
+        ) -> object:
+            self.open_attempts += 1
+            if self.open_attempts == 1:
+                raise RootHandleNotFound("missing")
+            assert expected_identity == identity
+            raise RootHandleError("injected created-root open failure")
+
+        def create_directory(self, _destination: PurePosixPath, _mode: int) -> tuple[int, int]:
+            return identity
+
+        def rmdir(
+            self,
+            destination: PurePosixPath,
+            *,
+            expected_identity: tuple[int, int] | None = None,
+        ) -> None:
+            self.removed.append((destination, expected_identity))
+
+    publication_root = PublicationRoot()
+
+    with pytest.raises(DataBackupError, match="created safely") as caught:
+        data_backup_module._prepare_restore_root(  # type: ignore[arg-type]
+            publication_root,
+            PurePosixPath("restored"),
+        )
+
+    assert publication_root.removed == [(PurePosixPath("restored"), identity)]
+    assert "retained" not in str(caught.value)
 
 
 def test_o4c_restore_never_follows_replaced_intermediate_directory(
@@ -991,6 +1146,69 @@ def test_drh1_posix_restore_failure_retains_actionable_residue(
         assert "retained" in str(caught.value) or "residue" in str(caught.value)
     else:
         assert not destination.exists() or _payload_paths(destination) == set()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="atomic cleanup ledger injection")
+def test_drh1_atomic_restore_cleanup_removes_completed_nested_subtrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    (source / "a-nested").mkdir(parents=True)
+    (source / "a-nested" / "state.json").write_bytes(b"nested")
+    (source / "z-later.json").write_bytes(b"later")
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "supports_atomic_cleanup",
+        property(lambda _root: True),
+    )
+
+    def fail_later_sibling(relative: PurePosixPath) -> None:
+        if relative == PurePosixPath("z-later.json"):
+            raise OSError("injected later sibling failure")
+
+    with pytest.raises(DataBackupError, match="later sibling failure"):
+        restore_data_backup(archive, destination, fault_injector=fail_later_sibling)
+
+    assert not destination.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="atomic cleanup substitution injection")
+def test_drh1_atomic_restore_cleanup_preserves_and_reports_a_replacement_subtree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    (source / "a-nested").mkdir(parents=True)
+    (source / "a-nested" / "state.json").write_bytes(b"nested")
+    (source / "z-later.json").write_bytes(b"later")
+    archive = tmp_path / "snapshot.shisad-backup"
+    create_data_backup(source, archive)
+    destination = tmp_path / "restored"
+    displaced = tmp_path / "displaced-nested"
+
+    monkeypatch.setattr(
+        data_root_handle_module._PosixRootHandle,
+        "supports_atomic_cleanup",
+        property(lambda _root: True),
+    )
+
+    def replace_then_fail(relative: PurePosixPath) -> None:
+        if relative == PurePosixPath("z-later.json"):
+            (destination / "a-nested").rename(displaced)
+            (destination / "a-nested").mkdir()
+            (destination / "a-nested" / "replacement.txt").write_bytes(b"replacement")
+            raise OSError("injected later sibling failure")
+
+    with pytest.raises(DataBackupError, match=r"partial destination retained"):
+        restore_data_backup(archive, destination, fault_injector=replace_then_fail)
+
+    assert (destination / "a-nested" / "replacement.txt").read_bytes() == b"replacement"
+    assert (displaced / "state.json").read_bytes() == b"nested"
 
 
 def test_drh1_restore_permission_failure_retains_posix_residue(
