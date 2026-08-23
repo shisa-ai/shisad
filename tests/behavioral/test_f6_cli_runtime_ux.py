@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -16,7 +17,11 @@ from shisad.channels import setup as channel_setup
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.cli import onboarding
 from shisad.cli.main import cli
+from shisad.core.audit import AuditLog
+from shisad.core.events import SessionCreated
 from shisad.core.readiness import ReadinessState, ReadinessStatus
+from shisad.core.types import SessionId, UserId
+from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.policy import PolicyLoader
 from shisad.ui import chat as chat_ui
 from tests.behavioral.test_behavioral_contract import ContractHarness
@@ -661,3 +666,47 @@ def test_o4c_backup_restore_round_trip_is_offline_verified_and_actionable(
     assert "shisad status" in restore_result.output
     assert "shisad doctor" in restore_result.output
     assert "offline health is not yet verified" in restore_result.output.lower()
+
+
+def test_o4d_audit_lifecycle_is_verified_bounded_and_actionable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(data_dir))
+    monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+    monkeypatch.setattr("shisad.security.control_plane.audit.MAX_SEGMENT_BYTES", 1_200)
+    main = AuditLog(data_dir / "audit.jsonl")
+    control = ControlPlaneAuditLog(data_dir / "control_plane" / "audit.jsonl")
+
+    async def seed() -> None:
+        for index in range(7):
+            await main.persist(
+                SessionCreated(
+                    session_id=SessionId(f"audit-{index}"),
+                    user_id=UserId(f"operator-{index}"),
+                    actor="behavioral",
+                )
+            )
+            control.append(
+                event_type="ControlPlaneActionObserved",
+                session_id=f"audit-{index}",
+                actor="control-plane",
+                data={"kind": "fs_read", "index": index},
+            )
+
+    asyncio.run(seed())
+    runner = CliRunner()
+    verified = runner.invoke(cli, ["audit", "verify", "--json"])
+    queried = runner.invoke(cli, ["audit", "query", "--all", "--json"])
+
+    assert verified.exit_code == 0, verified.output
+    status = json.loads(verified.output)
+    assert status["ok"] is True
+    assert set(status["streams"]) == {"main", "control_plane"}
+    assert all(row["verified"] is True for row in status["streams"].values())
+    assert all(row["archive_count"] <= 4 for row in status["streams"].values())
+    assert "path" not in verified.output
+    assert queried.exit_code == 0, queried.output
+    retained = json.loads(queried.output)
+    assert retained[-1]["session_id"] == "audit-6"

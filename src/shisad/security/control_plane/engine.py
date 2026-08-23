@@ -236,6 +236,7 @@ class ControlPlaneEngine:
         capabilities: set[Capability] | None = None,
         declared_resource_roots: set[str] | None = None,
     ) -> str:
+        self._audit_log.ensure_available()
         active = self._trace_verifier.active_plan(session_id)
         if active is not None:
             self._trace_verifier.cancel(session_id=session_id, reason="superseded_by_new_goal")
@@ -284,6 +285,7 @@ class ControlPlaneEngine:
         operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
+        self._audit_log.ensure_available()
         action_arguments = dict(arguments)
         monitor_payload = (
             dict(monitor_arguments) if monitor_arguments is not None else dict(arguments)
@@ -402,6 +404,7 @@ class ControlPlaneEngine:
         outcome_unknown: bool = False,
         idempotency_key: str = "",
     ) -> None:
+        self._audit_log.ensure_available()
         if success and outcome_unknown:
             raise ValueError("control_plane_execution_status_conflict")
         normalized_key = idempotency_key.strip()
@@ -485,6 +488,7 @@ class ControlPlaneEngine:
         source: str,
         reason_code: str,
     ) -> list[SequenceFinding]:
+        self._audit_log.ensure_available()
         record = self._history_store.append_denied_action(
             action,
             reason_code=reason_code,
@@ -534,6 +538,7 @@ class ControlPlaneEngine:
         expected_previous_hash: str = "",
         execution_idempotency_key: str = "",
     ) -> str:
+        self._audit_log.ensure_available()
         amended = self._trace_verifier.amend(
             session_id=action.origin.session_id,
             approved_by=approved_by,
@@ -573,6 +578,7 @@ class ControlPlaneEngine:
         reason: str,
         actor: str,
     ) -> bool:
+        self._audit_log.ensure_available()
         plan = self._trace_verifier.active_plan(session_id)
         normalized_correlation = correlation_id.strip()
         normalized_plan_hash = expected_plan_hash.strip()
@@ -598,6 +604,7 @@ class ControlPlaneEngine:
         return cancelled
 
     def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
+        self._audit_log.ensure_available()
         cancelled = self._trace_verifier.cancel(session_id=session_id, reason=reason)
         if cancelled:
             self._audit_log.append(
@@ -627,6 +634,7 @@ class ControlPlaneEngine:
         request_size: int,
         resolved_addresses: list[str],
     ) -> None:
+        self._audit_log.ensure_available()
         metadata = extract_network_metadata(
             origin=origin,
             tool_name=tool_name,

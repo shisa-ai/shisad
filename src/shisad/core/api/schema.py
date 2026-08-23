@@ -2316,6 +2316,7 @@ class DaemonStatusResult(BaseModel):
     storage_upgrades: dict[str, dict[str, Any]] = Field(default_factory=dict)
     sessions_active: int = 0
     audit_entries: int = 0
+    audit: dict[str, dict[str, Any]] = Field(default_factory=dict)
     policy_hash: str = ""
     tools_registered: list[str] = Field(default_factory=list)
     model_routes: dict[str, str] = Field(default_factory=dict)

@@ -102,6 +102,17 @@ def _audit_entry(
     }
 
 
+def _audit_jsonl(entries: list[dict[str, object]]) -> str:
+    previous_hash = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
+    lines: list[str] = []
+    for entry in entries:
+        linked = {**entry, "previous_event_hash": previous_hash, "previous_hash": previous_hash}
+        line = json.dumps(linked)
+        lines.append(line)
+        previous_hash = hashlib.sha256(line.encode()).hexdigest()
+    return "\n".join(lines) + "\n"
+
+
 def test_cli_commands_route_through_rpc_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3344,10 +3355,7 @@ def test_m9_audit_query_defaults_to_current_session_cache(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(_entry("e-cache", "s-cache"))
-        + "\n",
+        _audit_jsonl([_entry("e-other", "s-other"), _entry("e-cache", "s-cache")]),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3372,17 +3380,17 @@ def test_gh18_audit_query_json_defaults_to_current_session_cache(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(
-            _audit_entry(
-                "e-cache",
-                "s-cache",
-                event_type="ToolRejected",
-                data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
-            )
-        )
-        + "\n",
+        _audit_jsonl(
+            [
+                _audit_entry("e-other", "s-other"),
+                _audit_entry(
+                    "e-cache",
+                    "s-cache",
+                    event_type="ToolRejected",
+                    data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3427,7 +3435,7 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-one", "s-one")) + "\n" + json.dumps(_entry("e-two", "s-two")) + "\n",
+        _audit_jsonl([_entry("e-one", "s-one"), _entry("e-two", "s-two")]),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3448,17 +3456,17 @@ def test_gh18_audit_query_json_preserves_type_and_all_filters(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-one", "s-one"))
-        + "\n"
-        + json.dumps(
-            _audit_entry(
-                "e-alert",
-                "s-two",
-                event_type="OutputFirewallAlert",
-                data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
-            )
-        )
-        + "\n",
+        _audit_jsonl(
+            [
+                _audit_entry("e-one", "s-one"),
+                _audit_entry(
+                    "e-alert",
+                    "s-two",
+                    event_type="OutputFirewallAlert",
+                    data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3487,7 +3495,7 @@ def test_gh18_audit_query_json_empty_results_are_array(
     config = _config(tmp_path)
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_path.write_text(json.dumps(_audit_entry("e-one", "s-one")) + "\n", encoding="utf-8")
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -3514,6 +3522,36 @@ def test_gh18_audit_query_json_missing_log_is_empty_array(
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
     assert "No audit log found" not in result.output
+
+
+def test_o4d_audit_verify_json_reports_both_streams_without_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.security.control_plane.audit import ControlPlaneAuditLog
+
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    control = ControlPlaneAuditLog(config.data_dir / "control_plane" / "audit.jsonl")
+    control.append(
+        event_type="ControlPlaneActionObserved",
+        session_id="s-one",
+        actor="planner",
+        data={"kind": "fs_read"},
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert set(payload["streams"]) == {"main", "control_plane"}
+    assert payload["streams"]["main"]["entry_count"] == 1
+    assert payload["streams"]["control_plane"]["entry_count"] == 1
+    assert "path" not in result.output
 
 
 def test_m9_audit_query_rejects_all_with_session(

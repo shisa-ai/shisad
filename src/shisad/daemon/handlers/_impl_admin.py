@@ -1536,6 +1536,9 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
+        from shisad.core.audit_segments import AuditIntegrityError
+        from shisad.security.control_plane.audit import ControlPlaneAuditLog
+
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
         readiness = await AdminImplMixin._collect_doctor_checks(
             self,
@@ -1544,6 +1547,24 @@ class AdminImplMixin(HandlerMixinBase):
             timeout_seconds=3.0,
         )
         channel_startup_status = getattr(self._services, "channel_startup_status", {})
+        try:
+            control_plane_audit = ControlPlaneAuditLog(
+                self._config.data_dir / "control_plane" / "audit.jsonl",
+                _read_only=True,
+            ).lifecycle_status
+        except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+            control_plane_audit = {
+                "stream": "control_plane",
+                "state": "unavailable",
+                "reason_code": "audit.status_verification_failed",
+                "verified": False,
+                "segment_count": 0,
+                "archive_count": 0,
+                "entry_count": 0,
+                "retained_bytes": 0,
+                "permission_capability": "unknown",
+                "parent_sync_capability": "unknown",
+            }
 
         def _channel_startup(name: str, *, enabled: bool) -> dict[str, Any]:
             raw = channel_startup_status.get(name)
@@ -1559,6 +1580,10 @@ class AdminImplMixin(HandlerMixinBase):
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
             "audit_entries": self._audit_log.entry_count,
+            "audit": {
+                "main": self._audit_log.lifecycle_status,
+                "control_plane": control_plane_audit,
+            },
             "policy_hash": (
                 self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else "default"
             ),

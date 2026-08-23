@@ -916,6 +916,32 @@ can include user-authored task text, schedule metadata, delivery-channel
 display fields, and identifiers. Do not paste this output into shared logs,
 support tickets, or issue reports without reviewing and redacting it.
 
+### Audit lifecycle
+
+The v0.8.2 development tree verifies the retained main and control-plane audit
+chains before their owning runtime begins serving work. Each stream rotates
+before its active segment would exceed 32 MiB and normally retains four linked
+archives plus the active segment. A retention deletion failure preserves the
+uncertain archive and reports degraded retention instead of discarding audit
+history.
+
+Inspect retained audit state while the daemon is stopped:
+
+```bash
+shisad audit verify
+shisad audit verify --json
+shisad audit query --all --json
+```
+
+Verification covers every retained entry and adjacent segment link. Startup
+refuses corrupted active or archived state; it does not truncate, quarantine,
+or start a replacement chain automatically. Stop the daemon, preserve the data
+root, run `shisad audit verify`, and restore a known-good whole-data-root backup
+when verification fails. A main-stream persistence failure prevents event
+subscriber dispatch and requests daemon shutdown. A control-plane persistence
+failure rejects later control-plane decisions. Neither path continues through
+an unaudited fallback.
+
 ---
 
 ## Host Hardening (Optional)

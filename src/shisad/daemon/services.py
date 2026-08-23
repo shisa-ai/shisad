@@ -784,7 +784,11 @@ class DaemonServices:
     @classmethod
     async def _build_locked(cls, config: DaemonConfig, data_lock: BaseFileLock) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
-        audit_log = AuditLog(config.data_dir / "audit.jsonl")
+        shutdown_event = asyncio.Event()
+        audit_log = AuditLog(
+            config.data_dir / "audit.jsonl",
+            on_unavailable=shutdown_event.set,
+        )
         event_bus = EventBus(persister=audit_log)
 
         policy_loader = PolicyLoader(config.policy_path)
@@ -1294,7 +1298,6 @@ class DaemonServices:
                 default_persona_tone=config.assistant_persona_tone,
                 default_persona_text=effective_persona_text,
             )
-            shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id
             model_routes = {
                 component.value: router.route_for(component).base_url
@@ -1489,12 +1492,7 @@ class DaemonServices:
 
         # -- Audit log --
         cleared["audit_entries"] = self.audit_log.entry_count
-        from shisad.core.audit import _GENESIS_HASH
-
-        self.audit_log._previous_hash = _GENESIS_HASH
-        self.audit_log._entry_count = 0
-        if self.audit_log._log_path.exists():
-            self.audit_log._log_path.write_text("", encoding="utf-8")
+        self.audit_log.reset_for_test()
 
         # -- Checkpoints --
         cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)

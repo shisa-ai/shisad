@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.transport import ControlClient
+from shisad.core.audit_segments import AuditIntegrityError
 from shisad.core.config import DaemonConfig
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
@@ -21,6 +22,26 @@ from tests.helpers.daemon import (
 from tests.helpers.daemon import (
     wait_for_socket as _wait_for_socket,
 )
+
+
+@pytest.mark.asyncio
+async def test_o4d_corrupt_main_audit_refuses_daemon_before_socket_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True)
+    audit_path.write_text("{not-json}\n", encoding="utf-8")
+
+    with pytest.raises(AuditIntegrityError):
+        await run_daemon(config)
+    assert not config.socket_path.exists()
 
 
 @pytest.mark.asyncio
@@ -48,6 +69,13 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
         await client.connect()
         status = await client.call("daemon.status")
         assert status["status"] == "running"
+        assert status["audit"]["main"]["state"] == "verified"
+        assert status["audit"]["main"]["verified"] is True
+        assert status["audit"]["main"]["segment_count"] == 0
+        assert status["audit"]["control_plane"]["state"] == "verified"
+        assert status["audit"]["control_plane"]["verified"] is True
+        assert "path" not in status["audit"]["control_plane"]
+        assert "path" not in status["audit"]["main"]
         assert set(status["storage_upgrades"]) == {"memory", "timeline"}
         for upgrade in status["storage_upgrades"].values():
             assert upgrade["initialized"] is True

@@ -2427,7 +2427,10 @@ def audit_query(
         raise click.ClickException("--all cannot be used together with --session")
     resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
 
-    if not audit_path.exists():
+    audit_exists = audit_path.exists() or any(
+        audit_path.parent.glob(f"{audit_path.stem}.[0-9]*{audit_path.suffix}")
+    )
+    if not audit_exists:
         if as_json:
             click.echo(json.dumps([], sort_keys=True))
             return
@@ -2435,8 +2438,14 @@ def audit_query(
         return
 
     from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
 
-    log = AuditLog(audit_path)
+    try:
+        log = AuditLog(audit_path, _read_only=True)
+    except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+        raise click.ClickException(
+            "audit integrity verification failed; stop the daemon and run `shisad audit verify`"
+        ) from None
     try:
         since_dt = AuditLog.parse_since(since)
     except ValueError as e:
@@ -2467,6 +2476,7 @@ def audit_query(
 
 
 @audit.command("verify")
+@click.option("--json", "as_json", is_flag=True, help="Print lifecycle status as JSON.")
 @click.option(
     "--data-dir",
     "data_dir_override",
@@ -2477,26 +2487,66 @@ def audit_query(
         "Defaults to $SHISAD_DATA_DIR or ~/.local/share/shisad."
     ),
 )
-def audit_verify(data_dir_override: Path | None) -> None:
+def audit_verify(as_json: bool, data_dir_override: Path | None) -> None:
     """Verify audit log integrity."""
     config = _get_config()
     data_dir = data_dir_override if data_dir_override is not None else config.data_dir
-    audit_path = data_dir / "audit.jsonl"
-
-    if not audit_path.exists():
-        click.echo(f"No audit log found at {audit_path}")
-        return
+    stream_paths = {
+        "main": data_dir / "audit.jsonl",
+        "control_plane": data_dir / "control_plane" / "audit.jsonl",
+    }
 
     from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
+    from shisad.security.control_plane.audit import ControlPlaneAuditLog
 
-    log = AuditLog(audit_path)
-    is_valid, count, error = log.verify_chain()
+    def _stream_exists(path: Path) -> bool:
+        return path.exists() or any(path.parent.glob(f"{path.stem}.[0-9]*{path.suffix}"))
 
-    if is_valid:
-        click.echo(f"Audit log integrity verified: {count} entries, chain intact")
+    statuses: dict[str, dict[str, Any]] = {}
+    ok = True
+    for stream, path in stream_paths.items():
+        if not _stream_exists(path):
+            continue
+        try:
+            log = (
+                AuditLog(path, _read_only=True)
+                if stream == "main"
+                else ControlPlaneAuditLog(path, _read_only=True)
+            )
+            valid, _count, _error = log.verify_chain()
+            status = log.lifecycle_status
+            if not valid:
+                status = {**status, "state": "unavailable", "verified": False}
+            statuses[stream] = status
+            ok = ok and valid
+        except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+            statuses[stream] = {
+                "stream": stream,
+                "state": "unavailable",
+                "reason_code": "audit.verification_failed",
+                "verified": False,
+                "segment_count": 0,
+                "archive_count": 0,
+                "entry_count": 0,
+                "retained_bytes": 0,
+                "permission_capability": "unknown",
+                "parent_sync_capability": "unknown",
+            }
+            ok = False
+
+    if as_json:
+        click.echo(json.dumps({"ok": ok, "streams": statuses}, sort_keys=True))
+    elif not statuses:
+        click.echo("No audit logs found")
     else:
-        click.echo(f"INTEGRITY FAILURE at entry {count}: {error}", err=True)
-        sys.exit(1)
+        for stream, status in statuses.items():
+            click.echo(
+                f"{stream}: {status['state']}; {status['entry_count']} entries, "
+                f"{status['segment_count']} segments, {status['retained_bytes']} retained bytes"
+            )
+    if not ok:
+        raise click.ClickException("audit integrity verification failed")
 
 
 @cli.group()

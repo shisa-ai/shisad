@@ -75,6 +75,16 @@ text, but that text is not enforcement authority.
 
 **4. Privilege-separated control plane.** The runtime uses three privilege tiers: **TASK** agents handle untrusted content in sandboxed, ephemeral contexts. The **COMMAND** agent orchestrates — it holds user intent, dispatches TASKs, and presents results, but cannot modify system configuration. **SUDO** mode is a clean-room elevation triggered by intent detection on authenticated channels — it can modify policy, capabilities, credentials, and configuration, but its context is stripped to the current user message and system instructions only (no summaries, no artifacts, no residual TASK context), and it auto-drops back to normal operation after the privileged action completes. System modification is possible, but only through this constrained privileged workflow — there is no unconstrained self-modification and no agent-writable instruction files. Policies are read-only to the agent in normal operation. Audit logs are append-only.
 
+On the v0.8.2 development tree, append-only audit history is also bounded and
+startup-verified. Main and metadata-only control-plane streams use separate
+hash chains and linked, independently verifiable segments. Healthy operation
+retains four archives plus one active segment of at most 32 MiB per stream.
+Retention cleanup failure preserves history and reports degradation; integrity
+or persistence failure makes the owning audit authority unavailable. The main
+event path persists before subscriber effects and requests daemon shutdown on
+failure, while the control plane refuses later decisions. The runtime does not
+silently reset, truncate, or replace a failed chain.
+
 **5. Stateless context is a security primitive.** LLMs have no persistent memory between turns. We have complete, deterministic control over what the model "knows" at every turn. The model cannot hide state, cannot remember something we've removed, and cannot resist a context rollback. This enables: checkpoint rollback to pre-contamination state, context forking for isolated task agents, selective context construction and taint quarantine, clean-room sessions provably free of tainted content, and differential execution to empirically test whether content is influencing behavior.
 
 **6. Can't leak what you don't have.** Broker-managed credentials are not

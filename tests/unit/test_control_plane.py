@@ -2943,7 +2943,10 @@ def test_m5_rt7_control_plane_audit_chain_detects_whitespace_tamper(tmp_path) ->
     assert ok_before is True
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    lines[0] = lines[0] + "  "
+    entry_index = next(
+        index for index, line in enumerate(lines) if "shisad.audit.segment" not in line
+    )
+    lines[entry_index] = lines[entry_index] + "  "
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     ok_after, _, error = log.verify_chain()

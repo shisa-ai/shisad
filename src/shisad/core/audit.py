@@ -9,22 +9,26 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-import os
 import re
 from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from shisad.core.audit_segments import (
+    AuditIntegrityError,
+    AuditSegmentStore,
+    AuditUnavailableError,
+)
 from shisad.core.events import BaseEvent
-
-logger = logging.getLogger(__name__)
 
 # Genesis hash — the seed for the first entry in the chain
 _GENESIS_HASH = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
+MAX_SEGMENT_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVES = 4
 
 
 class AuditEntry(BaseModel):
@@ -64,15 +68,28 @@ class AuditLog:
     entries is detectable via verify_chain().
     """
 
-    def __init__(self, log_path: Path) -> None:
+    def __init__(
+        self,
+        log_path: Path,
+        *,
+        on_unavailable: Callable[[], None] | None = None,
+        _read_only: bool = False,
+    ) -> None:
         self._log_path = log_path
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._event_hashes: dict[str, str] = {}
-
-        # Resume chain from existing log if present
-        if self._log_path.exists():
-            self._resume_chain()
+        self._segments = AuditSegmentStore(
+            log_path,
+            stream="main",
+            genesis_hash=_GENESIS_HASH,
+            verify_row=self._verify_row,
+            max_segment_bytes=MAX_SEGMENT_BYTES,
+            max_archives=MAX_ARCHIVES,
+            on_unavailable=on_unavailable,
+            admit=not _read_only,
+        )
+        self._resume_chain()
 
     @property
     def log_path(self) -> Path:
@@ -82,8 +99,13 @@ class AuditLog:
     def entry_count(self) -> int:
         return self._entry_count
 
+    @property
+    def lifecycle_status(self) -> dict[str, Any]:
+        return self._segments.lifecycle_status
+
     async def persist(self, event: BaseEvent) -> None:
         """Persist an event to the audit log (EventPersister protocol)."""
+        self._segments.ensure_available()
         data = event.model_dump(mode="json")
         data_json = json.dumps(data, sort_keys=True)
         data_hash = hashlib.sha256(data_json.encode()).hexdigest()
@@ -116,12 +138,13 @@ class AuditLog:
         # Compute this entry's hash (used as previous_hash for next entry)
         entry_hash = hashlib.sha256(entry_json.encode()).hexdigest()
 
-        # Append to log
-        self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_secure_permissions()
-        with self._log_path.open("a", encoding="utf-8") as f:
-            f.write(entry_json + "\n")
-        self._ensure_secure_permissions()
+        try:
+            self._segments.append(entry_json, entry_hash)
+        except AuditUnavailableError:
+            raise
+        except Exception:
+            self._segments.mark_unavailable("audit.append_failed")
+            raise
 
         self._previous_hash = entry_hash
         self._entry_count += 1
@@ -133,47 +156,11 @@ class AuditLog:
         Returns:
             (is_valid, entries_checked, error_message)
         """
-        if not self._log_path.exists():
-            return (True, 0, "")
-
-        previous_hash = _GENESIS_HASH
-        count = 0
-
-        with self._log_path.open() as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-
-                try:
-                    entry = AuditEntry.model_validate_json(line)
-                except ValidationError as e:
-                    return (False, count, f"Line {line_num}: invalid entry: {e}")
-
-                # Check chain link
-                if entry.previous_event_hash != previous_hash:
-                    return (
-                        False,
-                        count,
-                        f"Line {line_num}: chain break — expected previous_hash "
-                        f"{previous_hash[:12]}…, got {entry.previous_event_hash[:12]}…",
-                    )
-
-                # Check data integrity
-                data_json = json.dumps(entry.data, sort_keys=True)
-                expected_data_hash = hashlib.sha256(data_json.encode()).hexdigest()
-                if entry.data_hash != expected_data_hash:
-                    return (
-                        False,
-                        count,
-                        f"Line {line_num}: data hash mismatch for event {entry.event_id}",
-                    )
-
-                # Compute this entry's hash for the next link
-                previous_hash = hashlib.sha256(line.encode()).hexdigest()
-                count += 1
-
-        return (True, count, "")
+        try:
+            verified = self._segments.verify()
+        except (AuditIntegrityError, OSError, UnicodeError, ValueError) as exc:
+            return (False, self._entry_count, str(exc))
+        return (True, verified.entry_count, "")
 
     def query(
         self,
@@ -186,8 +173,9 @@ class AuditLog:
         tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
-        if not self._log_path.exists():
-            return []
+        valid, _count, error = self.verify_chain()
+        if not valid:
+            raise AuditIntegrityError(error)
 
         max_results = max(1, int(limit))
         if tail:
@@ -195,66 +183,64 @@ class AuditLog:
         else:
             results = []
 
-        with self._log_path.open() as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+        for line in self._segments.iter_rows():
+            entry = AuditEntry.model_validate_json(line)
+
+            # Apply filters
+            if event_type is not None and entry.event_type != event_type:
+                continue
+            if session_id is not None and entry.session_id != session_id:
+                continue
+            if actor is not None and entry.actor != actor:
+                continue
+            if since is not None:
+                entry_time = datetime.fromisoformat(entry.timestamp)
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=UTC)
+                if entry_time < since:
                     continue
 
-                entry = AuditEntry.model_validate_json(line)
+            results.append(entry.model_dump())
 
-                # Apply filters
-                if event_type is not None and entry.event_type != event_type:
-                    continue
-                if session_id is not None and entry.session_id != session_id:
-                    continue
-                if actor is not None and entry.actor != actor:
-                    continue
-                if since is not None:
-                    entry_time = datetime.fromisoformat(entry.timestamp)
-                    if entry_time.tzinfo is None:
-                        entry_time = entry_time.replace(tzinfo=UTC)
-                    if entry_time < since:
-                        continue
-
-                results.append(entry.model_dump())
-
-                if not tail and len(results) >= max_results:
-                    break
+            if not tail and len(results) >= max_results:
+                break
 
         return list(results)
 
     def _resume_chain(self) -> None:
-        """Resume the hash chain from an existing log file."""
-        previous_hash = _GENESIS_HASH
-        count = 0
+        """Build the idempotency index from already-verified retained rows."""
+        self._event_hashes.clear()
+        for line in self._segments.iter_rows():
+            entry = AuditEntry.model_validate_json(line)
+            existing_hash = self._event_hashes.get(entry.event_id)
+            if existing_hash is not None and existing_hash != entry.data_hash:
+                raise AuditIntegrityError("audit_event_id_payload_conflict")
+            self._event_hashes[entry.event_id] = entry.data_hash
+        verified = self._segments.verification
+        self._entry_count = verified.entry_count
+        self._previous_hash = (
+            verified.segments[-1].terminal_hash if verified.segments else _GENESIS_HASH
+        )
 
-        with self._log_path.open() as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = AuditEntry.model_validate_json(line)
-                except ValidationError:
-                    entry = None
-                if entry is not None:
-                    existing_hash = self._event_hashes.get(entry.event_id)
-                    if existing_hash is not None and existing_hash != entry.data_hash:
-                        raise ValueError("audit_event_id_payload_conflict")
-                    self._event_hashes[entry.event_id] = entry.data_hash
-                previous_hash = hashlib.sha256(line.encode()).hexdigest()
-                count += 1
+    @staticmethod
+    def _verify_row(payload: str, previous_hash: str) -> str:
+        try:
+            entry = AuditEntry.model_validate_json(payload)
+        except ValidationError as exc:
+            raise AuditIntegrityError("invalid entry") from exc
+        if entry.previous_event_hash != previous_hash or entry.previous_hash != previous_hash:
+            raise AuditIntegrityError("chain break")
+        data_json = json.dumps(entry.data, sort_keys=True)
+        expected_data_hash = hashlib.sha256(data_json.encode()).hexdigest()
+        if entry.data_hash != expected_data_hash:
+            raise AuditIntegrityError(f"data hash mismatch for event {entry.event_id}")
+        return hashlib.sha256(payload.encode()).hexdigest()
 
-        self._previous_hash = previous_hash
-        self._entry_count = count
-        logger.info("Resumed audit chain: %d entries, last hash %s…", count, previous_hash[:12])
-
-    def _ensure_secure_permissions(self) -> None:
-        """Best-effort restrictive file mode for audit logs."""
-        if not self._log_path.exists():
-            return
-        os.chmod(self._log_path, 0o600)
+    def reset_for_test(self) -> None:
+        self._segments.reset_for_test()
+        self._previous_hash = _GENESIS_HASH
+        self._entry_count = 0
+        self._event_hashes.clear()
 
     @staticmethod
     def _derive_entry_metadata(

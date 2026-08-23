@@ -5,7 +5,39 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from shisad.core.audit_segments import AuditIntegrityError, AuditUnavailableError
+from shisad.core.types import Capability
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
+from shisad.security.control_plane.engine import ControlPlaneEngine
+from shisad.security.control_plane.schema import Origin
+
+
+def test_o4d_unavailable_audit_rejects_control_plane_before_state_change(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-o4d-unavailable")
+    origin = Origin(
+        session_id="s-o4d-unavailable",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+        trust_level="untrusted",
+    )
+    engine.audit._segments.mark_unavailable("audit.append_failed")
+
+    with pytest.raises(AuditUnavailableError, match=r"audit\.append_failed"):
+        engine.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal="read a file",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=2,
+            capabilities={Capability.FILE_READ},
+        )
+
+    assert engine.active_plan_hash(origin.session_id) == ""
 
 
 def test_m6_control_plane_audit_missing_file_verify_is_ok(tmp_path: Path) -> None:
@@ -67,10 +99,74 @@ def test_m6_control_plane_audit_verify_chain_detects_data_hash_mismatch(tmp_path
         data={"k": "v"},
     )
 
-    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    entry = next(
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("record_type") != "shisad.audit.segment"
+    )
     entry["data_hash"] = "broken"
-    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    entry_index = next(
+        index
+        for index, line in enumerate(lines)
+        if json.loads(line).get("record_type") != "shisad.audit.segment"
+    )
+    lines[entry_index] = json.dumps(entry)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     ok, _, error = log.verify_chain()
     assert ok is False
     assert "data hash mismatch" in error
+
+
+def test_o4d_control_plane_refuses_corrupt_chain_at_admission(tmp_path: Path) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    log = ControlPlaneAuditLog(path)
+    log.append(
+        event_type="ControlPlaneActionObserved",
+        session_id="s-1",
+        actor="planner",
+        data={"kind": "fs_read"},
+    )
+    lines = path.read_text(encoding="utf-8").splitlines()
+    entry_index = next(
+        index
+        for index, line in enumerate(lines)
+        if json.loads(line).get("record_type") != "shisad.audit.segment"
+    )
+    row = json.loads(lines[entry_index])
+    row["data_hash"] = "tampered"
+    lines[entry_index] = json.dumps(row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+        ControlPlaneAuditLog(path)
+
+
+def test_o4d_control_plane_append_failure_latches_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    log = ControlPlaneAuditLog(path)
+
+    def fail_append(_payload: str, _terminal_hash: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(log._segments, "append", fail_append)
+    with pytest.raises(OSError):
+        log.append(
+            event_type="ControlPlaneActionObserved",
+            session_id="s-1",
+            actor="planner",
+            data={},
+        )
+    assert log.lifecycle_status["state"] == "unavailable"
+    assert log.lifecycle_status["reason_code"] == "audit.append_failed"
+
+    with pytest.raises(AuditUnavailableError, match=r"audit\.append_failed"):
+        log.append(
+            event_type="ControlPlaneActionObserved",
+            session_id="s-2",
+            actor="planner",
+            data={},
+        )
