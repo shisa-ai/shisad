@@ -106,6 +106,7 @@ class AuditSegmentStore:
         self._verification = SegmentVerification((), 0, 0)
         self._read_only = not admit
         self._active_file_hasher = hashlib.sha256()
+        self._verified_fingerprint: tuple[tuple[Path, int, int, int, int, int, int], ...] = ()
 
         if max_segment_bytes < 1 or max_archives < 1:
             raise ValueError("audit segment limits must be positive")
@@ -154,6 +155,7 @@ class AuditSegmentStore:
                 self.mark_unavailable("audit.verification_failed")
             raise
         self._verification = verified
+        self._verified_fingerprint = self._disk_fingerprint()
         if self._read_only:
             self._inspect_read_only_state()
         else:
@@ -166,6 +168,7 @@ class AuditSegmentStore:
 
     def append(self, payload: str, terminal_hash: str) -> None:
         self.ensure_available()
+        self._ensure_admitted_files_unchanged()
         row = (payload + "\n").encode("utf-8")
         if len(row) > self.max_segment_bytes:
             self.mark_unavailable("audit.row_oversize")
@@ -203,6 +206,7 @@ class AuditSegmentStore:
                 self._verification.entry_count + 1,
                 self._verification.retained_bytes + len(row),
             )
+            self._verified_fingerprint = self._disk_fingerprint()
             if self._state == "retention_degraded":
                 self._reason_code = "audit.retention_delete_failed"
         except AuditUnavailableError:
@@ -224,6 +228,7 @@ class AuditSegmentStore:
         self._reason_code = ""
         self._verification = SegmentVerification((), 0, 0)
         self._active_file_hasher = hashlib.sha256()
+        self._verified_fingerprint = ()
 
     @property
     def _pending_path(self) -> Path:
@@ -272,6 +277,36 @@ class AuditSegmentStore:
         self._active_file_hasher = hashlib.sha256()
         if self._present(self.path):
             self._active_file_hasher.update(self.path.read_bytes())
+
+    def _disk_fingerprint(self) -> tuple[tuple[Path, int, int, int, int, int, int], ...]:
+        paths = [path for path, _sequence in self._archive_paths()]
+        paths.extend(path for path in (self.path, self._pending_path) if self._present(path))
+        fingerprints: list[tuple[Path, int, int, int, int, int, int]] = []
+        for path in paths:
+            metadata = path.lstat()
+            fingerprints.append(
+                (
+                    path,
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_mode,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    metadata.st_ctime_ns,
+                )
+            )
+        return tuple(fingerprints)
+
+    def _ensure_admitted_files_unchanged(self) -> None:
+        try:
+            if self._disk_fingerprint() == self._verified_fingerprint:
+                return
+            self._verify_all()
+        except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+            self.mark_unavailable("audit.verification_failed")
+            raise
+        self.mark_unavailable("audit.external_change_detected")
+        raise AuditIntegrityError("audit segments changed after admission")
 
     def _archive_paths(self) -> list[tuple[Path, int]]:
         pattern = re.compile(
@@ -455,6 +490,7 @@ class AuditSegmentStore:
             self._verification.retained_bytes + active.byte_count,
         )
         self._reset_active_hasher()
+        self._verified_fingerprint = self._disk_fingerprint()
 
     def _publish_successor(self, previous: SegmentInfo | None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -564,7 +600,9 @@ class AuditSegmentStore:
             self._verification.retained_bytes + successor.byte_count,
         )
         self._reset_active_hasher()
+        self._verified_fingerprint = self._disk_fingerprint()
         self._prune_archives()
+        self._verified_fingerprint = self._disk_fingerprint()
 
     def _prune_archives(self) -> None:
         archives = self._archive_paths()

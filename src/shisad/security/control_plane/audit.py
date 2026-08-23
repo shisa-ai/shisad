@@ -106,6 +106,9 @@ class ControlPlaneAuditLog:
         event_type: str | None = None,
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        valid, _count, error = self.verify_chain()
+        if not valid:
+            raise AuditIntegrityError(error)
         rows: list[dict[str, Any]] = []
         for text in self._segments.iter_rows():
             entry = ControlPlaneAuditEntry.model_validate_json(text)

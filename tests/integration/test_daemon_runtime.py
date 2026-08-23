@@ -168,7 +168,7 @@ async def test_o4d_daemon_status_reports_live_control_plane_audit_latch(
 
         status = await client.call("daemon.status")
         assert status["audit"]["control_plane"]["state"] == "unavailable"
-        assert status["audit"]["control_plane"]["reason_code"] == "audit.append_failed"
+        assert status["audit"]["control_plane"]["reason_code"] == ("audit.external_change_detected")
         assert status["audit"]["control_plane"]["verified"] is False
     finally:
         if audit_path.exists():

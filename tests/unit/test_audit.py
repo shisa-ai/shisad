@@ -527,7 +527,7 @@ class TestAuditLifecycle:
         assert inspected.lifecycle_status["reason_code"] == "audit.retention_delete_failed"
 
     @pytest.mark.asyncio
-    async def test_append_and_query_do_not_rescan_retained_history(
+    async def test_append_does_not_rescan_unchanged_retained_history(
         self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
@@ -539,7 +539,44 @@ class TestAuditLifecycle:
 
         monkeypatch.setattr(log._segments, "_verify_all", forbid_rescan)
         await _write_entries(log, count=3)
-        assert log.query(limit=100)
+        assert log.entry_count == 4
+
+    @pytest.mark.asyncio
+    async def test_post_admission_tamper_refuses_query(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        entry = json.loads(lines[entry_index])
+        entry["data"]["tampered"] = True
+        lines[entry_index] = json.dumps(entry, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            log.query()
+
+    @pytest.mark.asyncio
+    async def test_post_admission_tamper_refuses_next_append(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        entry = json.loads(lines[entry_index])
+        entry["data"]["tampered"] = True
+        lines[entry_index] = json.dumps(entry, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            await _write_entries(log, count=1)
+        assert log.lifecycle_status["state"] == "unavailable"
 
     @pytest.mark.asyncio
     async def test_append_failure_latches_unavailable_and_requests_shutdown(

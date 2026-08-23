@@ -2427,8 +2427,10 @@ def audit_query(
         raise click.ClickException("--all cannot be used together with --session")
     resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
 
-    audit_exists = audit_path.exists() or any(
-        audit_path.parent.glob(f"{audit_path.stem}.[0-9]*{audit_path.suffix}")
+    audit_exists = (
+        audit_path.exists()
+        or any(audit_path.parent.glob(f"{audit_path.stem}.[0-9]*{audit_path.suffix}"))
+        or audit_path.with_name(f".{audit_path.name}.next").exists()
     )
     if not audit_exists:
         if as_json:
@@ -2506,7 +2508,11 @@ def audit_verify(as_json: bool, data_dir_override: Path | None) -> None:
     from shisad.security.control_plane.audit import ControlPlaneAuditLog
 
     def _stream_exists(path: Path) -> bool:
-        return path.exists() or any(path.parent.glob(f"{path.stem}.[0-9]*{path.suffix}"))
+        return (
+            path.exists()
+            or any(path.parent.glob(f"{path.stem}.[0-9]*{path.suffix}"))
+            or path.with_name(f".{path.name}.next").exists()
+        )
 
     statuses: dict[str, dict[str, Any]] = {}
     ok = True
@@ -2521,7 +2527,7 @@ def audit_verify(as_json: bool, data_dir_override: Path | None) -> None:
             )
             valid, _count, _error = log.verify_chain()
             status = log.lifecycle_status
-            if not valid:
+            if not valid and status["state"] == "verified":
                 status = {**status, "state": "unavailable", "verified": False}
             statuses[stream] = status
             ok = ok and valid

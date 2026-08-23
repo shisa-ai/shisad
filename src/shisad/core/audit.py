@@ -176,6 +176,10 @@ class AuditLog:
         tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
+        valid, _count, error = self.verify_chain()
+        if not valid:
+            raise AuditIntegrityError(error)
+
         max_results = max(1, int(limit))
         if tail:
             results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)

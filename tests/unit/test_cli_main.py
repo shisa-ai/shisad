@@ -3619,6 +3619,33 @@ def test_o4d_audit_query_sanitizes_post_admission_read_failure(
     assert str(config.data_dir) not in result.output
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["audit", "verify"], "main: state=recovery_pending"),
+        (["audit", "query", "--all"], "audit integrity verification failed"),
+    ],
+)
+def test_o4d_audit_commands_recognize_lone_pending_successor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    expected: str,
+) -> None:
+    config = _config(tmp_path)
+    pending = config.data_dir / ".audit.jsonl.next"
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_bytes(b'{"record_type":"shisad.audit.segment"')
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, command)
+
+    assert result.exit_code != 0
+    assert expected in result.output
+    assert "No audit log" not in result.output
+    assert str(config.data_dir) not in result.output
+
+
 def test_m9_audit_query_rejects_all_with_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
