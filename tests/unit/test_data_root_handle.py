@@ -152,6 +152,23 @@ def test_o4cp_windows_file_reads_request_synchronous_handle_access(tmp_path: Pat
     assert desired_access & data_root_windows_module._SYNCHRONIZE
 
 
+def test_drh1_windows_ensured_files_request_metadata_access(tmp_path: Path) -> None:
+    api = _FakeWindowsApi()
+    root = data_root_windows_module._WindowsRootHandle(
+        tmp_path,
+        1,
+        (7, 1),
+        api,  # type: ignore[arg-type]
+    )
+
+    descriptor = root.ensure_file(PurePosixPath(".shisad.lock"), 0o600)
+
+    assert descriptor == 3
+    open_call = next(call for call in api.calls if call[:3] == ("open", 1, ".shisad.lock"))
+    desired_access = int(open_call[3]["desired_access"])
+    assert desired_access & data_root_windows_module._FILE_READ_ATTRIBUTES
+
+
 @_POSIX_ONLY
 def test_o4cp_root_handle_rejects_root_path_replacement(tmp_path: Path) -> None:
     root_path = tmp_path / "root"

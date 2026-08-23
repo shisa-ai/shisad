@@ -478,7 +478,7 @@ class _WindowsRootHandle(_RootContext):
         del mode
         handle = self._open(
             _windows_name(relative),
-            desired_access=_GENERIC_WRITE | _SYNCHRONIZE,
+            desired_access=_GENERIC_WRITE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
             disposition=_FILE_OPEN_IF,
             directory=False,
         )
