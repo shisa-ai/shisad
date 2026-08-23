@@ -9,7 +9,7 @@
       "tests/integration/test_action_execution_recovery.py": 48,
       "tests/integration/test_chat_confirmation_e2e.py": 11,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/integration/test_daemon_data_lock.py": 2,
+      "tests/integration/test_daemon_data_lock.py": 3,
       "tests/integration/test_skill_tool_execution.py": 7,
       "tests/unit/test_daemon_services.py": 37,
       "tests/unit/test_impl_tasks.py": 2,
@@ -52,7 +52,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 127,
+    "DaemonServices.build": 128,
     "run_daemon": 114
   }
 }
