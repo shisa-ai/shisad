@@ -312,7 +312,7 @@ async def test_gh111_uncleanable_channel_fails_bounded_and_releases_lock(
     )
 
     with pytest.raises(RuntimeError, match="telegram channel startup cleanup timed out"):
-        await asyncio.wait_for(run_daemon(config), timeout=5.0)
+        await asyncio.wait_for(run_daemon(config), timeout=1.0)
 
     assert config.socket_path.exists() is False
     probe = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
