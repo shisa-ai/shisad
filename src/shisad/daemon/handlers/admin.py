@@ -20,6 +20,11 @@ from shisad.core.api.schema import (
     DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
+    DeliveryIdentifierParams,
+    DeliveryInspectResult,
+    DeliveryListParams,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DevCloseParams,
     DevCloseResult,
     DevImplementParams,
@@ -158,6 +163,42 @@ class AdminHandlers:
         return ChannelPairingProposalResult.model_validate(
             await self._impl.do_channel_pairing_propose(payload)
         )
+
+    async def handle_delivery_list(
+        self,
+        params: DeliveryListParams,
+        ctx: RequestContext,
+    ) -> DeliveryListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryListResult.model_validate(await self._impl.do_delivery_list(payload))
+
+    async def handle_delivery_inspect(
+        self,
+        params: DeliveryIdentifierParams,
+        ctx: RequestContext,
+    ) -> DeliveryInspectResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryInspectResult.model_validate(await self._impl.do_delivery_inspect(payload))
+
+    async def handle_delivery_resolve(
+        self,
+        params: DeliveryIdentifierParams,
+        ctx: RequestContext,
+    ) -> DeliveryResolveResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryResolveResult.model_validate(await self._impl.do_delivery_resolve(payload))
 
     async def handle_admin_selfmod_propose(
         self,

@@ -600,6 +600,38 @@ client libraries degrade only that channel. For ingress, use the channel's
 `*_TRUSTED_USERS` field (or the generic identity allowlist) explicitly;
 connection or outbound delivery never grants trust.
 
+### Durable delivery reconciliation
+
+Every outbound channel attempt is recorded in the durable outbox. Operators
+can list or inspect those records without exposing the message payload or
+delivery metadata:
+
+```bash
+shisad delivery list --state outcome_unknown
+shisad delivery inspect <dres-or-dly-id>
+shisad delivery inspect <dres-or-dly-id> --json
+```
+
+For an uncertain provider attempt, `delivery resolve` performs a lookup only
+when the active adapter declares an authoritative reconciliation contract:
+
+```bash
+shisad delivery resolve <dres-or-dly-id>
+```
+
+The command never sends the message again. A provider-confirmed delivery is
+recorded with its matching receipt. Authoritative absence becomes the terminal
+`reconciled_absent` state; submit a fresh request through the normal policy and
+approval path if you want to retry. Unknown, failed, mismatched, or unsupported
+lookups remain uncertain.
+
+The current Matrix, Discord, Telegram, and Slack adapters do not yet expose an
+authoritative reconciliation contract, so their uncertain attempts report
+`unsupported` and remain `outcome_unknown`. Inspect the provider before
+deciding whether to submit fresh work. This limitation also means that seeing a
+provider transaction-ID feature in its API is not, by itself, a shipped restart
+recovery guarantee.
+
 For a combined setup, enroll the references first and create a bounded
 secret-free selection document. For example:
 

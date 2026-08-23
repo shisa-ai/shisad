@@ -16,6 +16,12 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DeliveryEntry,
+    DeliveryIdentifierParams,
+    DeliveryInspectResult,
+    DeliveryListParams,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DoctorCheckResult,
     GraphExportParams,
     GraphQueryParams,
@@ -118,6 +124,59 @@ class TestApiSchemaValidation:
     def test_session_create_tone_rejects_unknown_values(self) -> None:
         with pytest.raises(ValidationError):
             SessionCreateParams(tone="casual")
+
+    def test_o4e_delivery_operator_schema_is_exact_and_bounded(self) -> None:
+        reservation_id = "dres-" + "a" * 64
+        delivery_id = "dly-" + "b" * 64
+        entry = DeliveryEntry.model_validate(
+            {
+                "reservation_id": reservation_id,
+                "delivery_id": delivery_id,
+                "kind": "channel_result",
+                "target": {
+                    "channel": "matrix",
+                    "recipient": "!room:example.org",
+                    "workspace_hint": "workspace-1",
+                    "thread_id": "",
+                },
+                "state": "outcome_unknown",
+                "reason": "provider_attempt_failed",
+                "payload_digest": "c" * 64,
+                "receipt": None,
+                "recovery": {
+                    "kind": "neither",
+                    "guarantee_id": "",
+                    "reconciliation_available": False,
+                },
+            }
+        )
+
+        assert DeliveryIdentifierParams(delivery_id=delivery_id).delivery_id == delivery_id
+        assert DeliveryListParams(state="outcome_unknown", limit=1).limit == 1
+        assert DeliveryListResult(deliveries=[entry], count=1).deliveries == [entry]
+        assert DeliveryInspectResult(found=True, delivery=entry).delivery == entry
+        assert (
+            DeliveryResolveResult(
+                found=True,
+                lookup_attempted=False,
+                reconciliation_status="unsupported",
+                reason="provider_reconciliation_unavailable",
+                instruction="No provider lookup is available; no send was attempted.",
+                delivery=entry,
+            ).reconciliation_status
+            == "unsupported"
+        )
+
+        for invalid_id in ("", delivery_id[:-1], "dly-" + "z" * 64, "prefix-" + "a" * 64):
+            with pytest.raises(ValidationError):
+                DeliveryIdentifierParams(delivery_id=invalid_id)
+        for payload in (
+            {"limit": 0},
+            {"limit": 1001},
+            {"state": "unknown-state"},
+        ):
+            with pytest.raises(ValidationError):
+                DeliveryListParams.model_validate(payload)
 
     def test_task_create_requires_workspace_id(self) -> None:
         with pytest.raises(ValidationError):

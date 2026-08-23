@@ -34,7 +34,7 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 
-_FROZEN_F11A_MANIFEST_SHA256 = "d91a1699974a7202ee5461bdc4a23a3c1d1ef940dae53af31fa0271630add9ff"
+_FROZEN_F11A_MANIFEST_SHA256 = "f5dfa6d5001b36385aaae5dee7c551ae8df845310f9ddf82bc292b7c0ff75d55"
 _GROUP_TYPES = {
     RpcHandlerGroup.ADMIN: AdminHandlers,
     RpcHandlerGroup.ASSISTANT: AssistantHandlers,
@@ -90,10 +90,10 @@ def test_f11a_descriptor_manifest_matches_frozen_transport_contract() -> None:
 
     assert isinstance(production, tuple)
     assert isinstance(test_mode, tuple)
-    assert len(production) == 122
-    assert len(test_mode) == 123
-    assert len({descriptor.name for descriptor in test_mode}) == 123
-    assert sum(descriptor.admin_only for descriptor in test_mode) == 79
+    assert len(production) == 125
+    assert len(test_mode) == 126
+    assert len({descriptor.name for descriptor in test_mode}) == 126
+    assert sum(descriptor.admin_only for descriptor in test_mode) == 82
     assert _manifest_digest() == _FROZEN_F11A_MANIFEST_SHA256
 
     production_names = [descriptor.name for descriptor in production]
@@ -133,6 +133,28 @@ def test_f12_assistant_route_lookup_is_descriptor_derived() -> None:
     assert lookup("daemon.reset") is None
     assert lookup("daemon.reset", test_mode=True).availability is RpcAvailability.TEST_MODE
     assert lookup("missing.route") is None
+
+
+def test_o4e_delivery_routes_are_typed_admin_only_and_contiguous() -> None:
+    descriptors = rpc_method_descriptors(test_mode=False)
+    selected = [
+        descriptor
+        for descriptor in descriptors
+        if descriptor.name in {"delivery.list", "delivery.inspect", "delivery.resolve"}
+    ]
+
+    assert [descriptor.name for descriptor in selected] == [
+        "delivery.list",
+        "delivery.inspect",
+        "delivery.resolve",
+    ]
+    assert all(descriptor.admin_only for descriptor in selected)
+    assert all(descriptor.handler_group is RpcHandlerGroup.ADMIN for descriptor in selected)
+    assert [descriptor.handler_method for descriptor in selected] == [
+        "handle_delivery_list",
+        "handle_delivery_inspect",
+        "handle_delivery_resolve",
+    ]
 
 
 def test_f11a_descriptor_routes_match_every_typed_group_signature() -> None:

@@ -2273,6 +2273,24 @@ class AdminImplMixin(HandlerMixinBase):
             "applied": False,
         }
 
+    async def do_delivery_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        state = str(params.get("state") or "").strip() or None
+        deliveries = self._services.delivery.list_deliveries(
+            state=state,
+            limit=int(params.get("limit", 100)),
+        )
+        return {"deliveries": deliveries, "count": len(deliveries)}
+
+    async def do_delivery_inspect(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        delivery = self._services.delivery.inspect_delivery(str(params.get("delivery_id") or ""))
+        return {"found": delivery is not None, "delivery": delivery}
+
+    async def do_delivery_resolve(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._services.delivery.resolve_delivery(str(params.get("delivery_id") or "")),
+        )
+
     def _discord_pending_delivery_metadata(
         self,
         response: Mapping[str, Any],

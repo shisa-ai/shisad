@@ -67,6 +67,10 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DeliveryEntry,
+    DeliveryInspectResult,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DevCloseResult,
     DevImplementResult,
     DevRemediateResult,
@@ -470,6 +474,37 @@ def _render_terminal_qr(url: str) -> str:
 
 def _dump_model(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
+
+
+def _render_delivery_entry(entry: DeliveryEntry) -> str:
+    target = entry.target
+    recovery = entry.recovery
+    receipt = entry.receipt
+    lines = [
+        (
+            f"{sanitize_terminal_field(entry.delivery_id or entry.reservation_id)} "
+            f"state={sanitize_terminal_field(entry.state)} "
+            f"kind={sanitize_terminal_field(entry.kind)}"
+        ),
+        (
+            f"  target={sanitize_terminal_field(target.channel)}:"
+            f"{sanitize_terminal_field(target.recipient)} "
+            f"recovery={sanitize_terminal_field(recovery.kind)} "
+            "reconciliation_available="
+            f"{str(recovery.reconciliation_available).lower()}"
+        ),
+        (
+            f"  reservation={sanitize_terminal_field(entry.reservation_id)} "
+            f"digest={sanitize_terminal_field(entry.payload_digest)} "
+            f"reason={sanitize_terminal_field(entry.reason) or '-'}"
+        ),
+    ]
+    if receipt is not None:
+        lines.append(
+            f"  receipt={sanitize_terminal_field(receipt.provider)}:"
+            f"{sanitize_terminal_field(receipt.receipt_id)}"
+        )
+    return "\n".join(lines)
 
 
 def _render_web_search_result(result: WebSearchResult) -> str:
@@ -3635,6 +3670,93 @@ def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) 
         response_model=ChannelPairingProposalResult,
     )
     click.echo(_dump_model(result))
+
+
+@cli.group()
+def delivery() -> None:
+    """Inspect and reconcile durable outbound deliveries."""
+
+
+@delivery.command("list")
+@click.option(
+    "--state",
+    type=click.Choice(
+        [
+            "preparing",
+            "prepared",
+            "attempt_started",
+            "delivered",
+            "failed_pre_effect",
+            "outcome_unknown",
+            "reconciled_absent",
+            "superseded",
+            "cancelled",
+        ],
+        case_sensitive=True,
+    ),
+    default=None,
+    help="Show only deliveries in this exact durable state.",
+)
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum entries")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_list(state: str | None, limit: int, output_json: bool) -> None:
+    """List recent durable delivery records without message payloads."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.list",
+        {"state": state, "limit": limit},
+        response_model=DeliveryListResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.deliveries:
+        _echo("No matching durable deliveries.", fg="yellow")
+        return
+    click.echo("\n".join(_render_delivery_entry(entry) for entry in result.deliveries))
+
+
+@delivery.command("inspect")
+@click.argument("delivery_id")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_inspect(delivery_id: str, output_json: bool) -> None:
+    """Inspect one exact durable reservation or delivery ID."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.inspect",
+        {"delivery_id": delivery_id},
+        response_model=DeliveryInspectResult,
+    )
+    if not result.found or result.delivery is None:
+        raise click.ClickException("No durable delivery matched that exact ID.")
+    click.echo(_dump_model(result) if output_json else _render_delivery_entry(result.delivery))
+
+
+@delivery.command("resolve")
+@click.argument("delivery_id")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_resolve(delivery_id: str, output_json: bool) -> None:
+    """Reconcile an uncertain delivery without sending it again."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.resolve",
+        {"delivery_id": delivery_id},
+        response_model=DeliveryResolveResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.found or result.delivery is None:
+        raise click.ClickException(sanitize_terminal_text(result.instruction))
+    click.echo(_render_delivery_entry(result.delivery))
+    click.echo(
+        f"resolution={sanitize_terminal_field(result.reconciliation_status)} "
+        f"lookup_attempted={str(result.lookup_attempted).lower()}"
+    )
+    click.echo(sanitize_terminal_text(result.instruction))
 
 
 @cli.group()

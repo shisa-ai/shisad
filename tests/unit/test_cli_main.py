@@ -7363,3 +7363,87 @@ def test_audit_query_missing_log_reports_effective_path(
     assert result.exit_code == 0, result.output
     assert str(override_dir) in result.output
     assert "No audit log found" in result.output
+
+
+def test_o4e_delivery_commands_share_typed_safe_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    delivery_id = "dly-" + "b" * 64
+    reservation_id = "dres-" + "a" * 64
+    entry = {
+        "reservation_id": reservation_id,
+        "delivery_id": delivery_id,
+        "kind": "channel_result",
+        "target": {
+            "channel": "matrix",
+            "recipient": "!room:example.org",
+            "workspace_hint": "workspace-1",
+            "thread_id": "",
+        },
+        "state": "outcome_unknown",
+        "reason": "provider_attempt_failed",
+        "payload_digest": "c" * 64,
+        "receipt": None,
+        "recovery": {
+            "kind": "neither",
+            "guarantee_id": "",
+            "reconciliation_available": False,
+        },
+    }
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        request = dict(params or {})
+        calls.append((method, request))
+        if method == "delivery.list":
+            payload = {"deliveries": [entry], "count": 1}
+        elif method == "delivery.inspect":
+            payload = {"found": True, "delivery": entry}
+        else:
+            assert method == "delivery.resolve"
+            payload = {
+                "found": True,
+                "lookup_attempted": True,
+                "reconciliation_status": "absent",
+                "reason": "provider_reconciled_absent",
+                "instruction": (
+                    "No send was attempted. Submit a fresh request to retry the originating work."
+                ),
+                "delivery": {**entry, "state": "reconciled_absent"},
+            }
+        assert response_model is not None
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    listed = runner.invoke(
+        cli_main.cli,
+        ["delivery", "list", "--state", "outcome_unknown", "--limit", "2", "--json"],
+    )
+    inspected = runner.invoke(cli_main.cli, ["delivery", "inspect", delivery_id])
+    resolved = runner.invoke(cli_main.cli, ["delivery", "resolve", delivery_id])
+
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.output)["deliveries"][0]["delivery_id"] == delivery_id
+    assert inspected.exit_code == 0, inspected.output
+    assert "state=outcome_unknown" in inspected.output
+    assert "reconciliation_available=false" in inspected.output
+    assert resolved.exit_code == 0, resolved.output
+    assert "No send was attempted" in resolved.output
+    assert "fresh request" in resolved.output
+    assert calls == [
+        ("delivery.list", {"state": "outcome_unknown", "limit": 2}),
+        ("delivery.inspect", {"delivery_id": delivery_id}),
+        ("delivery.resolve", {"delivery_id": delivery_id}),
+    ]

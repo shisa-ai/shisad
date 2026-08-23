@@ -15,6 +15,7 @@ from textual.widgets import TextArea
 
 from shisad.channels import setup as channel_setup
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
+from shisad.cli import main as cli_main
 from shisad.cli import onboarding
 from shisad.cli.main import cli
 from shisad.core.audit import AuditLog
@@ -710,3 +711,80 @@ def test_o4d_audit_lifecycle_is_verified_bounded_and_actionable(
     assert queried.exit_code == 0, queried.output
     retained = json.loads(queried.output)
     assert retained[-1]["session_id"] == "audit-6"
+
+
+def test_o4e_delivery_reconciliation_is_truthful_and_actionable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delivery_id = "dly-" + "b" * 64
+    entry = {
+        "reservation_id": "dres-" + "a" * 64,
+        "delivery_id": delivery_id,
+        "kind": "channel_result",
+        "target": {
+            "channel": "matrix",
+            "recipient": "!room:example.org",
+            "workspace_hint": "workspace-1",
+            "thread_id": "",
+        },
+        "state": "outcome_unknown",
+        "reason": "provider_attempt_failed",
+        "payload_digest": "c" * 64,
+        "receipt": None,
+        "recovery": {
+            "kind": "neither",
+            "guarantee_id": "",
+            "reconciliation_available": False,
+        },
+    }
+    config = cli_main.DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: object,
+        method: str,
+        _params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        if method == "delivery.list":
+            payload = {"deliveries": [entry], "count": 1}
+        elif method == "delivery.inspect":
+            payload = {"found": True, "delivery": entry}
+        else:
+            assert method == "delivery.resolve"
+            payload = {
+                "found": True,
+                "lookup_attempted": False,
+                "reconciliation_status": "unsupported",
+                "reason": "provider_reconciliation_unavailable",
+                "instruction": (
+                    "No provider lookup is available; no send was attempted. "
+                    "Inspect the provider and submit a fresh request to retry."
+                ),
+                "delivery": entry,
+            }
+        assert response_model is not None
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+    listed = runner.invoke(cli, ["delivery", "list", "--state", "outcome_unknown"])
+    inspected = runner.invoke(cli, ["delivery", "inspect", delivery_id, "--json"])
+    resolved = runner.invoke(cli, ["delivery", "resolve", delivery_id])
+
+    assert listed.exit_code == 0, listed.output
+    assert "state=outcome_unknown" in listed.output
+    assert "reconciliation_available=false" in listed.output
+    assert inspected.exit_code == 0, inspected.output
+    inspected_payload = json.loads(inspected.output)
+    assert "payload" not in inspected_payload["delivery"]
+    assert "metadata" not in inspected_payload["delivery"]
+    assert resolved.exit_code == 0, resolved.output
+    assert "no send was attempted" in resolved.output.lower()
+    assert "fresh request" in resolved.output.lower()

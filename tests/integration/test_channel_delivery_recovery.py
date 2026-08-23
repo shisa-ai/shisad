@@ -38,6 +38,7 @@ class _RecoveryChannel(InMemoryChannel):
     def __init__(self, *, recovery_kind: DeliveryRecoveryKind) -> None:
         super().__init__(name="matrix")
         self.recovery_kind = recovery_kind
+        self.reconcile_override: DeliveryReconciliation | BaseException | None = None
         self.send_calls: list[dict[str, Any]] = []
         self.reconcile_calls: list[str] = []
         self.effects: dict[str, str] = {}
@@ -78,6 +79,10 @@ class _RecoveryChannel(InMemoryChannel):
     ) -> DeliveryReconciliation:
         _ = target
         self.reconcile_calls.append(delivery_id)
+        if isinstance(self.reconcile_override, BaseException):
+            raise self.reconcile_override
+        if self.reconcile_override is not None:
+            return self.reconcile_override
         for receipt in self.effects.values():
             return DeliveryReconciliation(
                 status=DeliveryReconciliationStatus.DELIVERED,
@@ -100,6 +105,27 @@ def _intent(*, source_id: str = "source-1", channel: str = "matrix") -> Delivery
             workspace_hint="workspace-1",
         ),
     )
+
+
+def _seed_outcome_unknown(
+    delivery: ChannelDeliveryService,
+    *,
+    source_id: str = "unknown-source",
+    channel: str = "matrix",
+    message: str = "sensitive delivery body",
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    reserved = delivery.reserve(_intent(source_id=source_id, channel=channel))
+    prepared = delivery.prepare(
+        reserved.reservation_id,
+        message=message,
+        metadata=metadata,
+    )
+    assert delivery._store is not None
+    claimed = delivery._store.claim_attempt(prepared.reservation_id)
+    assert claimed is not None
+    delivery._store.mark_outcome_unknown(prepared.reservation_id, "provider_attempt_failed")
+    return prepared.delivery_id
 
 
 @pytest.mark.asyncio
@@ -150,6 +176,173 @@ async def test_outbound_delivery_crash_never_loses_or_auto_duplicates_result(
         assert recovered[0].outcome_unknown is True
     else:
         assert recovered[0].sent is True
+
+
+@pytest.mark.asyncio
+async def test_authoritative_absence_after_restart_terminalizes_without_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "channels" / "delivery"
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    channel.reconcile_override = DeliveryReconciliation(status=DeliveryReconciliationStatus.ABSENT)
+    await channel.connect()
+    first = ChannelDeliveryService({"matrix": channel}, state_root=root)
+
+    def lose_receipt(*_args: object, **_kwargs: object) -> None:
+        raise OSError("crash before durable receipt")
+
+    assert first._store is not None
+    monkeypatch.setattr(first._store, "mark_delivered", lose_receipt)
+    initial = await first.send(intent=_intent(), message="one external effect")
+    assert initial.outcome_unknown is True
+    assert len(channel.send_calls) == 1
+
+    restarted = ChannelDeliveryService({"matrix": channel}, state_root=root)
+    recovered = await restarted.recover()
+
+    assert recovered[0].state == "reconciled_absent"
+    assert restarted.record(initial.reservation_id).state == "reconciled_absent"
+    assert len(channel.send_calls) == 1
+    assert channel.reconcile_calls == [initial.delivery_id]
+
+
+def test_delivery_inspection_is_exact_bounded_and_payload_safe(tmp_path: Path) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.NEITHER)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(
+        delivery,
+        message="secret message must not project",
+        metadata={"secret": "metadata-secret-must-not-project"},
+    )
+    record = delivery._store.records()[0]  # type: ignore[union-attr]
+
+    rows = delivery.list_deliveries(state="outcome_unknown", limit=1)
+    by_delivery = delivery.inspect_delivery(delivery_id)
+    by_reservation = delivery.inspect_delivery(record.reservation_id)
+
+    assert len(rows) == 1
+    assert rows[0] == by_delivery == by_reservation
+    assert rows[0]["state"] == "outcome_unknown"
+    assert rows[0]["target"]["channel"] == "matrix"
+    assert rows[0]["recovery"] == {
+        "kind": "neither",
+        "guarantee_id": "test.neither.v1",
+        "reconciliation_available": False,
+    }
+    serialized = json.dumps(rows)
+    assert "secret message must not project" not in serialized
+    assert "metadata-secret-must-not-project" not in serialized
+    assert "payload" not in rows[0]
+    assert "metadata" not in rows[0]
+    assert delivery.inspect_delivery(delivery_id[:-1]) is None
+    with pytest.raises(DeliveryStateError, match="limit"):
+        delivery.list_deliveries(limit=0)
+    with pytest.raises(DeliveryStateError, match="state"):
+        delivery.list_deliveries(state="unknown-state")
+
+
+@pytest.mark.asyncio
+async def test_operator_resolution_records_authoritative_delivery_once(tmp_path: Path) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery)
+    channel.reconcile_override = DeliveryReconciliation(
+        status=DeliveryReconciliationStatus.DELIVERED,
+        receipt=ProviderDeliveryReceipt("matrix", "event-authoritative", delivery_id),
+    )
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+    repeated = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is True
+    assert resolved["reconciliation_status"] == "delivered"
+    assert resolved["delivery"]["state"] == "delivered"
+    assert repeated["lookup_attempted"] is False
+    assert repeated["reconciliation_status"] == "delivered"
+    assert channel.reconcile_calls == [delivery_id]
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_operator_resolution_records_authoritative_absence_without_send(
+    tmp_path: Path,
+) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery)
+    channel.reconcile_override = DeliveryReconciliation(status=DeliveryReconciliationStatus.ABSENT)
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+    repeated = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is True
+    assert resolved["reconciliation_status"] == "absent"
+    assert resolved["delivery"]["state"] == "reconciled_absent"
+    assert "fresh request" in resolved["instruction"]
+    assert repeated["lookup_attempted"] is False
+    assert repeated["reconciliation_status"] == "absent"
+    assert channel.reconcile_calls == [delivery_id]
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["matrix", "discord", "telegram", "slack"])
+async def test_current_provider_without_guarantee_stays_unknown(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.NEITHER)
+    delivery = ChannelDeliveryService(
+        {provider: channel}, state_root=tmp_path / provider / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery, channel=provider)
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is False
+    assert resolved["reconciliation_status"] == "unsupported"
+    assert resolved["delivery"]["state"] == "outcome_unknown"
+    assert channel.reconcile_calls == []
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["unknown", "mismatch", "exception"])
+async def test_untrusted_provider_resolution_never_upgrades_uncertainty(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / failure / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery)
+    if failure == "unknown":
+        channel.reconcile_override = DeliveryReconciliation(
+            status=DeliveryReconciliationStatus.UNKNOWN
+        )
+    elif failure == "mismatch":
+        channel.reconcile_override = DeliveryReconciliation(
+            status=DeliveryReconciliationStatus.DELIVERED,
+            receipt=ProviderDeliveryReceipt("discord", "wrong", delivery_id),
+        )
+    else:
+        channel.reconcile_override = TimeoutError("provider secret must not escape")
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is True
+    assert resolved["reconciliation_status"] == "unknown"
+    assert resolved["delivery"]["state"] == "outcome_unknown"
+    assert "provider secret must not escape" not in json.dumps(resolved)
+    assert channel.send_calls == []
 
 
 @pytest.mark.asyncio

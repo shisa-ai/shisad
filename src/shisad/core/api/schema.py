@@ -1854,6 +1854,108 @@ class ChannelPairingProposalResult(BaseModel):
     applied: bool = False
 
 
+DeliveryState = Literal[
+    "preparing",
+    "prepared",
+    "attempt_started",
+    "delivered",
+    "failed_pre_effect",
+    "outcome_unknown",
+    "reconciled_absent",
+    "superseded",
+    "cancelled",
+]
+DeliveryReconciliationOutcome = Literal[
+    "delivered",
+    "absent",
+    "unknown",
+    "unsupported",
+    "not_found",
+    "not_applicable",
+]
+
+
+def _valid_delivery_identifier(value: str) -> bool:
+    prefix, separator, digest = value.partition("-")
+    return (
+        separator == "-"
+        and prefix in {"dres", "dly"}
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
+
+
+class DeliveryIdentifierParams(_StrictParams):
+    delivery_id: str
+
+    @model_validator(mode="after")
+    def validate_exact_identifier(self) -> DeliveryIdentifierParams:
+        delivery_id = self.delivery_id.strip()
+        if not _valid_delivery_identifier(delivery_id):
+            raise ValueError("delivery_id is invalid")
+        self.delivery_id = delivery_id
+        return self
+
+
+class DeliveryListParams(_StrictParams):
+    state: DeliveryState | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class DeliveryTargetEntry(BaseModel):
+    channel: str
+    recipient: str
+    workspace_hint: str = ""
+    thread_id: str = ""
+
+
+class DeliveryReceiptEntry(BaseModel):
+    provider: str
+    receipt_id: str
+    delivery_id: str
+
+
+class DeliveryRecoveryEntry(BaseModel):
+    kind: Literal["exact_idempotency_key", "authoritative_reconciliation", "neither"]
+    guarantee_id: str = ""
+    reconciliation_available: bool = False
+
+
+class DeliveryEntry(BaseModel):
+    reservation_id: str
+    delivery_id: str
+    kind: Literal["channel_result", "message_send", "approval_capability"]
+    target: DeliveryTargetEntry
+    state: DeliveryState
+    reason: str = ""
+    payload_digest: str
+    receipt: DeliveryReceiptEntry | None = None
+    recovery: DeliveryRecoveryEntry
+
+
+class DeliveryListResult(BaseModel):
+    deliveries: list[DeliveryEntry] = Field(default_factory=list)
+    count: int = 0
+
+
+class DeliveryInspectResult(BaseModel):
+    found: bool = False
+    delivery: DeliveryEntry | None = None
+
+    @model_validator(mode="after")
+    def validate_found_projection(self) -> DeliveryInspectResult:
+        if self.found != (self.delivery is not None):
+            raise ValueError("delivery inspection found state is inconsistent")
+        return self
+
+
+class DeliveryResolveResult(DeliveryInspectResult):
+    lookup_attempted: bool = False
+    reconciliation_status: DeliveryReconciliationOutcome
+    reason: str = ""
+    instruction: str = ""
+
+
 class ActionPendingParams(_StrictParams):
     confirmation_id: str | None = None
     session_id: str | None = None
