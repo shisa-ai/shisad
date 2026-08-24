@@ -26,8 +26,9 @@ It installs the Textual UI plus MCP, Matrix E2EE, Discord, Telegram, and Slack
 client libraries. It does not enable any channel or supply credentials.
 PromptGuard remains a separate optional model runtime; combine it explicitly
 as `shisad[assistant,promptguard]` when wanted. The latest currently published
-package is `v0.8.0`, so the `assistant` PyPI command applies after `v0.8.1` is
-published or to an equivalent wheel built from this tree.
+package is `v0.8.1`, where the `assistant` extra is the complete consumer
+install surface. Use an exact release tag or source checkout for the
+pre-publication `v0.8.2` candidate.
 
 The smaller base package still provides `shisad --help`; `shisad[chat]`
 remains available for a Textual-only installation. Missing optional surfaces
@@ -272,6 +273,11 @@ and parent-directory synchronization; on other supported platforms the write
 summary reports unavailable capabilities instead of overstating them. Stop
 shisad before manually restoring that backup, restore it only to its original
 config path, then run `config validate`.
+
+The rollback copy contains the complete original config, including any raw
+credentials or personal values already present outside the migrated fields.
+Keep it owner-only, do not attach it to logs or issue reports, and remove it
+only after the upgraded config and a separate recovery backup are verified.
 
 Interactive unmanaged startup may persist this safe migration and reports the
 backup. Managed or non-interactive startup does not infer write permission: it
@@ -584,7 +590,7 @@ shisad supports Discord, Telegram, Slack, and Matrix as messaging channels. Each
 channel uses default-deny identity allowlisting — only explicitly allowed user IDs
 can interact with the daemon.
 
-On the v0.8.2 development tree, prefer logical channel token references over
+On the v0.8.2 release candidate, prefer logical channel token references over
 raw `SHISAD_*_TOKEN` config values. Register each reference with
 `shisad credential set` (environment, optional keyring, or owner-only local
 file), then use `shisad setup channel --channel <name> ...`. The command validates and
@@ -681,6 +687,10 @@ remaining set can be retried; it never applies an allowlist. The four shipped
 adapters have no channel QR-pairing protocol, and channel credentials or
 control-device secrets are not rendered as substitute QR codes.
 
+Pairing output contains provider workspace/user identifiers and request
+metadata. Treat both human and JSON output as local operational data and
+redact it before sharing.
+
 For a combined setup, enroll the references first and create a bounded
 secret-free selection document. For example:
 
@@ -743,6 +753,11 @@ symlink, noncanonical selected-table, unknown-field, or raw-secret-bearing
 input before replacement. Restart the daemon to load a published update.
 Automatic workspace persona/SOUL generation is not part of this operation;
 persona content remains an explicit operator choice.
+
+The `pre-reconfigure` rollback copy contains the complete original config, not
+only the redacted preview. It can therefore retain raw credentials or personal
+values from unselected sections; keep it owner-only and do not share it as
+diagnostic output.
 
 Matrix homeserver values must be absolute HTTP(S) URLs without embedded
 userinfo, a query, or a fragment. Slack bot-token and app-token references must
@@ -1019,10 +1034,15 @@ Treat diagnostic JSON from shisad CLI commands as local operational data.
 can include user-authored task text, schedule metadata, delivery-channel
 display fields, and identifiers. Do not paste this output into shared logs,
 support tickets, or issue reports without reviewing and redacting it.
+The same handling applies to delivery inspection, channel pairing, audit
+query, backup/restore, config, setup, credential-status, and lifecycle JSON:
+these surfaces redact defined secret fields where contracted, but can still
+contain paths, provider identifiers, workspace/session metadata, or other
+personal operational context.
 
 ### Audit lifecycle
 
-The v0.8.2 development tree verifies the retained main and control-plane audit
+The v0.8.2 release candidate verifies the retained main and control-plane audit
 chains before their owning runtime begins serving work. Each stream rotates
 before its active segment would exceed 32 MiB and normally retains four linked
 archives plus the active segment. A retention deletion failure preserves the

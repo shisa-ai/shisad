@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-08-12 (v0.8.2 O2A optional keyring intake)*
+*Updated: 2026-08-24 (v0.8.2 ReleaseClose dependency remediation)*
 *Status: In Progress*  
-*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory include the v0.8.2 O0 candidate at `shisad@a2546460` plus the O2A optional-keyring lock delta from public baseline `5262d7a2`. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
+*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory include the pre-tag v0.8.2 release candidate with the O0 dependency refresh, O2A optional-keyring intake, and 2026-08-24 ReleaseClose audit remediation. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
 
 ## Scope and Intent
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev`; focused groups plus an opt-in clean-wheel/image job |
 | Release path | PyPI: GitHub Actions `publish.yml` via OIDC; container: local candidate only, no registry path |
-| Current risk summary | Python runtime resolutions remain hash-locked and no release-audit ignore is configured, but the all-groups audit now fails on a newly published high `cryptography 48.0.1` advisory whose first patched version (`50.0.0`) is not released. Optional-channel `aiohttp` and all current optional Ledger bridge advisories are resolved in the working candidate. The local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. |
+| Current risk summary | Python runtime resolutions remain hash-locked and the frozen all-groups audit reports no known vulnerabilities with no advisory ignore configured. The candidate resolves `cryptography 50.0.0`, `h2 4.4.1`, `aiohttp 3.14.3`, and the audited optional Ledger bridge set. The local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,27 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-08-24 — v0.8.2 ReleaseClose dependency remediation
+
+- The first hash-enforced frozen all-groups audit reported four fixed
+  advisories: `PYSEC-2026-3552`-`3554` against locked
+  `cryptography 48.0.1`, and `PYSEC-2026-3628` against transitive `h2 4.3.0`.
+- The human lead authorized the exact dependency and lockfile remediation.
+  The direct bound is now `cryptography>=50,<51`; the lock resolves
+  `cryptography 50.0.0` and `h2 4.4.1`, plus compatible transitive movements
+  `fido2 2.1.1 -> 2.2.1` and `hpack 4.1.0 -> 4.2.0`. No new direct package or
+  audit ignore was added.
+- Upstream `cryptography 50` removes 32-bit Windows and x86_64 macOS support.
+  Those are not candidate-bound tested lanes: the latest recorded portability
+  run used Windows x64 and `macos-26-arm64`, while Linux/amd64 remains the
+  primary release lane. The shisad call sites use AES-GCM, PBKDF2, Ed25519,
+  EC, serialization, and signature APIs unaffected by the documented
+  removals.
+- Focused Python 3.12 compatibility validation passed `287` crypto, approval,
+  FIDO2, memory, A2A, Matrix, and channel-setup tests. The repeated frozen
+  all-groups `pip-audit --require-hashes --disable-pip` then returned
+  `No known vulnerabilities found`.
 
 ### 2026-08-12 — v0.8.2 O2A optional keyring intake
 
@@ -636,9 +657,7 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-| ID | Rationale | Risk | Target / exit condition |
-|---|---|---|---|
-| `SC-v0.8.2-cryptography` | Locked `cryptography 48.0.1` is affected by the newly published PKCS#7 oracle advisory, while upstream names unreleased `50.0.0` as the first patched version. Released `49.0.0` does not close it. No audit ignore is configured. | A reachable PKCS#7 decrypt path could expose distinguishable error/timing behavior; the all-groups audit remains red. Shisad has no direct call to that surface, which bounds current exposure but is not a safety guarantee. | v0.8.2 ReleaseClose: lock and validate the first compatible `cryptography>=50` release, or record an explicit reviewed release-risk decision before publication. |
+No open release-audit dependency deferral remains for the v0.8.2 candidate.
 
 The current Claude adapter-chain advisory remains recorded above as accepted
 runtime-npx adapter risk, not as a second open deferral in this document.
@@ -647,6 +666,7 @@ runtime-npx adapter risk, not as a second open deferral in this document.
 
 | ID | Closure evidence | Residual risk | Closed in |
 |---|---|---|---|
+| `SC-v0.8.2-cryptography` | Raised the direct bound to `cryptography>=50,<51`, locked `50.0.0`, upgraded transitive `h2` to `4.4.1`, passed 287 focused compatibility tests, and obtained a clean hash-enforced frozen all-groups audit with no ignore. | Upstream no longer supports 32-bit Windows or x86_64 macOS; neither is a tested v0.8.2 lane. Future dependency refreshes must preserve the currently tested Linux/amd64, Windows x64, and macOS arm64 posture. | 2026-08-24 v0.8.2 ReleaseClose remediation |
 | SC-v0.7.0-ledger-uuid | Added an npm override for the optional Ledger bridge so Ledger SDK packages resolve patched `uuid@11.1.1`; regenerated `contrib/ledger-bridge/package-lock.json`; `npm audit --json`, `npm audit --omit=dev --json`, and `npm audit --omit=dev --audit-level=high` all exit 0. | Low. The bridge remains optional and disabled by default. Future Ledger SDK updates may remove the need for the override or change compatibility constraints; recheck during the next Ledger bridge dependency refresh. | 2026-05-07 Dependabot 21 remediation |
 
 ## Immediate Hardening Applied (2026-03-31)
@@ -802,9 +822,9 @@ sed -n '1,140p' docs/DEPLOY.md
 
 ### A. Python dependency chain summary
 
-- `uv.lock` entries: `134` packages total.
-- Third-party packages from registry: `133` (plus editable root package `shisad`).
-- Registry source in lockfile: `133` entries from `https://pypi.org/simple`.
+- `uv.lock` entries: `142` packages total.
+- Third-party packages from registry: `141` (plus editable root package `shisad`).
+- Registry source in lockfile: `141` entries from `https://pypi.org/simple`.
 - Non-registry sources in lockfile: none (except local editable `shisad` root).
 
 ### B. Direct dependency declarations vs lock resolution
@@ -815,8 +835,8 @@ sed -n '1,140p' docs/DEPLOY.md
 | --- | --- | --- | --- |
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
 | `click` | `>=8.3.3,<9` | `8.4.2` | Range in spec, exact in lock |
-| `cryptography` | `>=48.0.1,<49` | `48.0.1` | Range in spec, exact in lock |
-| `fido2` | `>=2.1,<3` | `2.1.1` | Range in spec, exact in lock |
+| `cryptography` | `>=50,<51` | `50.0.0` | Range in spec, exact in lock |
+| `fido2` | `>=2.1,<3` | `2.2.1` | Range in spec, exact in lock |
 | `filelock` | `>=3.25,<4` | `3.25.2` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
@@ -830,6 +850,7 @@ sed -n '1,140p' docs/DEPLOY.md
 
 | Extra | Direct packages in extra | Lock status |
 | --- | --- | --- |
+| `credentials` | `keyring` | Exact in lock (`25.7.0`); declared as range |
 | `assistant` | `textual`, `mcp`, `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `chat` | `textual` | Exact in lock (`0.89.1`); declared as range |
 | `promptguard` | `textguard[promptguard]` | Exact in lock through `textguard 1.0.0`; declared as range |
@@ -907,20 +928,20 @@ cffi==2.0.0
 click==8.4.2
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
-cryptography==48.0.1
+cryptography==50.0.0
 cuda-bindings==13.2.0 ; sys_platform == 'linux'
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
 cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
 discord-py==2.6.4
-fido2==2.1.1
+fido2==2.2.1
 filelock==3.25.2
 flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.3.0
 h11==0.16.0
-h2==4.3.0
+h2==4.4.1
 hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
-hpack==4.1.0
+hpack==4.2.0
 httpcore==1.0.9
 httpx==0.28.1
 httpx-sse==0.4.3
@@ -1090,7 +1111,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   tqdm
 coverage==7.13.4
     # via pytest-cov
-cryptography==48.0.1
+cryptography==50.0.0
     # via
     #   fido2
     #   pyjwt
@@ -1102,7 +1123,7 @@ cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
 cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
     # via torch
 discord-py==2.6.4
-fido2==2.1.1
+fido2==2.2.1
     # via shisad
 filelock==3.25.2
     # via
@@ -1123,11 +1144,11 @@ h11==0.16.0
     #   httpcore
     #   matrix-nio
     #   uvicorn
-h2==4.3.0
+h2==4.4.1
     # via matrix-nio
 hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
-hpack==4.1.0
+hpack==4.2.0
     # via h2
 httpcore==1.0.9
     # via httpx

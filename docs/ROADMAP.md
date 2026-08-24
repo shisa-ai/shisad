@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-08-16*
+*Updated: 2026-08-24*
 *Status: Active*
 
 ## Goal
@@ -95,6 +95,14 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   is published or signed, and this work does not claim the later setup wizard,
   live operator web application, universal secret normalization, universal
   SSRF prevention, DNS pinning, or connection-time peer verification.
+- `v0.8.2` is release-prepared but not yet tagged or published. The candidate
+  closes the post-`v0.8.1` reliability issues, composes bounded first-run setup
+  and guided operation, adds session-scoped chat/Discord progress surfaces,
+  versions owned config/SQLite state, and provides integrity-checked data-root
+  recovery, retained audit verification, delivery inspection, and channel
+  administration. Current adapters still do not provide authoritative
+  provider-side delivery lookup, and remote web/device enrollment remains
+  deferred.
 
 ## Milestones
 
@@ -412,7 +420,7 @@ TOTP entry remain deferred to `v0.8.0`.
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
   v0.9 work. Container registry publication remains future work
-- v0.8.2 development starts with the post-v0.8.1 issue burn-down. Its
+- v0.8.2 release candidate starts with the post-v0.8.1 issue burn-down. Its
   reliability lane includes bounded optional-channel startup: a connector
   timeout degrades that connector and preserves the core daemon when cleanup
   succeeds, while unsafe cleanup failure stops startup and releases data-root
@@ -474,7 +482,7 @@ TOTP entry remain deferred to `v0.8.0`.
 - Onboarding — the bounded environment/preflight welcome, generic model
   credential-reference lifecycle, explicit provider/model verification, and
   generated capability-preserving policy profiles are present on the v0.8.2
-  development tree. Reference-only four-channel setup now emits validated
+  release candidate. Reference-only four-channel setup now emits validated
   fragments, runs at most one bounded connector start, and sends a test notice
   only with explicit effect and target authority. Combined setup can now
   publish selected reference-only config and policy artifacts after explicit
