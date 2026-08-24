@@ -18,10 +18,6 @@ supported-markers = [
     "sys_platform == 'win32'",
 ]
 
-[options]
-exclude-newer = "2026-08-23T15:14:19.878407815Z"
-exclude-newer-span = "P1D"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.8.1"

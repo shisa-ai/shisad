@@ -8882,7 +8882,7 @@ async def test_i4_finalize_response_uses_typed_partial_route_failure_for_pending
 
 def test_i4_internal_tool_syntax_uses_generic_planner_failure() -> None:
     response = impl_session._coerce_internal_tool_narration_response_text(
-        response_text="<tool_call>{\"name\": \"web.search\"}</tool_call>",
+        response_text='<tool_call>{"name": "web.search"}</tool_call>',
         user_text="Summarize the current status.",
         risk_factors=[],
         rejected=0,

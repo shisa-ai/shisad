@@ -44,6 +44,7 @@ class CredentialBackend(StrEnum):
 
 class CredentialReferenceError(ValueError):
     """A credential operation failed without exposing backend details."""
+
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -68,9 +69,7 @@ class CredentialReference(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["shisad.credential_reference.v1"] = (
-        "shisad.credential_reference.v1"
-    )
+    schema_version: Literal["shisad.credential_reference.v1"] = "shisad.credential_reference.v1"
     name: str
     backend: CredentialBackend
     locator: str
@@ -242,9 +241,11 @@ class CredentialReferenceStore:
             references = [item for item in state.references if item.name != reference.name]
             references.append(reference)
             try:
-                self._write_state(_CredentialRegistryState(references=sorted(
-                    references, key=lambda item: item.name
-                )))
+                self._write_state(
+                    _CredentialRegistryState(
+                        references=sorted(references, key=lambda item: item.name)
+                    )
+                )
             except CredentialReferenceError:
                 if existing is None and not orphan_material:
                     self._rollback_new_backend(reference)
@@ -518,9 +519,7 @@ class CredentialReferenceStore:
 
     def _validate_secret_root(self, *, create: bool) -> bool:
         try:
-            exists = _path_safe(
-                self.secret_root, directory=True, mode=0o700, reason=_FILE_UNSAFE
-            )
+            exists = _path_safe(self.secret_root, directory=True, mode=0o700, reason=_FILE_UNSAFE)
             if not exists and create:
                 self.secret_root.mkdir(parents=True, mode=0o700)
                 exists = _path_safe(

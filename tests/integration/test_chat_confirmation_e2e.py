@@ -1002,7 +1002,7 @@ async def test_g1_chat_confirmation_early_return_persists_assistant_transcript_a
         )
         sid = created["session_id"]
         transcript_store = TranscriptStore(config.data_dir / "sessions")
-        audit_log = AuditLog(config.data_dir / "audit.jsonl")
+        audit_log = AuditLog(config.data_dir / "audit.jsonl", _read_only=True)
 
         first = await client.call(
             "session.message",

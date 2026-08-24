@@ -34,7 +34,7 @@
       "tests/integration/test_coding_agent_tasks.py": 1,
       "tests/integration/test_control_plane_integration.py": 1,
       "tests/integration/test_daemon_data_lock.py": 7,
-      "tests/integration/test_daemon_runtime.py": 11,
+      "tests/integration/test_daemon_runtime.py": 13,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
       "tests/integration/test_runtime_completion.py": 19,

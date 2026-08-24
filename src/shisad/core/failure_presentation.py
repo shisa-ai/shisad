@@ -15,9 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 ApprovalOutcome = Literal["not_applicable", "not_received", "accepted", "rejected"]
 ExecutionOutcome = Literal["not_started", "succeeded", "failed", "unknown"]
 
-_PROVIDER_HTTP_ERROR_RE = re.compile(
-    r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b"
-)
+_PROVIDER_HTTP_ERROR_RE = re.compile(r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b")
 _RETRYABLE_PROVIDER_HTTP_STATUSES = frozenset({408, 429})
 
 
@@ -55,8 +53,10 @@ def planner_route_failure(
 
     match = _PROVIDER_HTTP_ERROR_RE.search(diagnostic)
     status = int(match.group("status")) if match is not None else None
-    setup_required = status is not None and 400 <= status <= 499 and status not in (
-        _RETRYABLE_PROVIDER_HTTP_STATUSES
+    setup_required = (
+        status is not None
+        and 400 <= status <= 499
+        and status not in (_RETRYABLE_PROVIDER_HTTP_STATUSES)
     )
     if setup_required:
         summary = (

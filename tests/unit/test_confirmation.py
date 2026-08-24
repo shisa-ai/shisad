@@ -135,10 +135,13 @@ def test_i5a_compact_review_uses_only_closed_preview_labels() -> None:
 
     assert compact.review == "Search the web for: OpenClaw"
     assert compact.risk_level == "MEDIUM"
-    assert render_compact_confirmation_review(
-        preview,
-        fallback_action="web.search",
-    ) == "Review: Search the web for: OpenClaw\nRisk Level: MEDIUM"
+    assert (
+        render_compact_confirmation_review(
+            preview,
+            fallback_action="web.search",
+        )
+        == "Review: Search the web for: OpenClaw\nRisk Level: MEDIUM"
+    )
 
 
 def test_i5a_compact_review_does_not_echo_malformed_preview() -> None:

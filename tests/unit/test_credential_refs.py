@@ -416,9 +416,7 @@ def test_o2a_file_set_rejects_existing_unsafe_modes_without_repair(
 
     assert exc.value.reason == "credential_file_unsafe"
     assert secret_file.read_text(encoding="utf-8") == "keep"
-    assert stat.S_IMODE(target.stat().st_mode) == (
-        0o755 if unsafe_target == "root" else 0o644
-    )
+    assert stat.S_IMODE(target.stat().st_mode) == (0o755 if unsafe_target == "root" else 0o644)
     assert not (state / "credential-references.json").exists()
 
 
@@ -489,9 +487,7 @@ def test_o2a_file_remove_rejects_missing_destination_beneath_symlink_root(
 
     assert exc.value.reason == "credential_backend_remove_failed"
     assert not (outside / "model.primary").exists()
-    assert "model.primary" in (state / "credential-references.json").read_text(
-        encoding="utf-8"
-    )
+    assert "model.primary" in (state / "credential-references.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not hasattr(stat, "S_IMODE"), reason="POSIX mode inspection unavailable")
