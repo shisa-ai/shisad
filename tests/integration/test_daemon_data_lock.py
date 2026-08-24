@@ -337,6 +337,7 @@ async def test_gh111_uncleanable_channel_fails_bounded_and_releases_lock(
 
     monkeypatch.setattr(TelegramChannel, "connect", _blocked_connect)
     monkeypatch.setattr(TelegramChannel, "disconnect_strict", _blocked_disconnect)
+    monkeypatch.setattr(TelegramChannel, "available", property(lambda _channel: True))
     config = _config(
         tmp_path,
         root="u",
