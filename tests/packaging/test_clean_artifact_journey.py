@@ -262,7 +262,7 @@ def _planner_response(payload: Mapping[str, Any]) -> dict[str, Any]:
             previous_tool = str(function.get("name", "")) if isinstance(function, dict) else ""
             break
     if any(isinstance(message, dict) and message.get("role") == "tool" for message in messages):
-        return _openai_response(RESPONSE_MARKERS.get(previous_tool, "F5_TOOL_OK"))
+        return _respond_to_user(payload, RESPONSE_MARKERS.get(previous_tool, "F5_TOOL_OK"))
 
     user_text = "\n".join(
         str(message.get("content", ""))
@@ -271,7 +271,7 @@ def _planner_response(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     lowered = user_text.lower()
     if "matrix package hello" in lowered:
-        return _openai_response(RESPONSE_MARKERS["matrix"])
+        return _respond_to_user(payload, RESPONSE_MARKERS["matrix"])
     if "write package approval" in lowered:
         match = re.search(r"WRITE_PATH=([^\s]+)", user_text)
         assert match is not None
@@ -292,7 +292,18 @@ def _planner_response(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
     if "current package time" in lowered:
         return _openai_response("", tool_name="time.now", arguments={})
-    return _openai_response(RESPONSE_MARKERS["hello"])
+    return _respond_to_user(payload, RESPONSE_MARKERS["hello"])
+
+
+def _respond_to_user(payload: Mapping[str, Any], content: str) -> dict[str, Any]:
+    tools = payload.get("tools", [])
+    if isinstance(tools, list) and len(tools) == 1:
+        function = tools[0].get("function", {}) if isinstance(tools[0], dict) else {}
+        if isinstance(function, dict) and function.get("name") == "respond_to_user":
+            return _openai_response(
+                "", tool_name="respond_to_user", arguments={"final_answer": content}
+            )
+    return _openai_response(content)
 
 
 def _openai_response(
