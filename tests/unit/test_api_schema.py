@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from shisad.core.api import schema as api_schema
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingResult,
@@ -97,6 +98,60 @@ from shisad.core.api.schema import (
 
 class TestApiSchemaValidation:
     """M0.T1: schema validation rejects malformed control API requests."""
+
+    def test_o4f_channel_admin_params_are_finite_and_truthful(self) -> None:
+        test = api_schema.ChannelTestParams.model_validate(
+            {"channel": "discord", "target": "channel-123"}
+        )
+        cleanup = api_schema.ChannelPairingCleanupParams.model_validate(
+            {
+                "workspace_hint": "guild-1",
+                "channel": "discord",
+                "before": "2026-08-24T00:00:00+00:00",
+                "write": False,
+            }
+        )
+
+        assert test.channel == "discord"
+        assert test.target == "channel-123"
+        assert cleanup.before.tzinfo is not None
+        assert cleanup.write is False
+        for payload in (
+            {"channel": "email", "target": "x"},
+            {"channel": "discord", "target": ""},
+            {"channel": "discord", "target": "bad\nvalue"},
+        ):
+            with pytest.raises(ValidationError):
+                api_schema.ChannelTestParams.model_validate(payload)
+        with pytest.raises(ValidationError):
+            api_schema.ChannelPairingCleanupParams.model_validate(
+                {"workspace_hint": "guild-1", "before": "2026-08-24T00:00:00"}
+            )
+
+    def test_o4f_channel_admin_results_reject_false_round_trip_or_replay_claims(self) -> None:
+        result = api_schema.ChannelTestResult.model_validate(
+            {
+                "channel": "discord",
+                "target": "channel-123",
+                "attempted": True,
+                "sent": True,
+                "state": "delivered",
+                "reason": "provider_acknowledged",
+                "outbound_acknowledged": True,
+                "round_trip_verified": False,
+                "replay_recommended": False,
+            }
+        )
+        assert result.round_trip_verified is False
+        assert result.replay_recommended is False
+        with pytest.raises(ValidationError):
+            api_schema.ChannelTestResult.model_validate(
+                {**result.model_dump(mode="json"), "round_trip_verified": True}
+            )
+        with pytest.raises(ValidationError):
+            api_schema.ChannelTestResult.model_validate(
+                {**result.model_dump(mode="json"), "replay_recommended": True}
+            )
 
     def test_valid_request(self) -> None:
         req = JsonRpcRequest(method="session.create", params={"user_id": "alice"}, id=1)

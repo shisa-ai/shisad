@@ -42,7 +42,12 @@ from shisad.cli.onboarding import (
     parse_managed_posture,
     render_welcome,
 )
-from shisad.cli.presentation import CliErrorEnvelope, StructuredCliError, safe_error_detail
+from shisad.cli.presentation import (
+    CliErrorEnvelope,
+    StructuredCliError,
+    safe_cli_text,
+    safe_error_detail,
+)
 from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
 from shisad.cli.setup import setup
 from shisad.cli.upgrade import (
@@ -61,7 +66,11 @@ from shisad.core.api.schema import (
     AdminSelfModRollbackResult,
     AdminSoulReadResult,
     AdminSoulUpdateResult,
+    ChannelPairingCleanupResult,
+    ChannelPairingListResult,
     ChannelPairingProposalResult,
+    ChannelStatusResult,
+    ChannelTestResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
@@ -143,12 +152,14 @@ from shisad.core.config_file import (
     ConfigFileMissingError,
     LoadedConfig,
     UnsupportedConfigSchemaError,
+    apply_config_section_update,
     config_diff_projection,
     config_schema_projection,
     environment_config_selection,
     environment_projection,
     initialize_config_file,
     load_effective_config,
+    plan_config_section_update,
     render_config_template,
     selected_config_path,
 )
@@ -960,6 +971,102 @@ def config_diff(output_format: str) -> None:
     changes = payload.get("changes", {})
     human = _projection_lines(changes if isinstance(changes, dict) else {})
     _emit_structured_output(payload, output_format=output_format, human_lines=human)
+
+
+@config_group.command("wizard")
+@click.option(
+    "--section",
+    type=click.Choice(["daemon", "model", "security"]),
+    required=True,
+    help="One finite TOML section to reconfigure.",
+)
+@click.option(
+    "--set",
+    "updates",
+    multiple=True,
+    help="Typed FIELD=JSON update; plain text is treated as a string.",
+)
+@click.option("--write", is_flag=True, help="Explicitly publish the validated section update.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def config_wizard(
+    ctx: click.Context,
+    section: str,
+    updates: tuple[str, ...],
+    write: bool,
+    output_format: str,
+) -> None:
+    """Preview or explicitly publish one typed config-section update."""
+
+    try:
+        parsed_updates: dict[str, object] = {}
+        for item in updates:
+            field, separator, raw_value = item.partition("=")
+            field = field.strip()
+            if not separator or not field:
+                raise ConfigFileError("each --set must use FIELD=VALUE")
+            if field in parsed_updates:
+                raise ConfigFileError(f"duplicate config wizard field: {field}")
+            try:
+                value: object = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+            parsed_updates[field] = value
+        if not parsed_updates:
+            raise ConfigFileError("config wizard requires at least one --set FIELD=VALUE")
+        root_obj = ctx.find_root().obj or {}
+        selected = root_obj.get("config_path") if isinstance(root_obj, dict) else None
+        explicit_path = selected if isinstance(selected, Path) else None
+        path = selected_config_path(explicit_path, environ=os.environ)
+        loaded = load_effective_config(explicit_path, environ=os.environ)
+        plan = plan_config_section_update(
+            path,
+            section=section,
+            updates=parsed_updates,
+            environ=os.environ,
+        )
+        result = apply_config_section_update(plan, environ=os.environ) if write else None
+    except ConfigFileError as exc:
+        raise _config_cli_error(
+            what_failed="Could not prepare the config section update.",
+            exc=exc,
+            next_action="review the selected section and rerun config wizard",
+            output_format=output_format,
+        ) from exc
+
+    current = loaded.redacted_projection()[section]
+    payload: dict[str, object] = {
+        "section": section,
+        "path": str(path),
+        "current": current,
+        "changed_fields": list(plan.changed_fields),
+        "source_sha256": plan.source_sha256,
+        "persisted": result is not None,
+        "backup_path": str(result.backup_path) if result is not None else "",
+        "permissions": result.permissions if result is not None else "not_applicable",
+        "parent_sync": result.parent_sync if result is not None else "not_applicable",
+        "next_action": (
+            "restart the daemon to load the updated section"
+            if result is not None
+            else "rerun with --write to publish this exact selected-section update"
+        ),
+    }
+    human_lines = [
+        f"Config section: {section}",
+        *_projection_lines(current),
+        f"Changed fields: {', '.join(plan.changed_fields) or 'none'}",
+        f"Published: {str(result is not None).lower()}",
+    ]
+    if result is not None:
+        human_lines.append(f"Rollback copy: {safe_cli_text(str(result.backup_path), limit=512)}")
+    human_lines.append(f"Next: {payload['next_action']}")
+    _emit_structured_output(payload, output_format=output_format, human_lines=human_lines)
 
 
 @cli.command("init")
@@ -3645,6 +3752,135 @@ def lockdown_status(session_id: str, all_sessions: bool, output_json: bool) -> N
 @cli.group()
 def channel() -> None:
     """Channel admin workflows."""
+
+
+@channel.command("status")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_status(output_json: bool) -> None:
+    """Show truthful readiness for all shipped channel adapters."""
+    result = rpc_call(
+        _get_config(),
+        "channel.status",
+        {},
+        response_model=ChannelStatusResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    for row in result.channels:
+        channel_name = sanitize_terminal_field(row.channel)
+        startup = sanitize_terminal_field(row.startup_status)
+        last_message = row.last_message_at.isoformat() if row.last_message_at else "unavailable"
+        click.echo(
+            f"{channel_name} state={row.state} enabled={str(row.enabled).lower()} "
+            f"available={str(row.available).lower()} connected={str(row.connected).lower()} "
+            f"startup={startup} last_message={last_message}"
+        )
+
+
+@channel.command("test")
+@click.argument("channel_name", type=click.Choice(["matrix", "discord", "telegram", "slack"]))
+@click.option("--target", required=True, help="Exact outbound provider target")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_test(channel_name: str, target: str, output_json: bool) -> None:
+    """Send one fixed notice through normal durable channel delivery."""
+    result = rpc_call(
+        _get_config(),
+        "channel.test",
+        {"channel": channel_name, "target": target},
+        response_model=ChannelTestResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(
+        f"Channel test: state={sanitize_terminal_field(result.state)} "
+        f"reason={sanitize_terminal_field(result.reason)}"
+    )
+    if result.outbound_acknowledged:
+        click.echo("Outbound acknowledged; this is not a round-trip or inbound identity check.")
+    elif result.state == "outcome_unknown":
+        click.echo("Outcome unknown; no replay is recommended. Inspect delivery state first.")
+    else:
+        click.echo("No outbound acknowledgment; no round-trip claim is made.")
+
+
+@channel.command("pairing-list")
+@click.option("--channel", "channel_name", default="", help="Optional exact channel filter")
+@click.option("--workspace", "workspace_hint", required=True, help="Exact provider workspace")
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum entries")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_pairing_list(
+    channel_name: str,
+    workspace_hint: str,
+    limit: int,
+    output_json: bool,
+) -> None:
+    """Inspect validated pairing requests without creating a proposal."""
+    result = rpc_call(
+        _get_config(),
+        "channel.pairing_list",
+        {
+            "channel": channel_name or None,
+            "workspace_hint": workspace_hint,
+            "limit": limit,
+        },
+        response_model=ChannelPairingListResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.entries:
+        click.echo("No pairing requests in the selected scope.")
+        return
+    for entry in result.entries:
+        click.echo(
+            f"{sanitize_terminal_field(entry.channel)} "
+            f"user={sanitize_terminal_field(entry.external_user_id)} "
+            f"requested_at={entry.requested_at.isoformat()} "
+            f"reason={sanitize_terminal_field(entry.reason)}"
+        )
+
+
+@channel.command("pairing-cleanup")
+@click.option("--channel", "channel_name", default="", help="Optional exact channel filter")
+@click.option("--workspace", "workspace_hint", required=True, help="Exact provider workspace")
+@click.option("--before", required=True, help="Inclusive timezone-qualified cutoff")
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum removals")
+@click.option("--write", is_flag=True, help="Explicitly remove the previewed exact records")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_pairing_cleanup(
+    channel_name: str,
+    workspace_hint: str,
+    before: str,
+    limit: int,
+    write: bool,
+    output_json: bool,
+) -> None:
+    """Preview or explicitly clean one bounded pairing-request scope."""
+    result = rpc_call(
+        _get_config(),
+        "channel.pairing_cleanup",
+        {
+            "channel": channel_name or None,
+            "workspace_hint": workspace_hint,
+            "before": before,
+            "limit": limit,
+            "write": write,
+        },
+        response_model=ChannelPairingCleanupResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(
+        f"Pairing cleanup: applied={str(not result.dry_run).lower()} "
+        f"matched={result.matched_count} removed={result.removed_count} "
+        f"failed={result.failed_count} remaining={result.remaining_count} "
+        f"complete={str(result.complete).lower()} durability={result.durability}"
+    )
+    if result.dry_run:
+        click.echo("Dry run only; rerun with --write to remove these exact records.")
 
 
 @channel.command("pairing-propose")

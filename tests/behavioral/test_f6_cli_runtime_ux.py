@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from textual.widgets import TextArea
 
 from shisad.channels import setup as channel_setup
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
+from shisad.channels.delivery import DeliveryResult
 from shisad.cli import main as cli_main
 from shisad.cli import onboarding
 from shisad.cli.main import cli
@@ -22,6 +24,7 @@ from shisad.core.audit import AuditLog
 from shisad.core.events import SessionCreated
 from shisad.core.readiness import ReadinessState, ReadinessStatus
 from shisad.core.types import SessionId, UserId
+from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.policy import PolicyLoader
 from shisad.ui import chat as chat_ui
@@ -788,3 +791,282 @@ def test_o4e_delivery_reconciliation_is_truthful_and_actionable(
     assert resolved.exit_code == 0, resolved.output
     assert "no send was attempted" in resolved.output.lower()
     assert "fresh request" in resolved.output.lower()
+
+
+def test_o4f_channel_status_and_test_are_truthful(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = cli_main.DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_rpc_call(
+        _config: object,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, dict(params or {})))
+        if method == "channel.status":
+            payload = {
+                "channels": [
+                    {
+                        "channel": name,
+                        "enabled": name == "discord",
+                        "available": name == "discord",
+                        "connected": name == "discord",
+                        "state": "connected" if name == "discord" else "disabled",
+                        "startup_status": "ready" if name == "discord" else "disabled",
+                        "startup_reason": "",
+                        "last_message_at": None,
+                        "last_message_evidence": "unavailable",
+                    }
+                    for name in ("matrix", "discord", "telegram", "slack")
+                ],
+                "count": 4,
+            }
+        else:
+            assert method == "channel.test"
+            payload = {
+                "channel": "discord",
+                "target": "channel-456",
+                "attempted": True,
+                "sent": True,
+                "state": "delivered",
+                "reason": "provider_acknowledged",
+                "outbound_acknowledged": True,
+                "round_trip_verified": False,
+                "replay_recommended": False,
+                "reservation_id": "dres-" + "a" * 64,
+                "delivery_id": "dly-" + "b" * 64,
+            }
+        assert response_model is not None
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+    status = runner.invoke(cli, ["channel", "status"])
+    tested = runner.invoke(cli, ["channel", "test", "discord", "--target", "channel-456"])
+
+    assert status.exit_code == 0, status.output
+    assert "discord state=connected" in status.output
+    assert "last_message=unavailable" in status.output
+    assert tested.exit_code == 0, tested.output
+    assert "outbound acknowledged" in tested.output.lower()
+    assert "not a round-trip" in tested.output.lower()
+    assert calls == [
+        ("channel.status", {}),
+        ("channel.test", {"channel": "discord", "target": "channel-456"}),
+    ]
+
+    class _DeliveryOwner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def send(self, **kwargs: object) -> DeliveryResult:
+            self.calls.append(kwargs)
+            return DeliveryResult(
+                attempted=True,
+                sent=True,
+                reason="provider_acknowledged",
+                reservation_id="dres-runtime",
+                delivery_id="dly-runtime",
+                state="delivered",
+            )
+
+    class _RuntimeHarness(AdminImplMixin):
+        @staticmethod
+        def _is_admin_rpc_peer(params: object) -> bool:
+            return isinstance(params, dict) and params.get("_rpc_peer") == {"uid": 0}
+
+    delivery_owner = _DeliveryOwner()
+    harness = _RuntimeHarness()
+    harness._services = SimpleNamespace(  # type: ignore[attr-defined]
+        delivery=delivery_owner,
+        channel_startup_status={"discord": {"status": "ready", "reason_code": ""}},
+    )
+    harness._config = SimpleNamespace(  # type: ignore[attr-defined]
+        matrix_enabled=False,
+        discord_enabled=True,
+        telegram_enabled=False,
+        slack_enabled=False,
+    )
+    harness._matrix_channel = None  # type: ignore[attr-defined]
+    harness._discord_channel = SimpleNamespace(available=True, connected=True)  # type: ignore[attr-defined]
+    harness._telegram_channel = None  # type: ignore[attr-defined]
+    harness._slack_channel = None  # type: ignore[attr-defined]
+    runtime_status = asyncio.run(harness.do_channel_status({"_rpc_peer": {"uid": 0}}))
+    runtime_test = asyncio.run(
+        harness.do_channel_test(
+            {"channel": "discord", "target": "channel-456", "_rpc_peer": {"uid": 0}}
+        )
+    )
+    assert runtime_status["channels"][1]["last_message_evidence"] == "unavailable"
+    assert runtime_test["outbound_acknowledged"] is True
+    assert runtime_test["round_trip_verified"] is False
+    assert delivery_owner.calls[0]["message"] == channel_setup.CHANNEL_SETUP_TEST_MESSAGE
+    with pytest.raises(ValueError, match="authenticated admin"):
+        asyncio.run(harness.do_channel_test({"channel": "discord", "target": "channel-456"}))
+
+
+def test_o4f_pairing_operations_and_config_reconfiguration_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """schema_version = 1
+# keep daemon bytes exact
+[daemon]
+ui_theme = "shisa-dark"
+
+[model]
+planner_model_id = "old-model"
+planner_api_key_ref = "model.primary"
+
+# keep security bytes exact
+[security]
+default_deny = true
+""",
+        encoding="utf-8",
+    )
+    original = config_path.read_bytes()
+    runner = CliRunner()
+    preview = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "config",
+            "wizard",
+            "--section",
+            "model",
+            "--set",
+            'planner_model_id="new-model"',
+            "--format",
+            "json",
+        ],
+    )
+    assert preview.exit_code == 0, preview.output
+    assert json.loads(preview.output)["persisted"] is False
+    assert config_path.read_bytes() == original
+
+    published = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "config",
+            "wizard",
+            "--section",
+            "model",
+            "--set",
+            'planner_model_id="new-model"',
+            "--write",
+            "--format",
+            "json",
+        ],
+    )
+    assert published.exit_code == 0, published.output
+    publication = json.loads(published.output)
+    assert publication["persisted"] is True
+    assert publication["changed_fields"] == ["planner_model_id"]
+    assert Path(publication["backup_path"]).read_bytes() == original
+    rewritten = config_path.read_bytes()
+    assert b'# keep daemon bytes exact\n[daemon]\nui_theme = "shisa-dark"\n' in rewritten
+    assert b"# keep security bytes exact\n[security]\ndefault_deny = true\n" in rewritten
+    assert b'planner_model_id = "new-model"' in rewritten
+    assert "must-not-print" not in published.output
+
+    config = cli_main.DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_rpc_call(
+        _config: object,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        request = dict(params or {})
+        calls.append((method, request))
+        entry = {
+            "channel": "discord",
+            "external_user_id": "user-1",
+            "workspace_hint": "guild-1",
+            "reason": "identity_not_allowlisted",
+            "requested_at": "2026-08-23T00:00:00+00:00",
+        }
+        if method == "channel.pairing_list":
+            payload = {"entries": [entry], "count": 1}
+        else:
+            assert method == "channel.pairing_cleanup"
+            write = bool(request["write"])
+            payload = {
+                "workspace_hint": "guild-1",
+                "channel": "discord",
+                "before": "2026-08-24T00:00:00+00:00",
+                "dry_run": not write,
+                "complete": True,
+                "matched_count": 1,
+                "removed_count": 1 if write else 0,
+                "failed_count": 0,
+                "remaining_count": 0 if write else 1,
+                "durability": "supported" if write else "not_applicable",
+                "entries": [entry],
+                "failures": [],
+            }
+        assert response_model is not None
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    listed = runner.invoke(
+        cli,
+        ["channel", "pairing-list", "--workspace", "guild-1", "--channel", "discord"],
+    )
+    dry = runner.invoke(
+        cli,
+        [
+            "channel",
+            "pairing-cleanup",
+            "--workspace",
+            "guild-1",
+            "--channel",
+            "discord",
+            "--before",
+            "2026-08-24T00:00:00+00:00",
+        ],
+    )
+    written = runner.invoke(
+        cli,
+        [
+            "channel",
+            "pairing-cleanup",
+            "--workspace",
+            "guild-1",
+            "--channel",
+            "discord",
+            "--before",
+            "2026-08-24T00:00:00+00:00",
+            "--write",
+        ],
+    )
+    assert listed.exit_code == dry.exit_code == written.exit_code == 0
+    assert "applied=false" in dry.output
+    assert "applied=true" in written.output
+    assert all(
+        "pairing_requests" not in output for output in (listed.output, dry.output, written.output)
+    )
+    assert calls[1][1]["write"] is False
+    assert calls[2][1]["write"] is True

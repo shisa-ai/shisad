@@ -23,6 +23,7 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
+from shisad.channels.setup import CHANNEL_SETUP_TEST_MESSAGE
 from shisad.channels.state import (
     ChannelReplayIdentityError,
     ReplayIdentity,
@@ -33,6 +34,7 @@ from shisad.core.events import (
     ChannelDeliveryAttempted,
     ChannelPairingProposalGenerated,
     ChannelPairingRequested,
+    ChannelPairingRequestsCleaned,
     LockdownChanged,
     SessionMessageReceived,
 )
@@ -44,6 +46,7 @@ from shisad.core.soul import (
     soul_text_sha256,
     write_soul_text,
 )
+from shisad.core.storage_platform import sync_parent_directory
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.types import Capability, SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
@@ -2271,6 +2274,232 @@ class AdminImplMixin(HandlerMixinBase):
             "count": len(deduped),
             "config_patch": config_patch,
             "applied": False,
+        }
+
+    async def do_channel_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel status requires authenticated admin peer")
+        startup_rows = getattr(self._services, "channel_startup_status", {})
+        rows: list[dict[str, Any]] = []
+        for name, enabled, adapter in (
+            ("matrix", self._config.matrix_enabled, self._matrix_channel),
+            ("discord", self._config.discord_enabled, self._discord_channel),
+            ("telegram", self._config.telegram_enabled, self._telegram_channel),
+            ("slack", self._config.slack_enabled, self._slack_channel),
+        ):
+            available = bool(adapter.available) if adapter is not None else False
+            connected = bool(adapter.connected) if adapter is not None else False
+            state = "disabled"
+            if enabled and not available:
+                state = "misconfigured"
+            elif enabled and not connected:
+                state = "degraded"
+            elif enabled:
+                state = "connected"
+            startup = startup_rows.get(name, {})
+            if not isinstance(startup, Mapping):
+                startup = {}
+            rows.append(
+                {
+                    "channel": name,
+                    "enabled": bool(enabled),
+                    "available": available,
+                    "connected": connected,
+                    "state": state,
+                    "startup_status": str(
+                        startup.get("status") or ("unavailable" if enabled else "disabled")
+                    ),
+                    "startup_reason": str(startup.get("reason_code") or ""),
+                    "last_message_at": None,
+                    "last_message_evidence": "unavailable",
+                }
+            )
+        return {"channels": rows, "count": len(rows)}
+
+    async def do_channel_test(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel test requires authenticated admin peer")
+        channel = str(params.get("channel") or "").strip().lower()
+        target = str(params.get("target") or "").strip()
+        result = await self._services.delivery.send(
+            intent=DeliveryIntent(
+                source_id=f"channel_test:{uuid.uuid4().hex}",
+                kind="channel_test",
+                target=DeliveryTarget(channel=channel, recipient=target),
+            ),
+            message=CHANNEL_SETUP_TEST_MESSAGE,
+            metadata={"channel_test": True},
+        )
+        return {
+            "channel": channel,
+            "target": target,
+            "attempted": result.attempted,
+            "sent": result.sent,
+            "state": result.state,
+            "reason": result.reason,
+            "outbound_acknowledged": bool(result.sent and result.state == "delivered"),
+            "round_trip_verified": False,
+            "replay_recommended": False,
+            "reservation_id": result.reservation_id,
+            "delivery_id": result.delivery_id,
+        }
+
+    async def do_channel_pairing_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel pairing list requires authenticated admin peer")
+        channel_filter = str(params.get("channel") or "").strip().lower()
+        workspace = str(params.get("workspace_hint") or "").strip()
+        limit = max(1, int(params.get("limit", 100)))
+        rows = self._load_pairing_request_artifacts(
+            owner_uid=int(self._daemon_owner_uid),
+            workspace_hint=workspace,
+        )
+        entries = sorted(
+            (
+                {
+                    "channel": str(row["channel"]),
+                    "external_user_id": str(row["external_user_id"]),
+                    "workspace_hint": str(row["workspace_hint"]),
+                    "reason": str(row["reason"]),
+                    "requested_at": str(row["requested_at"]),
+                }
+                for row in rows
+                if not channel_filter or str(row["channel"]) == channel_filter
+            ),
+            key=lambda row: (
+                row["requested_at"],
+                row["channel"],
+                row["external_user_id"],
+            ),
+        )[:limit]
+        return {"entries": entries, "count": len(entries)}
+
+    async def do_channel_pairing_cleanup(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel pairing cleanup requires authenticated admin peer")
+        owner_uid = int(self._daemon_owner_uid)
+        channel_filter = str(params.get("channel") or "").strip().lower()
+        workspace = str(params.get("workspace_hint") or "").strip()
+        before = datetime.fromisoformat(str(params.get("before") or ""))
+        write = bool(params.get("write", False))
+        limit = max(1, int(params.get("limit", 100)))
+        rows = self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace,
+        )
+        matched = sorted(
+            (
+                row
+                for row in rows
+                if (not channel_filter or str(row["channel"]) == channel_filter)
+                and datetime.fromisoformat(str(row["requested_at"])) <= before
+            ),
+            key=lambda row: (
+                str(row["requested_at"]),
+                str(row["channel"]),
+                str(row["external_user_id"]),
+            ),
+        )[:limit]
+        entries = [
+            {
+                "channel": str(row["channel"]),
+                "external_user_id": str(row["external_user_id"]),
+                "workspace_hint": str(row["workspace_hint"]),
+                "reason": str(row["reason"]),
+                "requested_at": str(row["requested_at"]),
+            }
+            for row in matched
+        ]
+        failures: list[dict[str, str]] = []
+        removed = 0
+        durability = "not_applicable"
+        if write:
+            in_memory = self._identity_map.list_pairing_requests(limit=1000)
+            for row in matched:
+                channel = str(row["channel"])
+                external_user_id = str(row["external_user_id"])
+                artifact = self._pairing_request_artifact_path(
+                    owner_uid=owner_uid,
+                    workspace_hint=workspace,
+                    channel=channel,
+                    external_user_id=external_user_id,
+                )
+                try:
+                    artifact.unlink()
+                except OSError as exc:
+                    failures.append(
+                        {
+                            "channel": channel,
+                            "external_user_id": external_user_id,
+                            "reason": f"delete_failed:{exc.__class__.__name__}",
+                        }
+                    )
+                    continue
+                removed += 1
+                for request in in_memory:
+                    if (
+                        request.owner_uid == owner_uid
+                        and request.workspace_hint == workspace
+                        and request.channel == channel
+                        and request.external_user_id == external_user_id
+                    ):
+                        self._identity_map.discard_pairing_request(request)
+            if removed:
+                try:
+                    durability = sync_parent_directory(
+                        self._pairing_workspace_artifact_dir(
+                            owner_uid=owner_uid,
+                            workspace_hint=workspace,
+                        )
+                    )
+                except OSError:
+                    durability = "failed"
+                    failures.append(
+                        {
+                            "channel": channel_filter,
+                            "external_user_id": "",
+                            "reason": "parent_sync_failed",
+                        }
+                    )
+
+        remaining_rows = self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace,
+        )
+        remaining_count = sum(
+            1
+            for row in remaining_rows
+            if not channel_filter or str(row["channel"]) == channel_filter
+        )
+        complete = not failures and durability != "failed"
+        if write:
+            await self._event_bus.publish(
+                ChannelPairingRequestsCleaned(
+                    session_id=None,
+                    actor="control_api",
+                    owner_uid=owner_uid,
+                    workspace_hint=workspace,
+                    channel=channel_filter,
+                    before=before.isoformat(),
+                    matched_count=len(matched),
+                    removed_count=removed,
+                    failed_count=len(failures),
+                    complete=complete,
+                )
+            )
+        return {
+            "workspace_hint": workspace,
+            "channel": channel_filter,
+            "before": before.isoformat(),
+            "dry_run": not write,
+            "complete": complete,
+            "matched_count": len(matched),
+            "removed_count": removed,
+            "failed_count": len(failures),
+            "remaining_count": remaining_count,
+            "durability": durability,
+            "entries": entries,
+            "failures": failures,
         }
 
     async def do_delivery_list(self, params: Mapping[str, Any]) -> dict[str, Any]:

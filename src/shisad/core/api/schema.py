@@ -1816,13 +1816,13 @@ class ChannelIngestResult(SessionMessageResult):
     channel_policy: dict[str, Any] = Field(default_factory=dict)
 
 
-class ChannelPairingProposalParams(_StrictParams):
+class _ChannelPairingScopeParams(_StrictParams):
     channel: str | None = None
     workspace_hint: str
     limit: int = 100
 
     @model_validator(mode="after")
-    def normalize_exact_scope(self) -> ChannelPairingProposalParams:
+    def normalize_exact_scope(self) -> _ChannelPairingScopeParams:
         workspace_hint = self.workspace_hint.strip()
         if not workspace_hint:
             raise ValueError("workspace_hint is required")
@@ -1839,6 +1839,110 @@ class ChannelPairingProposalParams(_StrictParams):
         if not 1 <= self.limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
         return self
+
+
+ChannelAdminName = Literal["matrix", "discord", "telegram", "slack"]
+
+
+class ChannelStatusParams(_StrictParams):
+    """Read-only status for all shipped channel adapters."""
+
+
+class ChannelStatusEntry(BaseModel):
+    channel: ChannelAdminName
+    enabled: bool = False
+    available: bool = False
+    connected: bool = False
+    state: Literal["disabled", "misconfigured", "degraded", "connected"] = "disabled"
+    startup_status: str = ""
+    startup_reason: str = ""
+    last_message_at: datetime | None = None
+    last_message_evidence: Literal["unavailable"] = "unavailable"
+
+
+class ChannelStatusResult(BaseModel):
+    channels: list[ChannelStatusEntry] = Field(default_factory=list)
+    count: int = 0
+
+
+class ChannelTestParams(_StrictParams):
+    channel: ChannelAdminName
+    target: str
+
+    @model_validator(mode="after")
+    def normalize_exact_target(self) -> ChannelTestParams:
+        target = self.target.strip()
+        if not target or len(target) > 512 or not _procedure_candidate_label_safe(target):
+            raise ValueError("channel test target is invalid")
+        self.target = target
+        return self
+
+
+class ChannelTestResult(BaseModel):
+    channel: ChannelAdminName
+    target: str
+    attempted: bool = False
+    sent: bool = False
+    state: str = ""
+    reason: str = ""
+    outbound_acknowledged: bool = False
+    round_trip_verified: Literal[False] = False
+    replay_recommended: Literal[False] = False
+    reservation_id: str = ""
+    delivery_id: str = ""
+
+
+class ChannelPairingRequestEntry(BaseModel):
+    channel: str
+    external_user_id: str
+    workspace_hint: str
+    reason: str
+    requested_at: datetime
+
+
+class ChannelPairingListParams(_ChannelPairingScopeParams):
+    """Read validated pairing evidence without generating a proposal."""
+
+
+class ChannelPairingListResult(BaseModel):
+    entries: list[ChannelPairingRequestEntry] = Field(default_factory=list)
+    count: int = 0
+
+
+class ChannelPairingCleanupParams(_ChannelPairingScopeParams):
+    before: datetime
+    write: bool = False
+
+    @model_validator(mode="after")
+    def require_zoned_cutoff(self) -> ChannelPairingCleanupParams:
+        if self.before.tzinfo is None or self.before.utcoffset() is None:
+            raise ValueError("pairing cleanup cutoff must include a timezone")
+        return self
+
+
+class ChannelPairingCleanupFailure(BaseModel):
+    channel: str
+    external_user_id: str
+    reason: str
+
+
+class ChannelPairingCleanupResult(BaseModel):
+    workspace_hint: str
+    channel: str = ""
+    before: datetime
+    dry_run: bool = True
+    complete: bool = True
+    matched_count: int = 0
+    removed_count: int = 0
+    failed_count: int = 0
+    remaining_count: int = 0
+    durability: Literal["supported", "unsupported", "failed", "not_applicable"] = "not_applicable"
+    entries: list[ChannelPairingRequestEntry] = Field(default_factory=list)
+    failures: list[ChannelPairingCleanupFailure] = Field(default_factory=list)
+
+
+class ChannelPairingProposalParams(_ChannelPairingScopeParams):
+    """Generate a bounded proposal from one exact pairing scope."""
 
 
 class ChannelPairingProposalResult(BaseModel):

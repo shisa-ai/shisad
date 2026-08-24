@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tomllib
@@ -16,7 +17,9 @@ from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings
 
+from shisad.core.atomic_state import AtomicWriteError, atomic_write_bytes
 from shisad.core.config import DaemonConfig, ModelConfig, SecurityConfig
+from shisad.core.storage_platform import sync_parent_directory
 
 _SECTIONS: dict[str, type[BaseSettings]] = {
     "daemon": DaemonConfig,
@@ -95,6 +98,30 @@ class EnvironmentConfigSelection:
 
     section_overrides: dict[str, dict[str, object]]
     omitted_secret_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSectionUpdatePlan:
+    """Validated non-mutating replacement of one canonical TOML section."""
+
+    path: Path
+    section: str
+    changed_fields: tuple[str, ...]
+    source_sha256: str
+    candidate: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSectionUpdateResult:
+    """Durable publication result for one config-section plan."""
+
+    path: Path
+    section: str
+    changed_fields: tuple[str, ...]
+    persisted: bool
+    backup_path: Path
+    permissions: str
+    parent_sync: str
 
 
 def load_config_file(
@@ -485,6 +512,218 @@ def initialize_config_file(
         payload,
         environ=effective_env,
         label="config",
+    )
+
+
+def plan_config_section_update(
+    path: Path,
+    *,
+    section: str,
+    updates: Mapping[str, object],
+    environ: Mapping[str, str] | None = None,
+) -> ConfigSectionUpdatePlan:
+    """Validate one canonical section replacement without mutating the config."""
+
+    selected = section.strip().lower()
+    if selected not in _SECTIONS:
+        raise ConfigFileError("config section must be one of: daemon, model, security")
+    config_path = Path(path).expanduser()
+    if config_path.is_symlink():
+        raise ConfigFileError("selected config destination is a symlink")
+    if config_path.parent.is_symlink():
+        raise ConfigFileError("selected config parent is a symlink")
+    if not config_path.is_file():
+        raise ConfigFileError("selected config path is not a regular file")
+    effective_environ = dict(os.environ if environ is None else environ)
+    load_config_file(config_path, environ=effective_environ)
+    try:
+        original = config_path.read_bytes()
+        document = tomllib.loads(original.decode("utf-8"))
+    except OSError as exc:
+        raise ConfigFileError(
+            f"cannot read selected config file: {exc.__class__.__name__}"
+        ) from exc
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigFileError(f"invalid TOML: {exc}") from exc
+
+    raw_section = document.get(selected, {})
+    if not isinstance(raw_section, dict):  # pragma: no cover - loader owns this guard
+        raise ConfigFileError(f"{selected} must be a TOML table")
+    for field, value in raw_section.items():
+        if (field in _NESTED_SECRET_FIELDS or _field_is_secret(field)) and _has_secret_value(value):
+            raise ConfigFileError(
+                f"selected {selected} section contains a raw secret-bearing field"
+            )
+    merged = dict(raw_section)
+    merged.update(updates)
+    normalized = _validate_template_overrides({selected: merged})[selected]
+    changed_fields = tuple(
+        sorted(
+            field
+            for field in updates
+            if raw_section.get(field, PydanticUndefined) != normalized.get(field)
+        )
+    )
+    replacement = _render_config_section(selected, normalized)
+    candidate = _replace_canonical_config_section(
+        original,
+        document=document,
+        section=selected,
+        replacement=replacement,
+    )
+    try:
+        parsed_candidate = tomllib.loads(candidate.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
+        raise ConfigFileError("generated config section replacement is invalid") from exc
+    candidate_section = parsed_candidate.get(selected, {})
+    if not isinstance(candidate_section, dict):  # pragma: no cover
+        raise ConfigFileError("generated config section replacement is invalid")
+    _load_settings_section(
+        section=selected,
+        model_type=_SECTIONS[selected],
+        toml_values=candidate_section,
+        environ=effective_environ,
+        cli_values={},
+    )
+    return ConfigSectionUpdatePlan(
+        path=config_path,
+        section=selected,
+        changed_fields=changed_fields,
+        source_sha256=hashlib.sha256(original).hexdigest(),
+        candidate=candidate,
+    )
+
+
+def apply_config_section_update(
+    plan: ConfigSectionUpdatePlan,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> ConfigSectionUpdateResult:
+    """Publish one unchanged-source plan with an exact content-addressed backup."""
+
+    config_path = plan.path
+    if config_path.is_symlink():
+        raise ConfigFileError("selected config destination is a symlink")
+    try:
+        current = config_path.read_bytes()
+    except OSError as exc:
+        raise ConfigFileError(
+            f"cannot read selected config file: {exc.__class__.__name__}"
+        ) from exc
+    if hashlib.sha256(current).hexdigest() != plan.source_sha256:
+        raise ConfigFileError("selected config changed while its update was being prepared")
+
+    backup_path = config_path.with_name(
+        f"{config_path.name}.pre-reconfigure-{plan.source_sha256[:12]}.bak"
+    )
+    if backup_path.exists() or backup_path.is_symlink():
+        if backup_path.is_symlink() or not backup_path.is_file():
+            raise ConfigFileError("existing config reconfiguration backup is unsafe")
+        try:
+            backup = backup_path.read_bytes()
+        except OSError as exc:
+            raise ConfigFileError(
+                f"cannot read existing config reconfiguration backup: {exc.__class__.__name__}"
+            ) from exc
+        if backup != current:
+            raise ConfigFileError(
+                "existing config reconfiguration backup does not match the current config"
+            )
+        if backup_path.stat().st_mode & 0o077:
+            raise ConfigFileError("existing config reconfiguration backup is not owner-only")
+    else:
+        _initialize_owner_only_generated_file(
+            backup_path,
+            current,
+            environ={},
+            label="config reconfiguration backup",
+        )
+    try:
+        backup_parent_sync = sync_parent_directory(config_path.parent)
+    except OSError as exc:
+        raise ConfigFileError("cannot sync config reconfiguration backup parent directory") from exc
+    try:
+        capability = atomic_write_bytes(config_path, plan.candidate)
+    except AtomicWriteError as exc:
+        raise ConfigFileError(
+            "cannot atomically publish config section update; "
+            f"rollback copy remains at {backup_path}"
+        ) from exc
+    effective_environ = dict(os.environ if environ is None else environ)
+    load_config_file(config_path, environ=effective_environ)
+    return ConfigSectionUpdateResult(
+        path=config_path,
+        section=plan.section,
+        changed_fields=plan.changed_fields,
+        persisted=True,
+        backup_path=backup_path,
+        permissions=capability.permissions,
+        parent_sync=(
+            "supported"
+            if backup_parent_sync == capability.parent_sync == "supported"
+            else "unsupported"
+        ),
+    )
+
+
+def _render_config_section(section: str, values: Mapping[str, object]) -> bytes:
+    rendered = render_config_template(section_overrides={section: values})
+    lines = rendered.splitlines(keepends=True)
+    header = f"[{section}]"
+    start = next(index for index, line in enumerate(lines) if line.strip() == header)
+    known_headers = {f"[{name}]" for name in _SECTIONS}
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].strip() in known_headers),
+        len(lines),
+    )
+    payload = "".join(lines[start:end]).rstrip() + "\n"
+    return payload.encode("utf-8")
+
+
+def _replace_canonical_config_section(
+    original: bytes,
+    *,
+    document: Mapping[str, object],
+    section: str,
+    replacement: bytes,
+) -> bytes:
+    try:
+        text = original.decode("utf-8")
+    except UnicodeDecodeError as exc:  # pragma: no cover - loader owns this guard
+        raise ConfigFileError("selected config is not UTF-8") from exc
+    lines = text.splitlines(keepends=True)
+    headers = {name: f"[{name}]" for name in _SECTIONS}
+    positions: dict[str, list[int]] = {
+        name: [index for index, line in enumerate(lines) if line.strip() == header]
+        for name, header in headers.items()
+    }
+    for name in _SECTIONS:
+        if name in document and len(positions[name]) != 1:
+            raise ConfigFileError(
+                f"selected config must use one canonical [{name}] table for section updates"
+            )
+    selected_positions = positions[section]
+    if not selected_positions:
+        separator = b"" if not original or original.endswith(b"\n\n") else b"\n"
+        return original + separator + replacement
+    start = selected_positions[0]
+    end = min(
+        (
+            index
+            for name, indexes in positions.items()
+            if name != section
+            for index in indexes
+            if index > start
+        ),
+        default=len(lines),
+    )
+    while end > start + 1:
+        preceding = lines[end - 1].strip()
+        if preceding and not preceding.startswith("#"):
+            break
+        end -= 1
+    return (
+        "".join(lines[:start]).encode("utf-8") + replacement + "".join(lines[end:]).encode("utf-8")
     )
 
 

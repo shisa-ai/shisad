@@ -591,3 +591,155 @@ def test_o2d_selected_config_rejects_raw_secret_overrides(
 ) -> None:
     with pytest.raises(ConfigFileError, match="raw secret"):
         render_config_template(section_overrides={section: {field: "do-not-write"}})
+
+
+def test_o4f_config_section_plan_preserves_unselected_bytes_and_is_nonmutating(
+    tmp_path: Path,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        """schema_version = 1
+# operator daemon note
+[daemon]
+ui_theme = "shisa-dark"
+
+# operator model note
+[model]
+planner_model_id = "old-model"
+planner_api_key_ref = "model.primary"
+
+[security]
+default_deny = true
+""",
+    )
+    original = path.read_bytes()
+
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+
+    assert path.read_bytes() == original
+    assert plan.section == "model"
+    assert plan.changed_fields == ("planner_model_id",)
+    assert plan.source_sha256
+    assert b'# operator daemon note\n[daemon]\nui_theme = "shisa-dark"\n' in plan.candidate
+    assert b"[security]\ndefault_deny = true\n" in plan.candidate
+    assert b'planner_model_id = "new-model"' in plan.candidate
+
+
+def test_o4f_config_section_apply_keeps_exact_backup_and_rejects_stale_or_unsafe_source(
+    tmp_path: Path,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        """schema_version = 1
+[daemon]
+ui_theme = "shisa-dark"
+
+[model]
+planner_model_id = "old-model"
+
+[security]
+default_deny = true
+""",
+    )
+    original = path.read_bytes()
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+    result = config_file.apply_config_section_update(plan, environ={})
+
+    assert result.persisted is True
+    assert result.backup_path.read_bytes() == original
+    assert result.backup_path.stat().st_mode & 0o777 == 0o600
+    assert load_config_file(path, environ={}).model.planner_model_id == "new-model"
+    assert b'[daemon]\nui_theme = "shisa-dark"\n' in path.read_bytes()
+    assert b"[security]\ndefault_deny = true\n" in path.read_bytes()
+
+    stale = config_file.plan_config_section_update(
+        path,
+        section="daemon",
+        updates={"ui_theme": "shisa-light"},
+        environ={},
+    )
+    path.write_bytes(path.read_bytes() + b"\n# concurrent edit\n")
+    with pytest.raises(ConfigFileError, match="changed while"):
+        config_file.apply_config_section_update(stale, environ={})
+
+    unsafe = _write_config(
+        tmp_path / "raw-secret.toml",
+        """schema_version = 1
+[daemon]
+discord_bot_token = "must-not-copy"
+""",
+    )
+    with pytest.raises(ConfigFileError, match="raw secret"):
+        config_file.plan_config_section_update(
+            unsafe,
+            section="daemon",
+            updates={"ui_theme": "dark"},
+            environ={},
+        )
+
+
+def test_o4f_config_section_plan_rejects_symlink_and_noncanonical_selected_table(
+    tmp_path: Path,
+) -> None:
+    target = _write_config(tmp_path / "target.toml", "schema_version = 1\n")
+    linked = tmp_path / "linked.toml"
+    linked.symlink_to(target)
+    with pytest.raises(ConfigFileError, match="symlink"):
+        config_file.plan_config_section_update(
+            linked,
+            section="model",
+            updates={"planner_model_id": "new-model"},
+            environ={},
+        )
+
+    quoted = _write_config(
+        tmp_path / "quoted.toml",
+        'schema_version = 1\n["model"]\nplanner_model_id = "old-model"\n',
+    )
+    with pytest.raises(ConfigFileError, match="canonical"):
+        config_file.plan_config_section_update(
+            quoted,
+            section="model",
+            updates={"planner_model_id": "new-model"},
+            environ={},
+        )
+
+
+def test_o4f_config_section_apply_syncs_backup_before_replacing_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        'schema_version = 1\n[model]\nplanner_model_id = "old-model"\n',
+    )
+    original = path.read_bytes()
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+
+    def _fail_parent_sync(_parent: Path) -> str:
+        raise OSError("simulated backup parent sync failure")
+
+    monkeypatch.setattr(config_file, "sync_parent_directory", _fail_parent_sync, raising=False)
+    with pytest.raises(ConfigFileError, match="backup parent directory"):
+        config_file.apply_config_section_update(plan, environ={})
+
+    assert path.read_bytes() == original
+    assert (
+        path.with_name(f"{path.name}.pre-reconfigure-{plan.source_sha256[:12]}.bak").read_bytes()
+        == original
+    )

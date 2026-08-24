@@ -632,6 +632,55 @@ deciding whether to submit fresh work. This limitation also means that seeing a
 provider transaction-ID feature in its API is not, by itself, a shipped restart
 recovery guarantee.
 
+### Channel administration and pairing requests
+
+With the daemon running, inspect all four shipped adapters or send one fixed
+outbound test notice to an exact target:
+
+```bash
+shisad channel status
+shisad channel status --json
+shisad channel test discord --target <channel-id>
+```
+
+Status distinguishes disabled, missing-dependency, disconnected, and connected
+adapters. The runtime does not retain an authoritative cross-channel
+last-message timestamp, so that field is reported as unavailable rather than
+inferred from startup, heartbeat, or audit time. A successful test proves only
+that the provider acknowledged the outbound delivery. It does not prove a
+reply, inbound identity, or round trip. If the result is uncertain, use the
+durable delivery commands above; the test command does not recommend blind
+replay.
+
+Default-deny ingress records unknown identities as owner/workspace-scoped
+pairing requests. Inspect them without creating or applying a config proposal:
+
+```bash
+shisad channel pairing-list --workspace <provider-workspace> --channel discord
+```
+
+Cleanup is an explicit cutoff operation and is a dry run unless `--write` is
+present:
+
+```bash
+shisad channel pairing-cleanup \
+  --workspace <provider-workspace> \
+  --channel discord \
+  --before 2026-08-24T00:00:00+00:00
+shisad channel pairing-cleanup \
+  --workspace <provider-workspace> \
+  --channel discord \
+  --before 2026-08-24T00:00:00+00:00 \
+  --write
+```
+
+Inspection and cleanup fail closed on corrupt, ambiguous, symlinked, or
+over-bound artifacts. Each workspace admits at most 1,000 request artifacts
+and 1 MiB. Cleanup is audited and reports partial failures so the exact
+remaining set can be retried; it never applies an allowlist. The four shipped
+adapters have no channel QR-pairing protocol, and channel credentials or
+control-device secrets are not rendered as substitute QR codes.
+
 For a combined setup, enroll the references first and create a bounded
 secret-free selection document. For example:
 
@@ -671,6 +720,29 @@ policy file completes, the policy is inert and the error identifies it for
 inspection/removal. `setup apply` never starts or restarts the daemon. After a
 successful interactive `setup wizard` publication, a separate default-exit
 menu can explicitly start the daemon and open chat or the dashboard.
+
+To reconfigure one existing technical TOML section, use the separate
+current-state wizard. It shows the selected section with the same redaction and
+source metadata as `config show`, previews by default, and writes only with
+`--write`:
+
+```bash
+shisad --config /absolute/path/config.toml config wizard \
+  --section model \
+  --set 'planner_model_id="new-model"'
+shisad --config /absolute/path/config.toml config wizard \
+  --section model \
+  --set 'planner_model_id="new-model"' \
+  --write
+```
+
+The update validates the finite `daemon`, `model`, or `security` field through
+the normal typed config owner, preserves every unselected byte, retains an
+exact owner-only `pre-reconfigure` rollback copy, and refuses stale source,
+symlink, noncanonical selected-table, unknown-field, or raw-secret-bearing
+input before replacement. Restart the daemon to load a published update.
+Automatic workspace persona/SOUL generation is not part of this operation;
+persona content remains an explicit operator choice.
 
 Matrix homeserver values must be absolute HTTP(S) URLs without embedded
 userinfo, a query, or a fragment. Slack bot-token and app-token references must

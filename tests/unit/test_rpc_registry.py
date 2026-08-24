@@ -34,7 +34,7 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 
-_FROZEN_F11A_MANIFEST_SHA256 = "f5dfa6d5001b36385aaae5dee7c551ae8df845310f9ddf82bc292b7c0ff75d55"
+_FROZEN_F11A_MANIFEST_SHA256 = "7f173e44844a6e380a52f646e263a805b431e85b84217ff5fe9f9ca3b31c46fe"
 _GROUP_TYPES = {
     RpcHandlerGroup.ADMIN: AdminHandlers,
     RpcHandlerGroup.ASSISTANT: AssistantHandlers,
@@ -90,10 +90,10 @@ def test_f11a_descriptor_manifest_matches_frozen_transport_contract() -> None:
 
     assert isinstance(production, tuple)
     assert isinstance(test_mode, tuple)
-    assert len(production) == 125
-    assert len(test_mode) == 126
-    assert len({descriptor.name for descriptor in test_mode}) == 126
-    assert sum(descriptor.admin_only for descriptor in test_mode) == 82
+    assert len(production) == 129
+    assert len(test_mode) == 130
+    assert len({descriptor.name for descriptor in test_mode}) == 130
+    assert sum(descriptor.admin_only for descriptor in test_mode) == 86
     assert _manifest_digest() == _FROZEN_F11A_MANIFEST_SHA256
 
     production_names = [descriptor.name for descriptor in production]
@@ -293,3 +293,28 @@ def test_f11a_core_registry_does_not_eagerly_import_browser_executor() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_o4f_channel_admin_routes_are_typed_admin_only() -> None:
+    expected = {
+        "channel.status": ("ChannelStatusParams", "ChannelStatusResult"),
+        "channel.test": ("ChannelTestParams", "ChannelTestResult"),
+        "channel.pairing_list": ("ChannelPairingListParams", "ChannelPairingListResult"),
+        "channel.pairing_cleanup": (
+            "ChannelPairingCleanupParams",
+            "ChannelPairingCleanupResult",
+        ),
+    }
+    selected = {
+        descriptor.name: descriptor
+        for descriptor in rpc_method_descriptors(test_mode=False)
+        if descriptor.name in expected
+    }
+
+    assert set(selected) == set(expected)
+    for name, descriptor in selected.items():
+        params_name, result_name = expected[name]
+        assert descriptor.admin_only is True
+        assert descriptor.params_model.__name__ == params_name
+        assert descriptor.result_model.name == result_name
+        assert descriptor.handler_group is RpcHandlerGroup.ADMIN

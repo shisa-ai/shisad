@@ -96,6 +96,19 @@ class ChannelPairingProposalGenerated(BaseEvent):
     entries_count: int = 0
 
 
+class ChannelPairingRequestsCleaned(BaseEvent):
+    """Explicit scoped pairing-request cleanup completed or partially failed."""
+
+    owner_uid: int | None = None
+    workspace_hint: str = ""
+    channel: str = ""
+    before: str = ""
+    matched_count: int = 0
+    removed_count: int = 0
+    failed_count: int = 0
+    complete: bool = False
+
+
 class ChannelDeliveryAttempted(BaseEvent):
     """Outbound channel delivery attempt for ingress response/audit trail."""
 
@@ -759,6 +772,7 @@ type AnyEvent = (
     | SessionMessageResponded
     | ChannelPairingRequested
     | ChannelPairingProposalGenerated
+    | ChannelPairingRequestsCleaned
     | ChannelDeliveryAttempted
     | SessionTerminated
     | CapabilityGranted
@@ -819,6 +833,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionMessageResponded": SessionMessageResponded,
     "ChannelPairingRequested": ChannelPairingRequested,
     "ChannelPairingProposalGenerated": ChannelPairingProposalGenerated,
+    "ChannelPairingRequestsCleaned": ChannelPairingRequestsCleaned,
     "ChannelDeliveryAttempted": ChannelDeliveryAttempted,
     "SessionTerminated": SessionTerminated,
     "CapabilityGranted": CapabilityGranted,
