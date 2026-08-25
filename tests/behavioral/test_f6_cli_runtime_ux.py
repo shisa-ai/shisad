@@ -670,6 +670,8 @@ def test_o4c_backup_restore_round_trip_is_offline_verified_and_actionable(
     assert "shisad status" in restore_result.output
     assert "shisad doctor" in restore_result.output
     assert "offline health is not yet verified" in restore_result.output.lower()
+    assert "SHISAD_MEMORY_MASTER_KEY" in restore_result.output
+    assert "original absolute data root" in restore_result.output
 
 
 def test_o4d_audit_lifecycle_is_verified_bounded_and_actionable(

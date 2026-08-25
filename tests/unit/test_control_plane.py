@@ -51,7 +51,7 @@ from shisad.security.control_plane.schema import (
     infer_action_kind,
     sanitize_metadata_payload,
 )
-from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
+from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer, SequencePattern
 from shisad.security.control_plane.trace import (
     ExecutionTraceVerifier,
     PlanStage,
@@ -140,6 +140,53 @@ def test_m5_rt1_sequence_detects_fs_read_then_egress_with_intervening_action() -
 
     findings = analyzer.analyze(history=history, candidate_action=candidate)
     assert any(item.pattern_name == "exfil_after_read" for item in findings)
+
+
+@pytest.mark.parametrize(
+    "pattern_kinds",
+    [
+        [ActionKind.FS_READ, ActionKind.EGRESS],
+        [ActionKind.ENV_ACCESS, ActionKind.EGRESS],
+        [ActionKind.FS_LIST, ActionKind.FS_LIST, ActionKind.FS_LIST, ActionKind.FS_LIST],
+        [ActionKind.FS_WRITE, ActionKind.SHELL_EXEC],
+    ],
+    ids=("exfil-after-read", "env-then-egress", "mass-enum", "persistence-attempt"),
+)
+def test_rc82_sequence_requires_current_candidate_to_close_pattern(
+    pattern_kinds: list[ActionKind],
+) -> None:
+    history = SessionActionHistoryStore()
+    origin = _origin("s-rc82-candidate-anchor")
+    now = datetime.now(UTC)
+    for index, action_kind in enumerate(pattern_kinds):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(seconds=index),
+                origin=origin,
+                tool_name=f"completed.{index}",
+                action_kind=action_kind,
+                resource_id=f"completed:{index}",
+            ),
+            decision_status="allow",
+        )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(seconds=len(pattern_kinds)),
+        origin=origin,
+        tool_name="file.read",
+        action_kind=ActionKind.FS_READ,
+        resource_id="README.md",
+    )
+    analyzer = BehavioralSequenceAnalyzer(
+        patterns=[
+            SequencePattern(
+                name="candidate_anchor",
+                pattern=[action_kind.value for action_kind in pattern_kinds],
+                window_actions=10,
+            )
+        ]
+    )
+
+    assert analyzer.analyze(history=history, candidate_action=candidate, now=now) == []
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,13 @@ _OUTPUT_FORMAT = click.option(
     show_default=True,
 )
 
+_CROSS_ROOT_ENCRYPTED_MEMORY_GUIDANCE = (
+    "Starting encrypted memory at a different absolute data root requires an explicit stable "
+    "SHISAD_MEMORY_MASTER_KEY configured before the source data was created and the same value "
+    "at startup. Memory using the default path-derived key can be reopened only at its original "
+    "absolute data root."
+)
+
 
 @click.group()
 def data() -> None:
@@ -142,6 +149,7 @@ def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
         "sensitive_archive": True,
         "sensitive_archive_handling": "retain in operator-controlled storage",
         "offline_health_verified": False,
+        "cross_root_encrypted_memory": _CROSS_ROOT_ENCRYPTED_MEMORY_GUIDANCE,
         "next_actions": ["shisad start", "shisad status", "shisad doctor"],
         "rollback": "stop shisad and restore a different verified backup into a new empty root",
     }
@@ -158,7 +166,9 @@ def _emit_restore(result: DataRestoreResult, *, output_format: str) -> None:
         f"Storage capability: permissions={result.permissions} "
         f"parent_sync={result.parent_sync}.\n"
         "Sensitive archive: retain the owner-controlled backup for rollback.\n"
-        "Offline health is not yet verified.\nNext: shisad start\nThen: shisad status\n"
+        "Offline health is not yet verified.\n"
+        f"Encrypted-memory relocation: {_CROSS_ROOT_ENCRYPTED_MEMORY_GUIDANCE}\n"
+        "Next: shisad start\nThen: shisad status\n"
         "Finally: shisad doctor\nRollback: stop shisad and restore a different verified backup "
         "into a new empty root."
     )

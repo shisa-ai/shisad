@@ -692,7 +692,7 @@ These are still part of the live surface:
 
 | Env var | Purpose |
 |---|---|
-| `SHISAD_MEMORY_MASTER_KEY` | Optional memory-encryption secret override |
+| `SHISAD_MEMORY_MASTER_KEY` | Optional stable memory-encryption secret; configure it before creating source data when encrypted memory must start from a different absolute data root |
 | `SHISAD_SESSION_ID` | CLI current-session default when a command has no explicit `--session`; otherwise the CLI may use its last-session cache where that command permits it |
 | `SHISAD_USER` | CLI owner-scope default used together with `SHISAD_WORKSPACE` when explicit `--user` / `--workspace` flags are absent |
 | `SHISAD_WORKSPACE` | CLI owner-scope default used together with `SHISAD_USER`; setting only one of the pair is an error |
@@ -703,6 +703,11 @@ These are still part of the live surface:
 | `ANTHROPIC_API_KEY` | Anthropic preset credential discovery for planner/monitor routes |
 | Dynamically registered environment locator | A `credential set --backend env --locator NAME` entry reads only the exact registered variable at trusted resolution; status never prints its value |
 | `_SHISAD_COMPLETE` | shell-completion internal env, not operator config |
+
+Without an explicit `SHISAD_MEMORY_MASTER_KEY`, memory encryption derives from
+the absolute storage path. Such memory can be reopened only at its original
+absolute data root. A backup restores the ciphertext but does not migrate or
+recover its encryption key.
 
 ## Opt-In Test / Dev Knobs
 
