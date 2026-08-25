@@ -16,7 +16,7 @@ from textual.widgets import TextArea
 
 from shisad.channels import setup as channel_setup
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
-from shisad.channels.delivery import DeliveryResult
+from shisad.channels.delivery import DeliveryIntent, DeliveryResult
 from shisad.cli import main as cli_main
 from shisad.cli import onboarding
 from shisad.cli.main import cli
@@ -911,6 +911,9 @@ def test_o4f_channel_status_and_test_are_truthful(
     assert runtime_test["outbound_acknowledged"] is True
     assert runtime_test["round_trip_verified"] is False
     assert delivery_owner.calls[0]["message"] == channel_setup.CHANNEL_SETUP_TEST_MESSAGE
+    intent = delivery_owner.calls[0]["intent"]
+    assert isinstance(intent, DeliveryIntent)
+    assert intent.kind == "message_send"
     with pytest.raises(ValueError, match="authenticated admin"):
         asyncio.run(harness.do_channel_test({"channel": "discord", "target": "channel-456"}))
 

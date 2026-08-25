@@ -2324,7 +2324,7 @@ class AdminImplMixin(HandlerMixinBase):
         result = await self._services.delivery.send(
             intent=DeliveryIntent(
                 source_id=f"channel_test:{uuid.uuid4().hex}",
-                kind="channel_test",
+                kind="message_send",
                 target=DeliveryTarget(channel=channel, recipient=target),
             ),
             message=CHANNEL_SETUP_TEST_MESSAGE,
