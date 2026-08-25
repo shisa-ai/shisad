@@ -1842,7 +1842,12 @@ async def test_i5b_discord_structured_send_preserves_prepared_message_prefix() -
     )
 
     assert sent[0][0] == "[proactive] Completed action result."
-    assert sent[1][0] == "Use the attached controls."
+    expected_confirmation = (
+        "Use the attached controls."
+        if discord_module.discord is not None
+        else "ID: c-prefix\nUse the CLI approval route."
+    )
+    assert sent[1][0] == expected_confirmation
 
 
 @pytest.mark.asyncio
