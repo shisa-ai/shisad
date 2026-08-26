@@ -93,6 +93,8 @@ def test_f6_web_snapshot_payload_executes_in_real_browser_dom(tmp_path: Path) ->
             "--headless",
             "--no-sandbox",
             "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--user-data-dir={tmp_path / 'chromium-profile'}",
             "--dump-dom",
             output.as_uri(),
         ],
