@@ -30,6 +30,8 @@ LOG_FORMAT_FILE = (
     "{time:YYYY-MM-DDTHH:mm:ss.SSSZ} | {level: <8} | {name}:{function}:{line} - {message}"
 )
 
+_QUIET_HTTP_LOGGERS = ("httpx", "httpcore")
+
 
 class _InterceptHandler(logging.Handler):
     """Route stdlib ``logging`` calls into loguru.
@@ -91,3 +93,8 @@ def setup_logging(
 
     # Intercept all stdlib logging and route through loguru.
     logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+
+    # Routine client traces can contain credential-bearing provider URL paths.
+    # Preserve dependency warnings/errors without persisting request details.
+    for logger_name in _QUIET_HTTP_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)

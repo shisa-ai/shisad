@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import CliRunner
+from loguru import logger
 from textual.widgets import TextArea
 
 from shisad.channels import setup as channel_setup
@@ -22,6 +24,7 @@ from shisad.cli import onboarding
 from shisad.cli.main import cli
 from shisad.core.audit import AuditLog
 from shisad.core.events import SessionCreated
+from shisad.core.log import setup_logging
 from shisad.core.readiness import ReadinessState, ReadinessStatus
 from shisad.core.types import SessionId, UserId
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
@@ -32,6 +35,25 @@ from tests.behavioral.test_behavioral_contract import ContractHarness
 from tests.helpers.behavioral import extract_tool_outputs
 
 pytestmark = pytest.mark.first_principles
+
+
+def test_release_logs_suppress_http_client_request_urls() -> None:
+    captured: list[str] = []
+    secret = "telegram-bot-token-must-not-persist"
+
+    setup_logging(level="INFO", colorize=False)
+    handler_id = logger.add(captured.append, format="{level} {message}", level="INFO")
+    try:
+        logging.getLogger("httpx").info(
+            "HTTP Request: POST https://api.telegram.org/bot%s/getMe", secret
+        )
+        logging.getLogger("httpx").warning("provider request failed safely")
+    finally:
+        logger.remove(handler_id)
+
+    joined = "\n".join(captured)
+    assert secret not in joined
+    assert "WARNING provider request failed safely" in joined
 
 
 def test_f6_first_use_config_journey_is_safe_and_scriptable(
