@@ -1,9 +1,8 @@
 # ADR: Confirmation Review Presentation
 
-*Status: Accepted for v0.8.2 implementation*
+*Status: Accepted and shipped in v0.8.2*
 *Date: 2026-08-04*
 *Issues: [#74](https://github.com/shisa-ai/shisad/issues/74), [#78](https://github.com/shisa-ai/shisad/issues/78), [#103](https://github.com/shisa-ai/shisad/issues/103)*
-*Runtime baseline: `4e004c54`*
 
 ## Context
 
@@ -17,16 +16,16 @@ attached to the owning message. The TUI prints the complete `action.confirm`
 RPC result after an ordinary interactive approval, including raw status fields
 that the CLI already projects through a safe semantic renderer.
 
-This is a presentation problem. Confirmation authority, proof verification,
+This is a presentation problem. Confirmation policy, proof verification,
 pending state, Discord component identity, and tool execution are not moving.
 
 ## Decision
 
-1. The existing typed confirmation summary remains the single authority for
+1. The existing structured confirmation summary remains the canonical source for
    action-specific review text and structural exclusion of internal arguments.
 2. A compact review may extract only the closed `Review:` and `Risk Level:`
    labels produced by the structured preview renderer. Missing or malformed
-   structure falls back to the bounded tool label, never the raw preview.
+   structure falls back to the tool label, never the raw preview.
 3. A Discord message whose native controls cover both approval and rejection
    shows the action review, risk, existing human-facing warnings, and concise
    control instructions. It omits IDs, lifecycle metadata, CLI commands, and
@@ -52,7 +51,7 @@ pending state, Discord component identity, and tool execution are not moving.
 - Existing security warnings remain visible and distinct.
 - Missing controls or unsupported proof collection retain truthful fallback.
 - Explicit JSON/details output retains the machine-readable result without
-  adding excluded operator diagnostics to the safe failure envelope.
+  adding excluded operator diagnostics to the safe error record.
 - The renderer consumes finite machine-owned fields. It does not classify user
   intent or arbitrary natural-language meaning.
 
@@ -66,13 +65,13 @@ pending state, Discord component identity, and tool execution are not moving.
   action view.
 - Removing machine details from explicit JSON, audit, or operator diagnostics.
 
-## Platform Posture
+## Compatibility
 
-Python 3.12 is the implementation authority. The presentation seam is
+Implementation and release tests use Python 3.12. The presentation code is
 platform-neutral and adds no native-Windows daemon claim, dependency, storage,
 transaction, or locking work.
 
-## Acceptance Evidence
+## Verification
 
 - Canonical summary tests cover action-specific reviews and all named internal
   fields.

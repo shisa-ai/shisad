@@ -104,7 +104,11 @@ Not all work starts from a sprint punchlist. Interactive sessions (e.g., human l
 
 **The spec→test→implement loop still applies.** Even for ad-hoc requests:
 
-1. **Track the work.** Before implementing, add a brief entry to the relevant public planning/worklog artifact for the change. Use the closest existing doc under `docs/` (for example `docs/ROADMAP.md`, a touched ADR under `docs/adr/`, or a task-scoped note added for the feature). This keeps the change visible for review and avoids silent spec drift.
+1. **Track the work outside product documentation.** Use the public issue or
+   pull request when the work is intentionally public; otherwise use the
+   maintainer's external project tracker or session notes. Never create a
+   roadmap, worklog, punchlist, review trace, or agent-memory file in this
+   repository merely to track execution.
 2. **Write tests first.** Ad-hoc does not mean untested. Write or update tests before implementation — at minimum, cover the success path and any security-relevant edge cases.
 3. **Validate before committing.** Run the targeted Python 3.12 tests,
    changed-source coverage, and static checks from the validation matrix. A
@@ -115,23 +119,58 @@ Not all work starts from a sprint punchlist. Interactive sessions (e.g., human l
 **Post-implementation review is expected.** Ad-hoc commits should receive an independent review pass before any release is cut. This can happen:
 - As a follow-up reviewer session against the committed changes
 - As part of the next milestone review cycle
-- Reviewers should check both the active `PLAN`/`IMPLEMENTATION` docs and the relevant commit log (`git log`, commit diffs) to catch spec drift early
+- Reviewers should check the public issue/PR, any relevant human-facing ADR,
+  and the commit diff to catch behavioral or documentation drift early
 - The key point: interactive implementation does not substitute for review — it defers it
 
-**When the change outgrows ad-hoc.** If an ad-hoc request touches multiple components, changes security-relevant behavior, or grows beyond a single focused commit, escalate to the full spec→plan→test→implement cycle with a proper spec in `docs/`.
+**When the change outgrows ad-hoc.** If an ad-hoc request touches multiple
+components, changes security-relevant behavior, or grows beyond a single
+focused commit, pause for an explicit design and implementation plan. Publish
+an ADR only when it is useful to external human readers; keep execution plans
+outside this repository.
+
+### Public documentation boundary
+
+All documentation committed here must be useful to a human reader: users,
+operators, external developers, security reviewers, contributors, or release
+maintainers. Appropriate documents include product and setup guides,
+configuration references, runbooks, ADRs, research analysis, contributor
+guidance, maintainer procedures, and release history.
+
+Do not commit private roadmaps, milestone plans, worklogs, punchlists,
+review-lane records, agent memory, resumption notes, or private process
+identifiers. Stable contributor instructions and developer tooling may remain
+here when they help external contributors, but they must not contain private
+execution history or session-specific instructions. Public issues and PRs may
+describe concrete public work; they are not a reason to copy an internal
+execution ledger into `README.md` or `docs/`.
+
+README is an overview and navigation surface. Put detailed setup in the
+canonical operator guide and link to it. Before release, compare changed docs
+with the previous published tag and review them editorially for duplicated
+implementation detail, acceptance-test prose, stale phase wording, and
+unexplained internal vocabulary.
+
+Do not invent project jargon, acronyms, or workflow labels. Prefer established
+ordinary language, and define a necessary domain term the first time it
+appears. Temporary review IDs and agent shorthand must not become product
+vocabulary. See `CONTRIBUTING.md` for the public documentation style.
 
 ## Roles (Planners / Coders / Reviewers)
 
 We use separate lanes for development work:
 
-- **Planner**: produces/updates specs and punchlists in `docs/` (typically between sprints).
+- **Planner**: defines behavior and implementation sequencing outside public
+  product documentation; authors a public ADR only when external readers need
+  the design decision.
 - **Coder**: owns all implementation patches (code + tests) and repo changes.
 - **Reviewer**: analysis-only; must not author implementation patches (no code changes).
 - **Human lead**: arbitrates scope, risk, and disagreements; decides what is a blocker vs a deferral.
 
 Rules:
 - Reviewers provide findings + rationale + suggested fixes, but do not change the repo.
-- Coders translate reviewer findings into tracked punchlist/checklist entries before implementing fixes.
+- Coders translate reviewer findings into tracked issue/PR or external-task
+  entries before implementing fixes.
 - Coders must triage all reviewer feedback, including notes labeled non-blocking or informational. If the feedback is valid, fix it in the active remediation loop or record an explicit no-change/defer rationale approved by the human lead; severity affects priority, not whether valid feedback can be ignored.
 - Reviewer follow-up is confirmation-only (resolved / unresolved with rationale), not code changes.
 - For closure purposes, reviewer "green" means no remaining valid open findings for the reviewed scope. "Not a blocker" by itself is not enough if the reviewer also raised a valid issue that remains unfixed and undeferred.
@@ -143,11 +182,14 @@ Rules:
 - Check git status/log for recent changes
 - Run `git status -sb` and treat its output as the baseline worktree state for this task
 - Pre-existing unrelated dirty/untracked files from that baseline are expected and non-blocking
-- Review existing docs and tests for context (start with `docs/ROADMAP.md`, the touched public docs, and relevant ADRs/runbooks)
-- Review any touched-area cleanup backlog or TODO notes if they exist; otherwise record `none` in the task notes
+- Review existing docs and tests for context (start with the touched public
+  docs and relevant ADRs/runbooks)
+- Review any touched-area cleanup backlog or TODO notes in the external task
+  tracker when one exists
 - Re-review `docs/DESIGN-PHILOSOPHY.md` and explicitly note any product/behavioral-contract implications in the milestone pre-analysis
-- Complete a milestone pre-analysis before a coder starts the punchlist (threat hotspots, runtime wiring checkpoints, validation scope, and likely deferrals)
-- Record pre-analysis notes in the active task-scoped doc or worklog notes before implementation begins
+- Reason through threat hotspots, runtime wiring checkpoints, validation scope,
+  and likely deferrals before implementation begins; record that analysis in
+  the issue/PR or external task tracker, not a public product doc
 - Consider security implications of the change
 
 ### During Execution
@@ -156,7 +198,11 @@ Rules:
 - Keep commits atomic and focused
 - Document security-relevant decisions
 - For planner/provider/tool/scheduler/channel/runtime-security changes, identify the nearest deterministic user journey. Plan an isolated live verification pass only for milestone/release close or when the change materially alters live interaction in a way deterministic tests cannot represent.
-- **Opportunistic cleanup on file touch**: when editing a file for milestone work, remove dead code, stale imports, unused helper methods, and superseded approaches in the same file. This is normal hygiene, not scope expansion. Document significant removals in the task notes. If a cleanup requires touching files outside the active scope, defer it in the relevant planning/worklog doc instead.
+- **Opportunistic cleanup on file touch**: when editing a file for milestone
+  work, remove dead code, stale imports, unused helper methods, and superseded
+  approaches in the same file. This is normal hygiene, not scope expansion.
+  Document significant removals in the issue/PR or external task notes. If a
+  cleanup requires touching files outside the active scope, defer it there.
 - **Refactor backlog**: if the touched area already has a backlog or TODO doc, review it at the start of the task. Otherwise use same-file-touch opportunistic cleanup only.
 
 ### After Changes (commit on completion)
@@ -243,7 +289,7 @@ uv run mypy src/shisad/
 
 # Release or recorded milestone-exception live runner verification
 # Use an isolated daemon instance and record the exact commands + outcomes
-# in the active task-scoped doc or worklog notes.
+# in the issue/PR or external task notes.
 RUNNER_INHERIT_SHISAD_ENV=1 \
 RUNNER_TMUX_SOCKET_NAME=shisad-dev \
 RUNNER_TMUX_SESSION_NAME=shisad-dev \
@@ -337,15 +383,17 @@ When asked to close a milestone, review remediation, or release-readiness pass:
 6. Perform tag/push steps only when explicitly requested by the human lead (never assume retag/force-tag by default)
 7. If tag/push actions were requested, verify final refs and report them (`git rev-parse --short <branch>` and `git rev-parse --short <tag>`)
 8. Before declaring closure, verify every open deferral has a destination:
-   - scheduled in a concrete future milestone/point release plan, or
-   - carried into `docs/ROADMAP.md` or another future-plan doc with a tracked ID and exit condition.
+   - a public issue when external tracking is intended, or
+   - the maintainer's external project tracker.
+   Do not create a public roadmap/worklog entry only to satisfy this step.
 9. For milestone close and release-close, run a refactor-cadence sweep:
    - review any touched-area cleanup backlog or TODO notes in the closing scope,
    - close/update completed cleanup items and add newly discovered on-the-way candidates,
    - keep this opportunistic-only (do not expand closure into standalone refactor scope).
 10. For release-close, run an orphan sweep across the release docs:
-   - review the active release/task docs under `docs/` for unresolved/deferred items, and
-   - ensure each unresolved item is either closed, scheduled in a concrete future milestone, or moved to `docs/ROADMAP.md` or another future-plan doc.
+   - review the issue/PR and external task tracker for unresolved items, and
+   - ensure each unresolved item is closed or has a concrete destination
+     outside the public product documentation.
 11. For release-close, run a docs-parity sweep for top-level operator docs:
    - verify `README.md` and the top-level public docs under `docs/` match current architecture/runtime behavior and release status, and
    - update them in the same closure scope when drift is found.
@@ -366,7 +414,7 @@ checklist. Key points:
   and `gh api '/repos/<owner>/<repo>/code-scanning/alerts/<id>/instances'`.
   Only dismiss alerts programmatically after human review confirms a test-only
   hit or false positive, and record the alert IDs plus disposition in the
-  active worklog when they affect release-close.
+  issue/PR or external release record when they affect release-close.
 
 ## Code Quality
 
@@ -413,8 +461,8 @@ If you encounter:
 
 ## Docs, Metrics, and Claim Integrity
 
-- Treat the active task-scoped doc or worklog notes as the authoritative execution punchlist; keep checkboxes/worklog in sync with code changes.
-- Require a pre-analysis entry in the active task-scoped doc or worklog notes at milestone start, and refresh it when scope/risk assumptions materially change.
+- Keep execution checklists, pre-analysis, and milestone state in the issue/PR
+  or an external maintainer tracker, never in public product documentation.
 - Fix doc↔code drift immediately (especially around security guarantees and runtime enforcement semantics).
 - During release-close, explicitly include `README.md` and the top-level public docs under `docs/` in docs-parity review. If dependency resolutions or workflow/action trust anchors changed, include `docs/AUDIT-supply-chain.md` in the same parity pass.
 - When writing release stats or quoting numbers (tests, churn, LOC), scope calculations to a specific tag/commit and include the exact commands used.
@@ -426,7 +474,9 @@ Any claim of “done”, “shipped”, “complete”, or “closed” must inc
 
 - **Runtime wiring evidence**: where the behavior is enforced in the live runtime path (not just a helper function).
 - **Test evidence**: exact validation command(s) + outcomes (include integration/adversarial when relevant).
-- **Docs parity evidence**: punchlist/worklog updated, and security analysis/non-claims updated when behavior/guarantees change.
+- **Docs parity evidence**: the issue/PR or external task record is current,
+  and security analysis/non-claims are updated when behavior or guarantees
+  change.
 
 For runtime-facing release claims, also include live runner evidence: exact
 `runner/harness.sh` (or direct control-client) commands + outcomes, or an
@@ -448,25 +498,28 @@ Truth-in-claims:
 
 ### Deferrals
 
-- Unresolved items stay in the active task/worklog doc's `DEFERRALS` list (task-local first; add the section if missing).
-- Each deferral must include: **ID**, **rationale**, **risk**, and **target milestone**.
-- Use `docs/ROADMAP.md` or another future-plan doc for items beyond the current release scope (post-release backlog).
-- Release-close orphan checks must include both current and earlier release plan/implementation docs that can still contain unresolved carry-forwards.
+- Track unresolved items in the public issue tracker when they are intended for
+  public collaboration, or in the maintainer's external project tracker.
+- Each deferral should include a clear item, rationale, risk, and destination.
+- Do not add a `DEFERRALS` ledger, internal milestone ID, or execution backlog
+  to README, operator docs, ADRs, or other public documentation.
+- Release-close orphan checks must include the active issue/PR and external
+  tracking source.
 - No orphan deferrals: a deferred item must be linked to an executable destination before milestone/release closure. Accepted destinations are:
-  - a scheduled future milestone/point-release plan entry, or
-  - a `docs/ROADMAP.md` or other future-plan entry with source ID and exit condition.
-- If a deferral is carried forward, update both sides in the same change:
-  - source milestone `DEFERRALS` table (show where it moved), and
-  - destination plan/backlog entry (with the originating deferral ID).
+  - a public issue with an exit condition, or
+  - an external tracked milestone or backlog entry.
 
 ### Review Trace (Findings → IDs → Commits)
 
-- Convert reviewer findings into tracked IDs before remediation (examples: `M#.R-open.#`, `M#.RR#.#`).
-- Convert every valid finding into either a remediation ID or an explicit accepted-no-change/deferral note with rationale before closure, including findings a reviewer described as non-blocking.
-- Commit messages for remediation should include milestone + finding IDs and whether it is initial remediation or re-review closure.
-  - Example: `fix: close M3.R-open.2 (remediation)`
-  - Example: `security: close M5.RR2.4 (re-review closure)`
-- Log the exact validation commands + outcomes in the milestone/worklog notes when closing items.
+- Track reviewer findings in the issue/PR or external review record before
+  remediation; do not add an internal finding ledger to public docs.
+- Convert every valid finding into either a tracked correction or an explicit
+  accepted-no-change/deferral note with rationale before closure, including
+  findings a reviewer described as non-blocking.
+- Use public issue references in commit messages when they help readers trace
+  the change. Do not expose private finding IDs.
+- Log the exact validation commands and outcomes in the issue/PR or external
+  task notes when closing items.
 
 ## Meta: Evolving This File
 

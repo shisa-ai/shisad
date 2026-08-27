@@ -1,9 +1,8 @@
-# ADR: Structural User-Facing Failure Presentation
+# ADR: User-Facing Error Messages
 
-*Status: Accepted for v0.8.2 implementation*
+*Status: Accepted and shipped in v0.8.2*
 *Date: 2026-08-04*
 *Issues: [#101](https://github.com/shisa-ai/shisad/issues/101), [#104](https://github.com/shisa-ai/shisad/issues/104)*
-*Runtime baseline: `1f22fae9`*
 
 ## Context
 
@@ -23,13 +22,13 @@ surfaces still need.
 
 ## Decision
 
-1. The core defines a small typed failure envelope with a stable code, safe
+1. The core defines a small structured error record with a stable code, safe
    summary, retryability, safe next action, approval outcome, execution
    outcome, and partial-result flag.
 2. Operator diagnostics may accompany the in-process object, but Pydantic
    serialization excludes them. Ordinary user renderers use only the safe
    summary and next action.
-3. Provider route failures are classified from the bounded, machine-generated
+3. Provider route failures are classified from the documented, machine-generated
    provider error format. HTTP 408, 429, 5xx, connection failures, and unknown
    route errors are retryable temporary failures. Other 4xx responses require
    setup attention. Raw status, route, response body, credential guidance, and
@@ -37,18 +36,18 @@ surfaces still need.
 4. A deterministic local action produced during route fallback sets
    `partial_result=true`. The safe route notice remains beside its pending or
    completed result without claiming the sibling action failed.
-5. Invalid planner output uses one generic safe retry projection. Schema,
+5. Invalid planner output uses one generic safe retry response. Schema,
    native tool-call formatting, repair-attempt, and planner implementation
    details remain diagnostic-only.
 6. Once confirmation evidence is valid, approval is `accepted` independently
    of execution. A failed or unknown action result carries that accepted
    approval outcome plus its separate execution outcome. Unknown execution is
    not safely retryable because an immediate retry could duplicate an effect.
-7. Discord and ordinary CLI text render the semantic envelope. Explicit
+7. Discord and ordinary CLI text render the safe error record. Explicit
    JSON/details output retains existing machine status fields and the safe
-   envelope, but never the excluded operator diagnostics.
+   record, but never the excluded operator diagnostics.
 8. A known unconfigured web-search backend maps to an actionable setup-then-
-   retry projection. It remains an ordinary tool/configuration failure and
+   retry response. It remains an ordinary tool/configuration failure and
    does not trigger lockdown or disable unrelated tools.
 
 ## Invariants
@@ -59,14 +58,14 @@ surfaces still need.
   bodies, provider URLs, credential instructions, schema paths, or raw tool
   status codes from these failure paths.
 - Existing raw status fields remain available to explicit machine-oriented
-  consumers; the semantic projection does not replace lifecycle authority.
+  consumers; the safe error record does not replace lifecycle state.
 - Accepted approval followed by execution failure is not described as an
   approval failure and does not leave the terminal action pending for replay.
 - Partial failure wording does not erase or misstate completed or pending
   sibling work.
-- Configuration and execution failures do not change lockdown posture,
+- Configuration and execution failures do not change lockdown state,
   action authorization, confirmation verification, audit, persistence, or
-  output-firewall authority.
+  output-firewall behavior.
 - Classification is limited to finite machine-owned status/error formats. No
   regex or keyword table decides user intent or other natural-language
   meaning.
@@ -83,13 +82,13 @@ surfaces still need.
   approval statement.
 - Adding a custom transaction or locking protocol.
 
-## Platform Posture
+## Compatibility
 
-Python 3.12 is the implementation and milestone-validation authority. The
-envelope and renderers are platform-neutral. Supported-platform checks remain
-release-close evidence; this decision adds no native-Windows daemon claim.
+Implementation and release tests use Python 3.12. The error record and
+renderers are platform-neutral. This decision adds no native-Windows daemon
+claim.
 
-## Affected Files
+## Implementation
 
 ```text
 docs/adr/ADR-user-facing-failure-presentation.md
@@ -116,16 +115,15 @@ tests/
     └── test_session_message_phases.py
 ```
 
-Production ceiling: seven files. The integration test is an existing direct
-consumer of the invalid-planner-output contract.
+The integration test directly exercises invalid planner output.
 
-## Acceptance Evidence
+## Verification
 
 - Provider tests cover HTTP 400/401/403/408/429/5xx, connection failure,
   redacted serialization, safe primary text, and partial local-tool fallback.
-- Session tests prove only trusted typed provider metadata can preserve a
+- Session tests prove only trusted provider metadata can preserve a
   route-failure notice beside pending work; a spoofed text prefix is not an
-  authority source.
+  source of trusted state.
 - Confirmation tests cover accepted approval followed by successful, failed,
   and unknown execution outcomes without changing terminal lifecycle state.
 - Discord and CLI tests prove primary text distinguishes approval from
@@ -133,7 +131,6 @@ consumer of the invalid-planner-output contract.
 - Behavioral coverage exercises invalid planner output and an unconfigured
   web-search backend through `session.message`, including normal lockdown and
   actionable primary output.
-- The nearest first-principles gate remains required. Isolated live evidence
-  repeats the supported Shisa route's strict-output failure shape and records
-  any semantic-quality observations separately from deterministic safety
-  acceptance.
+- First-principles tests cover the change. Isolated live evidence repeats the
+  supported Shisa route's strict-output failure and records semantic-quality
+  observations separately from deterministic safety tests.

@@ -3,7 +3,7 @@
 *Created: 2026-03-31*  
 *Updated: 2026-08-27 (v0.8.2 release)*
 *Status: In Progress*  
-*Snapshot basis: the published v0.8.2 code/dependency and workflow state, including the O0 dependency refresh, O2A optional-keyring intake, and 2026-08-24 ReleaseClose audit remediation. Historical v0.7.0-v0.8.1 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This release snapshot includes no registry image.*
+*Snapshot basis: the published v0.8.2 code, dependencies, and workflow state, including the dependency refresh, optional keyring support, and 2026-08-24 release audit remediation. Historical v0.7.0-v0.8.1 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This release snapshot includes no registry image.*
 
 ## Scope and Intent
 
@@ -27,7 +27,7 @@ Goals:
 | Release path | PyPI: GitHub Actions `publish.yml` via OIDC; container: local candidate only, no registry path |
 | Current risk summary | Python runtime resolutions remain hash-locked and the frozen all-groups audit reports no known vulnerabilities with no advisory ignore configured. The candidate resolves `cryptography 50.0.0`, `h2 4.4.1`, `aiohttp 3.14.3`, and the audited optional Ledger bridge set. The local image pins its Linux/amd64 Python base digest and excludes build/test tooling from the final stage. Debian package resolution and builder-tool transitive resolution remain build-time mutable, and no container registry signing/attestation path exists yet. |
 
-## Pre-analysis Notes
+## Audit Considerations
 
 - Behavioral contract impact: none. This is documentation-only analysis and should not alter runtime behavior.
 - Threat hotspots for supply chain in this repo today:
@@ -37,9 +37,9 @@ Goals:
   - installer/bootstrap paths that depend on mutable upstream endpoints.
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
-## Follow-up Worklog
+## Dated Findings and Remediations
 
-### 2026-08-24 — v0.8.2 ReleaseClose dependency remediation
+### 2026-08-24 — v0.8.2 release dependency remediation
 
 - The first hash-enforced frozen all-groups audit reported four fixed
   advisories: `PYSEC-2026-3552`-`3554` against locked
@@ -60,7 +60,7 @@ Goals:
   all-groups `pip-audit --require-hashes --disable-pip` then returned
   `No known vulnerabilities found`.
 
-### 2026-08-12 — v0.8.2 O2A optional keyring intake
+### 2026-08-12 — v0.8.2 optional keyring dependencies
 
 - Added a separate `credentials` extra with direct bound
   `keyring>=25.7,<26`; the lock selects `keyring 25.7.0`, whose published
@@ -84,9 +84,9 @@ Goals:
   keyring or its newly selected transitives. It still reports the three
   pre-existing `cryptography 48.0.1` records (`PYSEC-2026-3552` through
   `PYSEC-2026-3554`); the high record requires `50.0.0`, so the existing
-  `V082-D008` ReleaseClose blocker/risk-decision path remains unchanged.
+  the open v0.8.2 cryptography risk decision remained unchanged at that point.
 
-### 2026-08-06 — v0.8.2 O0 dependency intake
+### 2026-08-06 — v0.8.2 dependency refresh
 
 - Optional Python channel resolution:
   - `uv --no-config lock --upgrade-package aiohttp` changed only locked
@@ -106,7 +106,7 @@ Goals:
     exposure rather than proving safety for every dependency path.
   - The human lead approved retaining `cryptography>=48.0.1,<49`, adding no
     audit-ignore, and treating this as a v0.8.2 release blocker until a
-    compatible fixed release is locked and validated or a ReleaseClose risk
+    compatible fixed release is locked and validated or a release risk
     exception is explicitly approved after final review. Two lower-severity
     audit records whose GitHub affected ranges end at `48.0.0` remain visible
     for database reconciliation and re-audit.
@@ -139,7 +139,7 @@ Goals:
     fixed 2026-05-20 cutoff. Versions before 48.0.1 are affected by
     [GHSA-537c-gmf6-5ccf](https://github.com/pyca/cryptography/security/advisories/GHSA-537c-gmf6-5ccf),
     so lowering the direct minimum would restore a known vulnerable wheel.
-- Accepted contract:
+- Documented behavior:
   - documented source-checkout setup commands use the repository's committed,
     hash-locked resolution with `uv --no-config sync --frozen`;
   - stale discovered user/system uv config cannot silently replace that
@@ -150,13 +150,13 @@ Goals:
   - users intentionally evaluating a different package-age universe must move
     their cutoff past every required security floor rather than weakening the
     project.
-- Affected files:
+- Files reviewed:
   - setup documentation: `README.md`, `docs/DEPLOY.md`, `runner/README.md`,
     `runner/RUNBOOK.md`, and `runner/SKILL.md`;
-  - contract/evidence: this audit and
+  - evidence: this audit and
     `tests/unit/test_runner_agent_harness.py`;
   - production files, `pyproject.toml`, and `uv.lock`: none.
-- Pre-analysis:
+- Review considerations:
   - product implication: managed development environments must remain usable
     without trading away the patched dependency baseline;
   - threat hotspots: discovered resolver config overriding the committed lock,
@@ -164,7 +164,7 @@ Goals:
     explicit caller overrides, and misleading Python-version narrowing;
   - runtime wiring: none; the shipped daemon is unchanged. The live path is
     the documented source-checkout command and uv's frozen lock consumption;
-  - refactor selection: none. This is a docs/contract-test unit with no
+  - refactor selection: none. This is a documentation and test change with no
     opportunistic production-file overlap;
   - validation: red-first documentation/command contract test, exact Python
     3.12 hostile-config dry run with lock immutability, Python 3.13 best-effort
@@ -176,17 +176,17 @@ Goals:
     without discovered uv config; the quoted invalid troubleshooting command
     remains only as the failure being diagnosed;
   - `pyproject.toml` and `uv.lock` are unchanged, so the supported-Python
-    contract and patched dependency floor remain intact;
-  - the red-first `GH100-R1` node initially failed on the ambient-config-
-    sensitive commands, then passed as `1 passed`; the owning
+    documented behavior and patched dependency floor remain intact;
+  - the documentation test initially failed on the ambient-config-sensitive
+    commands, then passed as `1 passed`; the owning
     `tests/unit/test_runner_agent_harness.py` file passed all `23` tests;
   - Ruff passed for the changed test, `uv --no-config lock --check` resolved
     all `134` packages, and frozen dry-runs passed on installed Python 3.12 and
     best-effort Python 3.13;
   - independent read-only review reported no remaining findings against the
-    accepted contract.
+    documented behavior.
 
-### 2026-07-28 — v0.8.1 ReleaseClose dependency remediation
+### 2026-07-28 — v0.8.1 release dependency remediation
 
 - Scope: audit the frozen `uv export --all-groups` dependency set and the
   publish-workflow exception list for the pre-tag candidate.
@@ -320,7 +320,7 @@ Goals:
 ### 2026-05-07 — v0.7.2 Ledger bridge uuid recheck
 
 - Scope: refresh the carried `SC-v0.7.0-ledger-uuid` optional Ledger bridge
-  npm advisory during v0.7.2 ReleaseClose remediation.
+  npm advisory during v0.7.2 release remediation.
 - Audit result:
   - `npm audit --omit=dev --audit-level=high` in `contrib/ledger-bridge/`
     exited 0. npm still printed the residual moderate `uuid` advisory family,
@@ -657,7 +657,7 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-No open release-audit dependency deferral remains for the v0.8.2 candidate.
+No open release-audit dependency deferral remains for v0.8.2.
 
 The current Claude adapter-chain advisory remains recorded above as accepted
 runtime-npx adapter risk, not as a second open deferral in this document.
@@ -666,7 +666,7 @@ runtime-npx adapter risk, not as a second open deferral in this document.
 
 | ID | Closure evidence | Residual risk | Closed in |
 |---|---|---|---|
-| `SC-v0.8.2-cryptography` | Raised the direct bound to `cryptography>=50,<51`, locked `50.0.0`, upgraded transitive `h2` to `4.4.1`, passed 287 focused compatibility tests, and obtained a clean hash-enforced frozen all-groups audit with no ignore. | Upstream no longer supports 32-bit Windows or x86_64 macOS; neither is a tested v0.8.2 lane. Future dependency refreshes must preserve the currently tested Linux/amd64, Windows x64, and macOS arm64 posture. | 2026-08-24 v0.8.2 ReleaseClose remediation |
+| `SC-v0.8.2-cryptography` | Raised the direct bound to `cryptography>=50,<51`, locked `50.0.0`, upgraded transitive `h2` to `4.4.1`, passed 287 focused compatibility tests, and obtained a clean hash-enforced frozen all-groups audit with no ignore. | Upstream no longer supports 32-bit Windows or x86_64 macOS; neither is a tested v0.8.2 lane. Future dependency refreshes must preserve the currently tested Linux/amd64, Windows x64, and macOS arm64 posture. | 2026-08-24 v0.8.2 release remediation |
 | SC-v0.7.0-ledger-uuid | Added an npm override for the optional Ledger bridge so Ledger SDK packages resolve patched `uuid@11.1.1`; regenerated `contrib/ledger-bridge/package-lock.json`; `npm audit --json`, `npm audit --omit=dev --json`, and `npm audit --omit=dev --audit-level=high` all exit 0. | Low. The bridge remains optional and disabled by default. Future Ledger SDK updates may remove the need for the override or change compatibility constraints; recheck during the next Ledger bridge dependency refresh. | 2026-05-07 Dependabot 21 remediation |
 
 ## Immediate Hardening Applied (2026-03-31)
@@ -905,9 +905,9 @@ that path.
   provenance attestation, signature, or documented signature-verification path
   yet; public docs therefore call it a local candidate only.
 
-### D. Current working-candidate package inventory (all groups)
+### D. v0.8.2 package inventory (all groups)
 
-The full locked package set (third-party only) at the O0 working candidate:
+The full locked third-party package set at the v0.8.2 dependency-refresh snapshot:
 
 ```text
 agent-client-protocol==0.8.1
@@ -1507,7 +1507,7 @@ Note: packages with no `# via` comments in this export are direct dependencies o
 | Lockfile committed | Yes | `uv.lock` committed and used in all workflows |
 | Frozen install enforced | Yes | `uv sync --frozen` in all CI jobs |
 | Age gate enforced | Yes | `--exclude-newer P7D` in all CI jobs |
-| Hashes enforced at install surface | Yes | `uv.lock` records artifact hashes; CI uses `--frozen` |
+| Hashes enforced during installation | Yes | `uv.lock` records artifact hashes; CI uses `--frozen` |
 | Build scripts deny-by-default | N/A | Python ecosystem; no install scripts in dependency chain |
 | GitHub Actions pinned by SHA | Yes | All actions pinned to immutable commit SHAs; `zizmor-action` refreshed at v0.6.0 release-close |
 | Release workflows avoid attacker-controlled triggers | Yes | `publish.yml` uses `workflow_dispatch` only |

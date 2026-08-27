@@ -1,6 +1,8 @@
 # Tool Status
 
-This file records a point-in-time snapshot of the tool surface from a local `shisad` run. Exact status depends on configuration, enabled channels, and environment. Regenerate it in your own environment with:
+This file records a point-in-time snapshot of the tools from a local `shisad`
+run. Exact status depends on configuration, enabled channels, and environment.
+Regenerate it in your own environment with:
 
 ```bash
 uv run --frozen python scripts/live_tool_matrix.py --tool-status
@@ -24,10 +26,10 @@ filesystem root was the source checkout. The direct-RPC probe is deliberately
 fast; later safe tools can therefore appear as `GATED` when the behavioral
 sequence control sees the synthetic burst.
 
-In the v0.8.2 release, typed `web.*`, `realitycheck.*`, `email.*`,
-`fs.*`, and `git.*` convenience probes enter the shared PEP, control-plane,
-durable approved-action, audit, taint, and output-sanitization path through a
-short-lived direct session. This note updates route semantics only; it does not
+In the v0.8.2 release, `web.*`, `realitycheck.*`, `email.*`, `fs.*`, and
+`git.*` convenience probes use the same policy, approval, audit, taint, and
+output-sanitization path through a short-lived direct session. This note
+updates route semantics only; it does not
 regenerate or relabel the dated environment-specific rows below.
 
 This host had no available `nsjail` or container sandbox backend. Under the
@@ -132,7 +134,7 @@ Note:
   prior transcript/timeline-handle fixture and a promotable read packet. Their
   user-visible search/read/promote contract is covered by behavioral tests.
 - The generated snapshot below reflects the current `scripts/live_tool_matrix.py` probe surface. Browser rows are intentionally omitted from this point-in-time table even though the browser tool surface is live in `v0.6.0` M6 when `SHISAD_BROWSER_ENABLED=1` and `SHISAD_BROWSER_COMMAND` is configured.
-- MCP tool rows are intentionally omitted from this static snapshot because the surface is configuration-specific and discovered at runtime. In `v0.6.5` I2, discovered MCP tools are treated as external/untrusted runtime entries and require confirmation by default unless the server name appears in `SHISAD_MCP_TRUSTED_SERVERS`.
+- MCP tool rows are intentionally omitted from this static snapshot because the surface is configuration-specific and discovered at runtime. Since `v0.6.5`, discovered MCP tools are treated as external/untrusted runtime entries and require confirmation by default unless the server name appears in `SHISAD_MCP_TRUSTED_SERVERS`.
 - Browser read-mostly tools (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are designed to work without confirmation when the destination is authorized. Browser write tools (`browser.click`, `browser.type_text`) are confirmation-gated in the live runtime. The source-checkout wrapper and host setup steps are documented in `docs/runbooks/BROWSER.md`; `SHISAD_BROWSER_COMMAND` must point at the shisad wrapper protocol, not upstream Playwright. The current PyPI wheel does not install the Node wrapper, so package installs need an explicit compatible wrapper path.
 - With `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1` (the default), browser scope entries must be literal hosts/URLs; wildcard browser allowlist patterns are rejected fail-closed because the hardened connect-path layer cannot enforce wildcard sibling hosts safely.
 - The browser rows remain live in the published `v0.7.x` line even though this point-in-time table intentionally omits them.

@@ -26,12 +26,11 @@ It installs the Textual UI plus MCP, Matrix E2EE, Discord, Telegram, and Slack
 client libraries. It does not enable any channel or supply credentials.
 PromptGuard remains a separate optional model runtime; combine it explicitly
 as `shisad[assistant,promptguard]` when wanted. The latest currently published
-package is `v0.8.1`, where the `assistant` extra is the complete consumer
-install surface. Use an exact release tag or source checkout for the
-pre-publication `v0.8.2` candidate.
+package is `v0.8.2`, where the `assistant` extra is the complete consumer
+installation profile.
 
 The smaller base package still provides `shisad --help`; `shisad[chat]`
-remains available for a Textual-only installation. Missing optional surfaces
+remains available for a Textual-only installation. Missing optional features
 fail with an install/configuration action rather than requiring the repository
 on `PYTHONPATH`.
 
@@ -290,7 +289,7 @@ rollback claim.
 For an env-only deployment that is moving selected non-secret settings into a
 file, use `shisad --config PATH init --from-env`. The generated file uses
 owner-only mode on POSIX and reports when equivalent permission tightening is
-unavailable. It contains only typed, non-default fields sourced from supported
+unavailable. It contains only supported, non-default fields sourced from
 environment variables. Raw API keys, bot tokens, credentials, nested
 secret-bearing objects, and other secret fields are omitted and remain
 environment-owned.
@@ -562,10 +561,11 @@ Start the daemon:
 uv run shisad start --foreground
 ```
 
-`--foreground` is the right posture for containers and service supervisors.
+`--foreground` is the correct mode for containers and service supervisors.
 For an interactive POSIX install, `uv run shisad start` launches a detached
-child, waits boundedly for the control API, and reports a redacted health
-summary plus its owner-only log at `<data-dir>/logs/daemon.log`. A repeated
+child, waits until the configured startup timeout for the control API, and
+reports a redacted health summary plus its owner-only log at
+`<data-dir>/logs/daemon.log`. A repeated
 start is idempotent while that socket is reachable. Native Windows daemon
 transport/background support is not claimed by this path.
 
@@ -602,8 +602,9 @@ can interact with the daemon.
 In the v0.8.2 release, prefer logical channel token references over
 raw `SHISAD_*_TOKEN` config values. Register each reference with
 `shisad credential set` (environment, optional keyring, or owner-only local
-file), then use `shisad setup channel --channel <name> ...`. The command validates and
-prints a reference-only fragment but does not publish it. `--skip-probe` makes
+file), then use `shisad setup channel --channel <name> ...`. The command
+validates and prints a fragment that names stored credentials without including
+their values, but does not publish it. `--skip-probe` makes
 no connector call. An optional fixed test notice requires both `--send-test`
 and an explicit `--test-target`, uses the normal durable delivery path exactly
 once, and does not claim an inbound round trip. If its effect is uncertain,
@@ -628,7 +629,7 @@ shisad delivery inspect <dres-or-dly-id> --json
 ```
 
 For an uncertain provider attempt, `delivery resolve` performs a lookup only
-when the active adapter declares an authoritative reconciliation contract:
+when the active adapter supports an authoritative provider-side lookup:
 
 ```bash
 shisad delivery resolve <dres-or-dly-id>
@@ -640,8 +641,8 @@ recorded with its matching receipt. Authoritative absence becomes the terminal
 approval path if you want to retry. Unknown, failed, mismatched, or unsupported
 lookups remain uncertain.
 
-The current Matrix, Discord, Telegram, and Slack adapters do not yet expose an
-authoritative reconciliation contract, so their uncertain attempts report
+The current Matrix, Discord, Telegram, and Slack adapters do not yet support
+that provider-side lookup, so their uncertain attempts report
 `unsupported` and remain `outcome_unknown`. Inspect the provider before
 deciding whether to submit fresh work. This limitation also means that seeing a
 provider transaction-ID feature in its API is not, by itself, a shipped restart
@@ -700,8 +701,8 @@ Pairing output contains provider workspace/user identifiers and request
 metadata. Treat both human and JSON output as local operational data and
 redact it before sharing.
 
-For a combined setup, enroll the references first and create a bounded
-secret-free selection document. For example:
+For a combined setup, enroll the references first and create a secret-free
+selection document. For example:
 
 ```yaml
 provider:
@@ -729,7 +730,7 @@ shisad setup apply --selection setup.yaml --skip-probes
 shisad setup apply --selection setup.yaml --skip-probes --write
 ```
 
-Remove `--skip-probes` to run each existing bounded provider/channel check
+Remove `--skip-probes` to run each available provider/channel check
 serially. A failed check is not retried and blocks publication. OpenRouter and
 local vLLM combined selections require an explicit `model_id`. The successful
 write creates `policy.yaml` before a sibling commented `config.toml`; each is
@@ -755,9 +756,9 @@ shisad --config /absolute/path/config.toml config wizard \
   --write
 ```
 
-The update validates the finite `daemon`, `model`, or `security` field through
-the normal typed config owner, preserves every unselected byte, retains an
-exact owner-only `pre-reconfigure` rollback copy, and refuses stale source,
+The update validates the selected `daemon`, `model`, or `security` field through
+the normal config writer, preserves every unselected byte, retains an
+owner-only `pre-reconfigure` rollback copy, and refuses stale source,
 symlink, noncanonical selected-table, unknown-field, or raw-secret-bearing
 input before replacement. Restart the daemon to load a published update.
 Automatic workspace persona/SOUL generation is not part of this operation;
@@ -1045,7 +1046,7 @@ display fields, and identifiers. Do not paste this output into shared logs,
 support tickets, or issue reports without reviewing and redacting it.
 The same handling applies to delivery inspection, channel pairing, audit
 query, backup/restore, config, setup, credential-status, and lifecycle JSON:
-these surfaces redact defined secret fields where contracted, but can still
+these commands redact defined secret fields, but can still
 contain paths, provider identifiers, workspace/session metadata, or other
 personal operational context.
 

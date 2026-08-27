@@ -1,9 +1,8 @@
-# ADR: Planner Context-Capacity Budgeting
+# ADR: Planner Context-Window Limits and Compaction
 
-*Status: Accepted for v0.8.2 implementation*
+*Status: Accepted and shipped in v0.8.2*
 *Date: 2026-07-31*
 *Issue: [#97](https://github.com/shisa-ai/shisad/issues/97)*
-*Runtime baseline: `0127ddaa`*
 
 ## Context
 
@@ -18,7 +17,7 @@ connectivity or credentials.
 The planner input is not one interchangeable prose blob. It contains trusted
 safety/tool instructions, authenticated current user intent, required tool
 schemas, trusted structural frontmatter, and several optional historical or
-retrieved context sources. Capacity handling must preserve those authority
+retrieved context sources. Capacity handling must preserve those trust
 boundaries rather than truncating the request blindly.
 
 ## Decision
@@ -38,7 +37,7 @@ boundaries rather than truncating the request blindly.
    admission boundary, not a claim to reproduce every provider tokenizer
    exactly.
 3. When optional context makes the request exceed the input budget, the
-   runtime removes complete typed context entries in a deterministic order:
+   runtime removes complete context entries in a deterministic order:
    conversation history and episode summaries first, then thread-resume and
    active-attention content, then retrieved memory, then remaining optional
    same-scope/task-detail context. It records which entry classes were omitted
@@ -51,13 +50,13 @@ boundaries rather than truncating the request blindly.
    - trusted security/session frontmatter; or
    - an enabled tool schema required for the current policy/tool surface.
 5. If those protected contributors cannot fit with the output reservation,
-   the provider is not called. The user receives a typed actionable response
+   the provider is not called. The user receives a structured response
    that names the configured context-window size and suggests shortening the
    request or selecting a larger-context model. It does not expose the route,
    raw provider payload, credentials, or internal control-plane details.
 6. Unknown-window routes are not compacted against an invented limit. If the
    provider returns a structurally recognized context-capacity error, that
-   error becomes the same typed terminal capacity state. The planner does not
+   error becomes the same terminal capacity error. The planner does not
    retry the identical oversized request and the routed provider does not
    convert it into a generic local fallback.
 7. Provider overflow classification is restricted to the finite
@@ -77,17 +76,17 @@ boundaries rather than truncating the request blindly.
 - A provider-reported capacity failure causes at most one remote call for that
   planner attempt and is not described as connectivity, credential, rate
   limit, or transient provider flakiness.
-- Logs and user-visible responses contain bounded typed capacity facts, not
+- Logs and user-visible responses contain only safe capacity details, not
   the raw provider body or endpoint.
 - No regex, keyword table, edit-distance check, or token-overlap heuristic is
   added for user intent or other natural-language meaning.
 
-## Unknown-Limit Posture
+## Unknown Model Limits
 
-The safe unknown posture is truthful rather than artificially small. The
-runtime preserves the request and lets the configured provider decide its
-capacity. A structurally recognized provider overflow is projected as a typed
-capacity failure. Users who know a custom model's limit can configure it in
+When the limit is unknown, the runtime does not invent a smaller one. It
+preserves the request and lets the configured provider decide its
+capacity. A structurally recognized provider overflow becomes a structured
+capacity error. Users who know a custom model's limit can configure it in
 the planner capability object to enable proactive compaction and preflight.
 
 ## Non-Goals
@@ -101,14 +100,13 @@ the planner capability object to enable proactive compaction and preflight.
   provider retry policy outside capacity errors, or the generic UI error model.
 - Introducing a custom transaction or locking protocol.
 
-## Platform Posture
+## Compatibility
 
-Python 3.12 is the implementation and milestone-validation authority. The
+Implementation and release tests use Python 3.12. The
 budgeting algorithm is deterministic and platform-neutral. Supported-platform
-coverage remains release-close evidence; no native-Windows daemon claim is
-added here.
+tests cover the release; no native-Windows daemon claim is added here.
 
-## Affected Files
+## Implementation
 
 ```text
 docs/
@@ -134,27 +132,22 @@ tests/
     └── test_providers_extracted.py
 ```
 
-Production ceiling: seven files. Total public ceiling: fifteen files.
-Incidental variance follows the repository's bounded existing-test/docs rule;
-production, configuration, dependency, workflow, and script variance remains
-outside that band.
+## Verification
 
-## Acceptance Evidence
-
-- `I2-R1`: under-limit and exact-estimated-limit requests reach the provider
-  unchanged; an over-limit request drops only the expected optional typed
+- Under-limit and exact-estimated-limit requests reach the provider unchanged;
+  an over-limit request drops only the expected optional
   entries and reaches the provider once within budget.
-- `I2-R2`: an irreducible request preserves the safety prompt, current goal,
+- An irreducible request preserves the safety prompt, current goal,
   trusted frontmatter, and full enabled tool schemas, makes zero provider
   calls, and returns an actionable capacity response without raw HTTP text.
-- `I2-R3`: an unknown-limit route applies no guessed preflight; one
-  structurally recognized 16,384-token provider overflow becomes the typed
+- An unknown-limit route applies no guessed preflight; one structurally
+  recognized 16,384-token provider overflow becomes the structured
   capacity response without local fallback or identical-request retry.
-- `I2-J1`: a long-session `session.message` journey with enough optional
+- A long-session `session.message` journey with enough optional
   history to exceed the known model budget still returns a visible answer;
   the provider-observed request retains the current goal/security/tool
   boundaries and records deterministic history omission.
 - The nearest accumulated/cross-session context regressions and the named
   first-principles gate remain green. Because this changes live planner-route
-  behavior, milestone close also records one isolated live long-session
+  behavior, release verification also records one isolated live long-session
   journey against the supported Shisa route.

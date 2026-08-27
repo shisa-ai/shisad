@@ -29,8 +29,8 @@ model-owned.
 
 The daemon supplies separately marked context for the authenticated request,
 trusted same-session user context, and untrusted evidence. The composed planner
-and typed response-finalization instructions require the model to apply these
-rules:
+and structured response-finalization instructions require the model to apply
+these rules:
 
 1. Claims actually supplied by the authenticated user or established by
    same-turn evidence may be stated directly.
@@ -58,7 +58,7 @@ rules:
 For remote native-tool-capable conversational responses, the existing
 `respond_to_user(final_answer)` protocol remains the structural output boundary.
 The model performs the linguistic grounding judgment; Python validates only the
-closed function-call envelope and passes the typed answer through the existing
+closed function-call structure and passes the final answer through the existing
 output firewall, transcript, audit, and channel path.
 
 ## Why the Daemon Does Not Grade the Answer
@@ -75,7 +75,7 @@ protocol and provenance structure, while the LLM owns meaning.
 
 ## Preserved Behavior
 
-- Untrusted evidence remains data, never an instruction or action authority.
+- Untrusted evidence remains data, never an instruction or permission to act.
 - Prior authenticated user turns remain usable as user-supplied context.
 - Model prior remains available when useful or explicitly requested.
 - Tool selection, PEP, confirmation, execution, post-tool synthesis, memory
@@ -87,9 +87,9 @@ protocol and provenance structure, while the LLM owns meaning.
 - Response finalization still exposes no executable runtime tools and does not
   change the synthetic function name or field set.
 
-## Validation Contract
+## Verification
 
-Deterministic acceptance covers both directions:
+Deterministic tests cover both directions:
 
 - a follow-up answerable from a supplied recommendation does not invent
   unsupported classifications or imply that the list verified them; and

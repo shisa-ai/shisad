@@ -70,7 +70,7 @@ Version must be updated in both places:
       other docs first. Verify:
       - The `## Status` section names the correct "latest published line"
         for the release you are cutting.
-      - Pre-tag / "ReleaseClose in progress" / "about to be tagged" /
+      - Pre-tag / "release review in progress" / "about to be tagged" /
         "pre-tag release content" wording is removed.
       - The feature bullets in `## What makes shisad different`, the
         version/focus table, and any claims about current capabilities
@@ -78,6 +78,27 @@ Version must be updated in both places:
         as shipped).
       - Any version-string references in install or quick-start examples
         reflect the release being cut.
+- [ ] Review every changed public document against the previous published tag.
+      This is an editorial review in addition to the factual release check:
+      `git diff --stat <previous-tag>..HEAD -- README.md CHANGELOG.md docs/ runner/README.md runner/RUNBOOK.md`
+      and
+      `git diff --numstat <previous-tag>..HEAD -- README.md CHANGELOG.md docs/ runner/README.md runner/RUNBOOK.md`.
+      Read the complete diff for each changed file. Use `git log` and
+      `git blame` when an unexpected block needs its history explained.
+- [ ] Confirm that every changed public document still has a clear audience
+      and purpose. Preserve the existing structure unless the release itself
+      requires a structural change. Large prose growth needs a concrete reader
+      need; version parity alone does not justify it.
+- [ ] Remove private execution material from public documentation: internal
+      plans, worklogs, punchlists, review/model assignments, temporary process
+      IDs, private paths, and session-resumption notes. Stable contributor
+      instructions and developer tools may remain when they help external
+      developers and contain no private execution history.
+- [ ] Check new or changed prose for invented jargon, acronyms, and workflow
+      labels. Prefer established ordinary language and define every necessary
+      domain term on first use. Describe user-visible behavior rather than
+      copying acceptance-test or implementation-plan wording.
+- [ ] Confirm the human editorial review in the release record before tagging.
 - [ ] Review top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
@@ -129,13 +150,13 @@ Version must be updated in both places:
       startup path; overlapping them can create avoidable socket-startup
       timeouts and invalidate the release-close evidence.
 - [ ] Record the exact release-close validation commands and outcomes in the
-      active implementation/worklog doc; if any live lane cannot be run, note
+      release record; if any live lane cannot be run, note
       why before claiming the release is closeable
 - [ ] Run the Discord `#shisad` publish gate with the current tree before
       claiming the release is publish-ready. See **Discord #shisad Publish
       Gate** below.
-- [ ] Record the Discord publish-gate evidence in the active
-      implementation/worklog doc: redacted command shape, environment posture,
+- [ ] Record the Discord publish-gate evidence in the release record: redacted
+      command shape, environment posture,
       target channel, session/message identifiers or transcript/log path when
       available, and result.
 - [ ] Stop before GitHub tag/PyPI publish if the current tree cannot post to
@@ -193,7 +214,7 @@ Version must be updated in both places:
       programmatically with:
       `gh api --method PATCH '/repos/<owner>/<repo>/code-scanning/alerts/<id>' -f state=dismissed -f dismissed_reason='false positive' -f dismissed_comment='...'`
       or `dismissed_reason='used in tests'` as appropriate. Record alert IDs
-      and disposition in the active worklog when they affect release-close.
+      and disposition in the release record when they affect release-close.
 - [ ] Confirm the tree is clean: `git status -sb`
 
 ## Discord #shisad Publish Gate
@@ -328,16 +349,19 @@ follow-on patch release.
    internal component name, architecture term, or implementation mechanism,
    rewrite it.
    - Good: "Security analysis runs in a separate process from the main daemon."
+2. **Use established language.** Do not invent project jargon, acronyms,
+   review labels, or workflow terms. Define necessary domain terms on first
+   use, and describe what readers can do or observe.
    - Bad: "Control-plane analysis is isolated from the main daemon path."
    - Good: "Tool actions are checked against what the user actually asked for."
    - Bad: "Risky tool actions must trace back to committed intent."
    - Good: "Subtasks can inherit their parent session's approved scope."
    - Bad: "Delegated TASK work can inherit trusted scope from a clean COMMAND session."
 
-2. **One feature per bullet.** If a bullet has commas separating five things,
+3. **One feature per bullet.** If a bullet has commas separating five things,
    break it into five bullets.
 
-3. **Write for an end-user who has not read our internals.**
+4. **Write for an end-user who has not read our internals.**
    Assume the reader uses the software, but does not know our ADRs, milestone
    plan, or internal vocabulary. Avoid milestone IDs, component names, and
    compound-adjective chains. If a sentence depends on a term like
@@ -353,21 +377,21 @@ follow-on patch release.
      where it names a distinct policy-author role separate from the
      end user.
 
-4. **Bold the headline, then explain.** Start each Added/Security bullet with
+5. **Bold the headline, then explain.** Start each Added/Security bullet with
    a short bold phrase, then follow with a plain sentence.
    - Example: `**Browser writes require user confirmation** and are scoped to
      the approved page context.`
 
-5. **Separate end-user changes from infrastructure.** Supply-chain hardening,
+6. **Separate end-user changes from infrastructure.** Supply-chain hardening,
    CI gates, and release pipeline changes matter, but most end-users will
    skip past them. Use sub-bullets under a parent item so readers can scan
    past if they don't care.
 
-6. **Stay truth-scoped.** Don't overclaim. If a feature requires configuration
+7. **Stay truth-scoped.** Don't overclaim. If a feature requires configuration
    or only works in certain modes, say so. Prefer "when X is configured" over
    implying it works universally.
 
-7. **Drop implementation details unless they matter to the end-user.**
+8. **Drop implementation details unless they matter to the end-user.**
    Internal class names, registry names, schema types, layer numbers, and
    enforcement mechanics belong in commit messages or architecture docs, not
    the changelog. Rewrite phrases like "committed intent", "Tool Dependency
@@ -376,7 +400,7 @@ follow-on patch release.
    Mention the mechanism only after the end-user-facing effect is already
    clear, and only when it helps explain limits or setup.
 
-8. **Expand acronyms on first use across the CHANGELOG.** Treat the whole
+9. **Expand acronyms on first use across the CHANGELOG.** Treat the whole
    file as one continuous document from a reader's perspective — they may
    read it top-to-bottom when catching up on a project. The first time an
    acronym appears in the file (counting from the newest release down),
@@ -389,7 +413,7 @@ follow-on patch release.
    expansions only — do not invent an expansion that reads plausibly but
    is not the commonly-used form.
 
-9. **Link public issue and PR provenance in a standard suffix.** When a
+10. **Link public issue and PR provenance in a standard suffix.** When a
    changelog entry maps to a public GitHub issue or pull request, end the
    bullet with a parenthesized Markdown link suffix after the user-facing
    sentence. Use full GitHub URLs so the links work in GitHub Releases,
@@ -408,14 +432,14 @@ follow-on patch release.
      provenance for the shipped change.
    - If no public issue or PR exists, omit the suffix.
 
-10. **Use a quick jargon smell test before you ship it.** Read each bullet and
+11. **Use a quick jargon smell test before you ship it.** Read each bullet and
    ask:
    - Would an end-user understand this without knowing our internal system names?
    - Does the first sentence say what changed for them, not what we built?
    - Could they explain it back after one read?
    If not, rewrite it.
 
-11. **Prefer everyday product language over internal threat language.** Write
+12. **Prefer everyday product language over internal threat language.** Write
     what the end-user can notice or act on. For example:
     - Better: "The daemon now warns when suspicious denied actions repeat."
     - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
@@ -466,8 +490,8 @@ accepted, you cannot re-upload different contents at the same version. If
 the package has already shipped to PyPI, cut `X.Y.(Z+1)` instead of moving
 the tag.
 
-Record the failure and the recovery in the active milestone/implementation
-worklog so the next release's preflight can be tightened if the gap is
+Record the failure and the recovery in the release record so the next
+release's checks can be tightened if the gap is
 reproducible (for example, adding the missing check to
 `scripts/ci_preflight.sh`).
 

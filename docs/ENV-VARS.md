@@ -203,7 +203,7 @@ Identity gating:
 
 - `SHISAD_CHANNEL_IDENTITY_ALLOWLIST`
 
-Each `*_TOKEN_REF` is a logical O2A credential name resolved only for enabled
+Each `*_TOKEN_REF` is a stored credential name resolved only for enabled
 adapter construction. It is mutually exclusive with the matching raw token
 field, and Slack bot/app references must be distinct. Missing references and
 optional channel dependencies degrade that channel without blocking the safe

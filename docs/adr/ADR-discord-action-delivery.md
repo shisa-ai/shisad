@@ -1,9 +1,8 @@
 # ADR: Discord Action and Result Delivery
 
-*Status: Accepted for v0.8.2 implementation*
+*Status: Accepted and shipped in v0.8.2*
 *Date: 2026-08-04*
 *Issues: [#102](https://github.com/shisa-ai/shisad/issues/102), [#105](https://github.com/shisa-ai/shisad/issues/105), [#106](https://github.com/shisa-ai/shisad/issues/106)*
-*Runtime baseline: `14c17fd1`*
 
 ## Context
 
@@ -99,20 +98,20 @@ that controls were removed and does not alter the action result.
 - Replacing Discord's legacy component layout with Components V2, embeds, or a
   broader channel redesign. The existing component model remains within the
   documented [component constraints](https://docs.discord.com/developers/components/reference).
-- Changing confirmation policy, proof authority, PEP, execution, audit, or
+- Changing confirmation policy, proof selection, PEP, execution, audit, or
   other channel behavior.
-- Rewriting long model responses. Delivery is bounded regardless of why the
-  response is long.
+- Rewriting long model responses. Delivery respects Discord's message limits
+  regardless of why the response is long.
 
-## Platform Posture
+## Compatibility
 
-Python 3.12 is the implementation authority. Discord behavior is validated at
+Implementation and release tests use Python 3.12. Discord behavior is validated at
 the adapter boundary with deterministic fakes, including actual view
 construction, send ordering, editing, chunking, and provider exceptions. No
 live token, dependency, storage schema, custom transaction, or locking
 protocol is added.
 
-## Acceptance Evidence
+## Verification
 
 - Adapter tests prove one owning view per confirmation, degraded rendering on
   atomic view-construction failure, componentless degraded delivery,
@@ -126,5 +125,5 @@ protocol is added.
 - A deterministic daemon journey proves that three Discord confirmations
   return three action-specific safe parts without leaking internal reason
   codes.
-- Existing delivery lifecycle and replay tests remain authoritative for the
-  logical `outcome_unknown` recovery posture.
+- Existing delivery lifecycle and replay tests continue to cover
+  `outcome_unknown` recovery.

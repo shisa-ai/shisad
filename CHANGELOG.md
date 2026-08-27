@@ -19,15 +19,15 @@ verification, and administrative diagnostics.
 
 ### Added
 
-- **First-run setup is bounded and inspectable.** Read-only preflight, named
-  credential references, provider/model checks, generated policy profiles,
-  reference-only channel configuration, an explicit-write setup wizard,
-  background first start, health diagnostics, and a guided tour compose without
-  silently publishing credentials or starting services.
+- **First-run setup previews changes before writing.** A read-only readiness
+  check, stored credential names, provider/model checks, generated policy
+  profiles, channel configuration, a setup wizard, background startup, health
+  diagnostics, and a guided tour work together without silently publishing
+  credentials or starting services.
 
 - **Chat exposes session-scoped pending work and progress.** The terminal chat
   can show current-session confirmations, Discord can opt into request-bound
-  threads, and local chat/Discord can display bounded typed action progress
+  threads, and local chat/Discord can display action progress
   without projecting raw arguments, results, destinations, or error prose.
   ([#79](https://github.com/shisa-ai/shisad/issues/79),
   [#81](https://github.com/shisa-ai/shisad/issues/81),
@@ -48,9 +48,9 @@ verification, and administrative diagnostics.
   Complete deletion remains outside the local-root threat boundary because
   there is no external audit anchor.
 
-- **Channel administration is explicit and bounded.** Authenticated local
-  commands report truthful Matrix/Discord/Telegram/Slack status, send one fixed
-  setup notice through normal durable delivery authority, inspect or clean one
+- **Channel administration requires explicit local commands.** Authenticated
+  local commands report truthful Matrix/Discord/Telegram/Slack status, send one fixed
+  setup notice through the normal delivery system, inspect or clean one
   exact workspace's pairing requests, and preview or publish one validated
   config-section change. Status and tests do not claim inbound round-trip
   verification.
@@ -64,8 +64,8 @@ verification, and administrative diagnostics.
 ### Changed
 
 - **Responses separate model prior from supplied evidence.** Native tool-call
-  paths expose one typed final answer rather than preliminary routing prose,
-  and the response contract distinguishes retrieved/tool evidence from the
+  paths expose one final answer rather than preliminary routing prose,
+  and the response data distinguishes retrieved/tool evidence from the
   model's prior knowledge without a daemon-side natural-language classifier.
   ([#96](https://github.com/shisa-ai/shisad/issues/96),
   [#98](https://github.com/shisa-ai/shisad/issues/98),
@@ -73,19 +73,19 @@ verification, and administrative diagnostics.
 
 - **Planner context capacity fails actionably.** Known model windows are
   budgeted before provider invocation; eligible optional history can be
-  compacted, while protected or provider-reported overflow returns a bounded
+  compacted, while protected or provider-reported overflow returns a clear
   user-facing error instead of an opaque HTTP failure.
   ([#97](https://github.com/shisa-ai/shisad/issues/97))
 
-- **Runtime failures use bounded user-facing envelopes.** Chat and channel
+- **Runtime failures show concise user-facing errors.** Chat and channel
   responses omit internal route identifiers and technical detail from their
   primary message while retaining structured technical diagnostics and clear
   next actions.
   ([#101](https://github.com/shisa-ai/shisad/issues/101),
   [#104](https://github.com/shisa-ai/shisad/issues/104))
 
-- **Confirmation reviews are action-specific and channel-readable.** Shared
-  semantic rendering hides internal control fields, retains explicit machine
+- **Confirmation details are specific to one action and readable in each channel.**
+  Shared rendering hides internal control fields, retains explicit machine
   detail where supported, and keeps completion on the originating surface.
   ([#74](https://github.com/shisa-ai/shisad/issues/74),
   [#78](https://github.com/shisa-ai/shisad/issues/78),
@@ -103,13 +103,13 @@ verification, and administrative diagnostics.
   state reported by the staging workflow.
   ([#100](https://github.com/shisa-ai/shisad/issues/100))
 
-- **Optional channel startup is bounded.** A missing or slow optional channel
-  degrades that connector and preserves the core daemon when cleanup succeeds;
+- **A missing optional channel does not stop the core daemon.** A missing or
+  slow optional channel degrades that connector and preserves the core daemon when cleanup succeeds;
   unsafe cleanup failure stops startup and releases data-root ownership.
   ([#111](https://github.com/shisa-ai/shisad/issues/111))
 
-- **Discord action/result delivery is separated and length-bounded.** Pending
-  confirmations, completed results, internal status reasons, and oversized
+- **Discord separates action status from results and respects message limits.**
+  Pending confirmations, completed results, internal status reasons, and oversized
   messages no longer collapse into one ambiguous or rejected reply.
   ([#102](https://github.com/shisa-ai/shisad/issues/102),
   [#105](https://github.com/shisa-ai/shisad/issues/105),
@@ -121,7 +121,7 @@ verification, and administrative diagnostics.
   suppresses routine HTTP client traces that can embed provider credentials,
   while retaining dependency warnings and shisad-owned application logs.
 
-- **Recovery paths bind filesystem authority to verified roots.** Backup,
+- **Recovery operations stay within verified data roots.** Backup,
   restore, cleanup, publication, and lifecycle locking use rooted operations
   on supported POSIX and Windows paths and refuse unsafe replacement or
   unavailable required capabilities.

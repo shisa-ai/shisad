@@ -63,11 +63,17 @@ This is what distinguishes shisad from both permissive agents (which can't tell 
 **1. Content-blind enforcement vs. content-seeing detection.** Security components fall into two categories:
 
 - **Content-blind** (control plane): see only action types, resource identifiers, timing, sequence patterns. They do not inspect file contents, message bodies, or free-form text. These are the hard enforcement boundary. Examples: the PEP's tool-registry/capability/resource/egress checks, behavioral sequence analyzer, resource access monitor, and consensus voting.
-- **Content-seeing** (detection): see content to classify, score, sanitize, or apply a bounded deterministic DLP rule. These use classifiers, finite signatures, and heuristics, not general-purpose LLMs. They are not general intent authorities — they can flag, redact, add taint, escalate, or reject an exact deterministic policy match. Examples: content firewall (injection and secret detection), output firewall (secret/PII detection), and the PEP's argument DLP check.
+- **Content-seeing** (detection): see content to classify, score, sanitize, or
+  apply a deterministic, limited-scope DLP rule. These use classifiers, finite
+  signatures, and heuristics, not general-purpose LLMs. They do not decide user
+  intent — they can flag, redact, add taint, escalate, or reject an exact
+  deterministic policy match. Examples: content firewall (injection and secret
+  detection), output firewall (secret/PII detection), and the PEP's argument
+  DLP check.
 
 Security signals from content-seeing components are structured metadata
 (scores, flags, enum labels). A sanitizer may also return rewritten user-facing
-text, but that text is not enforcement authority.
+text, but that text does not make the enforcement decision.
 
 **2. Commit before contamination.** Plans are committed *before* untrusted content is seen. Even if content contains "ignore the plan", the plan is already locked.
 
@@ -75,12 +81,12 @@ text, but that text is not enforcement authority.
 
 **4. Privilege-separated control plane.** The runtime uses three privilege tiers: **TASK** agents handle untrusted content in sandboxed, ephemeral contexts. The **COMMAND** agent orchestrates — it holds user intent, dispatches TASKs, and presents results, but cannot modify system configuration. **SUDO** mode is a clean-room elevation triggered by intent detection on authenticated channels — it can modify policy, capabilities, credentials, and configuration, but its context is stripped to the current user message and system instructions only (no summaries, no artifacts, no residual TASK context), and it auto-drops back to normal operation after the privileged action completes. System modification is possible, but only through this constrained privileged workflow — there is no unconstrained self-modification and no agent-writable instruction files. Policies are read-only to the agent in normal operation. Audit logs are append-only.
 
-In the v0.8.2 release, append-only audit history is also bounded and
-startup-verified. Main and metadata-only control-plane streams use separate
-hash chains and linked, independently verifiable segments. Healthy operation
+In the v0.8.2 release, append-only audit history is verified at startup and
+retained within set size and count limits. Main and metadata-only control-plane
+streams use separate hash chains and linked, independently verifiable segments. Healthy operation
 retains four archives plus one active segment of at most 32 MiB per stream.
 Retention cleanup failure preserves history and reports degradation; integrity
-or persistence failure makes the owning audit authority unavailable. The main
+or persistence failure makes the affected audit service unavailable. The main
 event path persists before subscriber effects and requests daemon shutdown on
 failure, while the control plane refuses later decisions. The runtime does not
 silently reset, truncate, or replace a failed chain. Control-plane state
@@ -98,8 +104,8 @@ credential-like material; bounded ingress, output, and argument-DLP detection
 is defense in depth for that separate case. Model-provider references use a
 separate trusted construction boundary: versioned metadata resolves only while
 the daemon constructs trusted provider configuration, never in config/status
-output or an LLM prompt. This is the scoped invariant I3; it is not a claim
-that arbitrary user-supplied secrets cannot reach a model.
+output or an LLM prompt. This does not mean that arbitrary user-supplied
+secrets cannot reach a model.
 
 **7. Approvals don't launder provenance.** When a user confirms an ambiguous action, the confirmation authorizes *that specific action* — it does not remove taint labels, change the content's provenance, or grant blanket trust to the source. A confirmed web fetch from an untrusted page does not make the fetched content trusted. Taint persists through the full data lifecycle regardless of intermediate approvals.
 
@@ -429,10 +435,10 @@ its optional fixed test notice requires an explicit target and makes one
 normal durable-delivery attempt; an uncertain effect is not automatically
 retried or described as an inbound round trip.
 
-Combined setup accepts only the typed provider/policy/channel selection schema;
+Combined setup accepts only the documented provider/policy/channel selection schema;
 unknown fields and raw-secret fields are rejected without echoing document
 contents. The interactive wizard is unavailable in managed or non-terminal
-postures and uses a final default-no write confirmation. Deterministic
+environments and uses a final default-no write confirmation. Deterministic
 `setup apply` never prompts and remains a dry run unless `--write` is explicit.
 It publishes the validated policy before activating that exact path in a
 commented, schema-validated TOML config. Both files are exclusive no-overwrite
