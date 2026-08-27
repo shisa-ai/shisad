@@ -2372,6 +2372,7 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         return result
 
     monkeypatch.setattr(impl_module, "current_time_payload", _recording_clock)
+    monkeypatch.setattr(impl_module, "_monotonic", lambda: 0.0)
     monkeypatch.setattr(
         impl_module,
         "_sleep",
