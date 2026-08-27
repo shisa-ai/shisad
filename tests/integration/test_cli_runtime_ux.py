@@ -48,10 +48,15 @@ def _chromium_binary() -> Path | None:
     configured = os.environ.get("SHISAD_TEST_CHROMIUM", "").strip()
     if configured:
         return Path(configured)
+    designated = os.environ.get("CHROME_BIN", "").strip()
+    if designated:
+        candidate = Path(designated)
+        if candidate.is_file():
+            return candidate
     for candidate in (
+        Path("/usr/bin/google-chrome"),
         Path("/usr/bin/chromium"),
         Path("/usr/bin/chromium-browser"),
-        Path("/usr/bin/google-chrome"),
     ):
         if candidate.is_file():
             return candidate
@@ -60,6 +65,18 @@ def _chromium_binary() -> Path | None:
         cache.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell")
     )
     return matches[-1] if matches else None
+
+
+def test_f6_chromium_binary_prefers_host_designated_stable_browser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stable_browser = tmp_path / "google-chrome"
+    stable_browser.touch()
+    monkeypatch.delenv("SHISAD_TEST_CHROMIUM", raising=False)
+    monkeypatch.setenv("CHROME_BIN", str(stable_browser))
+
+    assert _chromium_binary() == stable_browser
 
 
 def test_f6_web_snapshot_payload_executes_in_real_browser_dom(tmp_path: Path) -> None:

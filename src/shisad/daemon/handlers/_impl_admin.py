@@ -23,6 +23,7 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
+from shisad.channels.setup import CHANNEL_SETUP_TEST_MESSAGE
 from shisad.channels.state import (
     ChannelReplayIdentityError,
     ReplayIdentity,
@@ -33,6 +34,7 @@ from shisad.core.events import (
     ChannelDeliveryAttempted,
     ChannelPairingProposalGenerated,
     ChannelPairingRequested,
+    ChannelPairingRequestsCleaned,
     LockdownChanged,
     SessionMessageReceived,
 )
@@ -44,6 +46,7 @@ from shisad.core.soul import (
     soul_text_sha256,
     write_soul_text,
 )
+from shisad.core.storage_platform import sync_parent_directory
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.types import Capability, SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
@@ -1536,6 +1539,12 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
+        from shisad.security.control_plane.engine import CONTROL_PLANE_AUDIT_STATUS_KEY
+        from shisad.security.control_plane.sidecar import (
+            ControlPlaneRpcError,
+            ControlPlaneUnavailableError,
+        )
+
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
         readiness = await AdminImplMixin._collect_doctor_checks(
             self,
@@ -1544,6 +1553,49 @@ class AdminImplMixin(HandlerMixinBase):
             timeout_seconds=3.0,
         )
         channel_startup_status = getattr(self._services, "channel_startup_status", {})
+        try:
+            raw_control_plane_audit = await self._control_plane.execution_status(
+                idempotency_key=CONTROL_PLANE_AUDIT_STATUS_KEY
+            )
+            parsed_control_plane_audit = json.loads(raw_control_plane_audit)
+            if not isinstance(parsed_control_plane_audit, dict):
+                raise ValueError("invalid control-plane audit status")
+            required_audit_fields = {
+                "stream",
+                "state",
+                "reason_code",
+                "verified",
+                "segment_count",
+                "archive_count",
+                "entry_count",
+                "retained_bytes",
+                "permission_capability",
+                "parent_sync_capability",
+            }
+            if set(parsed_control_plane_audit) != required_audit_fields:
+                raise ValueError("invalid control-plane audit status schema")
+            control_plane_audit = parsed_control_plane_audit
+        except (
+            ControlPlaneRpcError,
+            ControlPlaneUnavailableError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+        ):
+            control_plane_audit = {
+                "stream": "control_plane",
+                "state": "unavailable",
+                "reason_code": "audit.status_verification_failed",
+                "verified": False,
+                "segment_count": 0,
+                "archive_count": 0,
+                "entry_count": 0,
+                "retained_bytes": 0,
+                "permission_capability": "unknown",
+                "parent_sync_capability": "unknown",
+            }
 
         def _channel_startup(name: str, *, enabled: bool) -> dict[str, Any]:
             raw = channel_startup_status.get(name)
@@ -1559,11 +1611,18 @@ class AdminImplMixin(HandlerMixinBase):
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
             "audit_entries": self._audit_log.entry_count,
+            "audit": {
+                "main": self._audit_log.lifecycle_status,
+                "control_plane": control_plane_audit,
+            },
             "policy_hash": (
                 self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else "default"
             ),
             "tools_registered": [tool.name for tool in self._registry.list_tools()],
             "model_routes": dict(self._model_routes),
+            "storage_upgrades": {
+                name: dict(result) for name, result in self._services.storage_upgrades.items()
+            },
             "readiness": readiness,
             "classifier_mode": self._classifier_mode,
             "content_firewall": self._firewall.status_snapshot(),
@@ -2216,6 +2275,250 @@ class AdminImplMixin(HandlerMixinBase):
             "config_patch": config_patch,
             "applied": False,
         }
+
+    async def do_channel_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel status requires authenticated admin peer")
+        startup_rows = getattr(self._services, "channel_startup_status", {})
+        rows: list[dict[str, Any]] = []
+        for name, enabled, adapter in (
+            ("matrix", self._config.matrix_enabled, self._matrix_channel),
+            ("discord", self._config.discord_enabled, self._discord_channel),
+            ("telegram", self._config.telegram_enabled, self._telegram_channel),
+            ("slack", self._config.slack_enabled, self._slack_channel),
+        ):
+            available = bool(adapter.available) if adapter is not None else False
+            connected = bool(adapter.connected) if adapter is not None else False
+            state = "disabled"
+            if enabled and not available:
+                state = "misconfigured"
+            elif enabled and not connected:
+                state = "degraded"
+            elif enabled:
+                state = "connected"
+            startup = startup_rows.get(name, {})
+            if not isinstance(startup, Mapping):
+                startup = {}
+            rows.append(
+                {
+                    "channel": name,
+                    "enabled": bool(enabled),
+                    "available": available,
+                    "connected": connected,
+                    "state": state,
+                    "startup_status": str(
+                        startup.get("status") or ("unavailable" if enabled else "disabled")
+                    ),
+                    "startup_reason": str(startup.get("reason_code") or ""),
+                    "last_message_at": None,
+                    "last_message_evidence": "unavailable",
+                }
+            )
+        return {"channels": rows, "count": len(rows)}
+
+    async def do_channel_test(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel test requires authenticated admin peer")
+        channel = str(params.get("channel") or "").strip().lower()
+        target = str(params.get("target") or "").strip()
+        result = await self._services.delivery.send(
+            intent=DeliveryIntent(
+                source_id=f"channel_test:{uuid.uuid4().hex}",
+                kind="message_send",
+                target=DeliveryTarget(channel=channel, recipient=target),
+            ),
+            message=CHANNEL_SETUP_TEST_MESSAGE,
+            metadata={"channel_test": True},
+        )
+        return {
+            "channel": channel,
+            "target": target,
+            "attempted": result.attempted,
+            "sent": result.sent,
+            "state": result.state,
+            "reason": result.reason,
+            "outbound_acknowledged": bool(result.sent and result.state == "delivered"),
+            "round_trip_verified": False,
+            "replay_recommended": False,
+            "reservation_id": result.reservation_id,
+            "delivery_id": result.delivery_id,
+        }
+
+    async def do_channel_pairing_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel pairing list requires authenticated admin peer")
+        channel_filter = str(params.get("channel") or "").strip().lower()
+        workspace = str(params.get("workspace_hint") or "").strip()
+        limit = max(1, int(params.get("limit", 100)))
+        rows = self._load_pairing_request_artifacts(
+            owner_uid=int(self._daemon_owner_uid),
+            workspace_hint=workspace,
+        )
+        entries = sorted(
+            (
+                {
+                    "channel": str(row["channel"]),
+                    "external_user_id": str(row["external_user_id"]),
+                    "workspace_hint": str(row["workspace_hint"]),
+                    "reason": str(row["reason"]),
+                    "requested_at": str(row["requested_at"]),
+                }
+                for row in rows
+                if not channel_filter or str(row["channel"]) == channel_filter
+            ),
+            key=lambda row: (
+                row["requested_at"],
+                row["channel"],
+                row["external_user_id"],
+            ),
+        )[:limit]
+        return {"entries": entries, "count": len(entries)}
+
+    async def do_channel_pairing_cleanup(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._is_admin_rpc_peer(params):
+            raise ValueError("channel pairing cleanup requires authenticated admin peer")
+        owner_uid = int(self._daemon_owner_uid)
+        channel_filter = str(params.get("channel") or "").strip().lower()
+        workspace = str(params.get("workspace_hint") or "").strip()
+        before = datetime.fromisoformat(str(params.get("before") or ""))
+        write = bool(params.get("write", False))
+        limit = max(1, int(params.get("limit", 100)))
+        rows = self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace,
+        )
+        matched = sorted(
+            (
+                row
+                for row in rows
+                if (not channel_filter or str(row["channel"]) == channel_filter)
+                and datetime.fromisoformat(str(row["requested_at"])) <= before
+            ),
+            key=lambda row: (
+                str(row["requested_at"]),
+                str(row["channel"]),
+                str(row["external_user_id"]),
+            ),
+        )[:limit]
+        entries = [
+            {
+                "channel": str(row["channel"]),
+                "external_user_id": str(row["external_user_id"]),
+                "workspace_hint": str(row["workspace_hint"]),
+                "reason": str(row["reason"]),
+                "requested_at": str(row["requested_at"]),
+            }
+            for row in matched
+        ]
+        failures: list[dict[str, str]] = []
+        removed = 0
+        durability = "not_applicable"
+        if write:
+            in_memory = self._identity_map.list_pairing_requests(limit=1000)
+            for row in matched:
+                channel = str(row["channel"])
+                external_user_id = str(row["external_user_id"])
+                artifact = self._pairing_request_artifact_path(
+                    owner_uid=owner_uid,
+                    workspace_hint=workspace,
+                    channel=channel,
+                    external_user_id=external_user_id,
+                )
+                try:
+                    artifact.unlink()
+                except OSError as exc:
+                    failures.append(
+                        {
+                            "channel": channel,
+                            "external_user_id": external_user_id,
+                            "reason": f"delete_failed:{exc.__class__.__name__}",
+                        }
+                    )
+                    continue
+                removed += 1
+                for request in in_memory:
+                    if (
+                        request.owner_uid == owner_uid
+                        and request.workspace_hint == workspace
+                        and request.channel == channel
+                        and request.external_user_id == external_user_id
+                    ):
+                        self._identity_map.discard_pairing_request(request)
+            if removed:
+                try:
+                    durability = sync_parent_directory(
+                        self._pairing_workspace_artifact_dir(
+                            owner_uid=owner_uid,
+                            workspace_hint=workspace,
+                        )
+                    )
+                except OSError:
+                    durability = "failed"
+                    failures.append(
+                        {
+                            "channel": channel_filter,
+                            "external_user_id": "",
+                            "reason": "parent_sync_failed",
+                        }
+                    )
+
+        remaining_rows = self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace,
+        )
+        remaining_count = sum(
+            1
+            for row in remaining_rows
+            if not channel_filter or str(row["channel"]) == channel_filter
+        )
+        complete = not failures and durability != "failed"
+        if write:
+            await self._event_bus.publish(
+                ChannelPairingRequestsCleaned(
+                    session_id=None,
+                    actor="control_api",
+                    owner_uid=owner_uid,
+                    workspace_hint=workspace,
+                    channel=channel_filter,
+                    before=before.isoformat(),
+                    matched_count=len(matched),
+                    removed_count=removed,
+                    failed_count=len(failures),
+                    complete=complete,
+                )
+            )
+        return {
+            "workspace_hint": workspace,
+            "channel": channel_filter,
+            "before": before.isoformat(),
+            "dry_run": not write,
+            "complete": complete,
+            "matched_count": len(matched),
+            "removed_count": removed,
+            "failed_count": len(failures),
+            "remaining_count": remaining_count,
+            "durability": durability,
+            "entries": entries,
+            "failures": failures,
+        }
+
+    async def do_delivery_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        state = str(params.get("state") or "").strip() or None
+        deliveries = self._services.delivery.list_deliveries(
+            state=state,
+            limit=int(params.get("limit", 100)),
+        )
+        return {"deliveries": deliveries, "count": len(deliveries)}
+
+    async def do_delivery_inspect(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        delivery = self._services.delivery.inspect_delivery(str(params.get("delivery_id") or ""))
+        return {"found": delivery is not None, "delivery": delivery}
+
+    async def do_delivery_resolve(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._services.delivery.resolve_delivery(str(params.get("delivery_id") or "")),
+        )
 
     def _discord_pending_delivery_metadata(
         self,
@@ -2953,6 +3256,7 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 user_id=identity_user_id,
                 workspace_id=identity_workspace_id,
+                delivery_thread_id=(message.thread_id if message.channel == "discord" else None),
             )
             if existing is not None and not public_session:
                 sid = existing.id

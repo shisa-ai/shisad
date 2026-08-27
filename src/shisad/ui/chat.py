@@ -23,8 +23,10 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
 from shisad import __version__
+from shisad.channels.progress import ActionProgressView, format_action_progress_line
+from shisad.core.api.schema import ActionPendingEntry, ActionPendingResult
 from shisad.core.transcript import derive_legacy_transcript_entry_id
-from shisad.ui.evidence import render_evidence_refs_for_terminal
+from shisad.ui.evidence import render_evidence_refs_for_terminal, sanitize_terminal_field
 from shisad.ui.motion import format_key_hints
 from shisad.ui.theme import (
     ThemePalette,
@@ -313,6 +315,19 @@ def _chat_css(theme: ThemePalette, *, color: bool = True) -> str:
         border: round {border};
         padding: 0 1;
     }}
+    #chat-pending {{
+        height: auto;
+        max-height: 11;
+        border: round {border};
+        padding: 0 1;
+    }}
+    #chat-progress {{
+        height: auto;
+        max-height: 14;
+        border: round {border};
+        padding: 0 1;
+        {muted_color}
+    }}
     .chat-turn {{
         height: auto;
         margin: 0 0 1 0;
@@ -363,6 +378,15 @@ class ChatApp(App[None]):
     PROMPT_INPUT_CHROME_ROWS = 2
     PROMPT_INPUT_HORIZONTAL_CHROME = 4
     TRANSCRIPT_REPLAY_LIMIT = 50
+    PENDING_QUERY_LIMIT = 8
+    PENDING_POLL_SECONDS = 0.5
+    PENDING_RPC_TIMEOUT_SECONDS = 2.0
+    PENDING_CLOSE_TIMEOUT_SECONDS = 0.1
+    PROGRESS_ACTION_LIMIT = 12
+    PROGRESS_TURN_LIMIT = 4
+    PROGRESS_CLOSED_TURN_LIMIT = 32
+    PROGRESS_RECONNECT_SECONDS = 0.5
+    PROGRESS_CLOSE_TIMEOUT_SECONDS = 0.1
     THEME = get_builtin_theme()
 
     CSS = _chat_css(THEME)
@@ -386,6 +410,7 @@ class ChatApp(App[None]):
         session_id: str | None = None,
         reuse_bound_session: bool = True,
         ui_posture: UiPosture | None = None,
+        startup_hint: str | None = None,
     ) -> None:
         self.ui_posture = ui_posture or resolve_ui_posture()
         self.THEME = self.ui_posture.palette
@@ -401,12 +426,18 @@ class ChatApp(App[None]):
         self._workspace_id = workspace_id
         self._session_id = self._normalize_session_id(session_id)
         self._reuse_bound_session = reuse_bound_session
+        self._startup_hint = startup_hint.strip() if startup_hint and startup_hint.strip() else None
         self._reconnected = False
         self._prompt_history: list[str] = []
         self._prompt_history_cursor: int | None = None
         self._prompt_draft = ""
         self._displayed_transcript_entry_ids: set[str] = set()
         self._transcript_poll_task: asyncio.Task[None] | None = None
+        self._pending_poll_task: asyncio.Task[None] | None = None
+        self._progress_event_task: asyncio.Task[None] | None = None
+        self._retired_progress_event_tasks: set[asyncio.Task[None]] = set()
+        self._progress_lines: dict[str, dict[str, str]] = {}
+        self._closed_progress_turns: dict[str, None] = {}
         self._connection_state = "disconnected"
         self._channel = "cli"
         self._lockdown_level = "normal"
@@ -415,6 +446,24 @@ class ChatApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(self._format_status_bar(), id="chat-status", classes="shisa-muted")
+        pending = Static(
+            "Pending confirmations unavailable until a session is connected.",
+            id="chat-pending",
+            classes="shisa-panel",
+            markup=False,
+        )
+        pending.border_title = "Pending confirmations"
+        pending.border_subtitle = "current session"
+        yield pending
+        progress = Static(
+            "No action progress for the current turn.",
+            id="chat-progress",
+            classes="shisa-panel",
+            markup=False,
+        )
+        progress.border_title = "Action progress"
+        progress.border_subtitle = "current session"
+        yield progress
         history = VerticalScroll(id="chat-log", can_focus=True, classes="shisa-panel")
         history.border_title = "Transcript"
         history.border_subtitle = "latest"
@@ -434,6 +483,7 @@ class ChatApp(App[None]):
     async def on_mount(self) -> None:
         self._set_connection_state("connecting")
         self._append_history("Connecting to daemon...")
+        self._start_pending_polling()
         try:
             client = await self._connect()
             try:
@@ -444,7 +494,11 @@ class ChatApp(App[None]):
             self._append_history("Connected.")
             self._append_current_session_status()
             self._replay_recent_transcript_history_best_effort()
+            if self._startup_hint is not None:
+                self._append_history(f"Tour suggestion (not sent): {self._startup_hint}")
             self._start_transcript_polling()
+            self._start_progress_subscription()
+            self._set_pending_panel_text("Checking current session for pending confirmations.")
             self._append_history(
                 "Type a message and press Enter. "
                 "Up/Down recalls prompts. "
@@ -461,6 +515,18 @@ class ChatApp(App[None]):
         self.query_one("#chat-input", TextArea).focus()
 
     async def on_unmount(self) -> None:
+        if self._progress_event_task is not None:
+            self._progress_event_task.cancel()
+            self._retired_progress_event_tasks.add(self._progress_event_task)
+            self._progress_event_task = None
+        if self._retired_progress_event_tasks:
+            await asyncio.gather(*self._retired_progress_event_tasks, return_exceptions=True)
+            self._retired_progress_event_tasks.clear()
+        if self._pending_poll_task is not None:
+            self._pending_poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._pending_poll_task
+            self._pending_poll_task = None
         if self._transcript_poll_task is not None:
             self._transcript_poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -521,6 +587,7 @@ class ChatApp(App[None]):
                 self._extract_response(result),
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
             )
+            self._complete_progress_display()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
         self._append_history("")
@@ -661,6 +728,7 @@ class ChatApp(App[None]):
             # Session is stale — daemon likely restarted. Recover.
             old_session_id = self._session_id
             self._session_id = None
+            self._clear_pending_panel_for_session_change()
             await self._ensure_session(client)
             if not self._session_id or self._session_id == old_session_id:
                 raise RuntimeError("Failed to recover session after unknown session error") from exc
@@ -770,6 +838,8 @@ class ChatApp(App[None]):
     def _refresh_status_from_message_result(self, result: Mapping[str, Any]) -> None:
         session_id = str(result.get("session_id", "")).strip()
         if session_id:
+            if session_id != self._active_session_id():
+                self._clear_pending_panel_for_session_change()
             self._session_id = session_id
         lockdown = str(result.get("lockdown_level", "")).strip().lower()
         if lockdown:
@@ -817,6 +887,233 @@ class ChatApp(App[None]):
         while True:
             await asyncio.sleep(0.5)
             self._poll_transcript_for_async_messages_best_effort()
+
+    def _start_progress_subscription(self) -> None:
+        if self._progress_event_task is not None:
+            return
+        self._progress_event_task = asyncio.create_task(self._progress_event_loop())
+
+    async def _progress_event_loop(self) -> None:
+        while True:
+            client: Any | None = None
+            session_id = self._active_session_id()
+            if not session_id:
+                await asyncio.sleep(self.PROGRESS_RECONNECT_SECONDS)
+                continue
+            try:
+                client = await self._connect()
+                await client.subscribe_events(
+                    {"event_type": "ActionProgress", "session_id": session_id}
+                )
+                while session_id == self._active_session_id():
+                    payload = await client.read_event()
+                    if not isinstance(payload, Mapping):
+                        raise TypeError("invalid progress event payload")
+                    self._record_progress_event(payload)
+                    await asyncio.sleep(0)
+            except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+                self._set_progress_panel_text(
+                    "Action progress unavailable; chat remains usable. Reconnecting."
+                )
+                await asyncio.sleep(self.PROGRESS_RECONNECT_SECONDS)
+            finally:
+                if client is not None:
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(max(0.01, self.PROGRESS_CLOSE_TIMEOUT_SECONDS)):
+                            await client.close()
+
+    def _record_progress_event(self, payload: Mapping[str, Any]) -> None:
+        try:
+            progress = ActionProgressView.model_validate(payload)
+        except (TypeError, ValueError):
+            return
+        if progress.session_id != self._active_session_id():
+            return
+        if progress.origin_turn_id in self._closed_progress_turns:
+            return
+        lines = self._progress_lines.get(progress.origin_turn_id)
+        if lines is None:
+            if len(self._progress_lines) >= self.PROGRESS_TURN_LIMIT:
+                self._progress_lines.pop(next(iter(self._progress_lines)), None)
+            lines = {}
+            self._progress_lines[progress.origin_turn_id] = lines
+        if progress.action_id not in lines and len(lines) >= self.PROGRESS_ACTION_LIMIT:
+            return
+        lines[progress.action_id] = format_action_progress_line(progress)
+        self._set_progress_panel_text(self._format_progress_panel())
+
+    def _format_progress_panel(self) -> str:
+        if not self._progress_lines:
+            return "No action progress for the current turn."
+        latest = next(reversed(self._progress_lines.values()))
+        return "\n".join(latest.values())
+
+    def _set_progress_panel_text(self, text: str) -> None:
+        for widget in self.query("#chat-progress"):
+            if isinstance(widget, Static):
+                widget.update(text)
+
+    def _clear_progress_for_turn(self, origin_turn_id: str) -> None:
+        if origin_turn_id not in self._closed_progress_turns:
+            if len(self._closed_progress_turns) >= self.PROGRESS_CLOSED_TURN_LIMIT:
+                self._closed_progress_turns.pop(next(iter(self._closed_progress_turns)), None)
+            self._closed_progress_turns[origin_turn_id] = None
+        self._progress_lines.pop(origin_turn_id, None)
+        self._set_progress_panel_text(self._format_progress_panel())
+
+    def _clear_all_progress(self) -> None:
+        self._progress_lines.clear()
+        self._set_progress_panel_text(self._format_progress_panel())
+
+    def _restart_progress_subscription(self) -> None:
+        task = self._progress_event_task
+        if task is None:
+            return
+        task.cancel()
+        self._retired_progress_event_tasks.add(task)
+        task.add_done_callback(self._retired_progress_event_tasks.discard)
+        self._progress_event_task = None
+        self._start_progress_subscription()
+
+    def _complete_progress_display(self) -> None:
+        for origin_turn_id in tuple(self._progress_lines):
+            self._clear_progress_for_turn(origin_turn_id)
+        self._restart_progress_subscription()
+
+    def _start_pending_polling(self) -> None:
+        if self._pending_poll_task is not None:
+            return
+        self._pending_poll_task = asyncio.create_task(self._pending_poll_loop())
+
+    async def _pending_poll_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.PENDING_POLL_SECONDS)
+            await self._refresh_pending_panel()
+
+    async def _refresh_pending_panel(self) -> None:
+        session_id = self._active_session_id()
+        if not session_id:
+            self._set_pending_panel_text(
+                "Pending confirmations unavailable until a session is connected."
+            )
+            return
+
+        client: Any | None = None
+        try:
+            async with asyncio.timeout(max(0.01, self.PENDING_RPC_TIMEOUT_SECONDS)):
+                client = await self._connect()
+                payload = await client.call(
+                    "action.pending",
+                    params={
+                        "session_id": session_id,
+                        "status": "pending",
+                        "limit": self.PENDING_QUERY_LIMIT,
+                        "include_ui": False,
+                    },
+                )
+            actions = self._validated_pending_actions(payload, session_id=session_id)
+        except Exception:
+            if session_id == self._active_session_id():
+                self._set_pending_panel_text(
+                    "Pending confirmations unavailable; chat remains usable. Retrying."
+                )
+            return
+        finally:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(max(0.01, self.PENDING_CLOSE_TIMEOUT_SECONDS)):
+                        await client.close()
+
+        if session_id != self._active_session_id():
+            return
+        self._set_pending_panel_text(self._format_pending_panel(actions))
+
+    def _validated_pending_actions(
+        self,
+        payload: object,
+        *,
+        session_id: str,
+    ) -> list[ActionPendingEntry]:
+        if not isinstance(payload, Mapping):
+            raise TypeError("action.pending returned a non-object response")
+        raw_actions = payload.get("actions")
+        if not isinstance(raw_actions, list):
+            raise TypeError("action.pending returned invalid actions")
+        result = ActionPendingResult.model_validate(
+            {
+                "actions": raw_actions[: self.PENDING_QUERY_LIMIT],
+                "count": min(len(raw_actions), self.PENDING_QUERY_LIMIT),
+                "persistence_status": payload.get("persistence_status", "healthy"),
+                "persistence_reason": payload.get("persistence_reason", ""),
+                "persistence_stage": payload.get("persistence_stage", ""),
+                "persistence_transition": payload.get("persistence_transition", ""),
+            }
+        )
+        if result.persistence_status != "healthy":
+            raise RuntimeError("pending-state persistence is degraded")
+        return [
+            action
+            for action in result.actions
+            if action.session_id.strip() == session_id
+            and str(action.lifecycle_state or action.status).strip().lower() == "pending"
+            and action.confirmation_id.strip()
+        ]
+
+    def _format_pending_panel(self, actions: list[ActionPendingEntry]) -> str:
+        if not actions:
+            return "No pending confirmations."
+        lines: list[str] = []
+        for ordinal, action in enumerate(actions[: self.PENDING_QUERY_LIMIT], start=1):
+            confirmation_id = self._bounded_pending_field(
+                action.confirmation_id,
+                fallback="unknown",
+                limit=96,
+            )
+            tool_name = self._bounded_pending_field(
+                action.tool_name,
+                fallback="unknown",
+                limit=64,
+            )
+            risk = self._bounded_pending_field(
+                action.risk_level,
+                fallback="unspecified",
+                limit=24,
+            )
+            approval = self._bounded_pending_field(
+                action.required_level or action.selected_backend_method,
+                fallback="standard",
+                limit=32,
+            )
+            lines.append(
+                f"{ordinal}. {confirmation_id} | tool={tool_name} | "
+                f"risk={risk} | approval={approval}"
+            )
+        lines.append("Decide with: shisad action confirm <id> | shisad action reject <id>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _bounded_pending_field(value: object, *, fallback: str, limit: int) -> str:
+        sanitized = sanitize_terminal_field(str(value or "").strip())
+        if not sanitized:
+            return fallback
+        if not sanitized.isascii() or any(
+            not (character.isalnum() or character in "._-") for character in sanitized
+        ):
+            return fallback
+        if len(sanitized) <= limit:
+            return sanitized
+        return sanitized[: max(1, limit - 1)] + "…"
+
+    def _set_pending_panel_text(self, text: str) -> None:
+        for widget in self.query("#chat-pending"):
+            if isinstance(widget, Static):
+                widget.update(text)
+
+    def _clear_pending_panel_for_session_change(self) -> None:
+        self._set_pending_panel_text("Checking the new session for pending confirmations.")
+        self._closed_progress_turns.clear()
+        self._clear_all_progress()
+        self._restart_progress_subscription()
 
     def _poll_transcript_for_async_messages_best_effort(self) -> None:
         try:
@@ -899,6 +1196,7 @@ class ChatApp(App[None]):
             )
 
     def _poll_transcript_for_async_messages(self) -> None:
+        displayed_final = False
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
             if not entry_id or entry_id in self._displayed_transcript_entry_ids:
@@ -920,6 +1218,9 @@ class ChatApp(App[None]):
                 ),
             )
             self._append_history("")
+            displayed_final = True
+        if displayed_final:
+            self._complete_progress_display()
 
     def _read_transcript_entries(self) -> list[Mapping[str, Any]]:
         path = self._transcript_path()
@@ -1085,6 +1386,7 @@ class ChatApp(App[None]):
         """Create and switch to a new session without restarting chat."""
         old_session_id = self._session_id
         self._session_id = None
+        self._clear_pending_panel_for_session_change()
         self._reconnected = False
         try:
             client = await self._connect()
@@ -1099,6 +1401,9 @@ class ChatApp(App[None]):
             self._poll_transcript_for_async_messages_best_effort()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._session_id = old_session_id
+            self._set_pending_panel_text(
+                "Pending confirmations unavailable; chat remains usable. Retrying."
+            )
             self._append_history(_format_error(f"Could not start new session: {exc}"))
             self._append_history("")
         self.query_one("#chat-input", TextArea).focus()

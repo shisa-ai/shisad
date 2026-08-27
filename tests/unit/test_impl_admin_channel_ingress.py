@@ -14,6 +14,7 @@ from shisad.channels import state as channel_state
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.discord_policy import DiscordChannelPolicyDecision
 from shisad.channels.identity import ChannelIdentityMap
+from shisad.core.session import SessionManager
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
@@ -124,6 +125,7 @@ class _SessionManagerStub:
     def __init__(self) -> None:
         self._sessions: dict[str, object] = {}
         self.terminated: list[tuple[str, str]] = []
+        self.binding_calls: list[dict[str, object]] = []
 
     def get(self, sid: object) -> object | None:
         return self._sessions.get(str(sid))
@@ -134,8 +136,16 @@ class _SessionManagerStub:
         channel: str,
         user_id: object,
         workspace_id: object,
+        delivery_thread_id: str | None = None,
     ) -> object | None:
-        _ = (channel, user_id, workspace_id)
+        self.binding_calls.append(
+            {
+                "channel": channel,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "delivery_thread_id": delivery_thread_id,
+            }
+        )
         return None
 
     def terminate(self, sid: object, *, reason: str) -> None:
@@ -244,6 +254,148 @@ class _ReservedIngressHarness(AdminImplMixin):
             "response": "handled",
             "ingress_risk": 0.1,
         }
+
+
+def test_o3d_session_binding_matches_exact_delivery_thread() -> None:
+    manager = SessionManager()
+    flat = manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("guild-1"),
+        metadata={
+            "delivery_target": DeliveryTarget(
+                channel="discord",
+                recipient="channel-1",
+            ).model_dump(mode="json")
+        },
+    )
+    threaded = manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("guild-1"),
+        metadata={
+            "delivery_target": DeliveryTarget(
+                channel="discord",
+                recipient="channel-1",
+                thread_id="thread-1",
+            ).model_dump(mode="json")
+        },
+    )
+
+    assert (
+        manager.find_by_binding(
+            channel="discord",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("guild-1"),
+            delivery_thread_id="thread-1",
+        )
+        is threaded
+    )
+    assert (
+        manager.find_by_binding(
+            channel="discord",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("guild-1"),
+            delivery_thread_id="thread-2",
+        )
+        is None
+    )
+    assert (
+        manager.find_by_binding(
+            channel="discord",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("guild-1"),
+            delivery_thread_id="",
+        )
+        is flat
+    )
+
+    matrix = manager.create(
+        channel="matrix",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("room-1"),
+        metadata={
+            "delivery_target": DeliveryTarget(
+                channel="matrix",
+                recipient="room-1",
+                thread_id="event-1",
+            ).model_dump(mode="json")
+        },
+    )
+    assert (
+        manager.find_by_binding(
+            channel="matrix",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("room-1"),
+        )
+        is matrix
+    )
+
+
+@pytest.mark.asyncio
+async def test_o3d_channel_ingress_passes_thread_to_session_lookup_and_delivery(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "channel-1",
+                "thread_id": "thread-1",
+                "message_id": "message-1",
+                "content": "keep this turn in its thread",
+                "metadata": {
+                    "discord_guild_id": "guild-1",
+                    "discord_channel_id": "channel-1",
+                },
+            }
+        }
+    )
+
+    assert harness._session_manager.binding_calls[-1]["delivery_thread_id"] == "thread-1"
+    assert harness.created_payloads[-1]["_delivery_target"] == {
+        "channel": "discord",
+        "recipient": "channel-1",
+        "workspace_hint": "guild-1",
+        "thread_id": "thread-1",
+    }
+    assert harness._delivery.calls[-1]["target"] == DeliveryTarget(
+        channel="discord",
+        recipient="channel-1",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_o3d_non_discord_ingress_keeps_session_lookup_thread_agnostic(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    harness._identity_map = ChannelIdentityMap(
+        default_trust={"matrix": "owner"},
+        allowlists={"matrix": {"alice"}},
+    )
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "matrix",
+                "external_user_id": "alice",
+                "workspace_hint": "room-1",
+                "reply_target": "room-1",
+                "thread_id": "event-2",
+                "message_id": "event-2",
+                "content": "continue the existing Matrix conversation",
+            }
+        }
+    )
+
+    assert harness._session_manager.binding_calls[-1]["delivery_thread_id"] is None
 
 
 class _DiscordInteractionAckStub:

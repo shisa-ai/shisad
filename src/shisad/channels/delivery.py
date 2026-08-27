@@ -16,7 +16,9 @@ from typing import Any
 
 from shisad.channels.base import (
     Channel,
+    DeliveryReconciliation,
     DeliveryReconciliationStatus,
+    DeliveryRecoveryCapability,
     DeliveryRecoveryKind,
     DeliveryTarget,
     ProviderDeliveryReceipt,
@@ -30,7 +32,15 @@ logger = logging.getLogger(__name__)
 _SCHEMA_VERSION = 1
 _MAX_MESSAGE_BYTES = 64 * 1024
 _KINDS = frozenset({"channel_result", "message_send", "approval_capability"})
-_TERMINAL = ("delivered", "failed_pre_effect", "outcome_unknown", "superseded", "cancelled")
+_TERMINAL = (
+    "delivered",
+    "failed_pre_effect",
+    "outcome_unknown",
+    "reconciled_absent",
+    "superseded",
+    "cancelled",
+)
+_DELIVERY_STATES = frozenset({"preparing", "prepared", "attempt_started", *_TERMINAL})
 _DELIVERY_SCHEMA = (
     "CREATE TABLE deliveries (reservation_id TEXT PRIMARY KEY, delivery_id TEXT UNIQUE, "
     "intent_json TEXT NOT NULL, payload TEXT NOT NULL, payload_digest TEXT NOT NULL, "
@@ -321,6 +331,38 @@ class _DeliveryStore:
         )
         return self._required(reservation_id)
 
+    def mark_reconciled_delivered(
+        self,
+        reservation_id: str,
+        receipt: ProviderDeliveryReceipt,
+    ) -> DeliveryRecord:
+        record = self._required(reservation_id)
+        if (
+            not receipt.provider.strip()
+            or not receipt.receipt_id.strip()
+            or receipt.provider != record.intent.target.channel
+            or receipt.delivery_id not in {"", record.delivery_id}
+        ):
+            raise DeliveryStateError("delivery receipt identity is invalid")
+        receipt = replace(receipt, delivery_id=record.delivery_id)
+        self._transition(
+            reservation_id,
+            "delivered",
+            "provider_reconciled_delivered",
+            allowed={"attempt_started", "outcome_unknown"},
+            receipt=receipt,
+        )
+        return self._required(reservation_id)
+
+    def mark_reconciled_absent(self, reservation_id: str) -> DeliveryRecord:
+        self._transition(
+            reservation_id,
+            "reconciled_absent",
+            "provider_reconciled_absent",
+            allowed={"attempt_started", "outcome_unknown"},
+        )
+        return self._required(reservation_id)
+
     def mark_failed_pre_effect(self, reservation_id: str, reason: str) -> DeliveryRecord:
         self._transition(
             reservation_id, "failed_pre_effect", reason, allowed={"preparing", "prepared"}
@@ -406,6 +448,16 @@ class _DeliveryStore:
             raise DeliveryStateError("delivery record read failed") from exc
         return self._decode(row) if row else None
 
+    def record_by_identifier(self, identifier: str) -> DeliveryRecord | None:
+        try:
+            row = self._db.execute(
+                "SELECT * FROM deliveries WHERE reservation_id = ? OR delivery_id = ?",
+                (identifier, identifier),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise DeliveryStateError("delivery record read failed") from exc
+        return self._decode(row) if row else None
+
     def records(self, *states: str) -> list[DeliveryRecord]:
         try:
             if states:
@@ -469,7 +521,7 @@ class _DeliveryStore:
                 else None
             )
             state = str(row["state"])
-            if state not in {"preparing", "prepared", "attempt_started", *_TERMINAL}:
+            if state not in _DELIVERY_STATES:
                 raise ValueError("unknown delivery state")
             reservation_id = str(row["reservation_id"])
             delivery_id = str(row["delivery_id"] or "")
@@ -550,6 +602,7 @@ class ChannelDeliveryService:
         transcript_store: TranscriptStore | None = None,
     ) -> None:
         self._channels = dict(channels)
+        self._reconciliation = DeliveryReconciliationRegistry(self._channels)
         self._transcripts = transcript_store
         self._state_error = ""
         self._active_attempts = 0
@@ -582,6 +635,144 @@ class ChannelDeliveryService:
 
     def record(self, reservation_id: str) -> DeliveryRecord | None:
         return self._require_store().record(reservation_id)
+
+    def list_deliveries(
+        self,
+        *,
+        state: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise DeliveryStateError("delivery list limit is invalid")
+        normalized_state = state.strip() if state else ""
+        if normalized_state and normalized_state not in _DELIVERY_STATES:
+            raise DeliveryStateError("delivery list state is invalid")
+        store = self._require_store()
+        records = store.records(normalized_state) if normalized_state else store.records()
+        return [self._inspection(record) for record in reversed(records[-limit:])]
+
+    def inspect_delivery(self, identifier: str) -> dict[str, Any] | None:
+        normalized = identifier.strip()
+        if not self._valid_identifier(normalized):
+            return None
+        record = self._require_store().record_by_identifier(normalized)
+        return self._inspection(record) if record is not None else None
+
+    async def resolve_delivery(self, identifier: str) -> dict[str, Any]:
+        normalized = identifier.strip()
+        store = self._require_store()
+        record = (
+            store.record_by_identifier(normalized) if self._valid_identifier(normalized) else None
+        )
+        if record is None:
+            return self._resolution(
+                None,
+                status="not_found",
+                reason="delivery_not_found",
+                instruction="Inspect the exact durable delivery ID and try again.",
+            )
+        terminal_resolution = self._terminal_resolution(record, attempted=False)
+        if terminal_resolution is not None:
+            return terminal_resolution
+        if record.state not in {"attempt_started", "outcome_unknown"}:
+            return self._resolution(
+                record,
+                status="not_applicable",
+                reason="delivery_not_uncertain",
+                instruction="Only an uncertain provider attempt can be reconciled.",
+            )
+        if not self._reconciliation.available(record.intent.target.channel):
+            record = self._retain_unknown(record, "provider_reconciliation_unavailable")
+            terminal_resolution = self._terminal_resolution(record, attempted=False)
+            if terminal_resolution is not None:
+                return terminal_resolution
+            return self._resolution(
+                record,
+                status="unsupported",
+                reason="provider_reconciliation_unavailable",
+                instruction=(
+                    "No provider lookup is available; no send was attempted. Inspect the "
+                    "provider and submit a fresh request to retry."
+                ),
+            )
+        try:
+            reconciled = await self._reconciliation.resolve(record)
+        except Exception:
+            logger.warning(
+                "Provider delivery reconciliation failed for channel=%s",
+                record.intent.target.channel,
+            )
+            record = self._retain_unknown(record, "provider_reconciliation_failed")
+            terminal_resolution = self._terminal_resolution(record, attempted=True)
+            if terminal_resolution is not None:
+                return terminal_resolution
+            return self._resolution(
+                record,
+                attempted=True,
+                status="unknown",
+                reason="provider_reconciliation_failed",
+                instruction="Provider outcome remains unknown; no send was attempted.",
+            )
+        if reconciled.status is DeliveryReconciliationStatus.DELIVERED:
+            try:
+                if reconciled.receipt is None:
+                    raise DeliveryStateError("delivery receipt identity is invalid")
+                record = store.mark_reconciled_delivered(record.reservation_id, reconciled.receipt)
+            except DeliveryStateError:
+                current = store.record(record.reservation_id)
+                if current is not None and current.state in {"delivered", "reconciled_absent"}:
+                    terminal_resolution = self._terminal_resolution(current, attempted=True)
+                    assert terminal_resolution is not None
+                    return terminal_resolution
+                record = self._retain_unknown(record, "reconciliation_receipt_invalid")
+                terminal_resolution = self._terminal_resolution(record, attempted=True)
+                if terminal_resolution is not None:
+                    return terminal_resolution
+                return self._resolution(
+                    record,
+                    attempted=True,
+                    status="unknown",
+                    reason="reconciliation_receipt_invalid",
+                    instruction="Provider identity did not match; no send was attempted.",
+                )
+            return self._resolution(
+                record,
+                attempted=True,
+                status="delivered",
+                reason=record.reason,
+                instruction="Provider delivery was reconciled; no second send was attempted.",
+            )
+        if reconciled.status is DeliveryReconciliationStatus.ABSENT:
+            try:
+                record = store.mark_reconciled_absent(record.reservation_id)
+            except DeliveryStateError:
+                current = store.record(record.reservation_id)
+                if current is None:
+                    raise
+                record = current
+            terminal_resolution = self._terminal_resolution(record, attempted=True)
+            if terminal_resolution is not None:
+                return terminal_resolution
+            return self._resolution(
+                record,
+                attempted=True,
+                status="absent" if record.state == "reconciled_absent" else "unknown",
+                reason=record.reason,
+                instruction=(
+                    "No send was attempted. Submit a fresh request to retry the originating work."
+                ),
+            )
+        record = self._retain_unknown(record, "provider_reconciliation_unknown")
+        terminal_resolution = self._terminal_resolution(record, attempted=True)
+        if terminal_resolution is not None:
+            return terminal_resolution
+        return self._resolution(
+            record,
+            attempted=True,
+            status="unknown",
+            reason="provider_reconciliation_unknown",
+            instruction="Provider outcome remains unknown; no send was attempted.",
+        )
 
     async def send(
         self,
@@ -682,7 +873,7 @@ class ChannelDeliveryService:
         try:
             store = self._require_store()
             self._reconcile_preparing(store)
-            records = store.records("prepared", "attempt_started", *_TERMINAL[:3:2])
+            records = store.records("prepared", "attempt_started", "delivered", "outcome_unknown")
         except DeliveryStateError as exc:
             self._store, self._state_error = None, str(exc)
             return [self._unavailable()]
@@ -873,7 +1064,7 @@ class ChannelDeliveryService:
                 except DeliveryStateError:
                     return self._uncertain(record, "reconciliation_receipt_invalid")
             if reconciled and reconciled.status is DeliveryReconciliationStatus.ABSENT:
-                return await self._perform(record)
+                return self._result(store.mark_reconciled_absent(record.reservation_id))
         return self._result(
             store.mark_outcome_unknown(record.reservation_id, "informed_recovery_required")
         )
@@ -972,6 +1163,94 @@ class ChannelDeliveryService:
             return "channel_not_connected"
         return ""
 
+    def _inspection(self, record: DeliveryRecord) -> dict[str, Any]:
+        capability = self._reconciliation.capability(record.intent.target.channel)
+        return {
+            "reservation_id": record.reservation_id,
+            "delivery_id": record.delivery_id,
+            "kind": record.intent.kind,
+            "target": record.intent.target.model_dump(mode="json"),
+            "state": record.state,
+            "reason": record.reason,
+            "payload_digest": record.payload_digest,
+            "receipt": asdict(record.receipt) if record.receipt is not None else None,
+            "recovery": {
+                "kind": capability.kind.value,
+                "guarantee_id": capability.guarantee_id,
+                "reconciliation_available": self._reconciliation.available(
+                    record.intent.target.channel
+                ),
+            },
+        }
+
+    def _retain_unknown(self, record: DeliveryRecord, reason: str) -> DeliveryRecord:
+        if record.state != "attempt_started":
+            return self._require_store().record(record.reservation_id) or record
+        try:
+            return self._require_store().mark_outcome_unknown(record.reservation_id, reason)
+        except DeliveryStateError:
+            return self._require_store().record(record.reservation_id) or record
+
+    def _resolution(
+        self,
+        record: DeliveryRecord | None,
+        *,
+        status: str,
+        reason: str,
+        instruction: str,
+        attempted: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "found": record is not None,
+            "lookup_attempted": attempted,
+            "reconciliation_status": status,
+            "reason": reason,
+            "instruction": instruction,
+            "delivery": self._inspection(record) if record is not None else None,
+        }
+
+    def _terminal_resolution(
+        self,
+        record: DeliveryRecord,
+        *,
+        attempted: bool,
+    ) -> dict[str, Any] | None:
+        if record.state == "delivered":
+            instruction = (
+                "Delivery became recorded as delivered during reconciliation; "
+                "no second send was attempted."
+                if attempted
+                else "Delivery is already recorded as delivered; no lookup or send ran."
+            )
+            return self._resolution(
+                record,
+                attempted=attempted,
+                status="delivered",
+                reason=record.reason,
+                instruction=instruction,
+            )
+        if record.state == "reconciled_absent":
+            return self._resolution(
+                record,
+                attempted=attempted,
+                status="absent",
+                reason=record.reason,
+                instruction=(
+                    "No send was attempted. Submit a fresh request to retry the originating work."
+                ),
+            )
+        return None
+
+    @staticmethod
+    def _valid_identifier(identifier: str) -> bool:
+        prefix, separator, digest = identifier.partition("-")
+        return (
+            separator == "-"
+            and prefix in {"dres", "dly"}
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
+        )
+
     @staticmethod
     def _capability_intent(record: DeliveryRecord) -> CapabilityDeliveryIntent:
         if record.expires_at is None:
@@ -1026,4 +1305,45 @@ class ChannelDeliveryService:
             "attempt_started",
             True,
             receipt_id,
+        )
+
+
+class DeliveryReconciliationRegistry:
+    """Typed provider lookup registry derived from active channel adapters."""
+
+    def __init__(self, channels: Mapping[str, Channel]) -> None:
+        self._channels = dict(channels)
+
+    def capability(self, channel_name: str) -> DeliveryRecoveryCapability:
+        channel = self._channels.get(channel_name)
+        if channel is None:
+            return DeliveryRecoveryCapability(DeliveryRecoveryKind.NEITHER, "")
+        try:
+            capability = channel.delivery_recovery_capability()
+        except Exception:
+            return DeliveryRecoveryCapability(DeliveryRecoveryKind.NEITHER, "")
+        guarantee_id = str(capability.guarantee_id).strip()
+        if (
+            not isinstance(capability.kind, DeliveryRecoveryKind)
+            or len(guarantee_id) > 256
+            or any(ord(char) < 32 or ord(char) == 127 for char in guarantee_id)
+        ):
+            return DeliveryRecoveryCapability(DeliveryRecoveryKind.NEITHER, "")
+        return DeliveryRecoveryCapability(capability.kind, guarantee_id)
+
+    def available(self, channel_name: str) -> bool:
+        capability = self.capability(channel_name)
+        return (
+            capability.kind is DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION
+            and bool(capability.guarantee_id)
+            and capability.guarantee_id.endswith(".v1")
+        )
+
+    async def resolve(self, record: DeliveryRecord) -> DeliveryReconciliation:
+        if not self.available(record.intent.target.channel):
+            return DeliveryReconciliation(DeliveryReconciliationStatus.UNKNOWN)
+        channel = self._channels[record.intent.target.channel]
+        return await channel.reconcile_delivery(
+            delivery_id=record.delivery_id,
+            target=record.intent.target,
         )

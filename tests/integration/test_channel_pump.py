@@ -172,6 +172,7 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
             )
 
     monkeypatch.setattr(case.channel_cls, "connect", _fake_connect)
+    monkeypatch.setattr(case.channel_cls, "available", property(lambda _channel: True))
 
     config_kwargs: dict[str, object] = {
         "data_dir": tmp_path / "data",
@@ -354,6 +355,7 @@ async def test_gh41_slack_confirm_reply_completes_without_reentering_planner(
         )
 
     monkeypatch.setattr(SlackChannel, "connect", _fake_connect)
+    monkeypatch.setattr(SlackChannel, "available", property(lambda _channel: True))
     monkeypatch.setattr(Planner, "propose", _planner_queues_read_confirmation)
 
     config = DaemonConfig(

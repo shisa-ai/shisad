@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
+from shisad.memory.sqlite_schema import prepare_memory_database
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,6 +110,7 @@ class SQLiteRetrievalBackend:
         self._db_path = db_path
         self._search_index_mode: _SearchIndexMode = "fts5"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        prepare_memory_database(self._db_path)
         with self._connect() as conn:
             self._search_index_mode = self._ensure_schema(conn)
 
@@ -566,128 +569,7 @@ class SQLiteRetrievalBackend:
         return [table_name for table_name in _SEARCH_INDEX_TABLES if table_name in found]
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> _SearchIndexMode:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS retrieval_records (
-                chunk_id TEXT PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                collection TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                content_sanitized TEXT NOT NULL,
-                extracted_facts_json TEXT NOT NULL,
-                risk_score REAL NOT NULL,
-                original_hash TEXT NOT NULL,
-                source_origin TEXT,
-                channel_trust TEXT,
-                confirmation_status TEXT,
-                scope TEXT,
-                user_id TEXT,
-                workspace_id TEXT,
-                taint_labels_json TEXT NOT NULL,
-                quarantined INTEGER NOT NULL,
-                citation_count INTEGER NOT NULL DEFAULT 0,
-                last_cited_at TEXT,
-                original_payload BLOB NOT NULL
-            )
-            """
-        )
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
-        }
-        if "citation_count" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN citation_count INTEGER NOT NULL DEFAULT 0
-                """
-            )
-        if "last_cited_at" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN last_cited_at TEXT
-                """
-            )
-        if "source_origin" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN source_origin TEXT
-                """
-            )
-        if "channel_trust" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN channel_trust TEXT
-                """
-            )
-        if "confirmation_status" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN confirmation_status TEXT
-                """
-            )
-        if "scope" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN scope TEXT
-                """
-            )
-        # v0.7.1 C2: (user, workspace) ownership migration. Pre-migration rows
-        # retain NULL owner and are excluded from recall by default.
-        if "user_id" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN user_id TEXT
-                """
-            )
-        if "workspace_id" not in columns:
-            conn.execute(
-                """
-                ALTER TABLE retrieval_records
-                ADD COLUMN workspace_id TEXT
-                """
-            )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS retrieval_vectors (
-                chunk_id TEXT PRIMARY KEY,
-                embedding_json TEXT NOT NULL
-            )
-            """
-        )
-        search_index_mode = self._ensure_search_index(conn)
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_retrieval_records_collection_created
-            ON retrieval_records (collection, created_at)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_retrieval_records_source_created
-            ON retrieval_records (source_id, created_at)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_retrieval_records_quarantined
-            ON retrieval_records (quarantined, created_at)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_retrieval_records_owner
-            ON retrieval_records (user_id, workspace_id, created_at)
-            """
-        )
-        return search_index_mode
+        return self._ensure_search_index(conn)
 
     def _ensure_search_index(self, conn: sqlite3.Connection) -> _SearchIndexMode:
         try:

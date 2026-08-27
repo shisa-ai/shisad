@@ -26,8 +26,9 @@ It installs the Textual UI plus MCP, Matrix E2EE, Discord, Telegram, and Slack
 client libraries. It does not enable any channel or supply credentials.
 PromptGuard remains a separate optional model runtime; combine it explicitly
 as `shisad[assistant,promptguard]` when wanted. The latest currently published
-package is `v0.8.0`, so the `assistant` PyPI command applies after `v0.8.1` is
-published or to an equivalent wheel built from this tree.
+package is `v0.8.1`, where the `assistant` extra is the complete consumer
+install surface. Use an exact release tag or source checkout for the
+pre-publication `v0.8.2` candidate.
 
 The smaller base package still provides `shisad --help`; `shisad[chat]`
 remains available for a Textual-only installation. Missing optional surfaces
@@ -255,15 +256,79 @@ Before starting the daemon:
 
 ## Data-Root Ownership and State Recovery
 
+### Operator-config migration
+
+The current operator TOML schema is `1`. Inspect an existing config without
+writing it:
+
+```bash
+shisad --config /absolute/path/config.toml config upgrade
+```
+
+A legacy file with no `schema_version` has one known non-breaking migration.
+Persist it explicitly with `config upgrade --write`. Before replacement,
+shisad creates an exact `config.toml.pre-v1.bak`, validates the candidate, and
+uses same-directory atomic replacement. On POSIX it enforces owner-only mode
+and parent-directory synchronization; on other supported platforms the write
+summary reports unavailable capabilities instead of overstating them. Stop
+shisad before manually restoring that backup, restore it only to its original
+config path, then run `config validate`.
+
+The rollback copy contains the complete original config, including any raw
+credentials or personal values already present outside the migrated fields.
+Keep it owner-only, do not attach it to logs or issue reports, and remove it
+only after the upgraded config and a separate recovery backup are verified.
+
+Interactive unmanaged startup may persist this safe migration and reports the
+backup. Managed or non-interactive startup does not infer write permission: it
+uses the compatible values in memory, reports that persistence is pending, and
+names the explicit command. Schema versions newer than `1`, malformed values,
+and explicit older values are refused without mutation or downgrade. This is
+operator-config recovery only; it is not a data-root backup or package
+rollback claim.
+
+For an env-only deployment that is moving selected non-secret settings into a
+file, use `shisad --config PATH init --from-env`. The generated file uses
+owner-only mode on POSIX and reports when equivalent permission tightening is
+unavailable. It contains only typed, non-default fields sourced from supported
+environment variables. Raw API keys, bot tokens, credentials, nested
+secret-bearing objects, and other secret fields are omitted and remain
+environment-owned.
+
 Only one daemon may own a given `SHISAD_DATA_DIR` at a time. Ownership is
 acquired before stores or control endpoints are opened; a same-root contender
 fails with an actionable error without altering feature state. Separate data
 roots with separate endpoints can run concurrently.
 
+### SQLite schema migration
+
+The replay and delivery databases use strict schema version `1` admission.
+The shared memory and timeline databases also use schema version `1`; when
+startup finds a structurally recognized legacy version-0 database, it creates
+and validates an exact `<database>.pre-v1.bak` before applying the ordered
+migration in one native SQLite transaction. Durable rows are preserved. A
+failed migration leaves the version-0 database and rollback copy intact so a
+later startup can retry against the same bytes.
+
+Startup refuses an empty existing database, an unrecognized or corrupt schema,
+a version newer than this build supports, an unsafe database or backup path, a
+mismatched pre-existing backup, or a backup whose database is missing. It does
+not downgrade or reset uncertain state. Stop the daemon before inspecting or
+restoring a rollback copy, preserve the refused files, and restore the backup
+only to its matching database path. The migration copy protects one physical
+database at one schema boundary; it is not a complete data-root backup.
+
+FTS and fallback lexical indexes in the memory database are derived,
+capability-selected search state. Their presence does not define a separate
+physical schema version. See [the SQLite runbook](runbooks/SQLITE.md) for
+inspection and recovery details.
+
 On supported hard-lock platforms, `.shisad.lock` is intentionally persistent.
 Its presence alone does not mean a daemon is running—the library-managed lock
-held by the live process is authoritative. Check the daemon and finite-store
-posture with:
+held by the live process is authoritative. Daemon startup, backup, and restore
+all open this same regular child relative to a pinned data-root handle and
+verify that the locked descriptor has that child's identity. Check the daemon
+and finite-store posture with:
 
 ```bash
 shisad doctor check --component storage
@@ -284,14 +349,67 @@ shared multi-host data root or active/active deployment.
 ### Backup, upgrade, and uninstall boundaries
 
 - **Backup:** stop the daemon that owns the data root, verify it is stopped,
-  and snapshot or copy the entire `SHISAD_DATA_DIR` as one unit. Preserve the
-  operator TOML, policy, secrets, external signer/helper configuration, and
-  assistant workspace separately because they may live outside that root.
-  shisad does not currently create or validate backups for you.
-- **Restore:** restore a complete trusted snapshot while the daemon is stopped,
-  retain its owner-only permissions, then run `shisad doctor check --component
-  storage` before accepting new work. Mixing individual state files from
-  different snapshots is not a supported recovery procedure.
+  and create a manifest-verified backup without overwriting an existing
+  artifact:
+
+  ```bash
+  shisad data backup /operator-controlled/shisad-2026-08-20.shisad-backup
+  ```
+
+  The command uses the configured `SHISAD_DATA_DIR`, refuses a held daemon
+  lock, symlinks, and special files, and includes every safe directory and
+  regular file except the root `.shisad.lock`. The single-file archive is
+  owner-only where supported but is **not encrypted**; keep it in
+  operator-controlled storage. Preserve the operator TOML, policy, environment
+  secrets, external signer/helper configuration, external msgvault roots, and
+  assistant workspace separately because they may live outside the data root.
+  Per-database pre-migration copies do not replace this full-root backup.
+  Source traversal keeps each directory open while enumerating and opening its
+  direct children, and archive publication is relative to an already-open
+  destination parent. Windows enumerates the opened directory handle rather
+  than reconstructing a pathname. If the host cannot provide these native
+  rooted operations, backup refuses instead of using a check-then-open pathname
+  fallback. On POSIX, an interrupted failure may retain a disclosed temporary
+  or published artifact in the destination directory: preserve the reported
+  residue, inspect it manually, and remove it only after identifying the exact
+  object. This avoids deleting a concurrently substituted name.
+- **Restore:** keep the existing root intact, stop shisad, and restore only into
+  an absent or empty explicitly named destination:
+
+  ```bash
+  shisad data restore /operator-controlled/shisad-2026-08-20.shisad-backup \
+    --destination /absolute/path/to/restored-data
+  ```
+
+  Starting encrypted memory under a different effective user, machine
+  identity, or absolute data root works only when an explicit stable
+  `SHISAD_MEMORY_MASTER_KEY` was configured before the source data was created
+  and that same value is available to the restored daemon. The default key is
+  derived from the effective user ID, machine identity, and absolute memory
+  storage path, so default-key memory can be reopened only when all three
+  match, including the original absolute data root. Restore does not migrate or
+  recover encryption keys.
+
+  Restore verifies the canonical manifest and every payload before writing and
+  never merges with existing state. It pins the destination parent and creates
+  every nested child relative to its live parent handle; Windows reparse points
+  and POSIX links are refused instead of followed. Windows can remove only
+  handles whose identity it created and verified after a later failure. POSIX
+  cannot portably delete by verified inode, so a failure retains and reports a
+  partial destination instead of risking deletion of a replacement. Preserve
+  that residue for inspection or remove the exact operator-verified tree. A
+  host without the required native rooted primitive refuses actionably. Point
+  the selected configuration at the restored root, then run
+  `shisad start`, `shisad status`, and `shisad doctor check --component all`.
+  Offline verification is not a runtime health claim. To roll back, stop the
+  daemon and restore a different verified backup into another absent or empty
+  root; mixing individual files from different backups is unsupported.
+
+  These rooted operations and the lifecycle lock coordinate ordinary local
+  shisad processes on one host. They are not a distributed lease and do not
+  claim protection from an administrator, a compromised host, or unrestricted
+  malicious native code running as the same user.
+
 - **Upgrade:** take the stopped-daemon backup first, install the reviewed wheel
   or image, and start exactly one daemon against the existing root. Run
   `shisad doctor check --component all` before enabling unattended work. An
@@ -369,6 +487,38 @@ Planner preset to credential mapping:
 
 See `README.md` for full provider routing examples (mixed mode, custom base URLs, auth modes).
 
+For model routes, v0.8.2 can persist a logical credential reference instead of
+a raw secret in TOML. Environment references store only the environment
+variable name:
+
+```bash
+export OPENAI_API_KEY="<openai-api-key>"
+uv run shisad credential set model.primary \
+  --backend env --locator OPENAI_API_KEY
+```
+
+Then select the logical name in the operator config:
+
+```toml
+[model]
+planner_provider_preset = "openai_default"
+planner_remote_enabled = true
+planner_api_key_ref = "model.primary"
+```
+
+An explicit reference suppresses ambient provider-key auto-detection for that
+route. If the referenced value is unavailable, provider readiness remains
+actionable while local/core daemon construction remains available. Do not set
+both `planner_api_key` and `planner_api_key_ref` (or the corresponding global,
+embeddings, or monitor pair).
+
+The built-in file backend accepts values only through a hidden prompt or
+`--stdin`; it stores permission-protected plaintext under the active data root
+with `0700` directories and `0600` files. Install the optional maintained OS
+keyring integration with `uv --no-config sync --frozen --extra credentials` (source
+checkout) or `pip install 'shisad[credentials]'` (package install). A missing
+or unusable keyring is reported and never falls back to the file backend.
+
 ### Health Checks
 
 ```bash
@@ -412,6 +562,13 @@ Start the daemon:
 uv run shisad start --foreground
 ```
 
+`--foreground` is the right posture for containers and service supervisors.
+For an interactive POSIX install, `uv run shisad start` launches a detached
+child, waits boundedly for the control API, and reports a redacted health
+summary plus its owner-only log at `<data-dir>/logs/daemon.log`. A repeated
+start is idempotent while that socket is reachable. Native Windows daemon
+transport/background support is not claimed by this path.
+
 In another shell:
 
 ```bash
@@ -442,6 +599,179 @@ shisad supports Discord, Telegram, Slack, and Matrix as messaging channels. Each
 channel uses default-deny identity allowlisting — only explicitly allowed user IDs
 can interact with the daemon.
 
+On the v0.8.2 release candidate, prefer logical channel token references over
+raw `SHISAD_*_TOKEN` config values. Register each reference with
+`shisad credential set` (environment, optional keyring, or owner-only local
+file), then use `shisad setup channel --channel <name> ...`. The command validates and
+prints a reference-only fragment but does not publish it. `--skip-probe` makes
+no connector call. An optional fixed test notice requires both `--send-test`
+and an explicit `--test-target`, uses the normal durable delivery path exactly
+once, and does not claim an inbound round trip. If its effect is uncertain,
+inspect the target before deciding whether to rerun.
+
+Raw token settings below remain compatibility inputs, but a raw value and its
+matching `*_TOKEN_REF` are mutually exclusive. Missing optional credentials or
+client libraries degrade only that channel. For ingress, use the channel's
+`*_TRUSTED_USERS` field (or the generic identity allowlist) explicitly;
+connection or outbound delivery never grants trust.
+
+### Durable delivery reconciliation
+
+Every outbound channel attempt is recorded in the durable outbox. Operators
+can list or inspect those records without exposing the message payload or
+delivery metadata:
+
+```bash
+shisad delivery list --state outcome_unknown
+shisad delivery inspect <dres-or-dly-id>
+shisad delivery inspect <dres-or-dly-id> --json
+```
+
+For an uncertain provider attempt, `delivery resolve` performs a lookup only
+when the active adapter declares an authoritative reconciliation contract:
+
+```bash
+shisad delivery resolve <dres-or-dly-id>
+```
+
+The command never sends the message again. A provider-confirmed delivery is
+recorded with its matching receipt. Authoritative absence becomes the terminal
+`reconciled_absent` state; submit a fresh request through the normal policy and
+approval path if you want to retry. Unknown, failed, mismatched, or unsupported
+lookups remain uncertain.
+
+The current Matrix, Discord, Telegram, and Slack adapters do not yet expose an
+authoritative reconciliation contract, so their uncertain attempts report
+`unsupported` and remain `outcome_unknown`. Inspect the provider before
+deciding whether to submit fresh work. This limitation also means that seeing a
+provider transaction-ID feature in its API is not, by itself, a shipped restart
+recovery guarantee.
+
+### Channel administration and pairing requests
+
+With the daemon running, inspect all four shipped adapters or send one fixed
+outbound test notice to an exact target:
+
+```bash
+shisad channel status
+shisad channel status --json
+shisad channel test discord --target <channel-id>
+```
+
+Status distinguishes disabled, missing-dependency, disconnected, and connected
+adapters. The runtime does not retain an authoritative cross-channel
+last-message timestamp, so that field is reported as unavailable rather than
+inferred from startup, heartbeat, or audit time. A successful test proves only
+that the provider acknowledged the outbound delivery. It does not prove a
+reply, inbound identity, or round trip. If the result is uncertain, use the
+durable delivery commands above; the test command does not recommend blind
+replay.
+
+Default-deny ingress records unknown identities as owner/workspace-scoped
+pairing requests. Inspect them without creating or applying a config proposal:
+
+```bash
+shisad channel pairing-list --workspace <provider-workspace> --channel discord
+```
+
+Cleanup is an explicit cutoff operation and is a dry run unless `--write` is
+present:
+
+```bash
+shisad channel pairing-cleanup \
+  --workspace <provider-workspace> \
+  --channel discord \
+  --before 2026-08-24T00:00:00+00:00
+shisad channel pairing-cleanup \
+  --workspace <provider-workspace> \
+  --channel discord \
+  --before 2026-08-24T00:00:00+00:00 \
+  --write
+```
+
+Inspection and cleanup fail closed on corrupt, ambiguous, symlinked, or
+over-bound artifacts. Each workspace admits at most 1,000 request artifacts
+and 1 MiB. Cleanup is audited and reports partial failures so the exact
+remaining set can be retried; it never applies an allowlist. The four shipped
+adapters have no channel QR-pairing protocol, and channel credentials or
+control-device secrets are not rendered as substitute QR codes.
+
+Pairing output contains provider workspace/user identifiers and request
+metadata. Treat both human and JSON output as local operational data and
+redact it before sharing.
+
+For a combined setup, enroll the references first and create a bounded
+secret-free selection document. For example:
+
+```yaml
+provider:
+  preset: openai_default
+  model_id: gpt-5.4-2026-03-05
+  credential_ref: model.primary
+policy:
+  profile: strict
+channels:
+  - channel: discord
+    bot_token_ref: channel.discord
+    default_target: "<channel-id>"
+    trusted_users: ["<your-discord-user-id>"]
+```
+
+`shisad setup wizard` provides the interactive equivalent on a real unmanaged
+terminal, including zero-or-more channel selection and one final default-no
+publication confirmation. Managed deployments and scripts should use:
+
+```bash
+# Dry run; resolves references but makes no network call or file write.
+shisad setup apply --selection setup.yaml --skip-probes
+
+# Explicitly publish this unverified selection.
+shisad setup apply --selection setup.yaml --skip-probes --write
+```
+
+Remove `--skip-probes` to run each existing bounded provider/channel check
+serially. A failed check is not retried and blocks publication. OpenRouter and
+local vLLM combined selections require an explicit `model_id`. The successful
+write creates `policy.yaml` before a sibling commented `config.toml`; each is
+exclusive, no-overwrite, and `0600`, and only logical `*_ref` values enter the
+config. The pair is not transactional. If config publication fails after the
+policy file completes, the policy is inert and the error identifies it for
+inspection/removal. `setup apply` never starts or restarts the daemon. After a
+successful interactive `setup wizard` publication, a separate default-exit
+menu can explicitly start the daemon and open chat or the dashboard.
+
+To reconfigure one existing technical TOML section, use the separate
+current-state wizard. It shows the selected section with the same redaction and
+source metadata as `config show`, previews by default, and writes only with
+`--write`:
+
+```bash
+shisad --config /absolute/path/config.toml config wizard \
+  --section model \
+  --set 'planner_model_id="new-model"'
+shisad --config /absolute/path/config.toml config wizard \
+  --section model \
+  --set 'planner_model_id="new-model"' \
+  --write
+```
+
+The update validates the finite `daemon`, `model`, or `security` field through
+the normal typed config owner, preserves every unselected byte, retains an
+exact owner-only `pre-reconfigure` rollback copy, and refuses stale source,
+symlink, noncanonical selected-table, unknown-field, or raw-secret-bearing
+input before replacement. Restart the daemon to load a published update.
+Automatic workspace persona/SOUL generation is not part of this operation;
+persona content remains an explicit operator choice.
+
+The `pre-reconfigure` rollback copy contains the complete original config, not
+only the redacted preview. It can therefore retain raw credentials or personal
+values from unselected sections; keep it owner-only and do not share it as
+diagnostic output.
+
+Matrix homeserver values must be absolute HTTP(S) URLs without embedded
+userinfo, a query, or a fragment. Slack bot-token and app-token references must
+name distinct logical credentials.
+
 `shisad[assistant]` and the local container already contain the channel client
 libraries. For a source checkout, install the matching dependency group:
 
@@ -459,6 +789,8 @@ uv --no-config sync --frozen --group channels-runtime
 4. Go to **OAuth2** tab → **URL Generator**:
    - Scopes: `bot`
    - Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
+   - Also select `Create Public Threads` and `Send Messages in Threads` when
+     enabling the optional thread mode below.
    - Copy the generated URL and open it to invite the bot to your server.
 5. Get your **Discord user ID**: enable Developer Mode (Settings → Advanced → Developer Mode), right-click your name → **Copy User ID**.
 
@@ -466,12 +798,34 @@ uv --no-config sync --frozen --group channels-runtime
 
 ```bash
 SHISAD_DISCORD_ENABLED=true
-SHISAD_DISCORD_BOT_TOKEN=<bot-token>
+SHISAD_DISCORD_BOT_TOKEN_REF=channel.discord
 SHISAD_DISCORD_DEFAULT_CHANNEL_ID=<channel-id>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
+SHISAD_DISCORD_USE_THREADS=true  # optional; default false
+SHISAD_DISCORD_TRUSTED_USERS='["<your-discord-user-id>"]'
+```
+
+For example, register the reference to an operator-supplied environment
+variable, then preview it without connecting:
+
+```bash
+shisad credential set channel.discord \
+  --backend env --locator DISCORD_BOT_TOKEN
+shisad setup channel --channel discord \
+  --bot-token-ref channel.discord \
+  --default-target <channel-id> \
+  --trusted-user <your-discord-user-id> \
+  --skip-probe
 ```
 
 **Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs currently do not require a mention.
+
+With `SHISAD_DISCORD_USE_THREADS=true`, an addressed parent message creates a
+thread named from its Discord message ID. Follow-up messages and all response,
+approval, and result delivery remain bound to that thread and reuse its
+session. If thread creation is unavailable, the bot reports the required
+permissions in the parent and does not silently continue with flat delivery.
+An unresolved thread target also fails without falling back to the parent.
+Discord channel rules for a thread are inherited from its parent channel ID.
 
 **Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
 JSON when the bot should also serve a shared Discord channel. Rules are
@@ -516,8 +870,8 @@ the owner session's full tool surface.
 
 ```bash
 SHISAD_TELEGRAM_ENABLED=true
-SHISAD_TELEGRAM_BOT_TOKEN=<bot-token>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"telegram":["<your-numeric-user-id>"]}'
+SHISAD_TELEGRAM_BOT_TOKEN_REF=channel.telegram
+SHISAD_TELEGRAM_TRUSTED_USERS='["<your-numeric-user-id>"]'
 ```
 
 **Verify:** Start the daemon, then send a message to your bot in Telegram.
@@ -536,9 +890,9 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"telegram":["<your-numeric-user-id>"]}'
 
 ```bash
 SHISAD_SLACK_ENABLED=true
-SHISAD_SLACK_BOT_TOKEN=<xoxb-token>
-SHISAD_SLACK_APP_TOKEN=<xapp-token>
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
+SHISAD_SLACK_BOT_TOKEN_REF=channel.slack.bot
+SHISAD_SLACK_APP_TOKEN_REF=channel.slack.app
+SHISAD_SLACK_TRUSTED_USERS='["<your-slack-user-id>"]'
 ```
 
 **Verify:** Start the daemon, then mention the bot or DM it in Slack.
@@ -562,11 +916,10 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
 SHISAD_MATRIX_ENABLED=true
 SHISAD_MATRIX_HOMESERVER=https://matrix.example.org
 SHISAD_MATRIX_USER_ID=@shisad:example.org
-SHISAD_MATRIX_ACCESS_TOKEN=<access-token>
+SHISAD_MATRIX_ACCESS_TOKEN_REF=channel.matrix
 SHISAD_MATRIX_ROOM_ID='!room:example.org'
 SHISAD_MATRIX_E2EE=true
 SHISAD_MATRIX_TRUSTED_USERS='["@alice:example.org"]'
-SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"matrix":["@alice:example.org"]}'
 ```
 
 **Verify:** Start the daemon, send a message from an allowlisted Matrix user in
@@ -690,6 +1043,43 @@ Treat diagnostic JSON from shisad CLI commands as local operational data.
 can include user-authored task text, schedule metadata, delivery-channel
 display fields, and identifiers. Do not paste this output into shared logs,
 support tickets, or issue reports without reviewing and redacting it.
+The same handling applies to delivery inspection, channel pairing, audit
+query, backup/restore, config, setup, credential-status, and lifecycle JSON:
+these surfaces redact defined secret fields where contracted, but can still
+contain paths, provider identifiers, workspace/session metadata, or other
+personal operational context.
+
+### Audit lifecycle
+
+The v0.8.2 release candidate verifies the retained main and control-plane audit
+chains before their owning runtime begins serving work. Each stream rotates
+before its active segment would exceed 32 MiB and normally retains four linked
+archives plus the active segment. A retention deletion failure preserves the
+uncertain archive and reports degraded retention instead of discarding audit
+history.
+
+While the daemon is running, `daemon.status` reports the live main and
+control-plane audit owners, including a latched unavailable state. The
+human-readable `audit verify` output includes state, counts, archive count,
+reason code, and permission/directory-sync capability without exposing paths.
+
+Inspect retained audit state while the daemon is stopped:
+
+```bash
+shisad audit verify
+shisad audit verify --json
+shisad audit query --all --json
+```
+
+Verification covers every retained entry and adjacent segment link. Startup
+refuses corrupted active or archived state; it does not truncate, quarantine,
+or start a replacement chain automatically. Stop the daemon, preserve the data
+root, run `shisad audit verify`, and restore a known-good whole-data-root backup
+when verification fails. A main-stream persistence failure prevents event
+subscriber dispatch and requests daemon shutdown. A control-plane persistence
+failure cannot precede an unrecorded control-plane state change: state-changing
+operations record their event or a write-ahead intent first, and later
+decisions are rejected. Neither path continues through an unaudited fallback.
 
 ---
 

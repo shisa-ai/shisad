@@ -8,16 +8,19 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import click
 import pytest
 from click.testing import CliRunner, Result
 
 from shisad.cli import main as cli_main
+from shisad.cli import onboarding
 from shisad.cli import rpc as cli_rpc
 from shisad.core.config import DaemonConfig
 from shisad.ui.theme import UiPosture
@@ -35,6 +38,38 @@ def _invoke_ok(runner: CliRunner, args: list[str]) -> Result:
     result = runner.invoke(cli_main.cli, args)
     assert result.exit_code == 0, result.output
     return result
+
+
+_CHAT_HINT_UNSET = object()
+
+
+def _chat_app_double(captured: dict[str, object]) -> type[object]:
+    class _FakeApp:
+        def __init__(
+            self,
+            *,
+            socket_path: Path,
+            data_dir: Path,
+            user_id: str,
+            workspace_id: str,
+            session_id: str | None,
+            reuse_bound_session: bool,
+            ui_posture: object,
+            startup_hint: str | None | object = _CHAT_HINT_UNSET,
+        ) -> None:
+            captured["socket_path"] = socket_path
+            captured["data_dir"] = data_dir
+            captured["user_id"] = user_id
+            captured["workspace_id"] = workspace_id
+            captured["session_id"] = session_id
+            captured["reuse_bound_session"] = reuse_bound_session
+            captured["ui_posture"] = ui_posture
+            captured["startup_hint"] = startup_hint
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    return _FakeApp
 
 
 def _audit_entry(
@@ -65,6 +100,17 @@ def _audit_entry(
         "previous_event_hash": "0" * 64,
         "previous_hash": "0" * 64,
     }
+
+
+def _audit_jsonl(entries: list[dict[str, object]]) -> str:
+    previous_hash = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
+    lines: list[str] = []
+    for entry in entries:
+        linked = {**entry, "previous_event_hash": previous_hash, "previous_hash": previous_hash}
+        line = json.dumps(linked)
+        lines.append(line)
+        previous_hash = hashlib.sha256(line.encode()).hexdigest()
+    return "\n".join(lines) + "\n"
 
 
 def test_cli_commands_route_through_rpc_wrapper(
@@ -2589,6 +2635,30 @@ def test_f6_init_honors_environment_path_with_explicit_cli_precedence(
     assert explicit_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_o2d_init_noninteractive_is_explicit_minimal_no_prompt_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "operator" / "config.toml"
+    result = CliRunner().invoke(
+        cli_main.cli,
+        [
+            "--config",
+            str(config_path),
+            "init",
+            "--non-interactive",
+            "--format",
+            "json",
+        ],
+        input="input-must-not-be-consumed\n",
+        env={"SHISAD_MANAGED": "true", "SHISAD_MODEL_API_KEY": "must-not-persist"},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["mode"] == "non_interactive"
+    assert payload["managed"] is True
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert "must-not-persist" not in config_path.read_text(encoding="utf-8")
+
+
 def test_f6_cli_renderers_receive_configured_no_color_motion_posture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2792,6 +2862,178 @@ def test_f6_root_help_groups_tasks_and_hides_compatibility_alias() -> None:
     assert "Daemon stopped:" in result.output
     assert "reality-check" in result.output
     assert "realitycheck" not in result.output
+
+
+def test_o1_bare_root_reports_fresh_preflight_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Fresh install" in result.output
+    assert "Preflight" in result.output
+    assert "Next action: shisad init" in result.output
+    assert "\x1b[" not in result.output
+    assert not config_home.exists()
+
+
+def test_o1_bare_root_explicit_missing_config_is_actionable_and_nonmutating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "missing config.toml"
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 3
+    assert str(config_path) in result.output
+    assert f"shisad --config '{config_path}' init" in result.output
+    assert "What failed: Could not load operator configuration." in result.output
+    assert not config_path.exists()
+
+
+def test_o1_bare_root_unsupported_schema_routes_to_upgrade_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("schema_version = 2\n", encoding="utf-8")
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 3
+    assert "upgrade" in result.output.lower()
+    assert "schema_version=1" in result.output
+    assert config_path.read_text(encoding="utf-8") == "schema_version = 2\n"
+
+
+def test_o1_bare_root_managed_posture_never_advertises_implicit_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    ambient_runtime = tmp_path / "ambient-runtime"
+    ambient_socket = ambient_runtime / "shisad" / "control.sock"
+    isolated_socket = tmp_path / "isolated" / "control.sock"
+    ambient_socket.parent.mkdir(parents=True)
+    ambient_socket.touch()
+    config_path.write_text(
+        f'schema_version = 1\n[daemon]\nsocket_path = "{isolated_socket}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(ambient_runtime))
+    monkeypatch.setenv("SHISAD_MANAGED", "true")
+    probed: list[Path] = []
+
+    def _ambient_probe(socket_path: Path) -> bool:
+        probed.append(socket_path)
+        return True
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _ambient_probe)
+
+    result = CliRunner().invoke(cli_main.cli, ["--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Managed environment" in result.output
+    assert "Next action: shisad doctor" in result.output
+    assert "Next action: shisad start" not in result.output
+    assert probed == []
+
+
+def test_o1_bare_root_no_color_uses_ascii_on_utf_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHISAD_POLICY_PATH", str(tmp_path / "missing-policy.yaml"))
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(tmp_path / "missing-control.sock"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+    def _unexpected_probe(_socket_path: Path) -> bool:
+        pytest.fail("isolated bare-root no-color test attempted live daemon IPC")
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _unexpected_probe)
+
+    result = CliRunner().invoke(cli_main.cli, ["--no-color"])
+
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.output
+    assert "╭" not in result.output
+    assert "WARN" in result.output
+
+
+def test_o1_bare_root_required_runtime_failure_uses_exit_three_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config-home"
+    original_inspect = cli_main.inspect_onboarding_environment
+
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SHISAD_MANAGED", raising=False)
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHISAD_POLICY_PATH", str(tmp_path / "missing-policy.yaml"))
+    monkeypatch.setenv("SHISAD_SOCKET_PATH", str(tmp_path / "missing-control.sock"))
+
+    def _unexpected_probe(_socket_path: Path) -> bool:
+        pytest.fail("isolated required-runtime test attempted live daemon IPC")
+
+    monkeypatch.setattr(onboarding, "_sync_daemon_probe", _unexpected_probe)
+
+    def _inspect_with_unsupported_runtime(
+        config_path: Path | None,
+        *,
+        environ: Mapping[str, str] | None = None,
+        interactive: bool | None = None,
+    ) -> onboarding.PreflightReport:
+        return original_inspect(
+            config_path,
+            environ=environ,
+            interactive=interactive,
+            python_version=(3, 11, 9),
+            containerized=False,
+        )
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(
+        cli_main,
+        "inspect_onboarding_environment",
+        _inspect_with_unsupported_runtime,
+    )
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 3
+    assert "Required onboarding preflight failed." in result.output
+    assert "Python 3.12 or newer" in result.output
+    assert "help, version, and explicit diagnostic commands" in result.output
+    assert not config_home.exists()
+
+
+def test_o1_bare_root_invalid_managed_posture_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MANAGED", "sometimes\x1b[31m")
+
+    result = CliRunner().invoke(cli_main.cli, [])
+
+    assert result.exit_code == 3
+    assert "SHISAD_MANAGED" in result.output
+    assert "true or false" in result.output
+    assert "\x1b[31m" not in result.output
 
 
 def test_f6_reality_check_canonical_and_legacy_alias_share_rpc(
@@ -3113,10 +3355,7 @@ def test_m9_audit_query_defaults_to_current_session_cache(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(_entry("e-cache", "s-cache"))
-        + "\n",
+        _audit_jsonl([_entry("e-other", "s-other"), _entry("e-cache", "s-cache")]),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3141,17 +3380,17 @@ def test_gh18_audit_query_json_defaults_to_current_session_cache(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(
-            _audit_entry(
-                "e-cache",
-                "s-cache",
-                event_type="ToolRejected",
-                data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
-            )
-        )
-        + "\n",
+        _audit_jsonl(
+            [
+                _audit_entry("e-other", "s-other"),
+                _audit_entry(
+                    "e-cache",
+                    "s-cache",
+                    event_type="ToolRejected",
+                    data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3196,7 +3435,7 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-one", "s-one")) + "\n" + json.dumps(_entry("e-two", "s-two")) + "\n",
+        _audit_jsonl([_entry("e-one", "s-one"), _entry("e-two", "s-two")]),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3217,17 +3456,17 @@ def test_gh18_audit_query_json_preserves_type_and_all_filters(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-one", "s-one"))
-        + "\n"
-        + json.dumps(
-            _audit_entry(
-                "e-alert",
-                "s-two",
-                event_type="OutputFirewallAlert",
-                data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
-            )
-        )
-        + "\n",
+        _audit_jsonl(
+            [
+                _audit_entry("e-one", "s-one"),
+                _audit_entry(
+                    "e-alert",
+                    "s-two",
+                    event_type="OutputFirewallAlert",
+                    data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -3256,7 +3495,7 @@ def test_gh18_audit_query_json_empty_results_are_array(
     config = _config(tmp_path)
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_path.write_text(json.dumps(_audit_entry("e-one", "s-one")) + "\n", encoding="utf-8")
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -3283,6 +3522,128 @@ def test_gh18_audit_query_json_missing_log_is_empty_array(
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
     assert "No audit log found" not in result.output
+
+
+def test_o4d_audit_verify_json_reports_both_streams_without_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.security.control_plane.audit import ControlPlaneAuditLog
+
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    control = ControlPlaneAuditLog(config.data_dir / "control_plane" / "audit.jsonl")
+    control.append(
+        event_type="ControlPlaneActionObserved",
+        session_id="s-one",
+        actor="planner",
+        data={"kind": "fs_read"},
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert set(payload["streams"]) == {"main", "control_plane"}
+    assert payload["streams"]["main"]["entry_count"] == 1
+    assert payload["streams"]["control_plane"]["entry_count"] == 1
+    assert "path" not in result.output
+
+
+def test_o4d_audit_verify_human_reports_complete_lifecycle_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify"])
+
+    assert result.exit_code == 0, result.output
+    assert "main: state=verified" in result.output
+    assert "archives=0" in result.output
+    assert "reason=none" in result.output
+    assert "permissions=" in result.output
+    assert "parent_sync=" in result.output
+    assert str(config.data_dir) not in result.output
+
+
+def test_o4d_audit_verify_human_sanitizes_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text("{not-json}\n", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, ["audit", "verify"])
+
+    assert result.exit_code != 0
+    assert "main: state=unavailable" in result.output
+    assert "reason=audit.verification_failed" in result.output
+    assert "archives=0" in result.output
+    assert str(config.data_dir) not in result.output
+    assert "not-json" not in result.output
+
+
+def test_o4d_audit_query_sanitizes_post_admission_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
+
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(_audit_jsonl([_audit_entry("e-one", "s-one")]), encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def fail_query(self: AuditLog, **_kwargs: object) -> list[dict[str, object]]:
+        raise AuditIntegrityError(f"raced path: {self.log_path}")
+
+    monkeypatch.setattr(AuditLog, "query", fail_query)
+    result = CliRunner().invoke(cli_main.cli, ["audit", "query", "--all"])
+
+    assert result.exit_code != 0
+    assert "audit integrity verification failed" in result.output
+    assert str(config.data_dir) not in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["audit", "verify"], "main: state=recovery_pending"),
+        (["audit", "query", "--all"], "audit integrity verification failed"),
+    ],
+)
+def test_o4d_audit_commands_recognize_lone_pending_successor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    expected: str,
+) -> None:
+    config = _config(tmp_path)
+    pending = config.data_dir / ".audit.jsonl.next"
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_bytes(b'{"record_type":"shisad.audit.segment"')
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    result = CliRunner().invoke(cli_main.cli, command)
+
+    assert result.exit_code != 0
+    assert expected in result.output
+    assert "No audit log" not in result.output
+    assert str(config.data_dir) not in result.output
 
 
 def test_m9_audit_query_rejects_all_with_session(
@@ -3713,37 +4074,556 @@ def test_start_debug_routes_to_autoreload_with_debug_log_level(
     assert "only supported mode" not in result.output
 
 
-def test_start_default_routes_to_foreground_path(
+def test_o3a_start_default_routes_to_background_with_bounded_health(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
 
-    captured: dict[str, DaemonConfig] = {}
+    captured: dict[str, object] = {}
+
+    def _fake_background_start(effective_config: DaemonConfig, *, no_color: bool = False):
+        captured["config"] = effective_config
+        captured["no_color"] = no_color
+        return SimpleNamespace(
+            already_running=False,
+            pid=4242,
+            log_path=tmp_path / "data" / "logs" / "daemon.log",
+            status=SimpleNamespace(
+                status="running",
+                readiness={
+                    "provider": {"status": "configured"},
+                    "storage": {"status": "verified"},
+                },
+            ),
+            doctor=SimpleNamespace(status="configured", checks={}),
+        )
+
+    def _unexpected_foreground(*args, **kwargs) -> None:
+        _ = args, kwargs
+        raise AssertionError("default start must not enter the foreground runner")
+
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        _fake_background_start,
+        raising=False,
+    )
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _unexpected_foreground)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["--no-color", "start"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"] is config
+    assert captured["no_color"] is True
+    assert "Daemon: started pid=4242" in result.output
+    assert "Health: configured" in result.output
+    assert "provider=configured" in result.output
+    assert "storage=verified" in result.output
+    assert "only supported mode" not in result.output
+
+
+def test_o3a_start_foreground_preserves_blocking_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: list[DaemonConfig] = []
 
     def _fake_foreground_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
-        captured["config"] = effective_config
-        if on_starting is not None:
-            on_starting(effective_config)
-        if on_started is not None:
-            on_started(effective_config)
-
-    def _fake_debug_start(_: DaemonConfig) -> None:
-        raise AssertionError("debug/autoreload path should not be used without --debug")
+        assert on_started is None
+        assert on_starting is None
+        captured.append(effective_config)
 
     monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
-    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda _config: pytest.fail("--foreground must not spawn a child"),
+        raising=False,
+    )
 
-    runner = CliRunner()
-    result = runner.invoke(cli_main.cli, ["start"])
+    result = CliRunner().invoke(cli_main.cli, ["start", "--foreground"])
+
     assert result.exit_code == 0, result.output
-    assert captured["config"].log_level == config.log_level
-    assert "only supported mode" in result.output
+    assert captured == [config]
+
+
+def test_o3a_background_argv_preserves_explicit_config_without_secret_values(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import build_background_argv
+
+    secret = "must-never-enter-child-argv"
+    config_path = tmp_path / "selected config.toml"
+    config = _config(tmp_path).model_copy(
+        update={
+            "config_path": config_path,
+            "discord_bot_token": secret,
+        }
+    )
+
+    argv = build_background_argv(config)
+    no_color_argv = build_background_argv(config, no_color=True)
+
+    assert argv[-2:] == ["start", "--foreground"]
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-m", "shisad.cli.main"]
+    assert argv[3:5] == ["--config", str(config_path)]
+    assert "--no-color" not in argv
+    assert no_color_argv[3:6] == ["--no-color", "--config", str(config_path)]
+    assert no_color_argv[-2:] == ["start", "--foreground"]
+    assert secret not in " ".join(argv)
+    assert secret not in " ".join(no_color_argv)
+
+
+def test_o3a_lifecycle_rpc_enforces_connect_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import lifecycle
+
+    closed: list[bool] = []
+
+    class _WedgedClient:
+        def __init__(self, _socket_path: Path) -> None:
+            pass
+
+        async def connect(self) -> None:
+            await asyncio.Event().wait()
+
+        async def call(self, *_args, **_kwargs) -> object:
+            raise AssertionError("call must not run before connect completes")
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(lifecycle, "ControlClient", _WedgedClient, raising=False)
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError):
+        lifecycle._bounded_rpc_call(
+            _config(tmp_path),
+            "daemon.status",
+            response_model=cli_main.DaemonStatusResult,
+            timeout_seconds=0.02,
+        )
+
+    assert time.monotonic() - started < 0.5
+    assert closed == [True]
+
+
+def test_o3a_background_start_is_idempotent_when_daemon_is_reachable(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import start_background_daemon
+
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    calls: list[str] = []
+
+    def _rpc(_config, method, _params=None, *, response_model=None):
+        _ = response_model
+        calls.append(method)
+        if method == "daemon.status":
+            return cli_main.DaemonStatusResult.model_validate(
+                {
+                    "status": "running",
+                    "readiness": {"provider": {"status": "configured"}},
+                }
+            )
+        return cli_main.DoctorCheckResult.model_validate(
+            {"status": "configured", "component": "all", "checks": {}}
+        )
+
+    def _unexpected_spawn(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("reachable daemon must not spawn a child")
+
+    result = start_background_daemon(
+        config,
+        rpc_call_fn=_rpc,
+        popen_factory=_unexpected_spawn,
+    )
+
+    assert result.already_running is True
+    assert result.pid is None
+    assert calls == ["daemon.status", "doctor.check"]
+    assert not (config.data_dir / "logs").exists()
+
+
+def test_o3a_background_start_uses_owner_only_log_and_reports_child_failure(
+    tmp_path: Path,
+) -> None:
+    from shisad.cli.lifecycle import BackgroundStartError, start_background_daemon
+
+    config = _config(tmp_path)
+
+    class _FailedProcess:
+        pid = 999
+
+        @staticmethod
+        def poll() -> int:
+            return 7
+
+    captured: dict[str, object] = {}
+
+    def _spawn(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return _FailedProcess()
+
+    with pytest.raises(BackgroundStartError, match="exited before readiness") as exc_info:
+        start_background_daemon(
+            config,
+            rpc_call_fn=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
+            popen_factory=_spawn,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=iter((0.0, 0.01)).__next__,
+        )
+
+    log_path = config.data_dir / "logs" / "daemon.log"
+    assert exc_info.value.log_path == log_path
+    assert log_path.stat().st_mode & 0o777 == 0o600
+    assert log_path.parent.stat().st_mode & 0o777 == 0o700
+    assert captured["stdin"] is not None
+    assert captured["stderr"] is not None
+    assert captured["start_new_session"] is True
+
+
+def test_o3a_background_timeout_terminates_only_the_spawned_child(tmp_path: Path) -> None:
+    from shisad.cli.lifecycle import BackgroundStartError, start_background_daemon
+
+    config = _config(tmp_path)
+
+    class _HangingProcess:
+        pid = 1001
+        terminated = False
+        waited: ClassVar[list[float]] = []
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @classmethod
+        def terminate(cls) -> None:
+            cls.terminated = True
+
+        @classmethod
+        def wait(cls, timeout: float) -> int:
+            cls.waited.append(timeout)
+            return -15
+
+    with pytest.raises(BackgroundStartError, match="start timeout"):
+        start_background_daemon(
+            config,
+            timeout_seconds=0.1,
+            rpc_call_fn=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
+            popen_factory=lambda *args, **kwargs: _HangingProcess(),
+            monotonic_fn=iter((0.0, 1.0)).__next__,
+        )
+
+    assert _HangingProcess.terminated is True
+    assert _HangingProcess.waited == [2.0]
+
+
+def test_o3a_health_projection_omits_nested_details_and_secrets(tmp_path: Path) -> None:
+    from shisad.cli.lifecycle import BackgroundStartResult, render_background_start
+
+    secret = "provider-secret-that-must-not-render"
+    result = BackgroundStartResult(
+        already_running=False,
+        pid=4242,
+        log_path=tmp_path / "daemon.log",
+        status=cli_main.DaemonStatusResult.model_validate(
+            {
+                "status": "running",
+                "readiness": {
+                    "provider": {
+                        "status": "blocked",
+                        "reason": secret,
+                        "next_action": secret,
+                    },
+                    secret: {"status": "verified"},
+                },
+            }
+        ),
+        doctor=cli_main.DoctorCheckResult.model_validate(
+            {
+                "status": "degraded",
+                "component": "all",
+                "checks": {"provider": {"problems": [secret]}},
+            }
+        ),
+    )
+
+    rendered = "\n".join(render_background_start(result))
+
+    assert "Health: degraded" in rendered
+    assert "provider=blocked" in rendered
+    assert secret not in rendered
+
+
+def test_o3a_explicit_post_setup_chat_starts_then_launches_normal_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import chat as chat_ui
+
+    config = _config(tmp_path)
+    launched: list[tuple[Path, Path | None]] = []
+    background_no_color: list[bool] = []
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_start(_config: DaemonConfig, *, no_color: bool = False) -> SimpleNamespace:
+        background_no_color.append(no_color)
+        return SimpleNamespace(
+            already_running=False,
+            pid=4242,
+            log_path=tmp_path / "daemon.log",
+            status=cli_main.DaemonStatusResult.model_validate(
+                {"status": "running", "readiness": {}}
+            ),
+            doctor=cli_main.DoctorCheckResult.model_validate(
+                {"status": "verified", "component": "all", "checks": {}}
+            ),
+        )
+
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        _fake_start,
+    )
+    monkeypatch.setattr(
+        chat_ui.ChatApp,
+        "run",
+        lambda app: launched.append((app._socket_path, app._transcript_root)),
+    )
+
+    @click.command()
+    @click.pass_context
+    def _harness(ctx: click.Context) -> None:
+        ctx.ensure_object(dict)
+        ctx.obj["no_color"] = True
+        cli_main._run_post_setup_action("chat")
+
+    result = CliRunner().invoke(_harness)
+
+    assert result.exit_code == 0, result.output
+    assert "Daemon: started pid=4242" in result.output
+    assert background_no_color == [True]
+    assert launched == [(config.socket_path, config.data_dir / "sessions")]
+
+
+def test_o3b_tour_noninteractive_is_deterministic_and_side_effect_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    config_home = tmp_path / "config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("SHISAD_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_chat",
+        lambda **_kwargs: pytest.fail("noninteractive tour must not launch chat"),
+        raising=False,
+    )
+    runner = CliRunner()
+
+    first = runner.invoke(cli_main.cli, ["tour"])
+    second = runner.invoke(cli_main.cli, ["tour"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert first.output == second.output
+    assert "shisad guided tour" in first.output
+    assert "auto-approved, require confirmation, be denied, or be blocked" in first.output
+    assert "shisad chat" in first.output
+    assert "shisad tui" in first.output
+    assert "shisad status" in first.output
+    assert "shisad doctor" in first.output
+    assert "shisad tour" in first.output
+    assert "Open ordinary chat" not in first.output
+    completion = first.output.split("5. Recovery and next steps", maxsplit=1)[1]
+    for command in ("shisad chat", "shisad tui", "shisad status", "shisad doctor", "shisad tour"):
+        assert command in completion
+    assert not config_home.exists()
+
+
+def test_o3b_tour_consumes_bounded_o3a_health_without_starting_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    probes: list[tuple[str, float]] = []
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_try_status",
+        lambda _config, _rpc, *, timeout_seconds: (
+            probes.append(("status", timeout_seconds))
+            or cli_main.DaemonStatusResult.model_validate(
+                {"status": "running", "readiness": {"provider": {"status": "blocked"}}}
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_try_doctor",
+        lambda _config, _rpc, *, timeout_seconds: (
+            probes.append(("doctor", timeout_seconds))
+            or cli_main.DoctorCheckResult.model_validate(
+                {"status": "degraded", "component": "all", "checks": {}}
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda *_args, **_kwargs: pytest.fail("tour health inspection must not start a daemon"),
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"])
+
+    assert result.exit_code == 0, result.output
+    assert "Current O3A health:" in result.output
+    assert "Health: degraded" in result.output
+    assert "Readiness: provider=blocked" in result.output
+    assert probes == [("status", 0.5), ("doctor", 0.5)]
+
+
+@pytest.mark.parametrize("failure", ("config", "rpc"))
+def test_o3b_tour_health_failure_degrades_to_actionable_unavailable(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    if failure == "config":
+        monkeypatch.setattr(
+            cli_main,
+            "_get_config",
+            lambda: (_ for _ in ()).throw(click.ClickException("invalid config")),
+        )
+    else:
+        monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+        monkeypatch.setattr(cli_main, "_try_status", lambda *_args, **_kwargs: None)
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "Current O3A health: unavailable; run shisad start, then shisad status or shisad doctor."
+        in result.output
+    )
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty", "expected"),
+    ((True, True, True), (True, False, False), (False, True, False)),
+)
+def test_o3b_tour_interactivity_requires_both_tty_streams(
+    stdin_tty: bool,
+    stdout_tty: bool,
+    expected: bool,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    stdin = SimpleNamespace(isatty=lambda: stdin_tty)
+    stdout = SimpleNamespace(isatty=lambda: stdout_tty)
+
+    assert tour_module.is_interactive_tour(stdin=stdin, stdout=stdout) is expected
+
+
+def test_o3b_tour_interactive_decline_exits_without_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_chat",
+        lambda **_kwargs: pytest.fail("declining the demo must not launch chat"),
+        raising=False,
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"], input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Open ordinary chat with a suggested first request? [y/N]" in result.output
+    assert "Tour complete; no chat session was opened." in result.output
+
+
+def test_o3b_tour_explicit_demo_uses_ordinary_chat_with_display_only_suggestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    config = _config(tmp_path)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
+    )
+
+    result = CliRunner().invoke(cli_main.cli, ["tour"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert captured["socket_path"] == config.socket_path
+    assert captured["session_id"] is None
+    assert captured["reuse_bound_session"] is True
+    assert captured["startup_hint"] == tour_module.CHAT_SUGGESTION
+    assert captured["ran"] is True
+
+
+def test_o3b_post_setup_tour_is_explanatory_and_names_daemon_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.cli import tour as tour_module
+
+    monkeypatch.setattr(tour_module, "is_interactive_tour", lambda: False)
+    monkeypatch.setattr(cli_main, "_inspect_tour_health", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "start_background_daemon",
+        lambda *_args, **_kwargs: pytest.fail("explanatory tour must not start a daemon"),
+    )
+
+    @click.command()
+    def _harness() -> None:
+        cli_main._run_post_setup_action("tour")
+
+    result = CliRunner().invoke(_harness)
+
+    assert result.exit_code == 0, result.output
+    assert "shisad guided tour" in result.output
+    assert "start the daemon with shisad start" in result.output
 
 
 def test_restart_default_shuts_down_then_starts_foreground(
@@ -4470,30 +5350,11 @@ def test_chat_command_runs_textual_app(
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     captured: dict[str, object] = {}
 
-    class _FakeApp:
-        def __init__(
-            self,
-            *,
-            socket_path: Path,
-            data_dir: Path,
-            user_id: str,
-            workspace_id: str,
-            session_id: str | None,
-            reuse_bound_session: bool,
-            ui_posture: object,
-        ) -> None:
-            captured["socket_path"] = socket_path
-            captured["data_dir"] = data_dir
-            captured["user_id"] = user_id
-            captured["workspace_id"] = workspace_id
-            captured["session_id"] = session_id
-            captured["reuse_bound_session"] = reuse_bound_session
-            captured["ui_posture"] = ui_posture
-
-        def run(self) -> None:
-            captured["ran"] = True
-
-    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -4508,6 +5369,7 @@ def test_chat_command_runs_textual_app(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] == "sess-123"
     assert captured["reuse_bound_session"] is True
+    assert captured["startup_hint"] is None
     assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 
@@ -4520,30 +5382,11 @@ def test_chat_command_new_forces_fresh_session_binding(
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     captured: dict[str, object] = {}
 
-    class _FakeApp:
-        def __init__(
-            self,
-            *,
-            socket_path: Path,
-            data_dir: Path,
-            user_id: str,
-            workspace_id: str,
-            session_id: str | None,
-            reuse_bound_session: bool,
-            ui_posture: object,
-        ) -> None:
-            captured["socket_path"] = socket_path
-            captured["data_dir"] = data_dir
-            captured["user_id"] = user_id
-            captured["workspace_id"] = workspace_id
-            captured["session_id"] = session_id
-            captured["reuse_bound_session"] = reuse_bound_session
-            captured["ui_posture"] = ui_posture
-
-        def run(self) -> None:
-            captured["ran"] = True
-
-    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    monkeypatch.setitem(
+        sys.modules,
+        "shisad.ui.chat",
+        SimpleNamespace(ChatApp=_chat_app_double(captured)),
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -4558,6 +5401,7 @@ def test_chat_command_new_forces_fresh_session_binding(
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] is None
     assert captured["reuse_bound_session"] is False
+    assert captured["startup_hint"] is None
     assert captured["ui_posture"].palette.name == "shisa-dark"  # type: ignore[union-attr]
     assert captured["ran"] is True
 
@@ -6519,3 +7363,87 @@ def test_audit_query_missing_log_reports_effective_path(
     assert result.exit_code == 0, result.output
     assert str(override_dir) in result.output
     assert "No audit log found" in result.output
+
+
+def test_o4e_delivery_commands_share_typed_safe_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    delivery_id = "dly-" + "b" * 64
+    reservation_id = "dres-" + "a" * 64
+    entry = {
+        "reservation_id": reservation_id,
+        "delivery_id": delivery_id,
+        "kind": "channel_result",
+        "target": {
+            "channel": "matrix",
+            "recipient": "!room:example.org",
+            "workspace_hint": "workspace-1",
+            "thread_id": "",
+        },
+        "state": "outcome_unknown",
+        "reason": "provider_attempt_failed",
+        "payload_digest": "c" * 64,
+        "receipt": None,
+        "recovery": {
+            "kind": "neither",
+            "guarantee_id": "",
+            "reconciliation_available": False,
+        },
+    }
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        request = dict(params or {})
+        calls.append((method, request))
+        if method == "delivery.list":
+            payload = {"deliveries": [entry], "count": 1}
+        elif method == "delivery.inspect":
+            payload = {"found": True, "delivery": entry}
+        else:
+            assert method == "delivery.resolve"
+            payload = {
+                "found": True,
+                "lookup_attempted": True,
+                "reconciliation_status": "absent",
+                "reason": "provider_reconciled_absent",
+                "instruction": (
+                    "No send was attempted. Submit a fresh request to retry the originating work."
+                ),
+                "delivery": {**entry, "state": "reconciled_absent"},
+            }
+        assert response_model is not None
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    listed = runner.invoke(
+        cli_main.cli,
+        ["delivery", "list", "--state", "outcome_unknown", "--limit", "2", "--json"],
+    )
+    inspected = runner.invoke(cli_main.cli, ["delivery", "inspect", delivery_id])
+    resolved = runner.invoke(cli_main.cli, ["delivery", "resolve", delivery_id])
+
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.output)["deliveries"][0]["delivery_id"] == delivery_id
+    assert inspected.exit_code == 0, inspected.output
+    assert "state=outcome_unknown" in inspected.output
+    assert "reconciliation_available=false" in inspected.output
+    assert resolved.exit_code == 0, resolved.output
+    assert "No send was attempted" in resolved.output
+    assert "fresh request" in resolved.output
+    assert calls == [
+        ("delivery.list", {"state": "outcome_unknown", "limit": 2}),
+        ("delivery.inspect", {"delivery_id": delivery_id}),
+        ("delivery.resolve", {"delivery_id": delivery_id}),
+    ]

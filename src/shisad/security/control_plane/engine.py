@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,7 @@ class ControlPlaneEvaluation(BaseModel, frozen=True):
 
 _AMV_METADATA_TEXT_MAX_CHARS = 256
 _CURRENT_TURN_LOCAL_READ_TRACE_ALLOW_REASON = "trace:current_turn_local_filesystem_read_intent"
+CONTROL_PLANE_AUDIT_STATUS_KEY = "\x00shisad.audit.lifecycle.v1"
 
 
 def _consensus_allows_current_turn_filesystem_read_trace_miss(
@@ -236,8 +238,15 @@ class ControlPlaneEngine:
         capabilities: set[Capability] | None = None,
         declared_resource_roots: set[str] | None = None,
     ) -> str:
+        self._audit_log.ensure_available()
         active = self._trace_verifier.active_plan(session_id)
         if active is not None:
+            self._audit_log.append(
+                event_type="plan_cancel_requested",
+                session_id=session_id,
+                actor=origin.actor,
+                data={"reason": "superseded_by_new_goal", "plan_hash": active.plan_hash},
+            )
             self._trace_verifier.cancel(session_id=session_id, reason="superseded_by_new_goal")
             self._audit_log.append(
                 event_type="plan_cancelled",
@@ -245,6 +254,17 @@ class ControlPlaneEngine:
                 actor=origin.actor,
                 data={"reason": "superseded_by_new_goal", "plan_hash": active.plan_hash},
             )
+        self._audit_log.append(
+            event_type="plan_commit_requested",
+            session_id=session_id,
+            actor=origin.actor,
+            data={
+                "ttl_seconds": ttl_seconds,
+                "max_actions": max_actions,
+                "capabilities": sorted(item.value for item in (capabilities or set())),
+                "declared_resource_roots": sorted(declared_resource_roots or set()),
+            },
+        )
         committed = self._trace_verifier.begin_precontent_plan(
             session_id=session_id,
             goal=goal,
@@ -284,6 +304,7 @@ class ControlPlaneEngine:
         operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
+        self._audit_log.ensure_available()
         action_arguments = dict(arguments)
         monitor_payload = (
             dict(monitor_arguments) if monitor_arguments is not None else dict(arguments)
@@ -370,7 +391,6 @@ class ControlPlaneEngine:
             if trace_result.reason_code not in reason_codes:
                 reason_codes.append(trace_result.reason_code)
 
-        self._history_store.append_action(action, decision_status=final_decision.value)
         self._audit_log.append(
             event_type="action_observed",
             session_id=origin.session_id,
@@ -385,6 +405,7 @@ class ControlPlaneEngine:
                 "reason_codes": reason_codes,
             },
         )
+        self._history_store.append_action(action, decision_status=final_decision.value)
 
         return ControlPlaneEvaluation(
             action=action,
@@ -402,8 +423,22 @@ class ControlPlaneEngine:
         outcome_unknown: bool = False,
         idempotency_key: str = "",
     ) -> None:
+        self._audit_log.ensure_available()
         if success and outcome_unknown:
             raise ValueError("control_plane_execution_status_conflict")
+        self._audit_log.append(
+            event_type="execution_record_requested",
+            session_id=action.origin.session_id,
+            actor=action.origin.actor,
+            data={
+                "tool_name": action.tool_name,
+                "action_kind": action.action_kind.value,
+                "resource_id": action.resource_id,
+                "success": success,
+                "outcome_unknown": outcome_unknown,
+                "action_surface_hash": execution_action_surface_hash(action),
+            },
+        )
         normalized_key = idempotency_key.strip()
         existing_record = self._history_store.idempotent_record(normalized_key)
         if existing_record is not None:
@@ -441,6 +476,16 @@ class ControlPlaneEngine:
             else success or outcome_unknown
         )
         if effective_success and existing_record is not None and not trace_plan_hash:
+            if active_plan is not None:
+                self._audit_log.append(
+                    event_type="plan_cancel_requested",
+                    session_id=action.origin.session_id,
+                    actor=action.origin.actor,
+                    data={
+                        "reason": "trace_accounting_plan_binding_unavailable",
+                        "plan_hash": active_plan.plan_hash,
+                    },
+                )
             if active_plan is not None and self._trace_verifier.cancel(
                 session_id=action.origin.session_id,
                 reason="trace_accounting_plan_binding_unavailable",
@@ -472,10 +517,24 @@ class ControlPlaneEngine:
                 idempotency_key=control_plane_trace_action_idempotency_key(normalized_key),
                 expected_plan_hash=trace_plan_hash,
             )
+        self._audit_log.append(
+            event_type="execution_recorded",
+            session_id=action.origin.session_id,
+            actor=action.origin.actor,
+            data={
+                "tool_name": action.tool_name,
+                "action_kind": action.action_kind.value,
+                "success": success,
+                "outcome_unknown": outcome_unknown,
+            },
+        )
 
     def execution_status(self, *, idempotency_key: str) -> str:
         """Return the first durable outcome for an execution attempt key."""
-        record = self._history_store.idempotent_record(idempotency_key.strip())
+        normalized_key = idempotency_key.strip()
+        if normalized_key == CONTROL_PLANE_AUDIT_STATUS_KEY:
+            return json.dumps(self._audit_log.lifecycle_status, sort_keys=True)
+        record = self._history_store.idempotent_record(normalized_key)
         return record.execution_status if record is not None else ""
 
     def observe_denied_action(
@@ -485,11 +544,7 @@ class ControlPlaneEngine:
         source: str,
         reason_code: str,
     ) -> list[SequenceFinding]:
-        record = self._history_store.append_denied_action(
-            action,
-            reason_code=reason_code,
-            source=source,
-        )
+        self._audit_log.ensure_available()
         self._audit_log.append(
             event_type="denied_action_observed",
             session_id=action.origin.session_id,
@@ -502,6 +557,11 @@ class ControlPlaneEngine:
                 "reason_code": reason_code,
                 "source": source,
             },
+        )
+        record = self._history_store.append_denied_action(
+            action,
+            reason_code=reason_code,
+            source=source,
         )
         findings = self._sequence_analyzer.analyze_denied_action(
             history=self._history_store,
@@ -534,6 +594,18 @@ class ControlPlaneEngine:
         expected_previous_hash: str = "",
         execution_idempotency_key: str = "",
     ) -> str:
+        self._audit_log.ensure_available()
+        self._audit_log.append(
+            event_type="plan_amend_requested",
+            session_id=action.origin.session_id,
+            actor=approved_by,
+            data={
+                "correlation_id": correlation_id,
+                "expected_previous_hash": expected_previous_hash,
+                "action_kind": action.action_kind.value,
+                "resource_ids": list(action.resource_ids),
+            },
+        )
         amended = self._trace_verifier.amend(
             session_id=action.origin.session_id,
             approved_by=approved_by,
@@ -573,6 +645,7 @@ class ControlPlaneEngine:
         reason: str,
         actor: str,
     ) -> bool:
+        self._audit_log.ensure_available()
         plan = self._trace_verifier.active_plan(session_id)
         normalized_correlation = correlation_id.strip()
         normalized_plan_hash = expected_plan_hash.strip()
@@ -583,6 +656,16 @@ class ControlPlaneEngine:
             or (normalized_plan_hash and plan.plan_hash != normalized_plan_hash)
         ):
             return False
+        self._audit_log.append(
+            event_type="plan_cancel_requested",
+            session_id=session_id,
+            actor=actor,
+            data={
+                "reason": reason,
+                "plan_hash": plan.plan_hash,
+                "correlation_id": normalized_correlation,
+            },
+        )
         cancelled = self._trace_verifier.cancel(session_id=session_id, reason=reason)
         if cancelled:
             self._audit_log.append(
@@ -598,6 +681,16 @@ class ControlPlaneEngine:
         return cancelled
 
     def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
+        self._audit_log.ensure_available()
+        plan = self._trace_verifier.active_plan(session_id)
+        if plan is None:
+            return False
+        self._audit_log.append(
+            event_type="plan_cancel_requested",
+            session_id=session_id,
+            actor=actor,
+            data={"reason": reason, "plan_hash": plan.plan_hash},
+        )
         cancelled = self._trace_verifier.cancel(session_id=session_id, reason=reason)
         if cancelled:
             self._audit_log.append(
@@ -627,6 +720,7 @@ class ControlPlaneEngine:
         request_size: int,
         resolved_addresses: list[str],
     ) -> None:
+        self._audit_log.ensure_available()
         metadata = extract_network_metadata(
             origin=origin,
             tool_name=tool_name,
@@ -636,12 +730,6 @@ class ControlPlaneEngine:
             request_size=request_size,
             resolved_addresses=resolved_addresses,
             timestamp=datetime.now(UTC),
-        )
-        self._network_monitor.record_learning(
-            metadata=metadata,
-            allow_or_confirmed=allowed,
-            suspicious=not allowed,
-            lockdown=False,
         )
         self._audit_log.append(
             event_type="network_observed",
@@ -657,6 +745,12 @@ class ControlPlaneEngine:
                 "request_size": request_size,
                 "resolved_addresses": list(resolved_addresses),
             },
+        )
+        self._network_monitor.record_learning(
+            metadata=metadata,
+            allow_or_confirmed=allowed,
+            suspicious=not allowed,
+            lockdown=False,
         )
 
     def _audit_consensus(self, payload: dict[str, Any]) -> None:

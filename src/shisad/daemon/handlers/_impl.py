@@ -6997,6 +6997,21 @@ class HandlerImplementation(
             ).encode("utf-8")
             + b"\n"
         )
+        self._load_pairing_request_artifacts(
+            owner_uid=owner_uid,
+            workspace_hint=workspace_hint,
+        )
+        artifact_dir = artifact_path.parent
+        try:
+            artifacts = list(artifact_dir.iterdir()) if artifact_dir.exists() else []
+            total_bytes = sum(item.stat().st_size for item in artifacts)
+        except OSError as exc:
+            raise ValueError("pairing_request_artifact_corrupt:quota_read") from exc
+        if (
+            len(artifacts) >= _PAIRING_REQUEST_MAX_FILES
+            or total_bytes + len(encoded) > _PAIRING_REQUEST_MAX_TOTAL_BYTES
+        ):
+            raise ValueError("pairing_request_quota_exceeded")
         atomic_write_bytes(artifact_path, encoded)
         return True
 

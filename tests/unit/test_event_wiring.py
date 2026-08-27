@@ -11,14 +11,18 @@ from typing import Any
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.events import (
     CapabilityGranted,
     SessionArchiveExported,
     SessionCreated,
     SessionRehydrated,
     SessionRehydrateRejected,
+    ToolApproved,
+    ToolExecuted,
+    ToolRejected,
 )
-from shisad.core.types import SessionId
+from shisad.core.types import PEPDecisionKind, SessionId, ToolName
 from shisad.daemon.event_wiring import DaemonEventWiring, channel_receive_pump, matrix_receive_pump
 from shisad.security.lockdown import LockdownManager
 from shisad.security.ratelimit import RateLimitEvent
@@ -94,6 +98,165 @@ async def test_forward_event_to_subscribers_adds_event_type() -> None:
 
     assert server.payloads
     assert server.payloads[0]["event_type"] == "SessionCreated"
+
+
+def test_o3e_progress_projection_is_structural_bounded_and_redacted() -> None:
+    from shisad.channels.progress import project_action_progress
+
+    identity = {
+        "session_id": SessionId("session-1"),
+        "actor": "policy_loop",
+        "tool_name": ToolName("shell.exec\nsecret"),
+        "action_id": "action-1",
+        "origin_turn_id": "turn-1",
+        "delivery_target": {
+            "channel": "discord",
+            "recipient": "100",
+            "thread_id": "200",
+        },
+    }
+    events = [
+        ToolApproved(**identity),
+        ToolRejected(
+            **identity,
+            decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
+            reason="contains TOP-SECRET and /private/path",
+        ),
+        ToolExecuted(
+            **identity,
+            success=False,
+            error="TOP-SECRET",
+            details={"result": "TOP-SECRET"},
+        ),
+    ]
+
+    views = [project_action_progress(event) for event in events]
+
+    assert [view.state for view in views if view is not None] == [
+        "running",
+        "awaiting_confirmation",
+        "failed",
+    ]
+    serialized = " ".join(view.model_dump_json() for view in views if view is not None)
+    assert "TOP-SECRET" not in serialized
+    assert "/private/path" not in serialized
+    assert "\n" not in views[0].tool_name  # type: ignore[union-attr]
+    assert len(views[0].tool_name) <= 64  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_o3e_event_wiring_broadcasts_safe_view_and_exact_discord_target() -> None:
+    bus = _RecordingEventBus()
+    server = _RecordingServer()
+    deliveries: list[object] = []
+
+    class _ProgressChannel:
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            deliveries.append((progress, target))
+
+    wiring = DaemonEventWiring(event_bus=bus, server=server)  # type: ignore[arg-type]
+    wiring.bind_progress_channels({"discord": _ProgressChannel()})  # type: ignore[dict-item]
+    event = ToolExecuted(
+        session_id=SessionId("session-1"),
+        actor="executor",
+        tool_name=ToolName("web.fetch"),
+        action_id="action-1",
+        origin_turn_id="turn-1",
+        delivery_target={"channel": "discord", "recipient": "100", "thread_id": "200"},
+        success=True,
+        details={"body": "TOP-SECRET"},
+    )
+
+    await wiring.forward_event_to_subscribers(event)
+
+    safe = next(payload for payload in server.payloads if payload["event_type"] == "ActionProgress")
+    assert safe == {
+        "event_type": "ActionProgress",
+        "session_id": "session-1",
+        "action_id": "action-1",
+        "origin_turn_id": "turn-1",
+        "tool_name": "web.fetch",
+        "state": "succeeded",
+    }
+    assert len(deliveries) == 1
+    delivered_progress, delivered_target = deliveries[0]  # type: ignore[misc]
+    assert delivered_progress.action_id == "action-1"  # type: ignore[attr-defined]
+    assert delivered_target == DeliveryTarget(channel="discord", recipient="100", thread_id="200")
+
+
+@pytest.mark.asyncio
+async def test_o3e_event_wiring_contains_provider_specific_progress_failure() -> None:
+    class _ProviderFailure(Exception):
+        pass
+
+    class _FailingProgressChannel:
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            del progress, target
+            raise _ProviderFailure
+
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(  # type: ignore[arg-type]
+        event_bus=_RecordingEventBus(),
+        server=server,
+    )
+    wiring.bind_progress_channels(  # type: ignore[dict-item]
+        {"discord": _FailingProgressChannel()}
+    )
+    event = ToolApproved(
+        session_id=SessionId("session-1"),
+        tool_name=ToolName("web.fetch"),
+        action_id="action-1",
+        origin_turn_id="turn-1",
+        delivery_target={"channel": "discord", "recipient": "100"},
+    )
+
+    await wiring.forward_event_to_subscribers(event)
+
+    assert [payload["event_type"] for payload in server.payloads] == [
+        "ToolApproved",
+        "ActionProgress",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_o3e_event_wiring_bounds_hanging_progress_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.daemon import event_wiring as event_wiring_module
+
+    class _HangingProgressChannel:
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            del progress, target
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        event_wiring_module,
+        "_PROGRESS_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(  # type: ignore[arg-type]
+        event_bus=_RecordingEventBus(),
+        server=server,
+    )
+    wiring.bind_progress_channels(  # type: ignore[dict-item]
+        {"discord": _HangingProgressChannel()}
+    )
+    event = ToolApproved(
+        session_id=SessionId("session-1"),
+        tool_name=ToolName("web.fetch"),
+        action_id="action-1",
+        origin_turn_id="turn-1",
+        delivery_target={"channel": "discord", "recipient": "100"},
+    )
+
+    await asyncio.wait_for(wiring.forward_event_to_subscribers(event), timeout=0.1)
+
+    assert [payload["event_type"] for payload in server.payloads] == [
+        "ToolApproved",
+        "ActionProgress",
+    ]
 
 
 @pytest.mark.asyncio

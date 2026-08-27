@@ -9854,3 +9854,79 @@ async def test_contract_session_scoped_tool_handles_remain_session_scoped_on_wri
                 },
             )
         assert excinfo.value.code == -32602
+
+
+def test_o4b_runtime_construction_migrates_legacy_memory_and_timeline_once(
+    tmp_path: Path,
+) -> None:
+    from shisad.core.session import SessionManager
+    from shisad.core.transcript import TranscriptStore
+    from shisad.memory.timeline import TimelineIndex
+
+    memory_root = tmp_path / "memory_entries"
+    memory_root.mkdir()
+    memory_db = memory_root / "memory.sqlite3"
+    with sqlite3.connect(memory_db) as connection:
+        connection.execute(
+            """
+            CREATE TABLE memory_events (
+                event_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL,
+                event_type TEXT NOT NULL, timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL, ingress_handle_id TEXT,
+                metadata_json TEXT NOT NULL
+            )
+            """
+        )
+    memory_before = memory_db.read_bytes()
+
+    timeline_root = tmp_path / "timeline"
+    timeline_root.mkdir()
+    timeline_db = timeline_root / "timeline.sqlite3"
+    with sqlite3.connect(timeline_db) as connection:
+        connection.execute(
+            """
+            CREATE TABLE timeline_rows (
+                handle TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL, episode_index INTEGER NOT NULL,
+                entry_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+                snippet TEXT NOT NULL, timestamp TEXT NOT NULL, user_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL, channel TEXT NOT NULL,
+                visibility TEXT NOT NULL, content_digest TEXT NOT NULL,
+                evidence_ref_id TEXT NOT NULL, taint_labels TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, thread_id TEXT NOT NULL,
+                related_memory_ids TEXT NOT NULL
+            )
+            """
+        )
+    timeline_before = timeline_db.read_bytes()
+
+    IngestionPipeline(memory_root)
+    MemoryManager(memory_root)
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    TimelineIndex(
+        timeline_root,
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+
+    memory_backup = memory_db.with_name("memory.sqlite3.pre-v1.bak")
+    timeline_backup = timeline_db.with_name("timeline.sqlite3.pre-v1.bak")
+    with sqlite3.connect(memory_db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    with sqlite3.connect(timeline_db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert memory_backup.read_bytes() == memory_before
+    assert timeline_backup.read_bytes() == timeline_before
+
+    memory_backup_before = memory_backup.read_bytes()
+    timeline_backup_before = timeline_backup.read_bytes()
+    IngestionPipeline(memory_root)
+    MemoryManager(memory_root)
+    TimelineIndex(
+        timeline_root,
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    assert memory_backup.read_bytes() == memory_backup_before
+    assert timeline_backup.read_bytes() == timeline_backup_before

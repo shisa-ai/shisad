@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core import config_file
+from shisad.core.config import DaemonConfig, ModelConfig, effective_credential_reference_paths
 from shisad.core.config_file import (
     ConfigFileError,
     config_field_inventory,
@@ -20,6 +21,50 @@ from shisad.core.providers.routing import ModelComponent, ModelRouter
 def _write_config(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize(
+    ("raw_field", "ref_field"),
+    [
+        ("matrix_access_token", "matrix_access_token_ref"),
+        ("discord_bot_token", "discord_bot_token_ref"),
+        ("telegram_bot_token", "telegram_bot_token_ref"),
+        ("slack_bot_token", "slack_bot_token_ref"),
+        ("slack_app_token", "slack_app_token_ref"),
+    ],
+)
+def test_o2c_channel_token_raw_and_reference_are_mutually_exclusive(
+    raw_field: str,
+    ref_field: str,
+) -> None:
+    with pytest.raises(ValueError, match="cannot use both a raw value and a credential reference"):
+        DaemonConfig.model_validate({raw_field: "raw-secret", ref_field: "channel.token"})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "matrix_access_token_ref",
+        "discord_bot_token_ref",
+        "telegram_bot_token_ref",
+        "slack_bot_token_ref",
+        "slack_app_token_ref",
+    ],
+)
+def test_o2c_channel_token_reference_uses_generic_logical_name_grammar(field: str) -> None:
+    assert getattr(DaemonConfig.model_validate({field: "channel.valid-token"}), field) == (
+        "channel.valid-token"
+    )
+    with pytest.raises(ValueError, match="credential reference name is invalid"):
+        DaemonConfig.model_validate({field: "../channel-secret"})
+
+
+def test_o2c_slack_bot_and_app_references_must_be_distinct() -> None:
+    with pytest.raises(ValueError, match="distinct"):
+        DaemonConfig(
+            slack_bot_token_ref="channel.slack.same",
+            slack_app_token_ref="channel.slack.same",
+        )
 
 
 def test_u41_config_precedence_sources_and_secret_redaction(tmp_path: Path) -> None:
@@ -305,6 +350,10 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     assert by_name[("daemon", "reduce_motion")]["consumer"] == "UiPosture"
     assert ("daemon", "ui_theme_path") not in by_name
     assert by_name[("model", "planner_api_key")]["consumer"] == "ModelRouter"
+    assert by_name[("model", "planner_api_key_ref")]["consumer"] == "ModelRouter"
+    assert by_name[("security", "credential_reference_store_path")]["consumer"] == (
+        "CredentialReferenceStore"
+    )
     for removed in (
         "require_confirmation_for_writes",
         "egress_default_deny",
@@ -313,6 +362,28 @@ def test_u41_config_inventory_has_no_unclassified_or_inert_advertised_controls()
     ):
         assert ("security", removed) not in by_name
     assert ("model", "log_prompts") not in by_name
+
+
+def test_o2a_raw_model_key_and_reference_conflict() -> None:
+    with pytest.raises(ValueError, match="cannot use both"):
+        ModelConfig(api_key="raw-secret", api_key_ref="model.primary")
+    with pytest.raises(ValueError, match="planner"):
+        ModelConfig(planner_api_key="raw-secret", planner_api_key_ref="model.planner")
+
+
+def test_o2a_default_credential_paths_follow_selected_data_root(tmp_path: Path) -> None:
+    store_path, secret_dir = effective_credential_reference_paths(data_dir=tmp_path)
+
+    assert store_path == tmp_path / "credential-references.json"
+    assert secret_dir == tmp_path / "credentials.d"
+
+    custom_store, custom_dir = effective_credential_reference_paths(
+        data_dir=tmp_path,
+        configured_store_path=tmp_path / "custom" / "refs.json",
+        configured_secret_dir=tmp_path / "custom" / "secrets",
+    )
+    assert custom_store == tmp_path / "custom" / "refs.json"
+    assert custom_dir == tmp_path / "custom" / "secrets"
 
 
 def test_u41_commented_template_is_generated_from_live_inventory() -> None:
@@ -398,6 +469,8 @@ def test_f6_init_publishes_one_owner_only_template_without_overwrite(
 
     assert created == destination
     assert destination.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "config-home").stat().st_mode & 0o777 == 0o700
+    assert destination.parent.stat().st_mode & 0o777 == 0o700
     text = destination.read_text(encoding="utf-8")
     assert text.startswith("schema_version = 1\n")
     assert "never-write-this" not in text
@@ -462,3 +535,211 @@ def test_f6_init_parent_preparation_failure_uses_config_error(tmp_path: Path) ->
 
     with pytest.raises(ConfigFileError, match="cannot prepare selected config parent"):
         config_file.initialize_config_file(blocked_parent / "config.toml", environ={})
+
+
+def test_o2d_rendered_selected_config_is_commented_validated_and_reference_only(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "config.toml"
+    policy_path = tmp_path / "policy.yaml"
+    secret = "ambient-secret-must-not-persist"
+
+    config_file.initialize_config_file(
+        destination,
+        environ={"SHISAD_MODEL_API_KEY": secret},
+        section_overrides={
+            "daemon": {
+                "policy_path": policy_path,
+                "discord_enabled": True,
+                "discord_bot_token_ref": "channel.discord",
+                "discord_trusted_users": ["operator-1"],
+            },
+            "model": {
+                "planner_provider_preset": "openai_default",
+                "planner_model_id": "gpt-5.4-2026-03-05",
+                "planner_api_key_ref": "model.primary",
+                "planner_remote_enabled": True,
+            },
+        },
+    )
+
+    text = destination.read_text(encoding="utf-8")
+    assert text.startswith("schema_version = 1\n")
+    assert 'policy_path = "' in text
+    assert 'discord_bot_token_ref = "channel.discord"' in text
+    assert 'planner_api_key_ref = "model.primary"' in text
+    assert "# status=live" in text
+    assert secret not in text
+    loaded = load_config_file(destination, environ={})
+    assert loaded.daemon.policy_path == policy_path
+    assert loaded.daemon.discord_enabled is True
+    assert loaded.daemon.discord_bot_token_ref == "channel.discord"
+    assert loaded.model.planner_provider_preset.value == "openai_default"
+    assert loaded.model.planner_model_id == "gpt-5.4-2026-03-05"
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("model", "planner_api_key"),
+        ("daemon", "discord_bot_token"),
+    ],
+)
+def test_o2d_selected_config_rejects_raw_secret_overrides(
+    section: str,
+    field: str,
+) -> None:
+    with pytest.raises(ConfigFileError, match="raw secret"):
+        render_config_template(section_overrides={section: {field: "do-not-write"}})
+
+
+def test_o4f_config_section_plan_preserves_unselected_bytes_and_is_nonmutating(
+    tmp_path: Path,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        """schema_version = 1
+# operator daemon note
+[daemon]
+ui_theme = "shisa-dark"
+
+# operator model note
+[model]
+planner_model_id = "old-model"
+planner_api_key_ref = "model.primary"
+
+[security]
+default_deny = true
+""",
+    )
+    original = path.read_bytes()
+
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+
+    assert path.read_bytes() == original
+    assert plan.section == "model"
+    assert plan.changed_fields == ("planner_model_id",)
+    assert plan.source_sha256
+    assert b'# operator daemon note\n[daemon]\nui_theme = "shisa-dark"\n' in plan.candidate
+    assert b"[security]\ndefault_deny = true\n" in plan.candidate
+    assert b'planner_model_id = "new-model"' in plan.candidate
+
+
+def test_o4f_config_section_apply_keeps_exact_backup_and_rejects_stale_or_unsafe_source(
+    tmp_path: Path,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        """schema_version = 1
+[daemon]
+ui_theme = "shisa-dark"
+
+[model]
+planner_model_id = "old-model"
+
+[security]
+default_deny = true
+""",
+    )
+    original = path.read_bytes()
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+    result = config_file.apply_config_section_update(plan, environ={})
+
+    assert result.persisted is True
+    assert result.backup_path.read_bytes() == original
+    assert result.backup_path.stat().st_mode & 0o777 == 0o600
+    assert load_config_file(path, environ={}).model.planner_model_id == "new-model"
+    assert b'[daemon]\nui_theme = "shisa-dark"\n' in path.read_bytes()
+    assert b"[security]\ndefault_deny = true\n" in path.read_bytes()
+
+    stale = config_file.plan_config_section_update(
+        path,
+        section="daemon",
+        updates={"ui_theme": "shisa-light"},
+        environ={},
+    )
+    path.write_bytes(path.read_bytes() + b"\n# concurrent edit\n")
+    with pytest.raises(ConfigFileError, match="changed while"):
+        config_file.apply_config_section_update(stale, environ={})
+
+    unsafe = _write_config(
+        tmp_path / "raw-secret.toml",
+        """schema_version = 1
+[daemon]
+discord_bot_token = "must-not-copy"
+""",
+    )
+    with pytest.raises(ConfigFileError, match="raw secret"):
+        config_file.plan_config_section_update(
+            unsafe,
+            section="daemon",
+            updates={"ui_theme": "dark"},
+            environ={},
+        )
+
+
+def test_o4f_config_section_plan_rejects_symlink_and_noncanonical_selected_table(
+    tmp_path: Path,
+) -> None:
+    target = _write_config(tmp_path / "target.toml", "schema_version = 1\n")
+    linked = tmp_path / "linked.toml"
+    linked.symlink_to(target)
+    with pytest.raises(ConfigFileError, match="symlink"):
+        config_file.plan_config_section_update(
+            linked,
+            section="model",
+            updates={"planner_model_id": "new-model"},
+            environ={},
+        )
+
+    quoted = _write_config(
+        tmp_path / "quoted.toml",
+        'schema_version = 1\n["model"]\nplanner_model_id = "old-model"\n',
+    )
+    with pytest.raises(ConfigFileError, match="canonical"):
+        config_file.plan_config_section_update(
+            quoted,
+            section="model",
+            updates={"planner_model_id": "new-model"},
+            environ={},
+        )
+
+
+def test_o4f_config_section_apply_syncs_backup_before_replacing_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write_config(
+        tmp_path / "config.toml",
+        'schema_version = 1\n[model]\nplanner_model_id = "old-model"\n',
+    )
+    original = path.read_bytes()
+    plan = config_file.plan_config_section_update(
+        path,
+        section="model",
+        updates={"planner_model_id": "new-model"},
+        environ={},
+    )
+
+    def _fail_parent_sync(_parent: Path) -> str:
+        raise OSError("simulated backup parent sync failure")
+
+    monkeypatch.setattr(config_file, "sync_parent_directory", _fail_parent_sync, raising=False)
+    with pytest.raises(ConfigFileError, match="backup parent directory"):
+        config_file.apply_config_section_update(plan, environ={})
+
+    assert path.read_bytes() == original
+    assert (
+        path.with_name(f"{path.name}.pre-reconfigure-{plan.source_sha256[:12]}.bak").read_bytes()
+        == original
+    )

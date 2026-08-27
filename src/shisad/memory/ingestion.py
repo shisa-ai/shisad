@@ -26,6 +26,7 @@ from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
 from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.schema import MemoryScope
+from shisad.memory.sqlite_schema import prepare_memory_database
 from shisad.memory.surfaces import (
     RecallPack,
     SufficiencyReport,
@@ -265,6 +266,7 @@ class IngestionPipeline:
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._legacy_storage_dir = legacy_storage_dir
         self._db_path = self._storage_dir / "memory.sqlite3"
+        prepare_memory_database(self._db_path)
         self._backend = SQLiteRetrievalBackend(self._db_path)
         self._event_store = MemoryEventStore(
             self._db_path,
@@ -281,7 +283,6 @@ class IngestionPipeline:
         self._quarantine_threshold = quarantine_threshold
         self._audit_hook = audit_hook
         self._allow_embedding_fallback = allow_embedding_fallback
-        self._ensure_schema()
         self._master_secret = self._resolve_master_secret(encryption_key)
         self._key_material_by_id: dict[str, bytes] = {}
         self._key_metadata_by_id: dict[str, dict[str, str]] = {}
@@ -1581,28 +1582,6 @@ class IngestionPipeline:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
-
-    def _ensure_schema(self) -> None:
-        with self._connect_db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS retrieval_keys (
-                    key_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    salt_b64 TEXT NOT NULL,
-                    nonce_b64 TEXT NOT NULL,
-                    wrapped_key_b64 TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS retrieval_metadata (
-                    key TEXT PRIMARY KEY,
-                    value_text TEXT NOT NULL
-                )
-                """
-            )
 
     def _metadata_get(
         self,

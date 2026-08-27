@@ -75,6 +75,19 @@ text, but that text is not enforcement authority.
 
 **4. Privilege-separated control plane.** The runtime uses three privilege tiers: **TASK** agents handle untrusted content in sandboxed, ephemeral contexts. The **COMMAND** agent orchestrates — it holds user intent, dispatches TASKs, and presents results, but cannot modify system configuration. **SUDO** mode is a clean-room elevation triggered by intent detection on authenticated channels — it can modify policy, capabilities, credentials, and configuration, but its context is stripped to the current user message and system instructions only (no summaries, no artifacts, no residual TASK context), and it auto-drops back to normal operation after the privileged action completes. System modification is possible, but only through this constrained privileged workflow — there is no unconstrained self-modification and no agent-writable instruction files. Policies are read-only to the agent in normal operation. Audit logs are append-only.
 
+In the v0.8.2 release candidate, append-only audit history is also bounded and
+startup-verified. Main and metadata-only control-plane streams use separate
+hash chains and linked, independently verifiable segments. Healthy operation
+retains four archives plus one active segment of at most 32 MiB per stream.
+Retention cleanup failure preserves history and reports degradation; integrity
+or persistence failure makes the owning audit authority unavailable. The main
+event path persists before subscriber effects and requests daemon shutdown on
+failure, while the control plane refuses later decisions. The runtime does not
+silently reset, truncate, or replace a failed chain. Control-plane state
+changes are preceded by a durable audit record or write-ahead intent, and
+`daemon.status` reads the live sidecar audit state rather than reconstructing a
+second view from disk.
+
 **5. Stateless context is a security primitive.** LLMs have no persistent memory between turns. We have complete, deterministic control over what the model "knows" at every turn. The model cannot hide state, cannot remember something we've removed, and cannot resist a context rollback. This enables: checkpoint rollback to pre-contamination state, context forking for isolated task agents, selective context construction and taint quarantine, clean-room sessions provably free of tainted content, and differential execution to empirically test whether content is influencing behavior.
 
 **6. Can't leak what you don't have.** Broker-managed credentials are not
@@ -82,7 +95,11 @@ placed in the LLM context. A credential broker resolves an opaque reference at
 the HTTP proxy layer, so the model cannot exfiltrate the brokered value it
 never receives. User-provided or retrieved text can still contain
 credential-like material; bounded ingress, output, and argument-DLP detection
-is defense in depth for that separate case. This is the scoped invariant I3.
+is defense in depth for that separate case. Model-provider references use a
+separate trusted construction boundary: versioned metadata resolves only while
+the daemon constructs trusted provider configuration, never in config/status
+output or an LLM prompt. This is the scoped invariant I3; it is not a claim
+that arbitrary user-supplied secrets cannot reach a model.
 
 **7. Approvals don't launder provenance.** When a user confirms an ambiguous action, the confirmation authorizes *that specific action* — it does not remove taint labels, change the content's provenance, or grant blanket trust to the source. A confirmed web fetch from an untrusted page does not make the fetched content trusted. Taint persists through the full data lifecycle regardless of intermediate approvals.
 
@@ -169,13 +186,25 @@ reported according to host/filesystem capability. shisad does not claim
 universal power-loss durability or universal POSIX owner, descriptor, or mount
 semantics.
 
-One maintained-library file lock gives a running daemon exclusive ownership of
-its local data root. This is a same-host process-coordination boundary, not a
-distributed lease, and does not defend against administrators, root, a
-compromised host, or unrestricted malicious native code running as the same
-user. A persistent `.shisad.lock` file is normal and does not by itself mean
-that a process currently holds the lock. Independent data roots remain usable
-concurrently.
+One maintained-library file lock gives a running daemon, backup, or restore
+exclusive ownership of its local data root. Each owner opens the same regular
+`.shisad.lock` child relative to a pinned data-root handle, applies the existing
+OS advisory lock, and verifies that the acquired descriptor has the rooted
+child's identity. The lock artifact is persistent, so its presence alone does
+not mean a process currently holds it. This is a same-host process-coordination
+boundary, not a distributed lease, and does not defend against administrators,
+root, a compromised host, or unrestricted malicious native code running as the
+same user. Independent data roots remain usable concurrently.
+
+Stopped-daemon backup and restore keep consequential traversal, creation, and
+publication relative to opened directory handles on supported local POSIX and
+Windows filesystems. Windows enumerates and, during failure cleanup, deletes
+through verified native handles. Portable POSIX cannot conditionally unlink a
+mutable name by inode; when safe ownership cannot be preserved, failure leaves
+actionably reported backup or partial-restore residue rather than risking
+deletion of a concurrently substituted object. This is a failure postcondition,
+not a claim of universal atomic cleanup, hostile same-user isolation, or
+multi-host coordination.
 
 Malformed, checksum-mismatched, or future-version state is preserved and
 degrades only its owning component. shisad does not silently replace it with an
@@ -386,6 +415,33 @@ use is narrowed again by the immutable task envelope: the envelope carries an
 explicit `credential_refs` allowlist, and the PEP denies missing or
 out-of-scope refs fail closed. Tool grants do not imply credential grants.
 
+The v0.8.2 setup foundation also administers provider-agnostic logical
+references through redacted `credential set/status/remove` commands.
+Environment entries persist only a variable name. The optional OS-keyring
+backend never falls back to disk when unavailable. The local file backend is
+truthfully permission-protected plaintext (`0700` directory, `0600` file), not
+encrypted storage. Generated TOML may name a reference but does not contain the
+resolved value. These references now wire model routes and enabled
+Matrix/Discord/Telegram/Slack adapters at their trusted construction
+boundaries. A missing channel reference or optional client runtime degrades
+only that channel. Channel setup never infers an ingress identity grant, and
+its optional fixed test notice requires an explicit target and makes one
+normal durable-delivery attempt; an uncertain effect is not automatically
+retried or described as an inbound round trip.
+
+Combined setup accepts only the typed provider/policy/channel selection schema;
+unknown fields and raw-secret fields are rejected without echoing document
+contents. The interactive wizard is unavailable in managed or non-terminal
+postures and uses a final default-no write confirmation. Deterministic
+`setup apply` never prompts and remains a dry run unless `--write` is explicit.
+It publishes the validated policy before activating that exact path in a
+commented, schema-validated TOML config. Both files are exclusive no-overwrite
+`0600` artifacts, and final TOML contains credential references rather than
+resolved values. This ordered pair is not a transaction: a later config-write
+failure can leave an inert policy artifact, which the error reports for
+operator inspection or removal. Setup does not start the daemon or turn a
+skipped probe into verification evidence.
+
 ### Evidence References (context isolation)
 
 Large untrusted content is stored out-of-band in a content-addressed evidence store. The LLM context receives only a short reference stub with metadata (`[EVIDENCE ref=ev-a1b2c3d4 source=web.fetch:nytimes.com taint=untrusted size=14832 summary="..."]`). The raw tainted content never enters the conversation transcript, eliminating persistent injection surface. When the model needs to re-examine content, it calls `evidence.read(ref_id)` — which goes through PEP enforcement and returns content into a single-turn isolated context. This dramatically reduces the token-budget cost of tainted content and limits each injection payload to a single exposure window.
@@ -582,7 +638,7 @@ boundary above.
   tools, signed A2A ingress, and reviewed local skill-tool integrity checks.
 - Multi-factor approval through software confirmation, TOTP, WebAuthn,
   local-FIDO2 helper, remote KMS, and supported Ledger signing surfaces.
-- The current `v0.8.1` tree adds durable pending-action/attempt/result state,
+- The `v0.8.2` release candidate adds durable pending-action/attempt/result state,
   conservative restart recovery and `outcome_unknown` containment, finite
   state integrity handling, one-daemon data-root ownership, managed-root
   filesystem/Git exclusions, and scoped four-channel delivery/approval

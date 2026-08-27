@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from shisad.channels import discord as discord_module
 from shisad.channels import state as channel_state
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 from shisad.channels.delivery import ChannelDeliveryService, DeliveryIntent
+from shisad.channels.discord import DiscordChannel, DiscordConfig
+from shisad.core.session import Session, SessionManager
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import SessionId
+from shisad.core.types import SessionId, UserId, WorkspaceId
 from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.daemon.handlers.admin import AdminHandlers
@@ -242,3 +246,227 @@ async def test_channel_result_outbox_survives_restart_without_duplicate_effect(
     assert restarted_process.delivery_state == ""
     assert restarted.record(first_process.reservation_id).state == "outcome_unknown"
     assert channel_state.ChannelStateStore(state_root).state_for(identity) == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_o3d_discord_thread_mode_preserves_session_and_delivery_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Intents:
+        message_content = False
+
+        @classmethod
+        def default(cls) -> _Intents:
+            return cls()
+
+    class _Target:
+        def __init__(self, target_id: str, *, parent_id: str = "") -> None:
+            self.id = target_id
+            self.parent_id = parent_id or None
+            self.sent: list[str] = []
+
+        async def send(self, content: str, **_kwargs: object) -> None:
+            self.sent.append(content)
+
+    class _Client:
+        def __init__(self, *, intents: _Intents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="999", name="shisad")
+            self.targets: dict[int, _Target] = {}
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        def get_channel(self, channel_id: int) -> _Target | None:
+            return self.targets.get(channel_id)
+
+        async def fetch_channel(self, channel_id: int) -> _Target | None:
+            return self.targets.get(channel_id)
+
+    class _Message:
+        def __init__(
+            self,
+            *,
+            message_id: str,
+            channel: _Target,
+            created_thread: _Target | None = None,
+        ) -> None:
+            self.id = message_id
+            self.author = SimpleNamespace(id="alice", bot=False)
+            self.content = "<@999> continue"
+            self.guild = SimpleNamespace(id="guild-1", get_thread=lambda _thread_id: None)
+            self.channel = channel
+            self.mentions = [SimpleNamespace(id="999")]
+            self.thread: _Target | None = None
+            self.created_thread = created_thread
+
+        async def create_thread(self, *, name: str) -> _Target:
+            assert name == f"shisad-{self.id}"
+            assert self.created_thread is not None
+            self.thread = self.created_thread
+            return self.created_thread
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_Intents, Client=_Client),
+    )
+    parent = _Target("100")
+    thread_one = _Target("201", parent_id="100")
+    thread_two = _Target("202", parent_id="100")
+    channel = DiscordChannel(DiscordConfig(bot_token="token", use_threads=True))
+    await channel.connect()
+    assert isinstance(channel._client, _Client)
+    channel._client.targets = {100: parent, 201: thread_one, 202: thread_two}
+
+    first = _Message(message_id="201", channel=parent, created_thread=thread_one)
+    repeated = _Message(message_id="301", channel=thread_one)
+    sibling = _Message(message_id="202", channel=parent, created_thread=thread_two)
+    await channel._client.on_message(first)
+    await channel._client.on_message(repeated)
+    await channel._client.on_message(sibling)
+    incoming = [await asyncio.wait_for(channel.receive(), timeout=0.2) for _ in range(3)]
+
+    manager = SessionManager()
+
+    def session_for(message: ChannelMessage) -> Session:
+        found = manager.find_by_binding(
+            channel=message.channel,
+            user_id=UserId(message.external_user_id),
+            workspace_id=WorkspaceId(message.workspace_hint),
+            delivery_thread_id=message.thread_id,
+        )
+        if found is not None:
+            return found
+        return manager.create(
+            channel=message.channel,
+            user_id=UserId(message.external_user_id),
+            workspace_id=WorkspaceId(message.workspace_hint),
+            metadata={
+                "delivery_target": DeliveryTarget(
+                    channel=message.channel,
+                    recipient=message.reply_target,
+                    workspace_hint=message.workspace_hint,
+                    thread_id=message.thread_id,
+                ).model_dump(mode="json")
+            },
+        )
+
+    sessions = [session_for(message) for message in incoming]
+    assert sessions[0] is sessions[1]
+    assert sessions[2] is not sessions[0]
+
+    for index in (0, 2):
+        message = incoming[index]
+        await channel.send(
+            f"result-{index}",
+            target=DeliveryTarget(
+                channel="discord",
+                recipient=message.reply_target,
+                workspace_hint=message.workspace_hint,
+                thread_id=message.thread_id,
+            ),
+        )
+    assert thread_one.sent == ["result-0"]
+    assert thread_two.sent == ["result-2"]
+    assert parent.sent == []
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_o3e_discord_progress_is_ordered_redacted_and_separate_from_result() -> None:
+    from shisad.core.events import ToolApproved, ToolExecuted
+    from shisad.core.types import ToolName
+    from shisad.daemon.event_wiring import DaemonEventWiring
+
+    class _Server:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, Any]] = []
+
+        async def broadcast_event(self, payload: dict[str, Any]) -> None:
+            self.payloads.append(payload)
+
+    class _ProgressDiscord(InMemoryChannel):
+        def __init__(self) -> None:
+            super().__init__(name="discord")
+            self.progress: list[object] = []
+
+        async def publish_progress(self, progress: object, *, target: object) -> None:
+            self.progress.append((progress, target))
+
+    server = _Server()
+    channel = _ProgressDiscord()
+    await channel.connect()
+    wiring = DaemonEventWiring(event_bus=SimpleNamespace(), server=server)  # type: ignore[arg-type]
+    wiring.bind_progress_channels({"discord": channel})
+    target = {
+        "channel": "discord",
+        "recipient": "100",
+        "workspace_hint": "guild-1",
+        "thread_id": "200",
+    }
+    events = [
+        ToolApproved(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("web.fetch"),
+            action_id="action-1",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+        ),
+        ToolApproved(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("shell.exec"),
+            action_id="action-2",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+        ),
+        ToolExecuted(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("web.fetch"),
+            action_id="action-1",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+            success=True,
+            details={"body": "TOP-SECRET"},
+        ),
+        ToolExecuted(
+            session_id=SessionId("session-1"),
+            tool_name=ToolName("shell.exec"),
+            action_id="action-2",
+            origin_turn_id="turn-1",
+            delivery_target=target,
+            success=False,
+            error="TOP-SECRET",
+        ),
+    ]
+    for event in events:
+        await wiring.forward_event_to_subscribers(event)
+    await channel.send("separate final result", target=DeliveryTarget.model_validate(target))
+
+    safe_payloads = [
+        payload for payload in server.payloads if payload.get("event_type") == "ActionProgress"
+    ]
+    assert [payload["state"] for payload in safe_payloads] == [
+        "running",
+        "running",
+        "succeeded",
+        "failed",
+    ]
+    assert [item[0].action_id for item in channel.progress] == [  # type: ignore[attr-defined]
+        "action-1",
+        "action-2",
+        "action-1",
+        "action-2",
+    ]
+    assert all(item[1].recipient == "100" for item in channel.progress)  # type: ignore[attr-defined]
+    assert "TOP-SECRET" not in json.dumps(safe_payloads)
+    assert "recipient" not in json.dumps(safe_payloads)
+    assert await channel.pop_outgoing() == "separate final result"
+    await channel.disconnect()

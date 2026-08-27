@@ -11,6 +11,24 @@ from pydantic import ValidationError
 from shisad.core.config import DaemonConfig
 
 
+def test_o2c_channel_credential_reference_environment_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MATRIX_ACCESS_TOKEN_REF", "channel.matrix")
+    monkeypatch.setenv("SHISAD_DISCORD_BOT_TOKEN_REF", "channel.discord")
+    monkeypatch.setenv("SHISAD_TELEGRAM_BOT_TOKEN_REF", "channel.telegram")
+    monkeypatch.setenv("SHISAD_SLACK_BOT_TOKEN_REF", "channel.slack.bot")
+    monkeypatch.setenv("SHISAD_SLACK_APP_TOKEN_REF", "channel.slack.app")
+
+    config = DaemonConfig()
+
+    assert config.matrix_access_token_ref == "channel.matrix"
+    assert config.discord_bot_token_ref == "channel.discord"
+    assert config.telegram_bot_token_ref == "channel.telegram"
+    assert config.slack_bot_token_ref == "channel.slack.bot"
+    assert config.slack_app_token_ref == "channel.slack.app"
+
+
 def test_gh33_web_and_browser_allowed_domains_accept_bare_env_strings(
     tmp_path: Path,
     monkeypatch,

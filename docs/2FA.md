@@ -261,7 +261,7 @@ shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
 ```
 
 > **Command-channel parity.** Routine approvals should be completable on the
-> channel where they originated. In the current v0.8.1 tree,
+> channel where they originated. In the v0.8.2 release candidate,
 > Discord-originated routine approvals use native Approve/Reject components
 > with typed-command fallback. Slack, Telegram, and Matrix use typed control
 > replies, and TOTP approval can stay on any trusted supported channel through

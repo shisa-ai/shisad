@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
-from shisad.core.audit import AuditLog
+from shisad.core.audit import AuditIntegrityError, AuditLog, AuditUnavailableError
 from shisad.core.events import (
     A2aIngressEvaluated,
     AnomalyReported,
@@ -38,6 +41,14 @@ async def _write_entries(log: AuditLog, count: int = 3) -> None:
             actor="test",
         )
         await log.persist(event)
+
+
+def _entry_lines(path: Path) -> list[str]:
+    return [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("record_type") != "shisad.audit.segment"
+    ]
 
 
 @pytest.mark.asyncio
@@ -71,7 +82,7 @@ async def test_recovery_event_id_is_idempotent_across_audit_restart(
     )
 
     assert restarted.entry_count == 1
-    assert len(audit_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(_entry_lines(audit_path)) == 1
     assert restarted.verify_chain() == (True, 1, "")
 
 
@@ -92,9 +103,14 @@ class TestAuditHashChainInsertion:
 
         # Insert a fake entry in the middle
         lines = audit_path.read_text().splitlines()
-        fake = json.loads(lines[0])
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        fake = json.loads(lines[entry_index])
         fake["event_id"] = "inserted_fake"
-        lines.insert(1, json.dumps(fake))
+        lines.insert(entry_index + 1, json.dumps(fake))
         audit_path.write_text("\n".join(lines) + "\n")
 
         is_valid, _count, error = audit_log.verify_chain()
@@ -111,9 +127,14 @@ class TestAuditHashChainModification:
 
         # Modify the second entry
         lines = audit_path.read_text().splitlines()
-        entry = json.loads(lines[1])
+        entry_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        ]
+        entry = json.loads(lines[entry_indexes[1]])
         entry["data"]["actor"] = "tampered"
-        lines[1] = json.dumps(entry)
+        lines[entry_indexes[1]] = json.dumps(entry)
         audit_path.write_text("\n".join(lines) + "\n")
 
         is_valid, _count, error = audit_log.verify_chain()
@@ -131,7 +152,12 @@ class TestAuditHashChainDeletion:
 
         # Delete the second entry
         lines = audit_path.read_text().splitlines()
-        del lines[1]
+        entry_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        ]
+        del lines[entry_indexes[1]]
         audit_path.write_text("\n".join(lines) + "\n")
 
         is_valid, _count, error = audit_log.verify_chain()
@@ -160,7 +186,7 @@ class TestAuditEntryMetadataDerivation:
                 decision=PEPDecisionKind.ALLOW,
             )
         )
-        entry = json.loads(audit_path.read_text().splitlines()[0])
+        entry = json.loads(_entry_lines(audit_path)[0])
         assert entry["event_type"] == "ToolApproved"
         assert entry["action"] == "ToolApproved"
         assert entry["target"] == "fs.read"
@@ -179,7 +205,7 @@ class TestAuditEntryMetadataDerivation:
                 reason="shell not permitted",
             )
         )
-        entry = json.loads(audit_path.read_text().splitlines()[0])
+        entry = json.loads(_entry_lines(audit_path)[0])
         assert entry["decision"] == "reject"
         assert entry["target"] == "shell.exec"
         assert entry["reasoning"] == "shell not permitted"
@@ -197,7 +223,7 @@ class TestAuditEntryMetadataDerivation:
                 recommended_action="retry_or_report",
             )
         )
-        entry = json.loads(audit_path.read_text().splitlines()[0])
+        entry = json.loads(_entry_lines(audit_path)[0])
         assert entry["action"] == "AnomalyReported"
         assert entry["reasoning"] == "suspicious prompt fragment observed"
 
@@ -213,7 +239,7 @@ class TestAuditEntryMetadataDerivation:
                 outcome="accepted",
             )
         )
-        entry = json.loads(audit_path.read_text().splitlines()[0])
+        entry = json.loads(_entry_lines(audit_path)[0])
         assert entry["decision"] == "allow"
         assert entry["target"] == "agent-42"
 
@@ -229,7 +255,7 @@ class TestAuditEntryMetadataDerivation:
                 outcome="rate_limited",
             )
         )
-        entry = json.loads(audit_path.read_text().splitlines()[0])
+        entry = json.loads(_entry_lines(audit_path)[0])
         assert entry["decision"] == "reject"
 
 
@@ -253,6 +279,367 @@ class TestAuditResumeChain:
         ok, total, error = reopened.verify_chain()
         assert ok, error
         assert total == expected_count + 1
+
+
+class TestAuditLifecycle:
+    @pytest.mark.asyncio
+    async def test_constructor_refuses_corrupt_existing_chain(self, audit_path: Path) -> None:
+        first = AuditLog(audit_path)
+        await _write_entries(first, count=2)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        row = json.loads(lines[entry_index])
+        row["data_hash"] = "tampered"
+        lines[entry_index] = json.dumps(row)
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_constructor_refuses_partial_final_row(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        payload = audit_path.read_bytes()
+        assert payload.endswith(b"\n")
+        audit_path.write_bytes(payload[:-1])
+
+        with pytest.raises(AuditIntegrityError, match="partial audit row"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_rotation_retention_restart_and_query_span_segments(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        monkeypatch.setattr("shisad.core.audit.MAX_ARCHIVES", 2)
+        log = AuditLog(audit_path)
+        for index in range(8):
+            await log.persist(
+                SessionCreated(
+                    session_id=SessionId(f"rotated-{index}"),
+                    user_id=UserId(f"user-{index}"),
+                    actor="rotation-test",
+                )
+            )
+
+        archives = sorted(tmp_path for tmp_path in audit_path.parent.glob("audit.*.jsonl"))
+        assert 1 <= len(archives) <= 2
+        status = log.lifecycle_status
+        assert status["state"] == "verified"
+        assert status["archive_count"] == len(archives)
+        assert status["segment_count"] == len(archives) + 1
+        assert status["retained_bytes"] <= 3 * 1_200
+
+        restarted = AuditLog(audit_path)
+        assert restarted.verify_chain()[0] is True
+        rows = restarted.query(actor="rotation-test", limit=100)
+        assert rows
+        assert rows[-1]["session_id"] == "rotated-7"
+        assert [row["timestamp"] for row in rows] == sorted(row["timestamp"] for row in rows)
+
+    @pytest.mark.asyncio
+    async def test_restart_reconstructs_missing_active_successor(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=2)
+        header = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+        sequence = int(header["sequence"])
+        archive = audit_path.with_name(f"audit.{sequence:020d}.jsonl")
+        os.replace(audit_path, archive)
+
+        restarted = AuditLog(audit_path)
+
+        assert audit_path.exists()
+        assert restarted.verify_chain()[0] is True
+        successor = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+        assert successor["sequence"] == sequence + 1
+        assert successor["previous_segment_sha256"]
+
+    @pytest.mark.asyncio
+    async def test_missing_middle_archive_refuses_admission(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=4)
+        archives = sorted(audit_path.parent.glob("audit.*.jsonl"))
+        assert len(archives) >= 2
+        archives[-1].unlink()
+
+        with pytest.raises(AuditIntegrityError, match="missing middle"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_active_segment_requires_its_immediate_predecessor(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=4)
+        archives = list(audit_path.parent.glob("audit.*.jsonl"))
+        assert archives
+        for archive in archives:
+            archive.unlink()
+
+        with pytest.raises(AuditIntegrityError, match="immediate predecessor"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("header_field", "expected"),
+        [
+            ("previous_segment_sha256", "file-hash link mismatch"),
+            ("previous_terminal_event_hash", "terminal-hash link mismatch"),
+        ],
+    )
+    async def test_adjacent_segment_link_tamper_refuses_admission(
+        self,
+        audit_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        header_field: str,
+        expected: str,
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=2)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        header[header_field] = "f" * 64
+        lines[0] = json.dumps(header, sort_keys=True, separators=(",", ":"))
+        if header_field == "previous_terminal_event_hash":
+            first_entry = json.loads(lines[1])
+            first_entry["previous_event_hash"] = "f" * 64
+            first_entry["previous_hash"] = "f" * 64
+            lines[1] = json.dumps(first_entry, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match=expected):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_archived_row_corruption_refuses_admission(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=2)
+        archive = sorted(audit_path.parent.glob("audit.*.jsonl"))[0]
+        lines = archive.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        row = json.loads(lines[entry_index])
+        row["data_hash"] = "f" * 64
+        lines[entry_index] = json.dumps(row, separators=(",", ":"))
+        archive.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_malformed_segment_header_refuses_admission(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        header["version"] = 2
+        lines[0] = json.dumps(header, sort_keys=True, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="header schema"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_validly_chained_duplicate_event_id_refuses_admission(
+        self, audit_path: Path
+    ) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        first = _entry_lines(audit_path)[0]
+        duplicate = json.loads(first)
+        previous_hash = hashlib.sha256(first.encode("utf-8")).hexdigest()
+        duplicate["previous_event_hash"] = previous_hash
+        duplicate["previous_hash"] = previous_hash
+        lines.append(json.dumps(duplicate, separators=(",", ":")))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="duplicate event ID"):
+            AuditLog(audit_path)
+
+    @pytest.mark.asyncio
+    async def test_partial_pending_successor_is_reconstructed_at_startup(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=2)
+        header = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+        archive = audit_path.with_name(f"audit.{int(header['sequence']):020d}.jsonl")
+        os.replace(audit_path, archive)
+        pending = audit_path.with_name(f".{audit_path.name}.next")
+        pending.write_bytes(b'{"record_type":"shisad.audit.segment"')
+
+        inspected = AuditLog(audit_path, _read_only=True)
+        assert inspected.lifecycle_status["state"] == "recovery_pending"
+        assert inspected.lifecycle_status["verified"] is False
+        assert pending.exists()
+
+        restarted = AuditLog(audit_path)
+        assert restarted.verify_chain()[0] is True
+        assert audit_path.exists()
+        assert not pending.exists()
+
+    @pytest.mark.asyncio
+    async def test_retention_delete_failure_preserves_archive_and_degrades(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        monkeypatch.setattr("shisad.core.audit.MAX_ARCHIVES", 1)
+        original_unlink = Path.unlink
+
+        def refuse_archive_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path.name.startswith("audit.") and path.suffix == ".jsonl":
+                raise OSError("retention denied")
+            original_unlink(path, *args, **kwargs)
+
+        log = AuditLog(audit_path)
+        monkeypatch.setattr(Path, "unlink", refuse_archive_unlink)
+        await _write_entries(log, count=4)
+
+        status = log.lifecycle_status
+        assert status["state"] == "retention_degraded"
+        assert status["reason_code"] == "audit.retention_delete_failed"
+        assert len(list(audit_path.parent.glob("audit.*.jsonl"))) > 1
+        assert log.verify_chain()[0] is True
+
+        inspected = AuditLog(audit_path, _read_only=True)
+        assert inspected.lifecycle_status["state"] == "retention_degraded"
+        assert inspected.lifecycle_status["reason_code"] == "audit.retention_delete_failed"
+
+    @pytest.mark.asyncio
+    async def test_append_does_not_rescan_unchanged_retained_history(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 1_200)
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+
+        def forbid_rescan() -> NoReturn:
+            raise AssertionError("retained history rescanned")
+
+        monkeypatch.setattr(log._segments, "_verify_all", forbid_rescan)
+        await _write_entries(log, count=3)
+        assert log.entry_count == 4
+
+    @pytest.mark.asyncio
+    async def test_post_admission_tamper_refuses_query(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        entry = json.loads(lines[entry_index])
+        entry["data"]["tampered"] = True
+        lines[entry_index] = json.dumps(entry, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            log.query()
+
+    @pytest.mark.asyncio
+    async def test_post_admission_tamper_refuses_next_append(self, audit_path: Path) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entry_index = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("record_type") != "shisad.audit.segment"
+        )
+        entry = json.loads(lines[entry_index])
+        entry["data"]["tampered"] = True
+        lines[entry_index] = json.dumps(entry, separators=(",", ":"))
+        audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(AuditIntegrityError, match="data hash mismatch"):
+            await _write_entries(log, count=1)
+        assert log.lifecycle_status["state"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_append_failure_latches_unavailable_and_requests_shutdown(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shutdown_requested = False
+
+        def request_shutdown() -> None:
+            nonlocal shutdown_requested
+            shutdown_requested = True
+
+        log = AuditLog(audit_path, on_unavailable=request_shutdown)
+
+        def fail_append(_payload: str, _terminal_hash: str) -> None:
+            raise OSError("disk full detail must not leak")
+
+        monkeypatch.setattr(log._segments, "append", fail_append)
+        with pytest.raises(OSError):
+            await _write_entries(log, count=1)
+        assert shutdown_requested is True
+        assert log.lifecycle_status["state"] == "unavailable"
+        assert log.lifecycle_status["reason_code"] == "audit.append_failed"
+
+        with pytest.raises(AuditUnavailableError, match=r"audit\.append_failed"):
+            await _write_entries(log, count=1)
+
+    @pytest.mark.asyncio
+    async def test_short_append_is_not_completed_as_multiple_writes(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = AuditLog(audit_path)
+        await _write_entries(log, count=1)
+        real_write = os.write
+        shortened = False
+
+        def short_once(descriptor: int, payload: bytes) -> int:
+            nonlocal shortened
+            if not shortened and len(payload) > 1:
+                shortened = True
+                return real_write(descriptor, payload[:-1])
+            return real_write(descriptor, payload)
+
+        monkeypatch.setattr("shisad.core.audit_segments.os.write", short_once)
+        with pytest.raises(OSError, match="short audit write"):
+            await _write_entries(log, count=1)
+        assert log.lifecycle_status["state"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_oversize_row_is_rejected_before_write(
+        self, audit_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("shisad.core.audit.MAX_SEGMENT_BYTES", 512)
+        log = AuditLog(audit_path)
+        with pytest.raises(AuditUnavailableError, match=r"audit\.row_oversize"):
+            await log.persist(
+                ToolRejected(
+                    session_id=SessionId("oversize"),
+                    actor="test",
+                    tool_name=ToolName("shell.exec"),
+                    reason="x" * 2_000,
+                )
+            )
+        assert not audit_path.exists()
 
 
 class TestAuditQueryFilters:

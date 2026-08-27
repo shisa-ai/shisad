@@ -67,6 +67,17 @@ def test_m1_pf36_legacy_alias_emits_deprecation_warning(caplog: pytest.LogCaptur
     assert any("deprecated" in record.getMessage().lower() for record in caplog.records)
 
 
+def test_o0_legacy_alias_warning_contains_no_dynamic_tool_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="shisad.core.tools.names"):
+        assert canonical_tool_name("shell_exec") == "shell.exec"
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Legacy tool alias is deprecated; use its canonical dotted name instead."
+    ]
+
+
 def test_m1_pf36_legacy_alias_warning_emits_once(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="shisad.core.tools.names"):
         assert canonical_tool_name("shell_exec") == "shell.exec"

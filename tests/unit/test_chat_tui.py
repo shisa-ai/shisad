@@ -22,6 +22,99 @@ def _rendered_static_texts(app: ChatApp, selector: str) -> list[str]:
     ]
 
 
+def test_o3e_chat_progress_filters_session_bounds_lines_and_clears_turn() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    for index in range(ChatApp.PROGRESS_ACTION_LIMIT + 3):
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "session-1",
+                "origin_turn_id": "turn-1",
+                "action_id": f"action-{index}",
+                "tool_name": f"tool.{index}",
+                "state": "running",
+            }
+        )
+    app._record_progress_event(
+        {
+            "event_type": "ActionProgress",
+            "session_id": "other-session",
+            "origin_turn_id": "turn-other",
+            "action_id": "foreign",
+            "tool_name": "secret.tool",
+            "state": "failed",
+        }
+    )
+
+    rendered = app._format_progress_panel()
+    assert len(rendered.splitlines()) == ChatApp.PROGRESS_ACTION_LIMIT
+    assert "foreign" not in rendered
+    assert "secret.tool" not in rendered
+    assert len(app._progress_lines) == 1
+
+    app._clear_progress_for_turn("turn-1")
+    assert app._format_progress_panel() == "No action progress for the current turn."
+
+
+@pytest.mark.asyncio
+async def test_o3e_chat_progress_reconnects_after_malformed_stream_event() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    app.PROGRESS_RECONNECT_SECONDS = 0.01
+    client = AsyncMock()
+    blocked = asyncio.Event()
+    reads = 0
+
+    async def read_event() -> object:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return object()
+        await blocked.wait()
+        return object()
+
+    client.read_event.side_effect = read_event
+    app._connect = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(app._progress_event_loop())
+    try:
+        for _ in range(20):
+            if client.close.await_count:
+                break
+            await asyncio.sleep(0.005)
+        assert client.close.await_count >= 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_o3e_chat_progress_bounds_stream_close_before_reconnect() -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="session-1")
+    app.PROGRESS_RECONNECT_SECONDS = 0.01
+    app.PROGRESS_CLOSE_TIMEOUT_SECONDS = 0.01
+    client = AsyncMock()
+
+    async def never_closes() -> None:
+        await asyncio.Event().wait()
+
+    client.read_event = AsyncMock(return_value=object())
+    client.close = AsyncMock(side_effect=never_closes)
+    app._connect = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(app._progress_event_loop())
+    try:
+        for _ in range(40):
+            if app._connect.await_count >= 2:  # type: ignore[attr-defined]
+                break
+            await asyncio.sleep(0.005)
+        assert app._connect.await_count >= 2  # type: ignore[attr-defined]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 # ---------------------------------------------------------------------------
 # Message formatting tests
 # ---------------------------------------------------------------------------
@@ -241,6 +334,44 @@ def test_chat_app_can_be_constructed() -> None:
     assert app._workspace_id == "default"
     assert app._session_id is None
     assert app._reuse_bound_session is True
+    assert app._startup_hint is None
+
+
+@pytest.mark.asyncio
+async def test_o3b_chat_tour_suggestion_is_display_only() -> None:
+    suggestion = "Try asking shisad to read a file in your workspace."
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        startup_hint=suggestion,
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_messages = _rendered_static_texts(app, ".status-message")
+
+    assert status_messages.count(f"Tour suggestion (not sent): {suggestion}") == 1
+    fake_client.call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_o3b_chat_handoff_reports_missing_daemon_actionably() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/missing-test.sock"),
+        startup_hint="Try asking shisad to read a file in your workspace.",
+    )
+    app._connect = AsyncMock(side_effect=OSError("offline"))  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_messages = _rendered_static_texts(app, ".status-message")
+
+    assert any("Could not connect to daemon" in message for message in status_messages)
+    assert "Is the daemon running? Try: shisad start --foreground" in status_messages
 
 
 def test_chat_app_with_existing_session() -> None:
@@ -376,12 +507,29 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
         session_id="sess-1",
     )
     fake_client = AsyncMock()
-    fake_client.call = AsyncMock(return_value={"response": "Hello from shisad!"})
+
+    async def call(method: str, *, params: object) -> object:
+        if method == "session.message":
+            return {"response": "Hello from shisad!"}
+        assert method == "action.pending"
+        return {"actions": [], "count": 0}
+
+    fake_client.call = AsyncMock(side_effect=call)
     app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
     app._ensure_session = AsyncMock()  # type: ignore[method-assign]
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-1",
+                "action_id": "action-1",
+                "tool_name": "web.fetch",
+                "state": "running",
+            }
+        )
         input_widget = app.query_one("#chat-input", TextArea)
         input_widget.focus()
         input_widget.load_text("hello")
@@ -389,11 +537,27 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
         await pilot.pause()
         user_messages = _rendered_static_texts(app, ".user-message")
         assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+        assert app._progress_lines == {}
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-1",
+                "action_id": "action-1",
+                "tool_name": "web.fetch",
+                "state": "succeeded",
+            }
+        )
+        assert app._progress_lines == {}
+        await pilot.pause(ChatApp.PENDING_POLL_SECONDS + 0.05)
 
-    fake_client.call.assert_awaited_once_with(
-        "session.message",
-        params={"session_id": "sess-1", "content": "hello"},
-    )
+    message_calls = [
+        awaited
+        for awaited in fake_client.call.await_args_list
+        if awaited.args == ("session.message",)
+    ]
+    assert len(message_calls) == 1
+    assert message_calls[0].kwargs == {"params": {"session_id": "sess-1", "content": "hello"}}
     assert user_messages[-1] == "you: hello"
     assert assistant_messages[-1] == "Hello from shisad!"
 
@@ -1014,6 +1178,411 @@ async def test_chat_app_new_session_keeps_created_session_when_poll_fails() -> N
         await pilot.pause()
 
     assert app._session_id == "new-session"
+
+
+@pytest.mark.asyncio
+async def test_o3c_pending_panel_queries_exact_session_and_filters_terminal_rows() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-current",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(
+        return_value={
+            "actions": [
+                {
+                    "confirmation_id": "confirm-current",
+                    "session_id": "sess-current",
+                    "status": "pending",
+                    "lifecycle_state": "pending",
+                    "tool_name": "fs.write",
+                    "risk_level": "high",
+                    "required_level": "software",
+                    "arguments": {"content": "raw-secret-must-not-render"},
+                    "approval_url": "https://secret.example/approval",
+                },
+                {
+                    "confirmation_id": "confirm-terminal",
+                    "session_id": "sess-current",
+                    "status": "rejected",
+                    "lifecycle_state": "rejected",
+                    "tool_name": "terminal-secret-tool",
+                },
+                {
+                    "confirmation_id": "confirm-other",
+                    "session_id": "sess-other",
+                    "status": "pending",
+                    "lifecycle_state": "pending",
+                    "tool_name": "cross-session-secret-tool",
+                },
+            ],
+            "count": 3,
+        }
+    )
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._refresh_pending_panel()
+        await pilot.pause()
+        panel = app.query_one("#chat-pending", Static)
+        rendered = str(panel.renderable)
+        app._refresh_status_from_message_result({"session_id": "sess-replaced"})
+        assert "confirm-current" not in str(panel.renderable)
+
+    fake_client.call.assert_awaited_once_with(
+        "action.pending",
+        params={
+            "session_id": "sess-current",
+            "status": "pending",
+            "limit": ChatApp.PENDING_QUERY_LIMIT,
+            "include_ui": False,
+        },
+    )
+    assert "confirm-current" in rendered
+    assert "fs.write" in rendered
+    assert "risk=high" in rendered
+    assert "approval=software" in rendered
+    assert "confirm-terminal" not in rendered
+    assert "terminal-secret-tool" not in rendered
+    assert "confirm-other" not in rendered
+    assert "cross-session-secret-tool" not in rendered
+    assert "raw-secret-must-not-render" not in rendered
+    assert "secret.example" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_o3c_pending_poll_recovers_after_mount_time_daemon_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ChatApp, "PENDING_POLL_SECONDS", 0.01, raising=False)
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    fake_client = AsyncMock()
+
+    async def connect_after_mount_failure() -> object:
+        if app._connect.await_count == 1:  # type: ignore[attr-defined]
+            raise OSError("daemon starting")
+        return fake_client
+
+    async def ensure_recovered_session(_client: object) -> None:
+        app._session_id = "sess-recovered"
+
+    async def call(method: str, *, params: object) -> object:
+        assert isinstance(params, dict)
+        if method == "session.message":
+            return {"session_id": "sess-recovered", "response": "chat recovered"}
+        assert method == "action.pending"
+        return {
+            "actions": [
+                {
+                    "confirmation_id": "confirm-after-startup",
+                    "session_id": "sess-recovered",
+                    "status": "pending",
+                    "tool_name": "fs.write",
+                }
+            ],
+            "count": 1,
+        }
+
+    app._connect = AsyncMock(side_effect=connect_after_mount_failure)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock(side_effect=ensure_recovered_session)  # type: ignore[method-assign]
+    fake_client.call = AsyncMock(side_effect=call)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._pending_poll_task is not None
+
+        input_widget = app.query_one("#chat-input", TextArea)
+        input_widget.focus()
+        input_widget.load_text("hello after startup")
+        await app.action_submit_prompt()
+
+        panel = app.query_one("#chat-pending", Static)
+        for _ in range(100):
+            await pilot.pause(0.01)
+            if "confirm-after-startup" in str(panel.renderable):
+                break
+        else:
+            pytest.fail("pending polling did not recover after mount-time daemon failure")
+
+        assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+        assert assistant_messages[-1] == "chat recovered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hung_stage", ["connect", "call", "close"])
+async def test_o3c_pending_refresh_bounds_every_rpc_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    hung_stage: str,
+) -> None:
+    monkeypatch.setattr(ChatApp, "PENDING_RPC_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(ChatApp, "PENDING_CLOSE_TIMEOUT_SECONDS", 0.01, raising=False)
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-current",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(return_value={"actions": [], "count": 0})
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async def never_returns(*_args: object, **_kwargs: object) -> object:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        if hung_stage == "connect":
+            app._connect = AsyncMock(side_effect=never_returns)  # type: ignore[method-assign]
+        elif hung_stage == "call":
+            fake_client.call = AsyncMock(side_effect=never_returns)
+        else:
+            fake_client.close = AsyncMock(side_effect=never_returns)
+
+        await asyncio.wait_for(app._refresh_pending_panel(), timeout=0.2)
+        panel = app.query_one("#chat-pending", Static)
+        rendered = str(panel.renderable)
+
+    if hung_stage == "close":
+        assert rendered == "No pending confirmations."
+    else:
+        assert rendered == ("Pending confirmations unavailable; chat remains usable. Retrying.")
+
+
+@pytest.mark.asyncio
+async def test_o3c_pending_panel_refreshes_without_prompt_and_cancels_serially(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ChatApp, "PENDING_POLL_SECONDS", 0.01, raising=False)
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-current",
+    )
+    fake_client = AsyncMock()
+    second_refresh = asyncio.Event()
+    call_count = 0
+    active_calls = 0
+    max_active_calls = 0
+
+    async def pending_call(method: str, *, params: object) -> object:
+        nonlocal active_calls, call_count, max_active_calls
+        assert method == "action.pending"
+        assert isinstance(params, dict)
+        call_count += 1
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        try:
+            if call_count == 1:
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "confirm-refresh",
+                            "session_id": "sess-current",
+                            "status": "pending",
+                            "tool_name": "fs.read",
+                        }
+                    ],
+                    "count": 1,
+                }
+            await second_refresh.wait()
+            return {"actions": [], "count": 0}
+        finally:
+            active_calls -= 1
+
+    fake_client.call = AsyncMock(side_effect=pending_call)
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        for _ in range(100):
+            await pilot.pause(0.01)
+            panel = app.query_one("#chat-pending", Static)
+            if "confirm-refresh" in str(panel.renderable):
+                break
+        else:
+            pytest.fail("pending panel did not refresh without a prompt")
+
+        second_refresh.set()
+        for _ in range(100):
+            await pilot.pause(0.01)
+            if "No pending confirmations" in str(panel.renderable):
+                break
+        else:
+            pytest.fail("terminal pending row did not disappear on refresh")
+
+        assert max_active_calls == 1
+        assert app._pending_poll_task is not None
+        pending_task = app._pending_poll_task
+        app._start_pending_polling()
+        assert app._pending_poll_task is pending_task
+
+    assert app._pending_poll_task is None
+
+
+@pytest.mark.asyncio
+async def test_o3c_pending_panel_failure_is_bounded_and_chat_remains_usable() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-current",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(return_value={"actions": "malformed"})
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript_before = _rendered_static_texts(app, ".status-message")
+        await app._refresh_pending_panel()
+        await pilot.pause()
+        panel = app.query_one("#chat-pending", Static)
+
+        assert str(panel.renderable) == (
+            "Pending confirmations unavailable; chat remains usable. Retrying."
+        )
+        assert _rendered_static_texts(app, ".status-message") == transcript_before
+
+        fake_client.call = AsyncMock(
+            return_value={
+                "actions": [],
+                "count": 0,
+                "persistence_status": "degraded",
+                "persistence_reason": "must-not-render",
+            }
+        )
+        await app._refresh_pending_panel()
+        assert str(panel.renderable) == (
+            "Pending confirmations unavailable; chat remains usable. Retrying."
+        )
+        assert "must-not-render" not in str(panel.renderable)
+
+        fake_client.call = AsyncMock(
+            return_value={
+                "actions": [
+                    {
+                        "confirmation_id": "confirm-recovered",
+                        "session_id": "sess-current",
+                        "status": "pending",
+                        "tool_name": "fs.read",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+        await app._refresh_pending_panel()
+        assert "confirm-recovered" in str(panel.renderable)
+        assert "unavailable" not in str(panel.renderable).lower()
+
+        fake_client.call = AsyncMock(return_value={"response": "chat still works"})
+        input_widget = app.query_one("#chat-input", TextArea)
+        input_widget.focus()
+        input_widget.load_text("hello after pending failure")
+        await app.action_submit_prompt()
+        await pilot.pause()
+        assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+
+    assert assistant_messages[-1] == "chat still works"
+
+
+@pytest.mark.asyncio
+async def test_o3c_new_session_clears_panel_before_query_and_ignores_stale_refresh() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-old",
+    )
+    fake_client = AsyncMock()
+    old_query_started = asyncio.Event()
+    release_old_query = asyncio.Event()
+    create_started = asyncio.Event()
+    release_create = asyncio.Event()
+
+    async def call(method: str, *, params: object) -> object:
+        assert isinstance(params, dict)
+        if method == "action.pending":
+            old_query_started.set()
+            await release_old_query.wait()
+            return {
+                "actions": [
+                    {
+                        "confirmation_id": "confirm-old",
+                        "session_id": "sess-old",
+                        "status": "pending",
+                        "tool_name": "fs.write",
+                    }
+                ],
+                "count": 1,
+            }
+        assert method == "session.create"
+        create_started.set()
+        await release_create.wait()
+        return {"session_id": "sess-new"}
+
+    fake_client.call = AsyncMock(side_effect=call)
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        stale_refresh = asyncio.create_task(app._refresh_pending_panel())
+        await old_query_started.wait()
+        new_session = asyncio.create_task(app.action_new_session())
+        await create_started.wait()
+        panel = app.query_one("#chat-pending", Static)
+        assert "confirm-old" not in str(panel.renderable)
+
+        release_create.set()
+        await new_session
+        release_old_query.set()
+        await stale_refresh
+        await pilot.pause()
+
+        assert app._session_id == "sess-new"
+        assert "confirm-old" not in str(panel.renderable)
+
+
+@pytest.mark.asyncio
+async def test_o3c_new_session_failure_restores_session_with_retrying_panel() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-old",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(side_effect=OSError("daemon unavailable"))
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._start_pending_polling = lambda: None  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_session()
+        await pilot.pause()
+        panel = app.query_one("#chat-pending", Static)
+
+    assert app._session_id == "sess-old"
+    assert str(panel.renderable) == (
+        "Pending confirmations unavailable; chat remains usable. Retrying."
+    )
 
 
 @pytest.mark.asyncio
@@ -1704,6 +2273,16 @@ async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_pat
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-async",
+                "action_id": "action-async",
+                "tool_name": "scheduler.run",
+                "state": "running",
+            }
+        )
         with transcript_path.open("a", encoding="utf-8") as handle:
             for row in async_rows:
                 handle.write(json.dumps(row) + "\n")
@@ -1713,6 +2292,18 @@ async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_pat
         await pilot.pause()
 
         rendered = [widget._markdown for widget in app.query(Markdown)]
+        assert app._progress_lines == {}
+        app._record_progress_event(
+            {
+                "event_type": "ActionProgress",
+                "session_id": "sess-1",
+                "origin_turn_id": "turn-async",
+                "action_id": "action-async",
+                "tool_name": "scheduler.run",
+                "state": "succeeded",
+            }
+        )
+        assert app._progress_lines == {}
 
     assert rendered == ["normal response", "Reminder: first", "Reminder: second"]
 

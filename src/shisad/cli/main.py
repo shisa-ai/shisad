@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
@@ -24,7 +25,36 @@ import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
 
+from shisad.cli import tour as tour_module
+from shisad.cli.credentials import credential
+from shisad.cli.data import data
+from shisad.cli.lifecycle import (
+    BackgroundStartError,
+    BackgroundStartResult,
+    _try_doctor,
+    _try_status,
+    render_background_start,
+    start_background_daemon,
+)
+from shisad.cli.onboarding import (
+    EnvironmentDetectionError,
+    inspect_onboarding_environment,
+    parse_managed_posture,
+    render_welcome,
+)
+from shisad.cli.presentation import (
+    CliErrorEnvelope,
+    StructuredCliError,
+    safe_cli_text,
+    safe_error_detail,
+)
 from shisad.cli.rpc import daemon_cli_error, rpc_call, rpc_run, run_async
+from shisad.cli.setup import setup
+from shisad.cli.upgrade import (
+    config_upgrade_command,
+    prepare_config_for_startup,
+    startup_upgrade_lines,
+)
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
@@ -36,12 +66,20 @@ from shisad.core.api.schema import (
     AdminSelfModRollbackResult,
     AdminSoulReadResult,
     AdminSoulUpdateResult,
+    ChannelPairingCleanupResult,
+    ChannelPairingListResult,
     ChannelPairingProposalResult,
+    ChannelStatusResult,
+    ChannelTestResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DeliveryEntry,
+    DeliveryInspectResult,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DevCloseResult,
     DevImplementResult,
     DevRemediateResult,
@@ -111,21 +149,27 @@ from shisad.core.api.schema import (
 from shisad.core.config import DaemonConfig
 from shisad.core.config_file import (
     ConfigFileError,
+    ConfigFileMissingError,
     LoadedConfig,
+    UnsupportedConfigSchemaError,
+    apply_config_section_update,
     config_diff_projection,
     config_schema_projection,
+    environment_config_selection,
     environment_projection,
     initialize_config_file,
     load_effective_config,
+    plan_config_section_update,
     render_config_template,
+    selected_config_path,
 )
+from shisad.core.storage_platform import tighten_permissions
 from shisad.interop.a2a_envelope import (
     fingerprint_for_public_key,
     load_private_key_from_path,
     load_public_key_from_path,
     write_ed25519_keypair,
 )
-from shisad.security.firewall.secrets import redact_ingress_secrets
 from shisad.ui.confirmation import (
     render_action_confirm_result,
     render_confirmed_tool_output,
@@ -443,6 +487,37 @@ def _dump_model(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
 
 
+def _render_delivery_entry(entry: DeliveryEntry) -> str:
+    target = entry.target
+    recovery = entry.recovery
+    receipt = entry.receipt
+    lines = [
+        (
+            f"{sanitize_terminal_field(entry.delivery_id or entry.reservation_id)} "
+            f"state={sanitize_terminal_field(entry.state)} "
+            f"kind={sanitize_terminal_field(entry.kind)}"
+        ),
+        (
+            f"  target={sanitize_terminal_field(target.channel)}:"
+            f"{sanitize_terminal_field(target.recipient)} "
+            f"recovery={sanitize_terminal_field(recovery.kind)} "
+            "reconciliation_available="
+            f"{str(recovery.reconciliation_available).lower()}"
+        ),
+        (
+            f"  reservation={sanitize_terminal_field(entry.reservation_id)} "
+            f"digest={sanitize_terminal_field(entry.payload_digest)} "
+            f"reason={sanitize_terminal_field(entry.reason) or '-'}"
+        ),
+    ]
+    if receipt is not None:
+        lines.append(
+            f"  receipt={sanitize_terminal_field(receipt.provider)}:"
+            f"{sanitize_terminal_field(receipt.receipt_id)}"
+        )
+    return "\n".join(lines)
+
+
 def _render_web_search_result(result: WebSearchResult) -> str:
     if result.ok or result.error != "web_search_backend_unconfigured":
         return _dump_model(result)
@@ -550,54 +625,32 @@ def _progress(label: str) -> Any:
         _echo(f"{label} done ({elapsed:.2f}s)", fg="green")
 
 
-class ConfigCliError(click.ClickException):
+class ConfigCliError(StructuredCliError):
     """Invalid or unsafe user configuration."""
 
     exit_code = 3
 
     def __init__(self, payload: Mapping[str, object], *, output_format: str) -> None:
-        self.payload = dict(payload)
-        self.output_format = output_format
-        super().__init__(
-            "\n".join(
-                [
-                    f"What failed: {payload['what_failed']}",
-                    f"What still works: {payload['what_still_works']}",
-                    f"Likely cause: {payload['likely_cause']}",
-                    f"Next action: {payload['next_action']}",
-                    f"Technical details: {payload['technical_details']}",
-                ]
-            )
-        )
-
-    def show(self, file: Any | None = None) -> None:
-        if self.output_format != "json":
-            super().show(file)
-            return
-        if file is None:
-            file = click.get_text_stream("stderr")
-        click.echo(json.dumps(self.payload, sort_keys=True), file=file)
+        super().__init__(CliErrorEnvelope.from_mapping(payload), output_format=output_format)
 
 
 def _config_cli_error(
     *,
     what_failed: str,
-    exc: ConfigFileError,
+    exc: ConfigFileError | EnvironmentDetectionError,
     next_action: str,
     output_format: str = "human",
+    likely_cause: str = "the selected config is missing, invalid, unsafe, or unsupported.",
 ) -> ConfigCliError:
-    sanitized = sanitize_terminal_field(str(exc)[:4096])
-    redacted, _findings = redact_ingress_secrets(sanitized)
-    detail = redacted[:240] or exc.__class__.__name__
     return ConfigCliError(
         {
             "error_type": "config",
             "exit_code": ConfigCliError.exit_code,
             "what_failed": what_failed,
             "what_still_works": ("help, config template, config schema, and version commands."),
-            "likely_cause": ("the selected config is missing, invalid, unsafe, or unsupported."),
+            "likely_cause": likely_cause,
             "next_action": next_action,
-            "technical_details": f"{exc.__class__.__name__}: {detail}",
+            "technical_details": safe_error_detail(exc),
         },
         output_format=output_format,
     )
@@ -612,7 +665,19 @@ class TaskGroupedGroup(click.Group):
     _ROOT_SECTIONS = (
         (
             "Get started",
-            ("init", "start", "status", "chat", "tui", "web-ui", "doctor", "stop", "restart"),
+            (
+                "init",
+                "setup",
+                "start",
+                "status",
+                "chat",
+                "tour",
+                "tui",
+                "web-ui",
+                "doctor",
+                "stop",
+                "restart",
+            ),
         ),
         (
             "Work with shisad",
@@ -649,7 +714,7 @@ class TaskGroupedGroup(click.Group):
         ),
         (
             "Administration",
-            ("config", "env", "completion", "admin", "dev"),
+            ("config", "credential", "env", "completion", "admin", "dev"),
         ),
     )
 
@@ -712,9 +777,10 @@ def _projection_lines(projection: Mapping[str, object]) -> list[str]:
 
 @click.group(
     cls=TaskGroupedGroup,
+    invoke_without_command=True,
     epilog=(
         "Fresh setup: shisad init\n"
-        "Daemon stopped: shisad start --foreground\n"
+        "Daemon stopped: shisad start\n"
         "Configured system: shisad status && shisad chat"
     ),
 )
@@ -733,11 +799,92 @@ def cli(ctx: click.Context, no_color: bool, config_path: Path | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["no_color"] = no_color
     ctx.obj["config_path"] = config_path
+    ctx.obj["post_setup_action_runner"] = _run_post_setup_action
+    if ctx.invoked_subcommand is not None:
+        return
+
+    output_stream = click.get_text_stream("stdout")
+    is_interactive = bool(getattr(output_stream, "isatty", lambda: False)())
+    try:
+        report = inspect_onboarding_environment(
+            config_path,
+            environ=os.environ,
+            interactive=is_interactive,
+        )
+    except EnvironmentDetectionError as exc:
+        raise StructuredCliError(
+            CliErrorEnvelope(
+                error_type="environment",
+                exit_code=3,
+                what_failed="Could not determine a safe onboarding environment.",
+                what_still_works="help, version, and explicit operator commands.",
+                likely_cause="SHISAD_MANAGED has an unsupported explicit value.",
+                next_action="set SHISAD_MANAGED to true or false, then run: shisad",
+                technical_details=safe_error_detail(exc),
+            )
+        ) from exc
+    except ConfigFileMissingError as exc:
+        selected = selected_config_path(config_path, environ=os.environ)
+        quoted_path = shlex.quote(str(selected))
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            next_action=(
+                f"create the selected path explicitly with: shisad --config {quoted_path} init"
+            ),
+        ) from exc
+    except UnsupportedConfigSchemaError as exc:
+        selected = selected_config_path(config_path, environ=os.environ)
+        quoted_path = shlex.quote(str(selected))
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            likely_cause="the selected config requires upgrade recovery.",
+            next_action=(
+                "use a compatible shisad version or restore schema_version=1, then run: "
+                f"shisad --config {quoted_path} config validate"
+            ),
+        ) from exc
+    except ConfigFileError as exc:
+        raise _config_cli_error(
+            what_failed="Could not load operator configuration.",
+            exc=exc,
+            next_action="review the selected TOML or run: shisad config template",
+        ) from exc
+
+    ui_posture = resolve_ui_posture(
+        theme_name=report.facts.ui_theme,
+        reduce_motion=report.facts.reduce_motion,
+        no_color=no_color,
+        environ=os.environ,
+        isatty=is_interactive,
+    )
+    click.echo(render_welcome(report, ui_posture=ui_posture), color=ui_posture.color_enabled)
+    if report.blocked:
+        raise StructuredCliError(
+            CliErrorEnvelope(
+                error_type="environment",
+                exit_code=3,
+                what_failed="Required onboarding preflight failed.",
+                what_still_works="help, version, and explicit diagnostic commands.",
+                likely_cause="the installed Python runtime is unsupported.",
+                next_action=report.next_action,
+                technical_details="required runtime check failed",
+            )
+        )
+
+
+cli.add_command(credential)
+cli.add_command(data)
+cli.add_command(setup)
 
 
 @cli.group("config")
 def config_group() -> None:
     """Inspect the operator-authored TOML configuration surface."""
+
+
+config_group.add_command(config_upgrade_command)
 
 
 @config_group.command("template")
@@ -826,7 +973,20 @@ def config_diff(output_format: str) -> None:
     _emit_structured_output(payload, output_format=output_format, human_lines=human)
 
 
-@cli.command("init")
+@config_group.command("wizard")
+@click.option(
+    "--section",
+    type=click.Choice(["daemon", "model", "security"]),
+    required=True,
+    help="One finite TOML section to reconfigure.",
+)
+@click.option(
+    "--set",
+    "updates",
+    multiple=True,
+    help="Typed FIELD=JSON update; plain text is treated as a string.",
+)
+@click.option("--write", is_flag=True, help="Explicitly publish the validated section update.")
 @click.option(
     "--format",
     "output_format",
@@ -835,13 +995,122 @@ def config_diff(output_format: str) -> None:
     show_default=True,
 )
 @click.pass_context
-def init_config(ctx: click.Context, output_format: str) -> None:
+def config_wizard(
+    ctx: click.Context,
+    section: str,
+    updates: tuple[str, ...],
+    write: bool,
+    output_format: str,
+) -> None:
+    """Preview or explicitly publish one typed config-section update."""
+
+    try:
+        parsed_updates: dict[str, object] = {}
+        for item in updates:
+            field, separator, raw_value = item.partition("=")
+            field = field.strip()
+            if not separator or not field:
+                raise ConfigFileError("each --set must use FIELD=VALUE")
+            if field in parsed_updates:
+                raise ConfigFileError(f"duplicate config wizard field: {field}")
+            try:
+                value: object = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+            parsed_updates[field] = value
+        if not parsed_updates:
+            raise ConfigFileError("config wizard requires at least one --set FIELD=VALUE")
+        root_obj = ctx.find_root().obj or {}
+        selected = root_obj.get("config_path") if isinstance(root_obj, dict) else None
+        explicit_path = selected if isinstance(selected, Path) else None
+        path = selected_config_path(explicit_path, environ=os.environ)
+        loaded = load_effective_config(explicit_path, environ=os.environ)
+        plan = plan_config_section_update(
+            path,
+            section=section,
+            updates=parsed_updates,
+            environ=os.environ,
+        )
+        result = apply_config_section_update(plan, environ=os.environ) if write else None
+    except ConfigFileError as exc:
+        raise _config_cli_error(
+            what_failed="Could not prepare the config section update.",
+            exc=exc,
+            next_action="review the selected section and rerun config wizard",
+            output_format=output_format,
+        ) from exc
+
+    current = loaded.redacted_projection()[section]
+    payload: dict[str, object] = {
+        "section": section,
+        "path": str(path),
+        "current": current,
+        "changed_fields": list(plan.changed_fields),
+        "source_sha256": plan.source_sha256,
+        "persisted": result is not None,
+        "backup_path": str(result.backup_path) if result is not None else "",
+        "permissions": result.permissions if result is not None else "not_applicable",
+        "parent_sync": result.parent_sync if result is not None else "not_applicable",
+        "next_action": (
+            "restart the daemon to load the updated section"
+            if result is not None
+            else "rerun with --write to publish this exact selected-section update"
+        ),
+    }
+    human_lines = [
+        f"Config section: {section}",
+        *_projection_lines(current),
+        f"Changed fields: {', '.join(plan.changed_fields) or 'none'}",
+        f"Published: {str(result is not None).lower()}",
+    ]
+    if result is not None:
+        human_lines.append(f"Rollback copy: {safe_cli_text(str(result.backup_path), limit=512)}")
+    human_lines.append(f"Next: {payload['next_action']}")
+    _emit_structured_output(payload, output_format=output_format, human_lines=human_lines)
+
+
+@cli.command("init")
+@click.option(
+    "--non-interactive",
+    is_flag=True,
+    help="Explicitly create only the minimal no-prompt config template.",
+)
+@click.option(
+    "--from-env",
+    "from_env",
+    is_flag=True,
+    help="Persist only typed non-secret values selected by environment variables.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    show_default=True,
+)
+@click.pass_context
+def init_config(
+    ctx: click.Context,
+    non_interactive: bool,
+    from_env: bool,
+    output_format: str,
+) -> None:
     """Create a minimal commented user config without overwriting existing data."""
 
     selected = (ctx.obj or {}).get("config_path")
     try:
-        destination = initialize_config_file(selected if isinstance(selected, Path) else None)
-    except ConfigFileError as exc:
+        managed = parse_managed_posture(os.environ)
+        env_selection = environment_config_selection(os.environ) if from_env else None
+        destination = initialize_config_file(
+            selected if isinstance(selected, Path) else None,
+            section_overrides=(
+                env_selection.section_overrides if env_selection is not None else None
+            ),
+        )
+        permission_posture = tighten_permissions(destination, 0o600)
+        if permission_posture == "failed":
+            raise ConfigFileError("created config permissions could not be tightened")
+    except (ConfigFileError, EnvironmentDetectionError) as exc:
         raise _config_cli_error(
             what_failed="Could not create operator configuration.",
             exc=exc,
@@ -851,6 +1120,21 @@ def init_config(ctx: click.Context, output_format: str) -> None:
     payload: dict[str, object] = {
         "created": True,
         "path": str(destination),
+        "mode": "from_env" if from_env else "non_interactive" if non_interactive else "minimal",
+        "managed": managed,
+        "permissions": permission_posture,
+        "persisted_fields": (
+            sorted(
+                f"{section}.{field}"
+                for section, fields in env_selection.section_overrides.items()
+                for field in fields
+            )
+            if env_selection is not None
+            else []
+        ),
+        "omitted_secret_fields": (
+            list(env_selection.omitted_secret_fields) if env_selection is not None else []
+        ),
         "next_actions": [
             "shisad config validate",
             "shisad config show --format human",
@@ -861,7 +1145,11 @@ def init_config(ctx: click.Context, output_format: str) -> None:
         payload,
         output_format=output_format,
         human_lines=[
-            f"Created owner-only config template: {destination}",
+            (
+                f"Created owner-only config template: {destination}"
+                if permission_posture == "supported"
+                else f"Created config template: {destination} (permission tightening unsupported)"
+            ),
             "Next: shisad config validate",
             "Then review values with: shisad config show --format human",
             "This minimal command does not configure providers or policy.",
@@ -938,18 +1226,16 @@ def tui(interactive: bool, plain: bool) -> None:
     click.echo(rendered)
 
 
-@cli.command("chat")
-@click.option("--session", "session_id", default="", help="Attach to existing session ID.")
-@click.option("--user", "-u", default="ops", help="User ID for new session.")
-@click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
-@click.option(
-    "--new",
-    "new_session",
-    is_flag=True,
-    help="Force a fresh session (skip user/workspace binding reuse).",
-)
-def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
-    """Interactive chat with the shisad daemon."""
+def _run_chat(
+    *,
+    session_id: str,
+    user: str,
+    workspace: str,
+    new_session: bool,
+    startup_hint: str | None = None,
+) -> None:
+    """Launch the ordinary chat app with optional display-only metadata."""
+
     if new_session and session_id:
         raise click.ClickException("--new cannot be used together with --session.")
     try:
@@ -974,8 +1260,111 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
         session_id=session_id or None,
         reuse_bound_session=not new_session,
         ui_posture=_get_ui_posture(config),
+        startup_hint=startup_hint,
     )
     app.run()
+
+
+@cli.command("chat")
+@click.option("--session", "session_id", default="", help="Attach to existing session ID.")
+@click.option("--user", "-u", default="ops", help="User ID for new session.")
+@click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
+@click.option(
+    "--new",
+    "new_session",
+    is_flag=True,
+    help="Force a fresh session (skip user/workspace binding reuse).",
+)
+def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
+    """Interactive chat with the shisad daemon."""
+
+    _run_chat(
+        session_id=session_id,
+        user=user,
+        workspace=workspace,
+        new_session=new_session,
+    )
+
+
+@cli.command("tour")
+def tour() -> None:
+    """Show the deterministic guided tour and optionally open ordinary chat."""
+
+    click.echo(tour_module.render_tour(health=_inspect_tour_health()))
+    if not tour_module.is_interactive_tour():
+        return
+    if not click.confirm(
+        "Open ordinary chat with a suggested first request?",
+        default=False,
+    ):
+        click.echo("Tour complete; no chat session was opened.")
+        return
+    _run_chat(
+        session_id="",
+        user="ops",
+        workspace="default",
+        new_session=False,
+        startup_hint=tour_module.CHAT_SUGGESTION,
+    )
+
+
+def _inspect_tour_health() -> BackgroundStartResult | None:
+    """Read O3A's bounded typed health without starting or mutating the daemon."""
+
+    try:
+        config = _get_config()
+    except (click.ClickException, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if not config.socket_path.exists():
+        return None
+    status_result = _try_status(config, None, timeout_seconds=0.5)
+    if status_result is None:
+        return None
+    return BackgroundStartResult(
+        already_running=True,
+        pid=None,
+        log_path=config.data_dir / "logs" / "daemon.log",
+        status=status_result,
+        doctor=_try_doctor(config, None, timeout_seconds=0.5),
+    )
+
+
+def _run_post_setup_action(action: str) -> None:
+    """Run one finite post-publication action from the root Click context."""
+
+    normalized = action.strip().lower()
+    root = click.get_current_context().find_root()
+    if normalized == "tour":
+        command = cli.get_command(root, "tour")
+        if command is not None:
+            root.invoke(command)
+        return
+    if normalized not in {"chat", "dashboard"}:
+        return
+
+    config = _get_config()
+    try:
+        started = start_background_daemon(
+            config,
+            no_color=bool((root.obj or {}).get("no_color", False)),
+        )
+    except BackgroundStartError as exc:
+        raise daemon_cli_error(
+            what_failed="Could not start the shisad daemon for the selected next step.",
+            exc=exc,
+            next_action=(f"inspect {exc.log_path} or run: shisad start --foreground"),
+        ) from exc
+    for line in render_background_start(started):
+        _echo(line)
+
+    command_name = "chat" if normalized == "chat" else "tui"
+    command = cli.get_command(root, command_name)
+    if command is None:
+        raise click.ClickException(f"selected next step is unavailable: {normalized}")
+    if normalized == "chat":
+        root.invoke(command)
+    else:
+        root.invoke(command, interactive=True, plain=False)
 
 
 @cli.command("web-ui")
@@ -1277,6 +1666,33 @@ def _start_daemon(
         _echo("\nShutting down...", fg="yellow")
 
 
+def _prepare_config_upgrade_for_daemon_start(ctx: click.Context) -> None:
+    """Apply or report the bounded config migration before daemon construction."""
+
+    root_obj = ctx.find_root().obj
+    configured = root_obj.get("config_path") if isinstance(root_obj, dict) else None
+    selected = selected_config_path(
+        configured if isinstance(configured, Path) else None,
+        environ=os.environ,
+    )
+    try:
+        startup_upgrade = prepare_config_for_startup(
+            selected,
+            managed=parse_managed_posture(os.environ),
+            interactive=bool(sys.stdin.isatty() and sys.stdout.isatty()),
+            environ=os.environ,
+        )
+    except (ConfigFileError, EnvironmentDetectionError) as exc:
+        raise _config_cli_error(
+            what_failed="Could not prepare operator configuration for startup.",
+            exc=exc,
+            next_action=(f"review {selected} or run: shisad --config {selected} config upgrade"),
+        ) from exc
+    if startup_upgrade is not None:
+        for line in startup_upgrade_lines(startup_upgrade, command_path=selected):
+            _echo(line, fg="yellow")
+
+
 @cli.command()
 @click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
 @click.option(
@@ -1284,9 +1700,27 @@ def _start_daemon(
     is_flag=True,
     help="Run in foreground with DEBUG logging and local autoreload.",
 )
-def start(foreground: bool, debug: bool) -> None:
+@click.pass_context
+def start(ctx: click.Context, foreground: bool, debug: bool) -> None:
     """Start the shisad daemon."""
-    _start_daemon(config=_get_config(), foreground=foreground, debug=debug)
+    _prepare_config_upgrade_for_daemon_start(ctx)
+    config = _get_config()
+    if foreground or debug:
+        _start_daemon(config=config, foreground=foreground, debug=debug)
+        return
+    try:
+        result = start_background_daemon(
+            config,
+            no_color=bool((ctx.find_root().obj or {}).get("no_color", False)),
+        )
+    except BackgroundStartError as exc:
+        raise daemon_cli_error(
+            what_failed="Could not start the shisad daemon in the background.",
+            exc=exc,
+            next_action=f"inspect {exc.log_path} or run: shisad start --foreground",
+        ) from exc
+    for line in render_background_start(result):
+        _echo(line)
 
 
 @cli.command()
@@ -1313,9 +1747,15 @@ def stop() -> None:
 @click.option(
     "--fresh-config",
     is_flag=True,
-    help="Reload effective config after shutdown before start, without writing a backup.",
+    help="Reload effective config after shutdown; required migrations retain rollback copies.",
 )
-def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
+@click.pass_context
+def restart(
+    ctx: click.Context,
+    foreground: bool,
+    debug: bool,
+    fresh_config: bool,
+) -> None:
     """Restart the shisad daemon."""
     config = _get_config()
 
@@ -1337,9 +1777,12 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         status_config = starting_config
 
     try:
+        phase = "config-upgrade"
+        _prepare_config_upgrade_for_daemon_start(ctx)
         if fresh_config:
+            phase = "fresh-config"
             config = _get_config()
-            _echo("Reloaded effective configuration without writing a backup", fg="cyan")
+            _echo("Reloaded effective configuration", fg="cyan")
 
         def _announce_started(started_config: DaemonConfig) -> None:
             nonlocal status_config
@@ -2126,7 +2569,12 @@ def audit_query(
         raise click.ClickException("--all cannot be used together with --session")
     resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
 
-    if not audit_path.exists():
+    audit_exists = (
+        audit_path.exists()
+        or any(audit_path.parent.glob(f"{audit_path.stem}.[0-9]*{audit_path.suffix}"))
+        or audit_path.with_name(f".{audit_path.name}.next").exists()
+    )
+    if not audit_exists:
         if as_json:
             click.echo(json.dumps([], sort_keys=True))
             return
@@ -2134,20 +2582,31 @@ def audit_query(
         return
 
     from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
 
-    log = AuditLog(audit_path)
+    try:
+        log = AuditLog(audit_path, _read_only=True)
+    except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+        raise click.ClickException(
+            "audit integrity verification failed; stop the daemon and run `shisad audit verify`"
+        ) from None
     try:
         since_dt = AuditLog.parse_since(since)
     except ValueError as e:
         click.echo(f"Invalid --since value: {e}", err=True)
         sys.exit(1)
-    results = log.query(
-        since=since_dt,
-        event_type=event_type,
-        session_id=resolved_session_id or None,
-        actor=actor,
-        limit=limit,
-    )
+    try:
+        results = log.query(
+            since=since_dt,
+            event_type=event_type,
+            session_id=resolved_session_id or None,
+            actor=actor,
+            limit=limit,
+        )
+    except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+        raise click.ClickException(
+            "audit integrity verification failed; stop the daemon and run `shisad audit verify`"
+        ) from None
 
     if as_json:
         click.echo(json.dumps(results, sort_keys=True))
@@ -2166,6 +2625,7 @@ def audit_query(
 
 
 @audit.command("verify")
+@click.option("--json", "as_json", is_flag=True, help="Print lifecycle status as JSON.")
 @click.option(
     "--data-dir",
     "data_dir_override",
@@ -2176,26 +2636,74 @@ def audit_query(
         "Defaults to $SHISAD_DATA_DIR or ~/.local/share/shisad."
     ),
 )
-def audit_verify(data_dir_override: Path | None) -> None:
+def audit_verify(as_json: bool, data_dir_override: Path | None) -> None:
     """Verify audit log integrity."""
     config = _get_config()
     data_dir = data_dir_override if data_dir_override is not None else config.data_dir
-    audit_path = data_dir / "audit.jsonl"
-
-    if not audit_path.exists():
-        click.echo(f"No audit log found at {audit_path}")
-        return
+    stream_paths = {
+        "main": data_dir / "audit.jsonl",
+        "control_plane": data_dir / "control_plane" / "audit.jsonl",
+    }
 
     from shisad.core.audit import AuditLog
+    from shisad.core.audit_segments import AuditIntegrityError
+    from shisad.security.control_plane.audit import ControlPlaneAuditLog
 
-    log = AuditLog(audit_path)
-    is_valid, count, error = log.verify_chain()
+    def _stream_exists(path: Path) -> bool:
+        return (
+            path.exists()
+            or any(path.parent.glob(f"{path.stem}.[0-9]*{path.suffix}"))
+            or path.with_name(f".{path.name}.next").exists()
+        )
 
-    if is_valid:
-        click.echo(f"Audit log integrity verified: {count} entries, chain intact")
+    statuses: dict[str, dict[str, Any]] = {}
+    ok = True
+    for stream, path in stream_paths.items():
+        if not _stream_exists(path):
+            continue
+        try:
+            log = (
+                AuditLog(path, _read_only=True)
+                if stream == "main"
+                else ControlPlaneAuditLog(path, _read_only=True)
+            )
+            valid, _count, _error = log.verify_chain()
+            status = log.lifecycle_status
+            if not valid and status["state"] == "verified":
+                status = {**status, "state": "unavailable", "verified": False}
+            statuses[stream] = status
+            ok = ok and valid
+        except (AuditIntegrityError, OSError, UnicodeError, ValueError):
+            statuses[stream] = {
+                "stream": stream,
+                "state": "unavailable",
+                "reason_code": "audit.verification_failed",
+                "verified": False,
+                "segment_count": 0,
+                "archive_count": 0,
+                "entry_count": 0,
+                "retained_bytes": 0,
+                "permission_capability": "unknown",
+                "parent_sync_capability": "unknown",
+            }
+            ok = False
+
+    if as_json:
+        click.echo(json.dumps({"ok": ok, "streams": statuses}, sort_keys=True))
+    elif not statuses:
+        click.echo("No audit logs found")
     else:
-        click.echo(f"INTEGRITY FAILURE at entry {count}: {error}", err=True)
-        sys.exit(1)
+        for stream, status in statuses.items():
+            click.echo(
+                f"{stream}: state={status['state']}; verified={status['verified']}; "
+                f"entries={status['entry_count']}; segments={status['segment_count']}; "
+                f"archives={status['archive_count']}; retained_bytes={status['retained_bytes']}; "
+                f"reason={status['reason_code'] or 'none'}; "
+                f"permissions={status['permission_capability']}; "
+                f"parent_sync={status['parent_sync_capability']}"
+            )
+    if not ok:
+        raise click.ClickException("audit integrity verification failed")
 
 
 @cli.group()
@@ -3246,6 +3754,135 @@ def channel() -> None:
     """Channel admin workflows."""
 
 
+@channel.command("status")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_status(output_json: bool) -> None:
+    """Show truthful readiness for all shipped channel adapters."""
+    result = rpc_call(
+        _get_config(),
+        "channel.status",
+        {},
+        response_model=ChannelStatusResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    for row in result.channels:
+        channel_name = sanitize_terminal_field(row.channel)
+        startup = sanitize_terminal_field(row.startup_status)
+        last_message = row.last_message_at.isoformat() if row.last_message_at else "unavailable"
+        click.echo(
+            f"{channel_name} state={row.state} enabled={str(row.enabled).lower()} "
+            f"available={str(row.available).lower()} connected={str(row.connected).lower()} "
+            f"startup={startup} last_message={last_message}"
+        )
+
+
+@channel.command("test")
+@click.argument("channel_name", type=click.Choice(["matrix", "discord", "telegram", "slack"]))
+@click.option("--target", required=True, help="Exact outbound provider target")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_test(channel_name: str, target: str, output_json: bool) -> None:
+    """Send one fixed notice through normal durable channel delivery."""
+    result = rpc_call(
+        _get_config(),
+        "channel.test",
+        {"channel": channel_name, "target": target},
+        response_model=ChannelTestResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(
+        f"Channel test: state={sanitize_terminal_field(result.state)} "
+        f"reason={sanitize_terminal_field(result.reason)}"
+    )
+    if result.outbound_acknowledged:
+        click.echo("Outbound acknowledged; this is not a round-trip or inbound identity check.")
+    elif result.state == "outcome_unknown":
+        click.echo("Outcome unknown; no replay is recommended. Inspect delivery state first.")
+    else:
+        click.echo("No outbound acknowledgment; no round-trip claim is made.")
+
+
+@channel.command("pairing-list")
+@click.option("--channel", "channel_name", default="", help="Optional exact channel filter")
+@click.option("--workspace", "workspace_hint", required=True, help="Exact provider workspace")
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum entries")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_pairing_list(
+    channel_name: str,
+    workspace_hint: str,
+    limit: int,
+    output_json: bool,
+) -> None:
+    """Inspect validated pairing requests without creating a proposal."""
+    result = rpc_call(
+        _get_config(),
+        "channel.pairing_list",
+        {
+            "channel": channel_name or None,
+            "workspace_hint": workspace_hint,
+            "limit": limit,
+        },
+        response_model=ChannelPairingListResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.entries:
+        click.echo("No pairing requests in the selected scope.")
+        return
+    for entry in result.entries:
+        click.echo(
+            f"{sanitize_terminal_field(entry.channel)} "
+            f"user={sanitize_terminal_field(entry.external_user_id)} "
+            f"requested_at={entry.requested_at.isoformat()} "
+            f"reason={sanitize_terminal_field(entry.reason)}"
+        )
+
+
+@channel.command("pairing-cleanup")
+@click.option("--channel", "channel_name", default="", help="Optional exact channel filter")
+@click.option("--workspace", "workspace_hint", required=True, help="Exact provider workspace")
+@click.option("--before", required=True, help="Inclusive timezone-qualified cutoff")
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum removals")
+@click.option("--write", is_flag=True, help="Explicitly remove the previewed exact records")
+@click.option("--json", "output_json", is_flag=True, help="Emit typed JSON output")
+def channel_pairing_cleanup(
+    channel_name: str,
+    workspace_hint: str,
+    before: str,
+    limit: int,
+    write: bool,
+    output_json: bool,
+) -> None:
+    """Preview or explicitly clean one bounded pairing-request scope."""
+    result = rpc_call(
+        _get_config(),
+        "channel.pairing_cleanup",
+        {
+            "channel": channel_name or None,
+            "workspace_hint": workspace_hint,
+            "before": before,
+            "limit": limit,
+            "write": write,
+        },
+        response_model=ChannelPairingCleanupResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(
+        f"Pairing cleanup: applied={str(not result.dry_run).lower()} "
+        f"matched={result.matched_count} removed={result.removed_count} "
+        f"failed={result.failed_count} remaining={result.remaining_count} "
+        f"complete={str(result.complete).lower()} durability={result.durability}"
+    )
+    if result.dry_run:
+        click.echo("Dry run only; rerun with --write to remove these exact records.")
+
+
 @channel.command("pairing-propose")
 @click.option("--channel", "channel_name", default="", help="Optional channel filter")
 @click.option(
@@ -3269,6 +3906,93 @@ def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) 
         response_model=ChannelPairingProposalResult,
     )
     click.echo(_dump_model(result))
+
+
+@cli.group()
+def delivery() -> None:
+    """Inspect and reconcile durable outbound deliveries."""
+
+
+@delivery.command("list")
+@click.option(
+    "--state",
+    type=click.Choice(
+        [
+            "preparing",
+            "prepared",
+            "attempt_started",
+            "delivered",
+            "failed_pre_effect",
+            "outcome_unknown",
+            "reconciled_absent",
+            "superseded",
+            "cancelled",
+        ],
+        case_sensitive=True,
+    ),
+    default=None,
+    help="Show only deliveries in this exact durable state.",
+)
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), help="Maximum entries")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_list(state: str | None, limit: int, output_json: bool) -> None:
+    """List recent durable delivery records without message payloads."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.list",
+        {"state": state, "limit": limit},
+        response_model=DeliveryListResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.deliveries:
+        _echo("No matching durable deliveries.", fg="yellow")
+        return
+    click.echo("\n".join(_render_delivery_entry(entry) for entry in result.deliveries))
+
+
+@delivery.command("inspect")
+@click.argument("delivery_id")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_inspect(delivery_id: str, output_json: bool) -> None:
+    """Inspect one exact durable reservation or delivery ID."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.inspect",
+        {"delivery_id": delivery_id},
+        response_model=DeliveryInspectResult,
+    )
+    if not result.found or result.delivery is None:
+        raise click.ClickException("No durable delivery matched that exact ID.")
+    click.echo(_dump_model(result) if output_json else _render_delivery_entry(result.delivery))
+
+
+@delivery.command("resolve")
+@click.argument("delivery_id")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def delivery_resolve(delivery_id: str, output_json: bool) -> None:
+    """Reconcile an uncertain delivery without sending it again."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "delivery.resolve",
+        {"delivery_id": delivery_id},
+        response_model=DeliveryResolveResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.found or result.delivery is None:
+        raise click.ClickException(sanitize_terminal_text(result.instruction))
+    click.echo(_render_delivery_entry(result.delivery))
+    click.echo(
+        f"resolution={sanitize_terminal_field(result.reconciliation_status)} "
+        f"lookup_attempted={str(result.lookup_attempted).lower()}"
+    )
+    click.echo(sanitize_terminal_text(result.instruction))
 
 
 @cli.group()

@@ -100,6 +100,27 @@ def test_setup_logging_idempotent() -> None:
     assert count_after == count_before
 
 
+def test_setup_logging_suppresses_dependency_request_traces_but_keeps_warnings() -> None:
+    captured: list[str] = []
+
+    setup_logging(level="DEBUG", colorize=False)
+    handler_id = logger.add(captured.append, format="{level} {message}", level="DEBUG")
+    try:
+        logging.getLogger("httpx").info(
+            "HTTP Request: POST https://api.telegram.org/botsecret-token/getMe"
+        )
+        logging.getLogger("httpcore").debug("authorization: secret-token")
+        logging.getLogger("httpx").warning("request failed before response")
+        logging.getLogger("shisad.test.logging").info("owned diagnostic")
+    finally:
+        logger.remove(handler_id)
+
+    joined = "\n".join(captured)
+    assert "secret-token" not in joined
+    assert "WARNING request failed before response" in joined
+    assert "INFO owned diagnostic" in joined
+
+
 def test_log_format_contains_expected_placeholders() -> None:
     """Verify format strings contain the key fields."""
     assert "{level" in LOG_FORMAT

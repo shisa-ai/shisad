@@ -13,7 +13,6 @@ import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
-from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import (
     ActionProposal,
@@ -233,8 +232,6 @@ async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_re
         )
         sid = created["session_id"]
         transcript_store = TranscriptStore(config.data_dir / "sessions")
-        audit_log = AuditLog(config.data_dir / "audit.jsonl")
-
         result = await client.call(
             "session.message",
             {
@@ -244,15 +241,21 @@ async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_re
         )
 
         entries = transcript_store.list_entries(sid)
-        received_events = audit_log.query(
-            event_type="SessionMessageReceived",
-            session_id=sid,
-            limit=10,
+        received_events = await client.call(
+            "audit.query",
+            {
+                "event_type": "SessionMessageReceived",
+                "session_id": sid,
+                "limit": 10,
+            },
         )
-        responded_events = audit_log.query(
-            event_type="SessionMessageResponded",
-            session_id=sid,
-            limit=10,
+        responded_events = await client.call(
+            "audit.query",
+            {
+                "event_type": "SessionMessageResponded",
+                "session_id": sid,
+                "limit": 10,
+            },
         )
 
         assert result["proposal_only"] is True
@@ -261,8 +264,8 @@ async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_re
             for reason in result.get("cleanroom_block_reasons", [])
         )
         assert entries == []
-        assert len(received_events) == 1
-        assert responded_events == []
+        assert received_events["total"] == 1
+        assert responded_events["total"] == 0
     finally:
         await _shutdown(daemon_task, client)
 
@@ -679,6 +682,179 @@ async def test_m4_pairing_proposal_uses_pairing_request_artifacts(
         assert artifact_payload["owner_uid"] == os.getuid()
         assert artifact_payload["workspace_hint"] == "guild-1"
         assert artifacts[0].stat().st_mode & 0o777 == 0o600
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_o4f_pairing_list_and_cleanup_are_scoped_dry_run_first_and_restart_safe(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        for index, workspace in enumerate(("guild-1", "guild-2"), start=1):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "shared-user",
+                        "workspace_hint": workspace,
+                        "content": f"hello {index}",
+                    }
+                },
+            )
+        listed = await client.call(
+            "channel.pairing_list",
+            {"workspace_hint": "guild-1", "channel": "discord", "limit": 100},
+        )
+        assert listed["count"] == 1
+        assert listed["entries"][0]["workspace_hint"] == "guild-1"
+        assert "path" not in json.dumps(listed)
+
+        cleanup_params = {
+            "workspace_hint": "guild-1",
+            "channel": "discord",
+            "before": "2100-01-01T00:00:00+00:00",
+            "write": False,
+        }
+        dry = await client.call("channel.pairing_cleanup", cleanup_params)
+        assert dry["dry_run"] is True
+        assert dry["matched_count"] == 1
+        assert dry["removed_count"] == 0
+        list_params = {
+            "workspace_hint": "guild-1",
+            "channel": "discord",
+            "limit": 100,
+        }
+        assert (await client.call("channel.pairing_list", list_params))["count"] == 1
+
+        applied = await client.call(
+            "channel.pairing_cleanup",
+            {**cleanup_params, "write": True},
+        )
+        assert applied["dry_run"] is False
+        assert applied["complete"] is True
+        assert applied["removed_count"] == 1
+        assert (await client.call("channel.pairing_list", list_params))["count"] == 0
+        other = await client.call(
+            "channel.pairing_list",
+            {"workspace_hint": "guild-2", "channel": "discord", "limit": 100},
+        )
+        assert other["count"] == 1
+        assert "ChannelPairingRequestsCleaned" in (config.data_dir / "audit.jsonl").read_text(
+            encoding="utf-8"
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+    restarted_task, restarted_client, _ = await _start_daemon(tmp_path)
+    try:
+        after_restart = await restarted_client.call(
+            "channel.pairing_list",
+            {"workspace_hint": "guild-1", "channel": "discord", "limit": 100},
+        )
+        assert after_restart["count"] == 0
+    finally:
+        await _shutdown(restarted_task, restarted_client)
+
+
+@pytest.mark.asyncio
+async def test_o4f_pairing_admission_enforces_scope_quota_before_publication(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shisad.daemon.handlers._impl._PAIRING_REQUEST_MAX_FILES", 1)
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "first-user",
+                    "workspace_hint": "guild-1",
+                    "content": "hello",
+                }
+            },
+        )
+        with pytest.raises(JsonRpcCallError, match="pairing_request_quota_exceeded"):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "second-user",
+                        "workspace_hint": "guild-1",
+                        "content": "hello",
+                    }
+                },
+            )
+        artifacts = list((config.data_dir / "channels" / "pairing_requests").rglob("*.jsonl"))
+        assert len(artifacts) == 1
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_o4f_pairing_cleanup_reports_partial_failure_and_recovers_on_rerun(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        for index, external_user in enumerate(("remove-user", "retry-user"), start=1):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": external_user,
+                        "workspace_hint": "guild-1",
+                        "content": f"pairing attempt {index}",
+                    }
+                },
+            )
+        artifacts = list((config.data_dir / "channels" / "pairing_requests").rglob("*.jsonl"))
+        failing = next(
+            path
+            for path in artifacts
+            if json.loads(path.read_text(encoding="utf-8"))["external_user_id"] == "retry-user"
+        )
+        real_unlink = Path.unlink
+        failed_once = False
+
+        def _fail_one_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            nonlocal failed_once
+            if path == failing and not failed_once:
+                failed_once = True
+                raise OSError("simulated cleanup failure")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", _fail_one_unlink)
+        params = {
+            "workspace_hint": "guild-1",
+            "channel": "discord",
+            "before": "2100-01-01T00:00:00+00:00",
+            "write": True,
+            "limit": 100,
+        }
+        partial = await client.call("channel.pairing_cleanup", params)
+        assert partial["complete"] is False
+        assert partial["removed_count"] == 1
+        assert partial["failed_count"] == 1
+        assert partial["remaining_count"] == 1
+        assert partial["failures"][0]["external_user_id"] == "retry-user"
+        assert "path" not in json.dumps(partial)
+
+        recovered = await client.call("channel.pairing_cleanup", params)
+        assert recovered["complete"] is True
+        assert recovered["removed_count"] == 1
+        assert recovered["failed_count"] == 0
+        assert recovered["remaining_count"] == 0
     finally:
         await _shutdown(daemon_task, client)
 

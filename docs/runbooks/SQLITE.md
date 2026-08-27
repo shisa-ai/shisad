@@ -11,6 +11,87 @@ the SQLite `--enable-fts5` configure option or the `SQLITE_ENABLE_FTS5`
 preprocessor symbol. Python's `sqlite3` module reports the runtime SQLite
 library version through `sqlite3.sqlite_version`.
 
+## Schema Versions and Recovery
+
+shisad owns four mutable SQLite databases: channel replay, channel delivery,
+shared memory, and timeline. Each physical database has one schema-version
+authority. All four currently admit version `1`. Replay and delivery retain
+strict admission; they do not have a legacy migration. Memory and timeline can
+migrate only a structurally recognized version-0 schema.
+
+Before a memory or timeline migration changes the database, shisad checkpoints
+its WAL, creates an exact `<database>.pre-v1.bak`, validates the copy and its
+version, and tightens its permissions where the platform supports that. The
+schema change and `PRAGMA user_version = 1` then commit in one native SQLite
+transaction. A retry reuses the copy only when it still exactly matches the
+legacy database.
+
+To inspect a stopped database without changing it, substitute its exact path:
+
+```bash
+python - <<'PY' /absolute/path/to/database.sqlite3
+import sqlite3
+import sys
+
+uri = f"file:{sys.argv[1]}?mode=ro"
+with sqlite3.connect(uri, uri=True) as conn:
+    print("user_version:", conn.execute("PRAGMA user_version").fetchone()[0])
+    print("quick_check:", conn.execute("PRAGMA quick_check").fetchone()[0])
+PY
+```
+
+If startup refuses a database, stop the daemon and retain the database, its
+`-wal`/`-shm` companions if present, and any `.pre-v1.bak`. Do not delete,
+rename, or combine these files while the daemon is running. A newer version is
+not safe to downgrade. An unknown, empty, corrupt, or mismatched database needs
+operator diagnosis or a trusted complete snapshot; shisad will not overwrite
+or reset it.
+
+For rollback immediately after a failed or incompatible version-0 migration,
+first preserve the refused current files elsewhere, then copy the matching
+`.pre-v1.bak` back to its original database path while the daemon is stopped.
+The copy is one database's pre-migration state, not a transactionally
+consistent backup of the whole data root. Prefer restoring a complete trusted
+data-root snapshot when other state may also have changed.
+
+## Full Data-Root Recovery
+
+For a consistent operator recovery point, stop the daemon and back up the
+configured data root as one manifest-verified archive:
+
+```bash
+shisad data backup /operator-controlled/shisad-data.shisad-backup
+```
+
+This archive includes the memory and timeline databases, their safe in-root
+companions, and all other regular files and directories under the data root.
+It excludes the root `.shisad.lock` and every path outside the root. A symlink
+or special file causes the whole operation to refuse. The archive is owner-only
+where supported and is not encrypted, so store it as sensitive data.
+
+Restore never replaces or merges an active root. Keep the old root, stop the
+daemon, and name an absent or empty destination explicitly:
+
+```bash
+shisad data restore /operator-controlled/shisad-data.shisad-backup \
+  --destination /absolute/path/to/restored-data
+```
+
+For a different-root start, encrypted memory is portable only when an explicit
+stable `SHISAD_MEMORY_MASTER_KEY` was configured before the source data was
+created and the same value is supplied to the restored daemon. The default key
+is derived from the effective user ID, machine identity, and absolute memory
+storage path, so default-key memory can be reopened only when all three match,
+including the original absolute data root. Restore does not migrate or recover
+encryption keys.
+
+The command verifies the complete manifest, member set, sizes, and SHA-256
+digests before creating payload files. After selecting the restored root in
+configuration, run `shisad start`, `shisad status`, and
+`shisad doctor check --component storage`. If runtime validation fails, stop
+the daemon and restore another verified archive into a new empty destination;
+do not combine individual databases or WAL companions across backups.
+
 ## Verify
 
 After the daemon starts, check the runtime component:

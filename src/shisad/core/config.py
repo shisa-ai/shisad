@@ -48,6 +48,15 @@ def _default_socket_path() -> Path:
 
 _WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
 _MCP_SERVER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_CREDENTIAL_REFERENCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+
+
+def validate_credential_reference_name(value: str) -> str:
+    """Validate one finite provider-agnostic logical credential name."""
+
+    if not _CREDENTIAL_REFERENCE_NAME_RE.fullmatch(value):
+        raise ValueError("credential reference name is invalid")
+    return value
 
 
 def _destination_host_pattern(destination: str) -> str:
@@ -310,6 +319,9 @@ class DaemonConfig(BaseSettings):
     matrix_homeserver: str = Field(default="", description="Matrix homeserver URL.")
     matrix_user_id: str = Field(default="", description="Matrix user id for bot account.")
     matrix_access_token: str = Field(default="", description="Matrix access token.")
+    matrix_access_token_ref: str = Field(
+        default="", description="Logical credential reference for the Matrix access token."
+    )
     matrix_room_id: str = Field(default="", description="Default Matrix room id.")
     matrix_e2ee: bool = Field(default=True, description="Enable Matrix E2EE when available.")
     matrix_trusted_users: list[str] = Field(
@@ -324,9 +336,16 @@ class DaemonConfig(BaseSettings):
     # Optional Discord runtime channel
     discord_enabled: bool = Field(default=False, description="Enable Discord channel runtime.")
     discord_bot_token: str = Field(default="", description="Discord bot token.")
+    discord_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Discord bot token."
+    )
     discord_default_channel_id: str = Field(
         default="",
         description="Default Discord channel id for outbound sends.",
+    )
+    discord_use_threads: bool = Field(
+        default=False,
+        description="Keep addressed Discord parent-channel conversations in threads.",
     )
     discord_trusted_users: list[str] = Field(
         default_factory=list,
@@ -346,6 +365,9 @@ class DaemonConfig(BaseSettings):
     # Optional Telegram runtime channel
     telegram_enabled: bool = Field(default=False, description="Enable Telegram channel runtime.")
     telegram_bot_token: str = Field(default="", description="Telegram bot token.")
+    telegram_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Telegram bot token."
+    )
     telegram_default_chat_id: str = Field(
         default="",
         description="Default Telegram chat id for outbound sends.",
@@ -362,7 +384,13 @@ class DaemonConfig(BaseSettings):
     # Optional Slack runtime channel
     slack_enabled: bool = Field(default=False, description="Enable Slack channel runtime.")
     slack_bot_token: str = Field(default="", description="Slack bot token.")
+    slack_bot_token_ref: str = Field(
+        default="", description="Logical credential reference for the Slack bot token."
+    )
     slack_app_token: str = Field(default="", description="Slack Socket Mode app token.")
+    slack_app_token_ref: str = Field(
+        default="", description="Logical credential reference for the Slack Socket Mode app token."
+    )
     slack_default_channel_id: str = Field(
         default="",
         description="Default Slack channel id for outbound sends.",
@@ -771,6 +799,21 @@ class DaemonConfig(BaseSettings):
             return [Path(str(item)).expanduser() for item in value if str(item).strip()]
         return value
 
+    @field_validator(
+        "matrix_access_token_ref",
+        "discord_bot_token_ref",
+        "telegram_bot_token_ref",
+        "slack_bot_token_ref",
+        "slack_app_token_ref",
+        mode="before",
+    )
+    @classmethod
+    def _parse_channel_credential_references(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("credential reference name must be a string")
+        selected = value.strip()
+        return validate_credential_reference_name(selected) if selected else ""
+
     @field_validator("matrix_trusted_users", mode="before")
     @classmethod
     def _parse_matrix_trusted_users(cls, value: object) -> object:
@@ -1027,6 +1070,23 @@ class DaemonConfig(BaseSettings):
         return normalized
 
     @model_validator(mode="after")
+    def _validate_channel_credential_configuration(self) -> Self:
+        for raw_field, reference_field in (
+            ("matrix_access_token", "matrix_access_token_ref"),
+            ("discord_bot_token", "discord_bot_token_ref"),
+            ("telegram_bot_token", "telegram_bot_token_ref"),
+            ("slack_bot_token", "slack_bot_token_ref"),
+            ("slack_app_token", "slack_app_token_ref"),
+        ):
+            if getattr(self, raw_field) and getattr(self, reference_field):
+                raise ValueError(
+                    f"{raw_field} cannot use both a raw value and a credential reference"
+                )
+        if self.slack_bot_token_ref and self.slack_bot_token_ref == self.slack_app_token_ref:
+            raise ValueError("Slack bot-token and app-token references must be distinct")
+        return self
+
+    @model_validator(mode="after")
     def _validate_browser_hardened_scope(self) -> Self:
         if not self.browser_enabled or not self.browser_require_hardened_isolation:
             return self
@@ -1116,6 +1176,14 @@ class SecurityConfig(BaseSettings):
         default=Path.home() / ".local" / "share" / "shisad" / "approval-factors.json",
         description="Path to the approval-factor state store",
     )
+    credential_reference_store_path: Path = Field(
+        default=Path.home() / ".local" / "share" / "shisad" / "credential-references.json",
+        description="Path to provider-agnostic credential reference metadata",
+    )
+    credential_secret_dir: Path = Field(
+        default=Path.home() / ".local" / "share" / "shisad" / "credentials.d",
+        description="Owner-only local plaintext credential backend directory",
+    )
 
 
 def effective_approval_factor_store_path(
@@ -1137,6 +1205,32 @@ def effective_approval_factor_store_path(
     if configured == default_path:
         return data_dir / "approval-factors.json"
     return configured
+
+
+def effective_credential_reference_paths(
+    *,
+    data_dir: Path,
+    configured_store_path: Path | None = None,
+    configured_secret_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve credential metadata and file-backend paths for one daemon root."""
+
+    defaults = SecurityConfig.model_fields
+    store_path = (
+        defaults["credential_reference_store_path"].default
+        if configured_store_path is None
+        else configured_store_path
+    )
+    secret_dir = (
+        defaults["credential_secret_dir"].default
+        if configured_secret_dir is None
+        else configured_secret_dir
+    )
+    if store_path == defaults["credential_reference_store_path"].default:
+        store_path = data_dir / "credential-references.json"
+    if secret_dir == defaults["credential_secret_dir"].default:
+        secret_dir = data_dir / "credentials.d"
+    return Path(store_path), Path(secret_dir)
 
 
 class ModelConfig(BaseSettings):
@@ -1180,6 +1274,10 @@ class ModelConfig(BaseSettings):
     api_key: str | None = Field(
         default=None,
         description="Optional global API key override (SHISAD_MODEL_API_KEY).",
+    )
+    api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the global model API key.",
     )
     remote_enabled: bool = Field(
         default=False,
@@ -1229,13 +1327,25 @@ class ModelConfig(BaseSettings):
         default=None,
         description="Optional route-local planner API key override.",
     )
+    planner_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the planner route.",
+    )
     embeddings_api_key: str | None = Field(
         default=None,
         description="Optional route-local embeddings API key override.",
     )
+    embeddings_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the embeddings route.",
+    )
     monitor_api_key: str | None = Field(
         default=None,
         description="Optional route-local monitor API key override.",
+    )
+    monitor_api_key_ref: str | None = Field(
+        default=None,
+        description="Optional logical credential reference for the monitor route.",
     )
 
     planner_auth_mode: AuthMode | None = Field(
@@ -1446,6 +1556,23 @@ class ModelConfig(BaseSettings):
         return cls._parse_nested_model(value, field_name=field_name)
 
     @field_validator(
+        "api_key_ref",
+        "planner_api_key_ref",
+        "embeddings_api_key_ref",
+        "monitor_api_key_ref",
+        mode="before",
+    )
+    @classmethod
+    def _parse_credential_references(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("credential reference name must be a string")
+        if not value:
+            return None
+        return validate_credential_reference_name(value)
+
+    @field_validator(
         "planner_api_key",
         "embeddings_api_key",
         "monitor_api_key",
@@ -1488,6 +1615,14 @@ class ModelConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_route_header_configuration(self) -> Self:
+        for prefix in ("", "planner_", "embeddings_", "monitor_"):
+            raw_value = getattr(self, f"{prefix}api_key")
+            reference = getattr(self, f"{prefix}api_key_ref")
+            if raw_value and reference:
+                label = prefix.removesuffix("_") or "global"
+                raise ValueError(
+                    f"{label} model API key cannot use both a raw value and a credential reference"
+                )
         for route in ("planner", "embeddings", "monitor"):
             auth_mode = getattr(self, f"{route}_auth_mode")
             auth_header_name = getattr(self, f"{route}_auth_header_name")

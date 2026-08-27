@@ -7,13 +7,13 @@ import contextlib
 import hashlib
 import logging
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
+from filelock import BaseFileLock, SoftFileLock, Timeout
 
 from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.channels.base import Channel
@@ -29,8 +29,10 @@ from shisad.core.config import (
     ModelConfig,
     SecurityConfig,
     effective_approval_factor_store_path,
+    effective_credential_reference_paths,
 )
 from shisad.core.config_file import load_effective_config
+from shisad.core.data_root_lock import RootedFileLock
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
 from shisad.core.host_matching import host_matches
@@ -45,6 +47,7 @@ from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_
 from shisad.core.readiness import aggregate_config_readiness, configured_route_readiness
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.soul import load_effective_persona_text
+from shisad.core.sqlite_migration import SQLiteMigrationResult
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
@@ -74,12 +77,17 @@ from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, Ret
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.memory.runtime_wiring import build_memory_runtime_components
-from shisad.memory.timeline import TimelineIndex
+from shisad.memory.sqlite_schema import prepare_memory_database
+from shisad.memory.timeline import TimelineIndex, prepare_timeline_database
 from shisad.scheduler.manager import SchedulerManager
 from shisad.security.control_plane.sidecar import (
     ControlPlaneGateway,
     ControlPlaneSidecarHandle,
     start_control_plane_sidecar,
+)
+from shisad.security.credential_refs import (
+    CredentialReferenceError,
+    CredentialReferenceStore,
 )
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
@@ -215,6 +223,103 @@ def _configs_for_daemon(
 
     loaded = load_effective_config(config.config_path, environ=environ)
     return loaded.model, loaded.security
+
+
+def _resolve_model_credential_references(
+    model_config: ModelConfig,
+    *,
+    store: CredentialReferenceStore,
+) -> ModelConfig:
+    """Resolve model secrets only for trusted provider construction."""
+
+    updates: dict[str, str] = {}
+    for prefix in ("", "planner_", "embeddings_", "monitor_"):
+        reference = getattr(model_config, f"{prefix}api_key_ref")
+        if not reference:
+            continue
+        try:
+            updates[f"{prefix}api_key"] = store.resolve(reference)
+        except CredentialReferenceError as exc:
+            route = prefix.removesuffix("_") or "global"
+            logger.warning(
+                "Model credential reference unavailable: route=%s reason=%s",
+                route,
+                exc.reason,
+            )
+    return model_config.model_copy(update=updates)
+
+
+_CHANNEL_CREDENTIAL_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "matrix": (("matrix_access_token", "matrix_access_token_ref"),),
+    "discord": (("discord_bot_token", "discord_bot_token_ref"),),
+    "telegram": (("telegram_bot_token", "telegram_bot_token_ref"),),
+    "slack": (
+        ("slack_bot_token", "slack_bot_token_ref"),
+        ("slack_app_token", "slack_app_token_ref"),
+    ),
+}
+
+
+def _resolve_channel_credential_references(
+    config: DaemonConfig,
+    *,
+    store: CredentialReferenceStore,
+    channels: tuple[str, ...] | None = None,
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, Any]]]:
+    """Resolve enabled channel tokens for adapter construction only."""
+
+    credentials: dict[str, dict[str, str]] = {}
+    diagnostics: dict[str, dict[str, Any]] = {}
+    for channel in channels or tuple(_CHANNEL_CREDENTIAL_FIELDS):
+        credential_fields = _CHANNEL_CREDENTIAL_FIELDS[channel]
+        if not bool(getattr(config, f"{channel}_enabled")):
+            continue
+        required = (
+            ("matrix_homeserver", "matrix_user_id", "matrix_room_id") if channel == "matrix" else ()
+        )
+        if any(not str(getattr(config, field)).strip() for field in required):
+            diagnostics[channel] = {
+                "status": "degraded",
+                "reason_code": "channel.configuration_incomplete",
+                "timeout_seconds": config.channel_startup_timeout_seconds,
+            }
+            continue
+        resolved: dict[str, str] = {}
+        missing = False
+        unavailable = False
+        for raw_field, reference_field in credential_fields:
+            raw_value = str(getattr(config, raw_field)).strip()
+            reference = str(getattr(config, reference_field)).strip()
+            if raw_value:
+                resolved[raw_field] = raw_value
+                continue
+            if not reference:
+                missing = True
+                break
+            try:
+                resolved[raw_field] = store.resolve(reference)
+            except CredentialReferenceError:
+                unavailable = True
+                break
+        if missing or unavailable:
+            reason_code = (
+                "channel.credential_unavailable"
+                if unavailable
+                else "channel.configuration_incomplete"
+            )
+            logger.warning(
+                "Channel degraded before startup (channel=%s reason_code=%s)",
+                channel,
+                reason_code,
+            )
+            diagnostics[channel] = {
+                "status": "degraded",
+                "reason_code": reason_code,
+                "timeout_seconds": config.channel_startup_timeout_seconds,
+            }
+            continue
+        credentials[channel] = resolved
+    return credentials, diagnostics
 
 
 def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
@@ -566,6 +671,13 @@ class _ChannelStartupResult:
     diagnostic: dict[str, Any]
 
 
+def _storage_upgrade_status(result: SQLiteMigrationResult) -> dict[str, object]:
+    return asdict(result) | {
+        "path": str(result.path),
+        "backup_path": str(result.backup_path) if result.backup_path is not None else None,
+    }
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -613,6 +725,7 @@ class DaemonServices:
     ingestion: IngestionPipeline
     memory_manager: MemoryManager
     timeline_index: TimelineIndex
+    storage_upgrades: dict[str, dict[str, object]]
     scheduler: SchedulerManager
     skill_manager: SkillManager
     coding_manager: CodingAgentManager
@@ -650,8 +763,12 @@ class DaemonServices:
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
         """Acquire data-root ownership before constructing mutable services."""
-        config.data_dir.mkdir(parents=True, exist_ok=True)
-        data_lock = FileLock(str(config.data_dir / ".shisad.lock"), timeout=0)
+        try:
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            config.data_dir = config.data_dir.resolve(strict=True)
+        except OSError:
+            raise RuntimeError("daemon data root could not be prepared") from None
+        data_lock = RootedFileLock(config.data_dir, timeout=0)
         try:
             data_lock.acquire(timeout=0)
         except Timeout:
@@ -667,7 +784,11 @@ class DaemonServices:
     @classmethod
     async def _build_locked(cls, config: DaemonConfig, data_lock: BaseFileLock) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
-        audit_log = AuditLog(config.data_dir / "audit.jsonl")
+        shutdown_event = asyncio.Event()
+        audit_log = AuditLog(
+            config.data_dir / "audit.jsonl",
+            on_unavailable=shutdown_event.set,
+        )
         event_bus = EventBus(persister=audit_log)
 
         policy_loader = PolicyLoader(config.policy_path)
@@ -680,8 +801,21 @@ class DaemonServices:
             )
 
         model_config, security_config = _configs_for_daemon(config)
+        credential_reference_path, credential_secret_dir = effective_credential_reference_paths(
+            data_dir=config.data_dir,
+            configured_store_path=security_config.credential_reference_store_path,
+            configured_secret_dir=security_config.credential_secret_dir,
+        )
+        credential_reference_store = CredentialReferenceStore(
+            registry_path=credential_reference_path,
+            secret_root=credential_secret_dir,
+        )
+        model_config = _resolve_model_credential_references(
+            model_config,
+            store=credential_reference_store,
+        )
         router = ModelRouter(model_config)
-        _validate_model_endpoints(model_config, router)
+        validate_model_endpoints(model_config, router)
         _validate_security_route_pins(model_config, router)
 
         transcript_root = config.data_dir / "sessions"
@@ -841,7 +975,16 @@ class DaemonServices:
                 )
             channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
-            matrix_channel = _build_matrix_channel(config)
+            def _credentials_for_channel(name: str) -> dict[str, str] | None:
+                resolved, diagnostics = _resolve_channel_credential_references(
+                    config, store=credential_reference_store, channels=(name,)
+                )
+                channel_startup_status.update(diagnostics)
+                return None if diagnostics else resolved.get(name)
+
+            credentials = _credentials_for_channel("matrix")
+            if credentials is not None:
+                matrix_channel = _build_matrix_channel(config, credentials=credentials)
             if matrix_channel is not None:
                 startup_result = await _start_channel(
                     name="matrix",
@@ -858,10 +1001,13 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            discord_channel = _build_discord_channel(
-                config,
-                replay_state_store=channel_state_store,
-            )
+            credentials = _credentials_for_channel("discord")
+            if credentials is not None:
+                discord_channel = _build_discord_channel(
+                    config,
+                    replay_state_store=channel_state_store,
+                    credentials=credentials,
+                )
             if discord_channel is not None:
                 startup_result = await _start_channel(
                     name="discord",
@@ -878,7 +1024,12 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            telegram_channel = _build_telegram_channel(config)
+            credentials = _credentials_for_channel("telegram")
+            if credentials is not None:
+                telegram_channel = _build_telegram_channel(
+                    config,
+                    credentials=credentials,
+                )
             if telegram_channel is not None:
                 startup_result = await _start_channel(
                     name="telegram",
@@ -895,7 +1046,9 @@ class DaemonServices:
                             external_user_id=user_id.strip(),
                         )
 
-            slack_channel = _build_slack_channel(config)
+            credentials = _credentials_for_channel("slack")
+            if credentials is not None:
+                slack_channel = _build_slack_channel(config, credentials=credentials)
             if slack_channel is not None:
                 startup_result = await _start_channel(
                     name="slack",
@@ -963,6 +1116,9 @@ class DaemonServices:
                 connect_path_proxy=connect_path_proxy,
                 checkpoint_store=checkpoint_store,
             )
+            memory_upgrade = prepare_memory_database(
+                config.data_dir / "memory_entries" / "memory.sqlite3"
+            )
             memory_components = build_memory_runtime_components(
                 config.data_dir,
                 firewall=firewall,
@@ -975,6 +1131,9 @@ class DaemonServices:
             )
             ingestion = memory_components.ingestion
             memory_manager = memory_components.memory_manager
+            timeline_upgrade = prepare_timeline_database(
+                config.data_dir / "timeline" / "timeline.sqlite3"
+            )
             timeline_index = TimelineIndex(
                 config.data_dir / "timeline",
                 transcript_store=transcript_store,
@@ -1139,7 +1298,6 @@ class DaemonServices:
                 default_persona_tone=config.assistant_persona_tone,
                 default_persona_text=effective_persona_text,
             )
-            shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id
             model_routes = {
                 component.value: router.route_for(component).base_url
@@ -1151,6 +1309,7 @@ class DaemonServices:
             }
             pending_action_store = PendingActionStore(config.data_dir / "pending_actions.json")
             pending_action_lifecycle = PendingActionLifecycleService(pending_action_store)
+            event_wiring.bind_progress_channels(channels)
             services = cls(
                 config=config,
                 data_lock=data_lock,
@@ -1194,6 +1353,10 @@ class DaemonServices:
                 ingestion=ingestion,
                 memory_manager=memory_manager,
                 timeline_index=timeline_index,
+                storage_upgrades={
+                    "memory": _storage_upgrade_status(memory_upgrade),
+                    "timeline": _storage_upgrade_status(timeline_upgrade),
+                },
                 scheduler=scheduler,
                 skill_manager=skill_manager,
                 coding_manager=coding_manager,
@@ -1329,12 +1492,7 @@ class DaemonServices:
 
         # -- Audit log --
         cleared["audit_entries"] = self.audit_log.entry_count
-        from shisad.core.audit import _GENESIS_HASH
-
-        self.audit_log._previous_hash = _GENESIS_HASH
-        self.audit_log._entry_count = 0
-        if self.audit_log._log_path.exists():
-            self.audit_log._log_path.write_text("", encoding="utf-8")
+        self.audit_log.reset_for_test()
 
         # -- Checkpoints --
         cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)
@@ -1625,6 +1783,20 @@ async def _start_channel(
     timeout_seconds: float,
 ) -> _ChannelStartupResult:
     """Connect one optional channel without letting it strand daemon startup."""
+    if getattr(channel, "available", True) is False:
+        logger.warning(
+            "Channel degraded before startup "
+            "(channel=%s reason_code=channel.dependency_unavailable)",
+            name,
+        )
+        return _ChannelStartupResult(
+            active=False,
+            diagnostic={
+                "status": "degraded",
+                "reason_code": "channel.dependency_unavailable",
+                "timeout_seconds": timeout_seconds,
+            },
+        )
     try:
         await asyncio.wait_for(channel.connect(), timeout=timeout_seconds)
     except asyncio.CancelledError:
@@ -1692,7 +1864,11 @@ async def _start_channel(
     )
 
 
-def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
+def _build_matrix_channel(
+    config: DaemonConfig,
+    *,
+    credentials: Mapping[str, str] | None = None,
+) -> MatrixChannel | None:
     if not config.matrix_enabled:
         return None
     from shisad.channels.matrix import MatrixChannel, MatrixConfig
@@ -1700,7 +1876,9 @@ def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     required = {
         "matrix_homeserver": config.matrix_homeserver,
         "matrix_user_id": config.matrix_user_id,
-        "matrix_access_token": config.matrix_access_token,
+        "matrix_access_token": (credentials or {}).get(
+            "matrix_access_token", config.matrix_access_token
+        ),
         "matrix_room_id": config.matrix_room_id,
     }
     missing = [name for name, value in required.items() if not value]
@@ -1712,7 +1890,7 @@ def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
         MatrixConfig(
             homeserver=config.matrix_homeserver,
             user_id=config.matrix_user_id,
-            access_token=config.matrix_access_token,
+            access_token=required["matrix_access_token"],
             room_id=config.matrix_room_id,
             enable_e2ee=config.matrix_e2ee,
             room_workspace_map=dict(config.matrix_room_workspace_map),
@@ -1726,19 +1904,22 @@ def _build_discord_channel(
     config: DaemonConfig,
     *,
     replay_state_store: ChannelStateStore,
+    credentials: Mapping[str, str] | None = None,
 ) -> DiscordChannel | None:
     if not config.discord_enabled:
         return None
     from shisad.channels.discord import DiscordChannel, DiscordConfig
 
-    if not config.discord_bot_token:
+    bot_token = (credentials or {}).get("discord_bot_token", config.discord_bot_token)
+    if not bot_token:
         raise ValueError(
             "Discord channel is enabled but missing required config field: discord_bot_token"
         )
     channel = DiscordChannel(
         DiscordConfig(
-            bot_token=config.discord_bot_token,
+            bot_token=bot_token,
             default_channel_id=config.discord_default_channel_id,
+            use_threads=config.discord_use_threads,
             guild_workspace_map=dict(config.discord_guild_workspace_map),
             trusted_users=set(config.discord_trusted_users),
             channel_rules=list(config.discord_channel_rules),
@@ -1748,18 +1929,23 @@ def _build_discord_channel(
     return channel
 
 
-def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
+def _build_telegram_channel(
+    config: DaemonConfig,
+    *,
+    credentials: Mapping[str, str] | None = None,
+) -> TelegramChannel | None:
     if not config.telegram_enabled:
         return None
     from shisad.channels.telegram import TelegramChannel, TelegramConfig
 
-    if not config.telegram_bot_token:
+    bot_token = (credentials or {}).get("telegram_bot_token", config.telegram_bot_token)
+    if not bot_token:
         raise ValueError(
             "Telegram channel is enabled but missing required config field: telegram_bot_token"
         )
     channel = TelegramChannel(
         TelegramConfig(
-            bot_token=config.telegram_bot_token,
+            bot_token=bot_token,
             default_chat_id=config.telegram_default_chat_id,
             chat_workspace_map=dict(config.telegram_chat_workspace_map),
             trusted_users=set(config.telegram_trusted_users),
@@ -1768,15 +1954,21 @@ def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
     return channel
 
 
-def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
+def _build_slack_channel(
+    config: DaemonConfig,
+    *,
+    credentials: Mapping[str, str] | None = None,
+) -> SlackChannel | None:
     if not config.slack_enabled:
         return None
     from shisad.channels.slack import SlackChannel, SlackConfig
 
     missing: list[str] = []
-    if not config.slack_bot_token:
+    bot_token = (credentials or {}).get("slack_bot_token", config.slack_bot_token)
+    app_token = (credentials or {}).get("slack_app_token", config.slack_app_token)
+    if not bot_token:
         missing.append("slack_bot_token")
-    if not config.slack_app_token:
+    if not app_token:
         missing.append("slack_app_token")
     if missing:
         raise ValueError(
@@ -1784,8 +1976,8 @@ def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
         )
     channel = SlackChannel(
         SlackConfig(
-            bot_token=config.slack_bot_token,
-            app_token=config.slack_app_token,
+            bot_token=bot_token,
+            app_token=app_token,
             default_channel_id=config.slack_default_channel_id,
             team_workspace_map=dict(config.slack_team_workspace_map),
             trusted_users=set(config.slack_trusted_users),
@@ -2785,8 +2977,16 @@ def _log_provider_route_summary(router: ModelRouter) -> None:
         )
 
 
-def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
-    for component in ModelComponent:
+def validate_model_endpoints(
+    model_config: ModelConfig,
+    router: ModelRouter,
+    *,
+    components: Iterable[ModelComponent] | None = None,
+) -> None:
+    """Validate selected routes, or every route for daemon startup."""
+
+    selected_components = tuple(ModelComponent) if components is None else tuple(components)
+    for component in selected_components:
         route = router.route_for(component)
         errors = validate_endpoint(
             route.base_url,

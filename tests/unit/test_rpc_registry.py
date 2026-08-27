@@ -34,7 +34,7 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 
-_FROZEN_F11A_MANIFEST_SHA256 = "d91a1699974a7202ee5461bdc4a23a3c1d1ef940dae53af31fa0271630add9ff"
+_FROZEN_F11A_MANIFEST_SHA256 = "7f173e44844a6e380a52f646e263a805b431e85b84217ff5fe9f9ca3b31c46fe"
 _GROUP_TYPES = {
     RpcHandlerGroup.ADMIN: AdminHandlers,
     RpcHandlerGroup.ASSISTANT: AssistantHandlers,
@@ -90,10 +90,10 @@ def test_f11a_descriptor_manifest_matches_frozen_transport_contract() -> None:
 
     assert isinstance(production, tuple)
     assert isinstance(test_mode, tuple)
-    assert len(production) == 122
-    assert len(test_mode) == 123
-    assert len({descriptor.name for descriptor in test_mode}) == 123
-    assert sum(descriptor.admin_only for descriptor in test_mode) == 79
+    assert len(production) == 129
+    assert len(test_mode) == 130
+    assert len({descriptor.name for descriptor in test_mode}) == 130
+    assert sum(descriptor.admin_only for descriptor in test_mode) == 86
     assert _manifest_digest() == _FROZEN_F11A_MANIFEST_SHA256
 
     production_names = [descriptor.name for descriptor in production]
@@ -133,6 +133,28 @@ def test_f12_assistant_route_lookup_is_descriptor_derived() -> None:
     assert lookup("daemon.reset") is None
     assert lookup("daemon.reset", test_mode=True).availability is RpcAvailability.TEST_MODE
     assert lookup("missing.route") is None
+
+
+def test_o4e_delivery_routes_are_typed_admin_only_and_contiguous() -> None:
+    descriptors = rpc_method_descriptors(test_mode=False)
+    selected = [
+        descriptor
+        for descriptor in descriptors
+        if descriptor.name in {"delivery.list", "delivery.inspect", "delivery.resolve"}
+    ]
+
+    assert [descriptor.name for descriptor in selected] == [
+        "delivery.list",
+        "delivery.inspect",
+        "delivery.resolve",
+    ]
+    assert all(descriptor.admin_only for descriptor in selected)
+    assert all(descriptor.handler_group is RpcHandlerGroup.ADMIN for descriptor in selected)
+    assert [descriptor.handler_method for descriptor in selected] == [
+        "handle_delivery_list",
+        "handle_delivery_inspect",
+        "handle_delivery_resolve",
+    ]
 
 
 def test_f11a_descriptor_routes_match_every_typed_group_signature() -> None:
@@ -271,3 +293,28 @@ def test_f11a_core_registry_does_not_eagerly_import_browser_executor() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_o4f_channel_admin_routes_are_typed_admin_only() -> None:
+    expected = {
+        "channel.status": ("ChannelStatusParams", "ChannelStatusResult"),
+        "channel.test": ("ChannelTestParams", "ChannelTestResult"),
+        "channel.pairing_list": ("ChannelPairingListParams", "ChannelPairingListResult"),
+        "channel.pairing_cleanup": (
+            "ChannelPairingCleanupParams",
+            "ChannelPairingCleanupResult",
+        ),
+    }
+    selected = {
+        descriptor.name: descriptor
+        for descriptor in rpc_method_descriptors(test_mode=False)
+        if descriptor.name in expected
+    }
+
+    assert set(selected) == set(expected)
+    for name, descriptor in selected.items():
+        params_name, result_name = expected[name]
+        assert descriptor.admin_only is True
+        assert descriptor.params_model.__name__ == params_name
+        assert descriptor.result_model.name == result_name
+        assert descriptor.handler_group is RpcHandlerGroup.ADMIN

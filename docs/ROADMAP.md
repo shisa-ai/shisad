@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-07-31*
+*Updated: 2026-08-24*
 *Status: Active*
 
 ## Goal
@@ -95,6 +95,14 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   is published or signed, and this work does not claim the later setup wizard,
   live operator web application, universal secret normalization, universal
   SSRF prevention, DNS pinning, or connection-time peer verification.
+- `v0.8.2` is release-prepared but not yet tagged or published. The candidate
+  closes the post-`v0.8.1` reliability issues, composes bounded first-run setup
+  and guided operation, adds session-scoped chat/Discord progress surfaces,
+  versions owned config/SQLite state, and provides integrity-checked data-root
+  recovery, retained audit verification, delivery inspection, and channel
+  administration. Current adapters still do not provide authoritative
+  provider-side delivery lookup, and remote web/device enrollment remains
+  deferred.
 
 ## Milestones
 
@@ -412,7 +420,7 @@ TOTP entry remain deferred to `v0.8.0`.
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
   v0.9 work. Container registry publication remains future work
-- v0.8.2 development starts with the post-v0.8.1 issue burn-down. Its
+- v0.8.2 release candidate starts with the post-v0.8.1 issue burn-down. Its
   reliability lane includes bounded optional-channel startup: a connector
   timeout degrades that connector and preserves the core daemon when cleanup
   succeeds, while unsafe cleanup failure stops startup and releases data-root
@@ -421,13 +429,69 @@ TOTP entry remain deferred to `v0.8.0`.
   when a protected request or provider-reported request cannot fit. The next
   response-finality unit treats remote no-action planner prose as a preliminary
   draft and exposes only a typed model-produced final answer on native-tool-call
-  routes; it does not add a daemon prose classifier.
+  routes; it does not add a daemon prose classifier. The first onboarding unit
+  now gives bare `shisad` a read-only environment welcome and preflight using
+  finite config, terminal, managed-mode, container, policy, and bounded daemon
+  reachability facts. Optional gaps degrade without blocking the safe core,
+  while invalid explicit posture/config fails actionably; the command does not
+  prompt, write, migrate, start the daemon, or open chat. The next bounded unit
+  adds versioned provider-agnostic credential references with environment,
+  optional OS-keyring, and owner-only local-file backends; redacted
+  set/status/remove commands; and trusted model-route resolution that suppresses
+  unrelated ambient-key auto-detection. A following bounded unit adds explicit
+  provider/model selection, a single redacted immediate planner probe, and
+  generated recommended/strict/finite-custom policy profiles without writing
+  active config or policy files. The channel sibling now adds reference-only
+  Matrix/Discord/Telegram/Slack fragments, bounded truthful connector
+  readiness, explicit default-deny identity guidance, and an optional
+  one-attempt fixed test notice through normal durable delivery. It does not
+  claim inbound round-trip verification. The combined setup unit now composes
+  those owners through an interactive default-no wizard or a deterministic
+  dry-run-by-default selection-file command, then explicitly publishes an
+  owner-only policy and commented reference-only config without starting the
+  daemon. The first-start sibling now makes bare `shisad start` a bounded POSIX
+  background launch with an owner-only log, typed status/doctor projection,
+  exact-child cleanup on startup timeout, and idempotent already-running
+  behavior. Foreground/debug paths remain explicit. A successful interactive
+  wizard publication offers a finite default-exit next-step menu; automation
+  and managed setup still never prompt or launch a child. The guided-tour
+  sibling now provides deterministic maintained readiness/policy/dashboard
+  guidance plus the bounded typed O3A health projection when reachable.
+  Noninteractive use is read-only; a TTY-only default-no choice may hand off
+  to ordinary chat with a display-only suggestion that is never sent
+  automatically. The persistent-chat sibling now polls typed, exact-session
+  `action.pending` state into a bounded literal-text panel; terminal actions
+  disappear on refresh, session changes clear prior state before another
+  query, and RPC/persistence failures degrade without blocking chat. The panel
+  is observational only: existing CLI/daemon confirmation routes remain the
+  lifecycle owners. The Discord sibling adds a default-off thread mode: an
+  addressed parent message creates or reuses a deterministic Discord thread,
+  delivery remains bound to its exact parent/thread coordinates, and session
+  reuse includes thread identity so sibling conversations stay isolated.
+  Missing thread permission is channel-scoped and actionable; invalid thread
+  targets do not fall back to flat delivery. The final sibling adds
+  exact-session local-chat and exact-target Discord action progress from typed
+  lifecycle events. It exposes bounded tool identity and finite state only,
+  edits one Discord progress message per turn, and keeps best-effort progress
+  failure independent from confirmations, execution, and final delivery; raw
+  arguments, results, destinations, and error prose are never projected.
 - TUI visual overhaul — built-in theme and accessibility wiring is present;
   broader chat/dashboard/confirmation chrome remains in the v0.8 line
 - CLI & config — typed TOML plus human/JSON show, validate, schema, diff, env,
   help grouping, exit statuses, and naming compatibility
-- Onboarding — the interactive wizard, tutorial bot, and upgrade flow remain
-  later work; v0.8.1 `init` is only a minimal template publisher
+- Onboarding — the bounded environment/preflight welcome, generic model
+  credential-reference lifecycle, explicit provider/model verification, and
+  generated capability-preserving policy profiles are present on the v0.8.2
+  release candidate. Reference-only four-channel setup now emits validated
+  fragments, runs at most one bounded connector start, and sends a test notice
+  only with explicit effect and target authority. Combined setup can now
+  publish selected reference-only config and policy artifacts after explicit
+  write authority; managed/non-interactive apply never prompts. Bounded
+  background first-start and the interactive post-publication next-step menu
+  are now present, along with the deterministic guided tour, session-scoped
+  persistent pending-confirmation state in chat, default-off Discord thread
+  identity, and bounded redacted action progress in chat/Discord. `init` is
+  still only a minimal template publisher
 - Operator web UI on top of daemon/event-stream surfaces remains later work;
   v0.8.1 `web-ui` is a local static investigation/export snapshot
 - Stats & dashboard — cost/token tracking, usage display, budget controls

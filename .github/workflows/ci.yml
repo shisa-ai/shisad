@@ -172,7 +172,7 @@ jobs:
           uv run python -c "import shisad; import shisad.cli.main"
           uv run shisad --help
 
-      - name: Run F3 portable state and digest paths on Windows
+      - name: Run F3 and DRH1 portable state and rooted recovery paths on Windows
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -180,6 +180,10 @@ jobs:
             tests/unit/test_atomic_state.py \
             tests/integration/test_state_store_integrity.py \
             tests/integration/test_daemon_data_lock.py::test_filelock_zero_timeout_is_portable_and_reacquirable \
+            tests/integration/test_daemon_data_lock.py::test_drh1_daemon_build_holds_the_rooted_lock_identity \
+            tests/unit/test_data_root_handle.py::test_o4cp_windows_root_handle_round_trip_and_exclusive_publication \
+            tests/unit/test_data_root_windows.py \
+            tests/unit/test_data_root_lock.py::test_drh1_rooted_lock_interoperates_with_existing_filelock \
             tests/unit/test_skills.py \
             tests/unit/test_selfmod.py
 

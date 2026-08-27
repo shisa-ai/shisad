@@ -51,7 +51,7 @@ from shisad.security.control_plane.schema import (
     infer_action_kind,
     sanitize_metadata_payload,
 )
-from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
+from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer, SequencePattern
 from shisad.security.control_plane.trace import (
     ExecutionTraceVerifier,
     PlanStage,
@@ -140,6 +140,144 @@ def test_m5_rt1_sequence_detects_fs_read_then_egress_with_intervening_action() -
 
     findings = analyzer.analyze(history=history, candidate_action=candidate)
     assert any(item.pattern_name == "exfil_after_read" for item in findings)
+
+
+@pytest.mark.parametrize(
+    "pattern_kinds",
+    [
+        [ActionKind.FS_READ, ActionKind.EGRESS],
+        [ActionKind.ENV_ACCESS, ActionKind.EGRESS],
+        [ActionKind.FS_LIST, ActionKind.FS_LIST, ActionKind.FS_LIST, ActionKind.FS_LIST],
+        [ActionKind.FS_WRITE, ActionKind.SHELL_EXEC],
+    ],
+    ids=("exfil-after-read", "env-then-egress", "mass-enum", "persistence-attempt"),
+)
+def test_rc82_sequence_requires_current_candidate_to_close_pattern(
+    pattern_kinds: list[ActionKind],
+) -> None:
+    history = SessionActionHistoryStore()
+    origin = _origin("s-rc82-candidate-anchor")
+    now = datetime.now(UTC)
+    for index, action_kind in enumerate(pattern_kinds):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(seconds=index),
+                origin=origin,
+                tool_name=f"completed.{index}",
+                action_kind=action_kind,
+                resource_id=f"completed:{index}",
+            ),
+            decision_status="allow",
+        )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(seconds=len(pattern_kinds)),
+        origin=origin,
+        tool_name="file.read",
+        action_kind=ActionKind.FS_READ,
+        resource_id="README.md",
+    )
+    analyzer = BehavioralSequenceAnalyzer(
+        patterns=[
+            SequencePattern(
+                name="candidate_anchor",
+                pattern=[action_kind.value for action_kind in pattern_kinds],
+                window_actions=10,
+            )
+        ]
+    )
+
+    assert analyzer.analyze(history=history, candidate_action=candidate, now=now) == []
+
+
+def test_rc82_sequence_keeps_persisted_candidate_at_window_end() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-rc82-persisted-candidate")
+    now = datetime.now(UTC)
+    history.append_action(
+        ControlPlaneAction(
+            timestamp=now,
+            origin=origin,
+            tool_name="file.write",
+            action_kind=ActionKind.FS_WRITE,
+            resource_id="/tmp/profile.rc",
+        ),
+        decision_status="allow",
+    )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(seconds=1),
+        origin=origin,
+        tool_name="shell.exec",
+        action_kind=ActionKind.SHELL_EXEC,
+        resource_id="/tmp/profile.rc",
+    )
+    history.append_action(candidate, decision_status="allow")
+    history.append_action(
+        ControlPlaneAction(
+            timestamp=now + timedelta(seconds=2),
+            origin=origin,
+            tool_name="file.read",
+            action_kind=ActionKind.FS_READ,
+            resource_id="README.md",
+        ),
+        decision_status="allow",
+    )
+
+    findings = analyzer.analyze(history=history, candidate_action=candidate, now=now)
+
+    assert any(item.pattern_name == "persistence_attempt" for item in findings)
+
+
+@pytest.mark.parametrize(
+    ("history_kinds", "candidate_kind", "resource_id", "expected_pattern"),
+    [
+        (
+            [ActionKind.FS_LIST, ActionKind.FS_LIST, ActionKind.FS_LIST],
+            ActionKind.FS_LIST,
+            "/tmp/tree",
+            "mass_enum",
+        ),
+        (
+            [ActionKind.FS_WRITE],
+            ActionKind.SHELL_EXEC,
+            "/tmp/profile.rc",
+            "persistence_attempt",
+        ),
+    ],
+    ids=("mass-enum", "persistence-attempt"),
+)
+def test_rc82_sequence_detects_candidate_closing_default_patterns(
+    history_kinds: list[ActionKind],
+    candidate_kind: ActionKind,
+    resource_id: str,
+    expected_pattern: str,
+) -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin(f"s-rc82-{expected_pattern}")
+    now = datetime.now(UTC)
+    for index, action_kind in enumerate(history_kinds):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(seconds=index),
+                origin=origin,
+                tool_name=f"completed.{index}",
+                action_kind=action_kind,
+                resource_id=resource_id,
+            ),
+            decision_status="allow",
+        )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(seconds=len(history_kinds)),
+        origin=origin,
+        tool_name="candidate",
+        action_kind=candidate_kind,
+        resource_id=resource_id,
+    )
+
+    findings = analyzer.analyze(history=history, candidate_action=candidate, now=now)
+
+    assert any(item.pattern_name == expected_pattern for item in findings)
 
 
 @pytest.mark.asyncio
@@ -2943,7 +3081,10 @@ def test_m5_rt7_control_plane_audit_chain_detects_whitespace_tamper(tmp_path) ->
     assert ok_before is True
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    lines[0] = lines[0] + "  "
+    entry_index = next(
+        index for index, line in enumerate(lines) if "shisad.audit.segment" not in line
+    )
+    lines[entry_index] = lines[entry_index] + "  "
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     ok_after, _, error = log.verify_chain()

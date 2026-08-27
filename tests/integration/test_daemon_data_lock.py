@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from filelock import FileLock, SoftFileLock, Timeout
@@ -14,6 +15,8 @@ from shisad.channels.base import InMemoryChannel
 from shisad.channels.telegram import TelegramChannel
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.data_root_handle import open_root
+from shisad.core.data_root_lock import RootedFileLock
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
 from tests.helpers.daemon import clear_remote_provider_env, wait_for_socket
@@ -33,6 +36,70 @@ def test_filelock_zero_timeout_is_portable_and_reacquirable(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_drh1_daemon_build_holds_the_rooted_lock_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, root="rooted", socket_name="rooted.sock")
+    observed = False
+
+    async def observe_lock(
+        cls: type[DaemonServices],
+        built_config: DaemonConfig,
+        data_lock: object,
+    ) -> DaemonServices:
+        nonlocal observed
+        assert cls is DaemonServices
+        assert built_config is config
+        assert isinstance(data_lock, RootedFileLock)
+        with open_root(config.data_dir) as root:
+            assert data_lock.identity == root.metadata(PurePosixPath(".shisad.lock")).identity
+        observed = True
+        raise RuntimeError("observed rooted lock")
+
+    monkeypatch.setattr(DaemonServices, "_build_locked", classmethod(observe_lock))
+
+    with pytest.raises(RuntimeError, match="observed rooted lock"):
+        await DaemonServices.build(config)
+
+    assert observed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlinked data-root compatibility")
+@pytest.mark.asyncio
+async def test_drh1_daemon_build_canonicalizes_a_symlinked_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "canonical-root"
+    target.mkdir()
+    configured = tmp_path / "configured-root"
+    configured.symlink_to(target, target_is_directory=True)
+    config = _config(tmp_path, root=configured.name, socket_name="canonical.sock")
+    observed = False
+
+    async def observe_canonical_root(
+        cls: type[DaemonServices],
+        built_config: DaemonConfig,
+        data_lock: object,
+    ) -> DaemonServices:
+        nonlocal observed
+        assert cls is DaemonServices
+        assert built_config is config
+        assert built_config.data_dir == target.resolve(strict=True)
+        assert isinstance(data_lock, RootedFileLock)
+        observed = True
+        raise RuntimeError("observed canonical root")
+
+    monkeypatch.setattr(DaemonServices, "_build_locked", classmethod(observe_canonical_root))
+
+    with pytest.raises(RuntimeError, match="observed canonical root"):
+        await DaemonServices.build(config)
+
+    assert observed
+
+
+@pytest.mark.asyncio
 async def test_data_root_lock_error_is_redacted_before_service_construction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -44,7 +111,7 @@ async def test_data_root_lock_error_is_redacted_before_service_construction(
     config = _config(tmp_path, root="private-data", socket_name="control.sock")
     monkeypatch.setattr(
         services_module,
-        "FileLock",
+        "RootedFileLock",
         lambda *_args, **_kwargs: _BrokenLock(),
     )
 
@@ -180,11 +247,16 @@ async def test_partial_startup_failure_releases_data_root_lock(
         tmp_path,
         root="retryable",
         socket_name="broken.sock",
-        matrix_enabled=True,
     )
 
-    with pytest.raises(ValueError, match="Matrix channel is enabled"):
-        await run_daemon(broken)
+    with monkeypatch.context() as startup_failure:
+
+        async def _fail_after_lock(*_args) -> None:
+            raise ValueError("simulated partial startup failure")
+
+        startup_failure.setattr(DaemonServices, "_build_locked", classmethod(_fail_after_lock))
+        with pytest.raises(ValueError, match="simulated partial startup failure"):
+            await run_daemon(broken)
 
     healthy = _config(tmp_path, root="retryable", socket_name="healthy.sock")
     task = _spawn_daemon(healthy)
@@ -265,6 +337,7 @@ async def test_gh111_uncleanable_channel_fails_bounded_and_releases_lock(
 
     monkeypatch.setattr(TelegramChannel, "connect", _blocked_connect)
     monkeypatch.setattr(TelegramChannel, "disconnect_strict", _blocked_disconnect)
+    monkeypatch.setattr(TelegramChannel, "available", property(lambda _channel: True))
     config = _config(
         tmp_path,
         root="u",

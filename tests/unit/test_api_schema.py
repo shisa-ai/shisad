@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from shisad.core.api import schema as api_schema
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingResult,
@@ -16,6 +17,12 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DeliveryEntry,
+    DeliveryIdentifierParams,
+    DeliveryInspectResult,
+    DeliveryListParams,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DoctorCheckResult,
     GraphExportParams,
     GraphQueryParams,
@@ -92,6 +99,60 @@ from shisad.core.api.schema import (
 class TestApiSchemaValidation:
     """M0.T1: schema validation rejects malformed control API requests."""
 
+    def test_o4f_channel_admin_params_are_finite_and_truthful(self) -> None:
+        test = api_schema.ChannelTestParams.model_validate(
+            {"channel": "discord", "target": "channel-123"}
+        )
+        cleanup = api_schema.ChannelPairingCleanupParams.model_validate(
+            {
+                "workspace_hint": "guild-1",
+                "channel": "discord",
+                "before": "2026-08-24T00:00:00+00:00",
+                "write": False,
+            }
+        )
+
+        assert test.channel == "discord"
+        assert test.target == "channel-123"
+        assert cleanup.before.tzinfo is not None
+        assert cleanup.write is False
+        for payload in (
+            {"channel": "email", "target": "x"},
+            {"channel": "discord", "target": ""},
+            {"channel": "discord", "target": "bad\nvalue"},
+        ):
+            with pytest.raises(ValidationError):
+                api_schema.ChannelTestParams.model_validate(payload)
+        with pytest.raises(ValidationError):
+            api_schema.ChannelPairingCleanupParams.model_validate(
+                {"workspace_hint": "guild-1", "before": "2026-08-24T00:00:00"}
+            )
+
+    def test_o4f_channel_admin_results_reject_false_round_trip_or_replay_claims(self) -> None:
+        result = api_schema.ChannelTestResult.model_validate(
+            {
+                "channel": "discord",
+                "target": "channel-123",
+                "attempted": True,
+                "sent": True,
+                "state": "delivered",
+                "reason": "provider_acknowledged",
+                "outbound_acknowledged": True,
+                "round_trip_verified": False,
+                "replay_recommended": False,
+            }
+        )
+        assert result.round_trip_verified is False
+        assert result.replay_recommended is False
+        with pytest.raises(ValidationError):
+            api_schema.ChannelTestResult.model_validate(
+                {**result.model_dump(mode="json"), "round_trip_verified": True}
+            )
+        with pytest.raises(ValidationError):
+            api_schema.ChannelTestResult.model_validate(
+                {**result.model_dump(mode="json"), "replay_recommended": True}
+            )
+
     def test_valid_request(self) -> None:
         req = JsonRpcRequest(method="session.create", params={"user_id": "alice"}, id=1)
         assert req.method == "session.create"
@@ -118,6 +179,59 @@ class TestApiSchemaValidation:
     def test_session_create_tone_rejects_unknown_values(self) -> None:
         with pytest.raises(ValidationError):
             SessionCreateParams(tone="casual")
+
+    def test_o4e_delivery_operator_schema_is_exact_and_bounded(self) -> None:
+        reservation_id = "dres-" + "a" * 64
+        delivery_id = "dly-" + "b" * 64
+        entry = DeliveryEntry.model_validate(
+            {
+                "reservation_id": reservation_id,
+                "delivery_id": delivery_id,
+                "kind": "channel_result",
+                "target": {
+                    "channel": "matrix",
+                    "recipient": "!room:example.org",
+                    "workspace_hint": "workspace-1",
+                    "thread_id": "",
+                },
+                "state": "outcome_unknown",
+                "reason": "provider_attempt_failed",
+                "payload_digest": "c" * 64,
+                "receipt": None,
+                "recovery": {
+                    "kind": "neither",
+                    "guarantee_id": "",
+                    "reconciliation_available": False,
+                },
+            }
+        )
+
+        assert DeliveryIdentifierParams(delivery_id=delivery_id).delivery_id == delivery_id
+        assert DeliveryListParams(state="outcome_unknown", limit=1).limit == 1
+        assert DeliveryListResult(deliveries=[entry], count=1).deliveries == [entry]
+        assert DeliveryInspectResult(found=True, delivery=entry).delivery == entry
+        assert (
+            DeliveryResolveResult(
+                found=True,
+                lookup_attempted=False,
+                reconciliation_status="unsupported",
+                reason="provider_reconciliation_unavailable",
+                instruction="No provider lookup is available; no send was attempted.",
+                delivery=entry,
+            ).reconciliation_status
+            == "unsupported"
+        )
+
+        for invalid_id in ("", delivery_id[:-1], "dly-" + "z" * 64, "prefix-" + "a" * 64):
+            with pytest.raises(ValidationError):
+                DeliveryIdentifierParams(delivery_id=invalid_id)
+        for payload in (
+            {"limit": 0},
+            {"limit": 1001},
+            {"state": "unknown-state"},
+        ):
+            with pytest.raises(ValidationError):
+                DeliveryListParams.model_validate(payload)
 
     def test_task_create_requires_workspace_id(self) -> None:
         with pytest.raises(ValidationError):

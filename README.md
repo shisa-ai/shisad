@@ -66,6 +66,7 @@ the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
+| v0.8.2 (release prepared) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, a deterministic guided tour, session-scoped pending confirmations, opt-in Discord thread identity, and bounded redacted action progress in chat/Discord |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -99,13 +100,19 @@ shisad --help
 shisad doctor check --component all
 ```
 
+The v0.8.2 release candidate can prepare one channel at a time or explicitly
+publish a combined provider/policy/channel selection. Enroll logical credential
+references first, then use `shisad setup wizard` on an interactive unmanaged
+terminal or `shisad setup apply --selection FILE` for deterministic automation.
+The apply command is a dry run unless `--write` is present. One-channel setup
+remains available through `shisad setup channel --channel <name> ...`.
+
 The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
 Telegram, and Slack client runtimes. It does not enable channels or add
 credentials; those remain explicit configuration. PromptGuard also remains a
 separate opt-in, so install `shisad[assistant,promptguard]` only when that local
-model runtime is wanted. The latest currently published package is `v0.8.0`;
-the `assistant` extra becomes a PyPI install surface when `v0.8.1` is actually
-published.
+model runtime is wanted. The latest currently published package is `v0.8.1`,
+where the `assistant` extra is the complete consumer install surface.
 
 This repository also contains a tested Linux/amd64 Dockerfile candidate. No
 registry image is published or signed from this tree yet; build it locally and
@@ -154,41 +161,219 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.1 CLI can create and inspect the typed TOML surface without starting
-the daemon:
+The v0.8.2 release-candidate CLI can inspect the environment and create or
+inspect the typed TOML surface without starting the daemon:
 
 ```bash
-shisad init
+shisad
+shisad init --non-interactive
+shisad init --from-env
 shisad config validate
+shisad config upgrade
 shisad config show --format human
 shisad config diff --format human
 shisad config schema --format json
 shisad env --format human
+shisad credential status model.primary
+shisad start
+shisad status
+shisad stop
 ```
 
-`shisad init` creates one owner-only commented template at
+Bare `shisad` is a read-only welcome and preflight. It distinguishes fresh,
+returning, explicitly managed, and non-interactive posture from finite machine
+facts; reports required, optional/degraded, and informational checks; and names
+an explicit next action. It does not prompt, write configuration, migrate a
+schema, start the daemon, or open chat. Unsupported config schema and invalid
+managed posture fail actionably instead of inferring consent. Guided setup is
+an explicit `shisad setup wizard` command. After successful interactive
+publication, its default-exit menu can start the daemon and open chat or the
+dashboard, or show the guided-tour entry point; managed/non-interactive setup
+does not prompt or start a process.
+
+`shisad start` now launches one detached POSIX daemon, waits boundedly for its
+typed status, and prints only a structural readiness summary plus the owner-only
+log path. Repeating it against a reachable daemon is idempotent. Use
+`shisad start --foreground` for service supervisors, containers, or direct log
+inspection; unsupported native background platforms receive that foreground
+path as actionable guidance. `shisad stop` still shuts down through the control
+API rather than trusting a PID file.
+
+`shisad tour` prints a deterministic, maintained walkthrough of readiness,
+ordinary chat, live policy outcomes, dashboard state, and recovery commands.
+It consumes the bounded typed O3A health projection when a daemon is reachable
+and otherwise keeps the guide usable with explicit start/status/doctor
+recovery. Non-interactive use only prints the guide and that read-only health
+state. On a TTY, an explicit default-no choice can open the ordinary chat app
+with a display-only suggested request; the tour never submits that request,
+invokes a model/tool, changes policy, or creates separate tutorial state.
+
+`shisad init` creates one commented template at
 `$XDG_CONFIG_HOME/shisad/config.toml` (normally
 `~/.config/shisad/config.toml`) and refuses an existing or symlink destination.
+It enforces owner-only mode on POSIX and reports when equivalent permission
+tightening is unavailable on another supported platform.
 It is deliberately not a setup wizard: it does not copy ambient secrets,
 configure a provider or policy, create daemon state, or start the daemon. Use
-root `--config FILE` to select another path. Effective precedence remains
-command-line override, environment, TOML, then typed default; show, diff, env,
-and validation output redact secret-bearing fields.
+`--non-interactive` when scripts want to state the existing no-prompt behavior
+explicitly. `--from-env` instead writes only typed, non-default, non-secret
+fields selected by supported environment variables; secret-bearing fields
+remain environment-owned and are named only as omitted fields. Use root
+`--config FILE` to select another path. Effective
+precedence remains command-line override, environment, TOML, then typed
+default; show, diff, env, and validation output redact secret-bearing fields.
+
+Configuration schema `1` is current. `shisad config upgrade` is a no-write
+inspection by default. For a legacy config with no `schema_version`, rerun it
+with `--write` to add only `schema_version = 1`; shisad first preserves the
+exact original in a `.pre-v1.bak` file, validates a temporary candidate, and
+atomically replaces the config. The write summary reports whether owner-only
+permissions and parent-directory synchronization were supported. Interactive
+unmanaged startup may apply that one safe migration with the same visible
+backup and rollback guidance. Managed or non-interactive startup uses the
+compatible legacy values in memory but does not rewrite the operator file; it
+prints the explicit upgrade command instead. Newer, malformed, or explicitly
+older versions are refused without a downgrade attempt.
+
+The O2 credential foundation can keep model-provider secrets out of TOML. A
+logical reference records only backend metadata; the value stays in an
+environment variable, an optional OS keyring, or a permission-protected local
+plaintext file:
+
+```bash
+# Metadata only: this never copies or prints OPENAI_API_KEY.
+shisad credential set model.primary --backend env --locator OPENAI_API_KEY
+
+# Or enroll a local owner-only file value through stdin, never argv.
+printf '%s' "$PROVIDER_KEY" |
+  shisad credential set model.primary --backend file --stdin
+
+# Point model config at the logical name.
+# [model]
+# remote_enabled = true
+# api_key_ref = "model.primary"
+
+shisad credential status model.primary --format human
+shisad credential remove model.primary
+```
+
+The local file backend is plaintext at rest protected by `0700` directories
+and `0600` files; it is not described as encrypted. Install
+`shisad[credentials]` to enable the maintained Python keyring integration. An
+unavailable keyring fails actionably and never falls back to a file. Generated
+setup/config output persists references, not values. Existing explicit raw
+model-key fields remain compatible, but a route cannot configure both a raw
+key and a reference. A reference supplies a credential; it does not bypass the
+existing `remote_enabled` posture.
+
+Credential `--stdin` normalizes terminal CR/LF input record delimiters before
+storage. The `printf '%s'` example avoids adding a shell newline; exact-byte
+enrollment of values that intentionally end in a newline is not supported.
+
+Provider and policy setup can now be evaluated without writing the final
+configuration or active policy files:
+
+Authenticated maintained presets require an explicit `--credential-ref`;
+`vllm_local_default` is the only maintained unauthenticated preset and rejects
+a credential reference. Ambient provider keys do not fill an omitted setup
+selection.
+
+```bash
+# Resolves model.primary only in memory, validates the endpoint, and performs
+# one bounded planner request. Output contains the logical reference, not its value.
+shisad setup provider \
+  --preset openai_default \
+  --credential-ref model.primary \
+  --format human
+
+# Explicitly generate an unverified fragment without making a network request.
+shisad setup provider \
+  --preset openai_default \
+  --credential-ref model.primary \
+  --skip-probe \
+  --format json
+
+# Generate a validated profile on stdout; no active policy is changed.
+shisad setup policy --profile recommended --format human
+shisad setup policy --profile strict --format json
+```
+
+`recommended` keeps default-grant capabilities and automatic per-call handling.
+`strict` keeps the same capabilities but requires confirmation by default and
+requires the semantic classifier and YARA postures. A `custom` profile requires
+all three finite choices explicitly (`--confirmation`,
+`--semantic-classifier`, and `--yara`). Broader rule authoring remains available
+through the existing policy-file format. A skipped probe is reported as
+unverified; a failed probe is not retried automatically, and provider response
+bodies are discarded rather than printed or persisted.
+
+The combined flow accepts the same typed inputs. Interactive setup prompts only
+when both terminal streams are interactive and managed mode is off; it shows a
+redacted summary and requires a final confirmation whose default is no. For
+automation, use one bounded secret-free YAML/JSON selection:
+
+```yaml
+provider:
+  preset: openai_default
+  model_id: gpt-5.4-2026-03-05
+  credential_ref: model.primary
+policy:
+  profile: recommended
+channels:
+  - channel: discord
+    bot_token_ref: channel.discord
+    default_target: "1234567890"
+    trusted_users: ["operator-user-id"]
+```
+
+```bash
+# Evaluate only. No prompt and no write.
+shisad setup apply --selection setup.yaml --skip-probes --format human
+
+# Explicitly publish the displayed unverified selection.
+shisad setup apply --selection setup.yaml --skip-probes --write --format json
+```
+
+Omit `--skip-probes` for the bounded live checks. OpenRouter and local vLLM
+combined selections require an explicit model ID because shisad does not invent
+a maintained default for those presets. Successful publication creates
+`policy.yaml` first and then a schema-validated commented `config.toml` beside
+it, both owner-only (`0600`). Selected fields are active; the rest of the live
+schema stays commented. Existing or symlink destinations are refused. The two
+exclusive writes are not a transaction: if config publication fails after the
+policy completes, the error identifies the inert policy artifact for explicit
+inspection or removal. Setup never starts the daemon.
 
 Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and
 `shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional
 motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
 `NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
-selection is not a supported configuration surface. `shisad web-ui` writes a
-local static investigation/export artifact; it is not the planned live
-operator web application. The artifact embeds session, pending-action, alert,
-and egress-review data, so keep it private and remove it when the investigation
-is complete.
+selection is not a supported configuration surface. In the v0.8.2 release
+candidate, chat also polls the daemon's canonical `action.pending` state for the
+current session and keeps a bounded confirmation panel updated without another
+prompt. The panel shows only confirmation IDs plus bounded tool, risk, and
+approval posture, and points to `shisad action confirm` or
+`shisad action reject` for an explicit decision without deciding anything
+itself. Pending-state RPC or persistence degradation leaves chat input usable
+and displays a retrying unavailable state instead of treating an unlisted
+action as resolved. The v0.8.2 release candidate also projects typed action
+events into a bounded live-progress panel for the exact chat session and one
+edited Discord message per target/turn. Progress contains only bounded tool
+identity plus finite lifecycle state—never arguments, values, results, paths,
+URLs, or error prose—and remains best-effort observability separate from final
+delivery. An unfiltered `shisad events subscribe` stream includes both raw
+audit events and synthetic `ActionProgress` rows; `--count` counts every
+emitted row. `shisad web-ui` writes a local static
+investigation/export artifact; it is not the planned live operator web
+application. The artifact embeds session, pending-action, alert, and
+egress-review data, so keep it private and remove it when the investigation is
+complete.
 
 Expected CLI failures use exit status 1 for command/user-state errors, 2 for
-daemon-connect/RPC errors (and Click usage compatibility), and 3 for invalid or
-unsafe configuration; success is 0. `doctor` remains read-only and has no
+daemon-connect/RPC errors, a completed unsuccessful setup-provider probe (and
+Click usage compatibility), and 3 for invalid or unsafe configuration; success
+is 0. `doctor` remains read-only and has no
 automatic `--fix` mode. Root help advertises the canonical `reality-check`
 spelling while the legacy `realitycheck` spelling remains a hidden
 compatibility alias.
@@ -301,6 +486,8 @@ Auth notes:
 ```bash
 export SHISAD_DISCORD_ENABLED=true
 export SHISAD_DISCORD_BOT_TOKEN="<token>"
+# Optional: create/reuse one Discord thread per addressed parent message.
+export SHISAD_DISCORD_USE_THREADS=true
 
 export SHISAD_TELEGRAM_ENABLED=true
 export SHISAD_TELEGRAM_BOT_TOKEN="<token>"
@@ -312,6 +499,11 @@ export SHISAD_SLACK_APP_TOKEN="<xapp-token>"
 # Default-deny allowlist: channel -> [external_user_id]
 export SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["1234567890"],"telegram":["11111"],"slack":["U12345"]}'
 ```
+
+Discord thread mode defaults off. When enabled, parent-channel mentions create
+a bounded `shisad-<message-id>` thread, later turns in that thread reuse its
+session, and replies never fall back to the parent if the thread cannot be
+resolved. Grant the bot Create Public Threads and Send Messages in Threads.
 
 ### Assistant surfaces
 

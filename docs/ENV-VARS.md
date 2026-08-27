@@ -25,7 +25,7 @@ There are three kinds of env vars in the current codebase:
 3. tool or CLI internal env vars (`_SHISAD_COMPLETE`, opt-in live-test vars, placeholders)
 
 The same typed settings are available in an operator-authored TOML file. Use
-`shisad init` for one no-overwrite owner-only commented template,
+`shisad init --non-interactive` for one no-overwrite owner-only commented template,
 `shisad config template` to print that template without writing it, and
 `shisad config validate|show|schema|diff` plus `shisad env` for human or JSON
 inspection. Effective values and sources are derived from the same typed loader
@@ -66,8 +66,9 @@ Precedence is command-line override, then environment, then TOML, then default.
 Parsing is read-only and does not create the configured data directory.
 
 There is intentionally no `init --from-env` migration command in this release.
-Use the generated template and `config show` rather than assuming environment
-values were written to disk.
+`init --non-interactive` names the same minimal no-prompt behavior; it does not
+copy environment values. Use the generated template and `config show` rather
+than assuming environment values were written to disk.
 
 `shisad init` writes only the generated comments/default examples. It refuses
 existing files, symlink destinations, and destinations inside configured data
@@ -75,6 +76,14 @@ or assistant-managed roots; it does not configure providers or policy, create
 daemon state, or start the daemon. `config validate`, `config show`, `config
 schema`, `config diff`, and `shisad env` are read-only. Each accepts `--format
 human|json`; `config show` retains JSON as its compatibility default.
+
+`shisad setup apply --selection FILE` is the deterministic managed/automation
+path for final provider, policy, and channel setup. It never prompts and is a
+dry run unless `--write` is present. The selection document may contain logical
+credential references but no raw-secret field. Final TOML uncomments only the
+validated selected fields and never copies ambient provider/channel secrets.
+The sibling policy and config files are each created exclusively at `0600`;
+they are ordered policy then config but are not a cross-file transaction.
 
 ## Child-Process Environment Boundaries
 
@@ -153,6 +162,7 @@ Matrix:
 - `SHISAD_MATRIX_HOMESERVER`
 - `SHISAD_MATRIX_USER_ID`
 - `SHISAD_MATRIX_ACCESS_TOKEN`
+- `SHISAD_MATRIX_ACCESS_TOKEN_REF`
 - `SHISAD_MATRIX_ROOM_ID`
 - `SHISAD_MATRIX_E2EE`
 - `SHISAD_MATRIX_TRUSTED_USERS`
@@ -162,7 +172,9 @@ Discord:
 
 - `SHISAD_DISCORD_ENABLED`
 - `SHISAD_DISCORD_BOT_TOKEN`
+- `SHISAD_DISCORD_BOT_TOKEN_REF`
 - `SHISAD_DISCORD_DEFAULT_CHANNEL_ID`
+- `SHISAD_DISCORD_USE_THREADS`
 - `SHISAD_DISCORD_TRUSTED_USERS`
 - `SHISAD_DISCORD_GUILD_WORKSPACE_MAP`
 - `SHISAD_DISCORD_CHANNEL_RULES`
@@ -171,6 +183,7 @@ Telegram:
 
 - `SHISAD_TELEGRAM_ENABLED`
 - `SHISAD_TELEGRAM_BOT_TOKEN`
+- `SHISAD_TELEGRAM_BOT_TOKEN_REF`
 - `SHISAD_TELEGRAM_DEFAULT_CHAT_ID`
 - `SHISAD_TELEGRAM_TRUSTED_USERS`
 - `SHISAD_TELEGRAM_CHAT_WORKSPACE_MAP`
@@ -179,7 +192,9 @@ Slack:
 
 - `SHISAD_SLACK_ENABLED`
 - `SHISAD_SLACK_BOT_TOKEN`
+- `SHISAD_SLACK_BOT_TOKEN_REF`
 - `SHISAD_SLACK_APP_TOKEN`
+- `SHISAD_SLACK_APP_TOKEN_REF`
 - `SHISAD_SLACK_DEFAULT_CHANNEL_ID`
 - `SHISAD_SLACK_TRUSTED_USERS`
 - `SHISAD_SLACK_TEAM_WORKSPACE_MAP`
@@ -188,7 +203,23 @@ Identity gating:
 
 - `SHISAD_CHANNEL_IDENTITY_ALLOWLIST`
 
+Each `*_TOKEN_REF` is a logical O2A credential name resolved only for enabled
+adapter construction. It is mutually exclusive with the matching raw token
+field, and Slack bot/app references must be distinct. Missing references and
+optional channel dependencies degrade that channel without blocking the safe
+core daemon. A connector or test target is never an identity grant; configure
+an explicit channel `*_TRUSTED_USERS` list or generic allowlist for ingress.
+
 Discord public-channel rules:
+
+- `SHISAD_DISCORD_USE_THREADS` is a boolean and defaults to `false`. When
+  enabled, an addressed parent-channel message creates or reuses its Discord
+  message thread; existing thread messages stay in that thread, session reuse
+  includes the exact thread ID, and outbound delivery does not fall back to the
+  parent when a thread target is invalid. The bot needs Create Public Threads
+  and Send Messages in Threads permissions. DMs retain their existing flat
+  behavior. In thread mode, Discord channel rules are evaluated against and
+  inherited from the parent channel ID rather than the concrete thread ID.
 
 - `SHISAD_DISCORD_CHANNEL_RULES` accepts a JSON list of rules. Each rule may set
   `guild_id`, `channels`, `exclude_channels`, `mode` (`mention-only`,
@@ -639,6 +670,17 @@ Notes:
   request.
 - Route-local `*_REMOTE_ENABLED` fields accept empty/unset to mean “inherit global”.
 - `SHISAD_MODEL_API_KEY` is the generic global override, but preset-native key envs are also recognized.
+- `SHISAD_MODEL_API_KEY_REF` is the provider-agnostic logical-reference
+  alternative to the global raw key. Route-local alternatives are
+  `SHISAD_MODEL_PLANNER_API_KEY_REF`,
+  `SHISAD_MODEL_EMBEDDINGS_API_KEY_REF`, and
+  `SHISAD_MODEL_MONITOR_API_KEY_REF`. A raw key and its matching reference are
+  mutually exclusive. When a reference is explicit, unrelated ambient
+  provider keys do not replace it.
+- `SHISAD_SECURITY_CREDENTIAL_REFERENCE_STORE_PATH` selects the versioned
+  metadata registry, and `SHISAD_SECURITY_CREDENTIAL_SECRET_DIR` selects the
+  owner-only local plaintext backend root. Their defaults follow
+  `SHISAD_DATA_DIR`; custom paths are explicit operator state.
 - Ordinary `shisad doctor check --component provider` reports configuration
   evidence only; a present key is `configured`, not authenticated or verified.
   Run `shisad doctor check --component provider --live` for the opt-in bounded
@@ -650,7 +692,7 @@ These are still part of the live surface:
 
 | Env var | Purpose |
 |---|---|
-| `SHISAD_MEMORY_MASTER_KEY` | Optional memory-encryption secret override |
+| `SHISAD_MEMORY_MASTER_KEY` | Optional stable memory-encryption secret; configure it before creating source data when encrypted memory must start under a different effective user, machine identity, or absolute data root; otherwise the default key binds all three |
 | `SHISAD_SESSION_ID` | CLI current-session default when a command has no explicit `--session`; otherwise the CLI may use its last-session cache where that command permits it |
 | `SHISAD_USER` | CLI owner-scope default used together with `SHISAD_WORKSPACE` when explicit `--user` / `--workspace` flags are absent |
 | `SHISAD_WORKSPACE` | CLI owner-scope default used together with `SHISAD_USER`; setting only one of the pair is an error |
@@ -659,7 +701,13 @@ These are still part of the live surface:
 | `OPENROUTER_API_KEY` | OpenRouter preset credential discovery |
 | `GEMINI_API_KEY` | Google OpenAI-compatible preset credential discovery |
 | `ANTHROPIC_API_KEY` | Anthropic preset credential discovery for planner/monitor routes |
+| Dynamically registered environment locator | A `credential set --backend env --locator NAME` entry reads only the exact registered variable at trusted resolution; status never prints its value |
 | `_SHISAD_COMPLETE` | shell-completion internal env, not operator config |
+
+Without an explicit `SHISAD_MEMORY_MASTER_KEY`, memory encryption derives from
+the absolute storage path. Such memory can be reopened only at its original
+absolute data root. A backup restores the ciphertext but does not migrate or
+recover its encryption key.
 
 ## Opt-In Test / Dev Knobs
 

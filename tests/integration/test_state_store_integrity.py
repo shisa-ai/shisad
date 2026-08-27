@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import shisad.core.data_backup as data_backup_module
 import shisad.scheduler.manager as scheduler_module
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -36,6 +39,47 @@ def _assert_state_envelope(path: Path) -> dict[str, object]:
     assert envelope["schema"] == 1
     assert isinstance(envelope["sha256"], str)
     return envelope
+
+
+def test_o4cp_supported_platform_root_handle_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    state = source / "nested" / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_bytes(b'\x00{"durable":true}\n')
+    archive = tmp_path / "snapshot.shisad-backup"
+    restored = tmp_path / "restored"
+
+    backup = data_backup_module.create_data_backup(source, archive)
+    restore = data_backup_module.restore_data_backup(archive, restored)
+
+    assert backup.verified is True
+    assert restore.verified is True
+    assert (restored / "nested" / "state.json").read_bytes() == state.read_bytes()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows reparse contract")
+def test_drh1_native_windows_backup_rejects_a_directory_junction(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_bytes(b"outside")
+    junction = source / "junction"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    archive = tmp_path / "snapshot.shisad-backup"
+
+    with pytest.raises(
+        data_backup_module.DataBackupError,
+        match=r"reparse|unsafe|special|scan|travers|inspect",
+    ):
+        data_backup_module.create_data_backup(source, archive)
+
+    assert not archive.exists()
 
 
 def test_scheduler_first_use_restart_and_pending_state_use_state_envelopes(

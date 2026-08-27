@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from shisad.core.config import ModelConfig
-from shisad.core.providers.routing import ModelRouter
-from shisad.daemon.runner import _validate_model_endpoints
+from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.daemon import runner as daemon_runner
+from shisad.daemon.services import validate_model_endpoints
 
 
 def test_model_endpoint_validation_rejects_remote_http(
@@ -19,7 +20,7 @@ def test_model_endpoint_validation_rejects_remote_http(
     router = ModelRouter(config)
 
     with pytest.raises(ValueError):
-        _validate_model_endpoints(config, router)
+        validate_model_endpoints(config, router)
 
 
 def test_model_endpoint_validation_accepts_https_routes() -> None:
@@ -31,7 +32,7 @@ def test_model_endpoint_validation_accepts_https_routes() -> None:
     config = ModelConfig(base_url="https://api.example.com/v1")
     router = ModelRouter(config)
 
-    assert _validate_model_endpoints(config, router) is None
+    assert validate_model_endpoints(config, router) is None
 
 
 def test_model_endpoint_validation_checks_all_model_components() -> None:
@@ -47,7 +48,25 @@ def test_model_endpoint_validation_checks_all_model_components() -> None:
     router = ModelRouter(config)
 
     with pytest.raises(ValueError, match="planner"):
-        _validate_model_endpoints(config, router)
+        validate_model_endpoints(config, router)
+
+
+def test_model_endpoint_validation_can_scope_setup_to_planner() -> None:
+    config = ModelConfig(
+        planner_base_url="https://planner.example.com/v1",
+        monitor_base_url="http://monitor.example.com/v1",
+        endpoint_allowlist=["https://planner.example.com/v1"],
+    )
+    router = ModelRouter(config)
+
+    assert (
+        validate_model_endpoints(
+            config,
+            router,
+            components=(ModelComponent.PLANNER,),
+        )
+        is None
+    )
 
 
 def test_model_endpoint_validation_enforces_configured_allowlist() -> None:
@@ -58,4 +77,8 @@ def test_model_endpoint_validation_enforces_configured_allowlist() -> None:
     router = ModelRouter(config)
 
     with pytest.raises(ValueError):
-        _validate_model_endpoints(config, router)
+        validate_model_endpoints(config, router)
+
+
+def test_rf_2026_011_runner_endpoint_validator_shim_is_deleted() -> None:
+    assert not hasattr(daemon_runner, "_validate_model_endpoints")

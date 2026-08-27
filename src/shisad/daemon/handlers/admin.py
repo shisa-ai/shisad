@@ -15,11 +15,24 @@ from shisad.core.api.schema import (
     AdminSoulUpdateResult,
     ChannelIngestParams,
     ChannelIngestResult,
+    ChannelPairingCleanupParams,
+    ChannelPairingCleanupResult,
+    ChannelPairingListParams,
+    ChannelPairingListResult,
     ChannelPairingProposalParams,
     ChannelPairingProposalResult,
+    ChannelStatusParams,
+    ChannelStatusResult,
+    ChannelTestParams,
+    ChannelTestResult,
     DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
+    DeliveryIdentifierParams,
+    DeliveryInspectResult,
+    DeliveryListParams,
+    DeliveryListResult,
+    DeliveryResolveResult,
     DevCloseParams,
     DevCloseResult,
     DevImplementParams,
@@ -145,6 +158,58 @@ class AdminHandlers:
             await self._impl.do_channel_ingest_reserved(payload)
         )
 
+    async def handle_channel_status(
+        self,
+        params: ChannelStatusParams,
+        ctx: RequestContext,
+    ) -> ChannelStatusResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ChannelStatusResult.model_validate(await self._impl.do_channel_status(payload))
+
+    async def handle_channel_test(
+        self,
+        params: ChannelTestParams,
+        ctx: RequestContext,
+    ) -> ChannelTestResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ChannelTestResult.model_validate(await self._impl.do_channel_test(payload))
+
+    async def handle_channel_pairing_list(
+        self,
+        params: ChannelPairingListParams,
+        ctx: RequestContext,
+    ) -> ChannelPairingListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ChannelPairingListResult.model_validate(
+            await self._impl.do_channel_pairing_list(payload)
+        )
+
+    async def handle_channel_pairing_cleanup(
+        self,
+        params: ChannelPairingCleanupParams,
+        ctx: RequestContext,
+    ) -> ChannelPairingCleanupResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ChannelPairingCleanupResult.model_validate(
+            await self._impl.do_channel_pairing_cleanup(payload)
+        )
+
     async def handle_channel_pairing_propose(
         self,
         params: ChannelPairingProposalParams,
@@ -158,6 +223,42 @@ class AdminHandlers:
         return ChannelPairingProposalResult.model_validate(
             await self._impl.do_channel_pairing_propose(payload)
         )
+
+    async def handle_delivery_list(
+        self,
+        params: DeliveryListParams,
+        ctx: RequestContext,
+    ) -> DeliveryListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryListResult.model_validate(await self._impl.do_delivery_list(payload))
+
+    async def handle_delivery_inspect(
+        self,
+        params: DeliveryIdentifierParams,
+        ctx: RequestContext,
+    ) -> DeliveryInspectResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryInspectResult.model_validate(await self._impl.do_delivery_inspect(payload))
+
+    async def handle_delivery_resolve(
+        self,
+        params: DeliveryIdentifierParams,
+        ctx: RequestContext,
+    ) -> DeliveryResolveResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DeliveryResolveResult.model_validate(await self._impl.do_delivery_resolve(payload))
 
     async def handle_admin_selfmod_propose(
         self,

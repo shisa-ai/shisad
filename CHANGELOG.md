@@ -11,6 +11,124 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## 0.8.2 Release Content - 2026-08-24
+
+This release completes the guided onboarding path and strengthens response
+grounding, channel interaction, data recovery, schema migration, audit
+verification, and operator diagnostics. It is release-prepared content; the
+latest published package remains `v0.8.1` until the explicit tag and publish
+steps complete.
+
+### Added
+
+- **First-run setup is bounded and inspectable.** Read-only preflight, named
+  credential references, provider/model checks, generated policy profiles,
+  reference-only channel configuration, an explicit-write setup wizard,
+  background first start, health diagnostics, and a guided tour compose without
+  silently publishing credentials or starting services.
+
+- **Chat exposes session-scoped pending work and progress.** The terminal chat
+  can show current-session confirmations, Discord can opt into request-bound
+  threads, and local chat/Discord can display bounded typed action progress
+  without projecting raw arguments, results, destinations, or error prose.
+  ([#79](https://github.com/shisa-ai/shisad/issues/79),
+  [#81](https://github.com/shisa-ai/shisad/issues/81),
+  [#87](https://github.com/shisa-ai/shisad/issues/87))
+
+- **Config and owned SQLite stores have explicit upgrade paths.** Config
+  upgrades are previewable and preserve an exact rollback copy; owned SQLite
+  stores validate their current schema and run ordered, restart-safe forward
+  migrations while refusing unsupported newer layouts.
+
+- **The complete data root can be backed up and restored.** The stopped-daemon
+  workflow uses an integrity-checked archive, verified rooted filesystem
+  operations, explicit sensitive-data handling, and actionable recovery output.
+
+- **Audit history covers the retained action lifecycle.** Startup, append,
+  rotation, retention, query, and offline verification share one hash-linked
+  local history and fail closed when retained evidence changes unexpectedly.
+  Complete deletion remains outside the local-root threat boundary because
+  there is no external audit anchor.
+
+- **Channel administration is explicit and bounded.** Authenticated local
+  commands report truthful Matrix/Discord/Telegram/Slack status, send one fixed
+  setup notice through normal durable delivery authority, inspect or clean one
+  exact workspace's pairing requests, and preview or publish one validated
+  config-section change. Status and tests do not claim inbound round-trip
+  verification.
+
+- **Durable delivery attempts are inspectable after uncertainty.** Operators
+  can list, inspect, and resolve locally retained channel-delivery attempts.
+  Current adapters truthfully report that authoritative provider lookup is
+  unavailable, so the command does not infer delivery or silently replay an
+  uncertain send.
+
+### Changed
+
+- **Responses separate model prior from supplied evidence.** Native tool-call
+  paths expose one typed final answer rather than preliminary routing prose,
+  and the response contract distinguishes retrieved/tool evidence from the
+  model's prior knowledge without a daemon-side natural-language classifier.
+  ([#96](https://github.com/shisa-ai/shisad/issues/96),
+  [#98](https://github.com/shisa-ai/shisad/issues/98),
+  [#99](https://github.com/shisa-ai/shisad/issues/99))
+
+- **Planner context capacity fails actionably.** Known model windows are
+  budgeted before provider invocation; eligible optional history can be
+  compacted, while protected or provider-reported overflow returns a bounded
+  user-facing error instead of an opaque HTTP failure.
+  ([#97](https://github.com/shisa-ai/shisad/issues/97))
+
+- **Runtime failures use bounded user-facing envelopes.** Chat and channel
+  responses omit internal route identifiers and technical detail from their
+  primary message while retaining structured operator diagnostics and clear
+  next actions.
+  ([#101](https://github.com/shisa-ai/shisad/issues/101),
+  [#104](https://github.com/shisa-ai/shisad/issues/104))
+
+- **Confirmation reviews are action-specific and channel-readable.** Shared
+  semantic rendering hides internal control fields, retains explicit machine
+  detail where supported, and keeps completion on the originating surface.
+  ([#74](https://github.com/shisa-ai/shisad/issues/74),
+  [#78](https://github.com/shisa-ai/shisad/issues/78),
+  [#103](https://github.com/shisa-ai/shisad/issues/103))
+
+### Fixed
+
+- **ACP configuration negotiation preserves reasoning effort.** Compatible
+  option aliases survive capability negotiation, and mismatched responses are
+  rejected instead of silently dropping the requested setting.
+  ([#109](https://github.com/shisa-ai/shisad/issues/109))
+
+- **Development dependency groups synchronize together.** The supported
+  development plus chat installation resolves without the conflicting group
+  state reported by the staging workflow.
+  ([#100](https://github.com/shisa-ai/shisad/issues/100))
+
+- **Optional channel startup is bounded.** A missing or slow optional channel
+  degrades that connector and preserves the core daemon when cleanup succeeds;
+  unsafe cleanup failure stops startup and releases data-root ownership.
+  ([#111](https://github.com/shisa-ai/shisad/issues/111))
+
+- **Discord action/result delivery is separated and length-bounded.** Pending
+  confirmations, completed results, internal status reasons, and oversized
+  messages no longer collapse into one ambiguous or rejected reply.
+  ([#102](https://github.com/shisa-ai/shisad/issues/102),
+  [#105](https://github.com/shisa-ai/shisad/issues/105),
+  [#106](https://github.com/shisa-ai/shisad/issues/106))
+
+### Security
+
+- **Recovery paths bind filesystem authority to verified roots.** Backup,
+  restore, cleanup, publication, and lifecycle locking use rooted operations
+  on supported POSIX and Windows paths and refuse unsafe replacement or
+  unavailable required capabilities.
+
+- **Migration and audit admission validate retained structure before use.**
+  Unexpected SQLite layouts, corrupt migration state, broken audit links, and
+  externally changed retained audit files are rejected before consequential
+  work or new audit append.
+
 ## [0.8.1] - 2026-07-28
 
 This release makes actions, recovery, configuration, containment, and

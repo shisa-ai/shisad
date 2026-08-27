@@ -188,16 +188,19 @@ class BehavioralSequenceAnalyzer:
 
     @staticmethod
     def _matches_pattern(kinds: list[str], pattern: list[str]) -> bool:
-        if len(kinds) < len(pattern):
+        if not pattern or len(kinds) < len(pattern):
+            return False
+        candidate_expected = pattern[-1]
+        if candidate_expected != "*" and kinds[-1] != candidate_expected:
             return False
         index = 0
-        for observed in kinds:
-            if index >= len(pattern):
-                return True
+        for observed in kinds[:-1]:
+            if index >= len(pattern) - 1:
+                break
             expected = pattern[index]
             if expected == "*" or observed == expected:
                 index += 1
-        return index == len(pattern)
+        return index == len(pattern) - 1
 
     @staticmethod
     def _window_records(
@@ -225,6 +228,8 @@ class BehavioralSequenceAnalyzer:
         else:
             records = history.for_analysis(session_id, observation_kinds={"action"})
         records = list(records)
+        candidate_key = history.analysis_key(candidate_record)
+        records = [record for record in records if history.analysis_key(record) != candidate_key]
         records.append(candidate_record)
         records = history.dedupe_for_analysis(records)
         if pattern.window_actions is not None and len(records) > pattern.window_actions:

@@ -1769,6 +1769,7 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
         )
 
     monkeypatch.setattr(MatrixChannel, "connect", _fake_connect)
+    monkeypatch.setattr(MatrixChannel, "available", property(lambda _channel: True))
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -1886,6 +1887,7 @@ async def test_m5_discord_receive_pump_ingests_inbound_messages(
         )
 
     monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+    monkeypatch.setattr(DiscordChannel, "available", property(lambda _channel: True))
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -1933,6 +1935,7 @@ async def test_m5_telegram_receive_pump_ingests_inbound_messages(
         )
 
     monkeypatch.setattr(TelegramChannel, "connect", _fake_connect)
+    monkeypatch.setattr(TelegramChannel, "available", property(lambda _channel: True))
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -1980,6 +1983,7 @@ async def test_m5_slack_receive_pump_ingests_inbound_messages(
         )
 
     monkeypatch.setattr(SlackChannel, "connect", _fake_connect)
+    monkeypatch.setattr(SlackChannel, "available", property(lambda _channel: True))
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",

@@ -3121,9 +3121,7 @@ async def test_i4_route_failure_with_local_tool_marks_partial_result() -> None:
     response = await provider.complete(
         [Message(role="user", content="run: echo hello")],
         fallback_mode="route_error",
-        fallback_error=(
-            "Provider HTTP error 503 for https://planner.example.test/v1: unavailable"
-        ),
+        fallback_error=("Provider HTTP error 503 for https://planner.example.test/v1: unavailable"),
     )
 
     assert response.failure is not None

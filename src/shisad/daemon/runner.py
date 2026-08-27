@@ -12,22 +12,14 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from shisad.core.api.rpc_registry import rpc_method_descriptors
-from shisad.core.config import DaemonConfig, ModelConfig
+from shisad.core.config import DaemonConfig
 from shisad.core.interfaces import TypedHandler
 from shisad.core.log import setup_logging
-from shisad.core.providers.routing import ModelRouter
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
-
-
-def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
-    """Compatibility shim for endpoint validation helper moved to services."""
-    from shisad.daemon.services import _validate_model_endpoints as _validate
-
-    _validate(model_config, router)
 
 
 def _warn_on_startup_config_gaps(config: DaemonConfig) -> None:
