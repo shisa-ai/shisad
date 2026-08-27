@@ -381,12 +381,14 @@ shared multi-host data root or active/active deployment.
     --destination /absolute/path/to/restored-data
   ```
 
-  Starting encrypted memory at a different absolute data root works only when
-  an explicit stable `SHISAD_MEMORY_MASTER_KEY` was configured before the
-  source data was created and that same value is available to the restored
-  daemon. Memory using the default path-derived key can be reopened only at its
-  original absolute data root; restore does not migrate or recover encryption
-  keys.
+  Starting encrypted memory under a different effective user, machine
+  identity, or absolute data root works only when an explicit stable
+  `SHISAD_MEMORY_MASTER_KEY` was configured before the source data was created
+  and that same value is available to the restored daemon. The default key is
+  derived from the effective user ID, machine identity, and absolute memory
+  storage path, so default-key memory can be reopened only when all three
+  match, including the original absolute data root. Restore does not migrate or
+  recover encryption keys.
 
   Restore verifies the canonical manifest and every payload before writing and
   never merges with existing state. It pins the destination parent and creates

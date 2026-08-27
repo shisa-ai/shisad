@@ -31,10 +31,11 @@ _OUTPUT_FORMAT = click.option(
 )
 
 _CROSS_ROOT_ENCRYPTED_MEMORY_GUIDANCE = (
-    "Starting encrypted memory at a different absolute data root requires an explicit stable "
-    "SHISAD_MEMORY_MASTER_KEY configured before the source data was created and the same value "
-    "at startup. Memory using the default path-derived key can be reopened only at its original "
-    "absolute data root."
+    "Starting encrypted memory under a different effective user, machine identity, or absolute "
+    "data root requires an explicit stable SHISAD_MEMORY_MASTER_KEY configured before the source "
+    "data was created and the same value at startup. Memory using the default key, derived from "
+    "the effective user ID, machine identity, and absolute memory storage path, can be reopened "
+    "only when all three match, including the original absolute data root."
 )
 
 

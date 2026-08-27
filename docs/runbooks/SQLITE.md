@@ -80,8 +80,9 @@ shisad data restore /operator-controlled/shisad-data.shisad-backup \
 For a different-root start, encrypted memory is portable only when an explicit
 stable `SHISAD_MEMORY_MASTER_KEY` was configured before the source data was
 created and the same value is supplied to the restored daemon. The default key
-is derived from the absolute storage path, so default-key memory can be reopened
-only at its original absolute data root. Restore does not migrate or recover
+is derived from the effective user ID, machine identity, and absolute memory
+storage path, so default-key memory can be reopened only when all three match,
+including the original absolute data root. Restore does not migrate or recover
 encryption keys.
 
 The command verifies the complete manifest, member set, sizes, and SHA-256

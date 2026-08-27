@@ -65,6 +65,8 @@ def test_o4c_data_backup_restore_json_and_human_guidance(
     assert json_restore["sensitive_archive"] is True
     assert json_restore["sensitive_archive_handling"] == "retain in operator-controlled storage"
     assert "SHISAD_MEMORY_MASTER_KEY" in json_restore["cross_root_encrypted_memory"]
+    assert "effective user" in json_restore["cross_root_encrypted_memory"]
+    assert "machine identity" in json_restore["cross_root_encrypted_memory"]
     assert "original absolute data root" in json_restore["cross_root_encrypted_memory"]
 
     human_archive = tmp_path / "human-snapshot.shisad-backup"
@@ -99,6 +101,8 @@ def test_o4c_data_backup_restore_json_and_human_guidance(
     assert "permissions=" in restore_result.output
     assert "Sensitive archive" in restore_result.output
     assert "SHISAD_MEMORY_MASTER_KEY" in restore_result.output
+    assert "effective user" in restore_result.output
+    assert "machine identity" in restore_result.output
     assert "original absolute data root" in restore_result.output
     assert (restored / "sessions" / "state" / "session.json").read_bytes() == state.read_bytes()
 

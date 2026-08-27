@@ -671,22 +671,9 @@ class ChannelDeliveryService:
                 reason="delivery_not_found",
                 instruction="Inspect the exact durable delivery ID and try again.",
             )
-        if record.state == "delivered":
-            return self._resolution(
-                record,
-                status="delivered",
-                reason=record.reason,
-                instruction="Delivery is already recorded as delivered; no lookup or send ran.",
-            )
-        if record.state == "reconciled_absent":
-            return self._resolution(
-                record,
-                status="absent",
-                reason=record.reason,
-                instruction=(
-                    "No send was attempted. Submit a fresh request to retry the originating work."
-                ),
-            )
+        terminal_resolution = self._terminal_resolution(record, attempted=False)
+        if terminal_resolution is not None:
+            return terminal_resolution
         if record.state not in {"attempt_started", "outcome_unknown"}:
             return self._resolution(
                 record,
@@ -696,6 +683,9 @@ class ChannelDeliveryService:
             )
         if not self._reconciliation.available(record.intent.target.channel):
             record = self._retain_unknown(record, "provider_reconciliation_unavailable")
+            terminal_resolution = self._terminal_resolution(record, attempted=False)
+            if terminal_resolution is not None:
+                return terminal_resolution
             return self._resolution(
                 record,
                 status="unsupported",
@@ -713,6 +703,9 @@ class ChannelDeliveryService:
                 record.intent.target.channel,
             )
             record = self._retain_unknown(record, "provider_reconciliation_failed")
+            terminal_resolution = self._terminal_resolution(record, attempted=True)
+            if terminal_resolution is not None:
+                return terminal_resolution
             return self._resolution(
                 record,
                 attempted=True,
@@ -728,8 +721,13 @@ class ChannelDeliveryService:
             except DeliveryStateError:
                 current = store.record(record.reservation_id)
                 if current is not None and current.state in {"delivered", "reconciled_absent"}:
-                    return await self.resolve_delivery(current.delivery_id)
+                    terminal_resolution = self._terminal_resolution(current, attempted=True)
+                    assert terminal_resolution is not None
+                    return terminal_resolution
                 record = self._retain_unknown(record, "reconciliation_receipt_invalid")
+                terminal_resolution = self._terminal_resolution(record, attempted=True)
+                if terminal_resolution is not None:
+                    return terminal_resolution
                 return self._resolution(
                     record,
                     attempted=True,
@@ -752,6 +750,9 @@ class ChannelDeliveryService:
                 if current is None:
                     raise
                 record = current
+            terminal_resolution = self._terminal_resolution(record, attempted=True)
+            if terminal_resolution is not None:
+                return terminal_resolution
             return self._resolution(
                 record,
                 attempted=True,
@@ -762,6 +763,9 @@ class ChannelDeliveryService:
                 ),
             )
         record = self._retain_unknown(record, "provider_reconciliation_unknown")
+        terminal_resolution = self._terminal_resolution(record, attempted=True)
+        if terminal_resolution is not None:
+            return terminal_resolution
         return self._resolution(
             record,
             attempted=True,
@@ -1204,6 +1208,38 @@ class ChannelDeliveryService:
             "instruction": instruction,
             "delivery": self._inspection(record) if record is not None else None,
         }
+
+    def _terminal_resolution(
+        self,
+        record: DeliveryRecord,
+        *,
+        attempted: bool,
+    ) -> dict[str, Any] | None:
+        if record.state == "delivered":
+            instruction = (
+                "Delivery became recorded as delivered during reconciliation; "
+                "no second send was attempted."
+                if attempted
+                else "Delivery is already recorded as delivered; no lookup or send ran."
+            )
+            return self._resolution(
+                record,
+                attempted=attempted,
+                status="delivered",
+                reason=record.reason,
+                instruction=instruction,
+            )
+        if record.state == "reconciled_absent":
+            return self._resolution(
+                record,
+                attempted=attempted,
+                status="absent",
+                reason=record.reason,
+                instruction=(
+                    "No send was attempted. Submit a fresh request to retry the originating work."
+                ),
+            )
+        return None
 
     @staticmethod
     def _valid_identifier(identifier: str) -> bool:

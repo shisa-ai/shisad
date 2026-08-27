@@ -692,7 +692,7 @@ These are still part of the live surface:
 
 | Env var | Purpose |
 |---|---|
-| `SHISAD_MEMORY_MASTER_KEY` | Optional stable memory-encryption secret; configure it before creating source data when encrypted memory must start from a different absolute data root |
+| `SHISAD_MEMORY_MASTER_KEY` | Optional stable memory-encryption secret; configure it before creating source data when encrypted memory must start under a different effective user, machine identity, or absolute data root; otherwise the default key binds all three |
 | `SHISAD_SESSION_ID` | CLI current-session default when a command has no explicit `--session`; otherwise the CLI may use its last-session cache where that command permits it |
 | `SHISAD_USER` | CLI owner-scope default used together with `SHISAD_WORKSPACE` when explicit `--user` / `--workspace` flags are absent |
 | `SHISAD_WORKSPACE` | CLI owner-scope default used together with `SHISAD_USER`; setting only one of the pair is an error |

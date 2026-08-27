@@ -228,6 +228,8 @@ class BehavioralSequenceAnalyzer:
         else:
             records = history.for_analysis(session_id, observation_kinds={"action"})
         records = list(records)
+        candidate_key = history.analysis_key(candidate_record)
+        records = [record for record in records if history.analysis_key(record) != candidate_key]
         records.append(candidate_record)
         records = history.dedupe_for_analysis(records)
         if pattern.window_actions is not None and len(records) > pattern.window_actions:

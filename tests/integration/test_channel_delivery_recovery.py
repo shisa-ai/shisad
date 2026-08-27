@@ -293,6 +293,80 @@ async def test_operator_resolution_records_authoritative_absence_without_send(
 
 
 @pytest.mark.asyncio
+async def test_stale_authoritative_absence_projects_concurrent_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery)
+    assert delivery._store is not None
+    store = delivery._store
+    record = store.record_by_identifier(delivery_id)
+    assert record is not None
+    mark_absent = store.mark_reconciled_absent
+
+    def lose_absence_race(reservation_id: str) -> None:
+        store.mark_reconciled_delivered(
+            reservation_id,
+            ProviderDeliveryReceipt("matrix", "event-concurrent", delivery_id),
+        )
+        mark_absent(reservation_id)
+
+    monkeypatch.setattr(store, "mark_reconciled_absent", lose_absence_race)
+    channel.reconcile_override = DeliveryReconciliation(status=DeliveryReconciliationStatus.ABSENT)
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is True
+    assert resolved["reconciliation_status"] == "delivered"
+    assert resolved["delivery"]["state"] == "delivered"
+    assert "fresh request" not in resolved["instruction"].lower()
+    assert channel.reconcile_calls == [delivery_id]
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_unknown_result_projects_concurrent_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = _RecoveryChannel(recovery_kind=DeliveryRecoveryKind.AUTHORITATIVE_RECONCILIATION)
+    delivery = ChannelDeliveryService(
+        {"matrix": channel}, state_root=tmp_path / "channels" / "delivery"
+    )
+    delivery_id = _seed_outcome_unknown(delivery)
+    assert delivery._store is not None
+    store = delivery._store
+    record = store.record_by_identifier(delivery_id)
+    assert record is not None
+
+    async def reconcile_after_concurrent_delivery(
+        *, delivery_id: str, target: DeliveryTarget
+    ) -> DeliveryReconciliation:
+        _ = target
+        channel.reconcile_calls.append(delivery_id)
+        store.mark_reconciled_delivered(
+            record.reservation_id,
+            ProviderDeliveryReceipt("matrix", "event-concurrent", delivery_id),
+        )
+        return DeliveryReconciliation(status=DeliveryReconciliationStatus.UNKNOWN)
+
+    monkeypatch.setattr(channel, "reconcile_delivery", reconcile_after_concurrent_delivery)
+
+    resolved = await delivery.resolve_delivery(delivery_id)
+
+    assert resolved["lookup_attempted"] is True
+    assert resolved["reconciliation_status"] == "delivered"
+    assert resolved["delivery"]["state"] == "delivered"
+    assert "fresh request" not in resolved["instruction"].lower()
+    assert channel.reconcile_calls == [delivery_id]
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["matrix", "discord", "telegram", "slack"])
 async def test_current_provider_without_guarantee_stays_unknown(
     tmp_path: Path,
