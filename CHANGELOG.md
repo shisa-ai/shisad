@@ -11,6 +11,30 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## [0.8.2.1] - 2026-08-27
+
+This documentation-only follow-up restores the public documentation as a
+human-facing product and contributor reference. Runtime behavior is unchanged.
+
+### Fixed
+
+- **The project overview is readable and current again.** The README preserves
+  its established structure while replacing internal worklog language with
+  concise descriptions of the features and security model shipped in the
+  v0.8.2 line.
+
+- **Public documentation is separated from private development records.**
+  Contributor and publishing guidance now requires public docs to serve users,
+  operators, external developers, security reviewers, contributors, or release
+  maintainers; roadmap detail and several architecture records were edited for
+  the same audience.
+
+- **Future releases include an explicit editorial check.** The publishing
+  checklist now requires a complete public-doc comparison with the previous
+  tag, checks for duplicated implementation detail and unexplained internal
+  terminology, and preserves existing document structure unless readers need a
+  change.
+
 ## [0.8.2] - 2026-08-27
 
 This release completes the guided onboarding path and strengthens response
@@ -1450,6 +1474,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.2.1]: https://github.com/shisa-ai/shisad/compare/v0.8.2...v0.8.2.1
 [0.8.2]: https://github.com/shisa-ai/shisad/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/shisa-ai/shisad/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/shisa-ai/shisad/compare/v0.8.0b1...v0.8.0

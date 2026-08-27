@@ -2,13 +2,12 @@
 
 [Security-first](docs/SECURITY.md) AI agent daemon framework.
 
-ShisaD is a long-running daemon that sits between an LLM and external systems
-(tools, files, network, messaging channels). The model proposes actions; the
-shared planner execution path decides what actually executes through policy
-enforcement, provenance/taint checks, confirmation, and audit. Authenticated
-operator convenience RPCs are separate routes with route-local validation and
-logging; see the [ref-scoped authority map](docs/AUTHORITY-MAP.md) for the exact
-boundary.
+ShisaD is a long-running daemon that connects an LLM to tools, files, networks,
+and messaging channels. The model proposes actions; ShisaD checks each action
+against policy, considers where the request came from, asks for confirmation
+when required, and records the decision. Local administrative commands use
+separate validation and logging rules, documented in the
+[administrative route reference](docs/AUTHORITY-MAP.md).
 
 The core question at every action is: **who asked for it?** ShisaD is the user's agent — it exists to do what the user asks with the highest possible fidelity, and to prevent anything else (prompt injection, hallucination, attacker-controlled input) from taking control.
 
@@ -38,40 +37,91 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Features
 
-- **Structured long-term memory** — separate identity, active-attention, recall, procedural, and evidence surfaces share a versioned local store with provenance-gated writes, review gates for high-risk paths, and auditable provenance
-- **COMMAND/TASK orchestration runtime** — persistent COMMAND sessions hand off delegated work to isolated TASK sessions with taint-safe summaries, approval provenance, and explicit task envelopes
-- **Per-call policy enforcement** — the 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every shared planner / `tool.execute` action, not just at session start
-- **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
+- **Long-term memory** — ShisaD stores identity, current priorities, recalled
+  facts, procedures, and supporting evidence separately in versioned local
+  storage. Each entry records where it came from, and higher-risk additions
+  require review
+- **Isolated delegated work** — ShisaD keeps the main conversation active in a
+  COMMAND session while handing delegated work—including work with untrusted,
+  or tainted, content—to separate TASK sessions. Raw TASK output cannot enter
+  COMMAND directly; it must pass through a summary firewall that returns a
+  sanitized, structured summary. This separation helps prevent untrusted
+  instructions from persisting in the long-lived COMMAND context. Each task
+  also records its assigned scope and keeps approvals linked to the request
+  that authorized them
+- **Every action is checked before execution** — each action proposed by the
+  planner or submitted through `tool.execute` passes through the Policy
+  Enforcement Point (PEP), rather than being checked only when the session
+  starts. It validates the tool and its arguments, checks permissions and
+  resource access, restricts network destinations and credential use, scans
+  for secrets, and applies additional rules when untrusted data reaches a
+  sensitive destination
+- **Ingress and egress content controls** — on ingress, ShisaD's content
+  firewall scans untrusted input, marks it as tainted, and records where it
+  came from. The system preserves those labels while content is processed and
+  when it is stored. On egress, the output firewall checks content before it
+  leaves, while policy uses the labels to determine whether related actions can
+  proceed, require confirmation, or be blocked
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
-- **Command-channel approvals** — supported command surfaces can approve or reject routine pending actions where they originated, with CLI remaining as fallback rather than the only path
-- **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and user-visible warnings on repeated suspicious deny patterns
-- **Destructive command protection** — under the supported containment profile,
-  command policy is enforced before execution rather than by LLM judgment;
-  unavailable required isolation fails closed, while the explicit
-  `expert_host_fallback` posture carries no supported-containment claim
-- **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
-- **Multi-channel messaging** — Matrix, Discord, Telegram, Slack (Socket Mode), with default-deny identity allowlisting per channel
-- **Assistant primitives** — notes/todos, scheduler with shared delivery, web search/fetch, baseline browser automation, filesystem/git helpers, and evidence references for large untrusted output
-- **Artifact and evidence boundaries** — restart-stable evidence refs, structured ArtifactLedger storage, and terminal-safe evidence rendering keep large untrusted content off the raw prompt path by default
-- **Intent-grounded execution** — risky actions must trace back to committed user or clean COMMAND intent, with missing-path reads routed to confirmation and missing-path side effects blocked
-- **Provider routing** — pluggable LLM provider presets (Shisa, OpenAI, OpenRouter, Google, local vLLM) with per-route auth, model selection, and mixed-mode deployment
-- **Tool-surface integrity** — reviewed local skills can declare tools, but their schema hashes are pinned across install/restart/runtime, drifted reviewed tools fail closed with explicit audit visibility, and dynamic remote tool discovery remains fail-closed
+- **Approve actions where they were requested** — on supported interfaces,
+  users can approve or reject a pending action in the same conversation where
+  it originated. The `shisad` CLI remains available as a fallback
+- **Detect suspicious behavior across actions** — ShisaD combines signals from
+  five independent monitors to detect patterns that a single action check
+  might miss. It can warn the user, limit repeated requests, or enter lockdown
+  when multiple signals indicate a genuine anomaly
+- **Destructive command protection** — ShisaD checks shell commands before
+  execution and blocks known destructive patterns independently of the model.
+  In the standard supported
+  configuration, commands run only when the required isolation is available.
+  Operators can explicitly select `expert_host_fallback` to run commands
+  without supported isolation, and ShisaD reports that weaker state
+- **Clean-room administrative changes** — ShisaD handles changes to policy,
+  configuration, credentials, and capabilities in a fresh SUDO session
+  containing only the current authenticated request and trusted system state.
+  It produces a proposal for review instead of applying changes automatically
+- **Messaging channels** — receive and send messages through Matrix, Discord,
+  Telegram, and Slack Socket Mode. By default, only user IDs explicitly allowed
+  for each channel can interact with the daemon
+- **Built-in assistant tools** — take notes, manage todos, schedule tasks,
+  deliver results through configured channels, search and fetch web content,
+  automate browser tasks, work with files and Git repositories, and refer to
+  large untrusted results without loading them into the conversation history
+- **Keep large untrusted content out of conversation history** — web pages,
+  email bodies, and large tool results are stored separately and represented by
+  stable references that survive daemon restarts. Raw content is loaded into an
+  isolated, single-turn context only when needed, and terminal output is
+  escaped to prevent control-sequence attacks
+- **Actions must match the user's intent** — before a risky action runs,
+  ShisaD verifies that it follows the user's intent, either directly from their
+  request or from a plan created in a clean COMMAND session. A read involving a
+  path that does not exist requires confirmation, while an action that would
+  create or change an unverified missing path is blocked
+- **Flexible model routing** — configure Shisa, OpenAI, OpenRouter, Google, and
+  local vLLM providers with separate credentials and model choices. A single
+  deployment can use different routes for different workloads and combine
+  local and remote models
+- **Detect unexpected tool changes** — reviewed local skills can add tools, and
+  ShisaD records a fingerprint of each skill bundle and declared tool. If
+  either changes unexpectedly, the affected skill is not loaded and the
+  discrepancy is recorded in the audit log. Tools discovered through remote
+  Model Context Protocol (MCP) servers are treated as untrusted and require
+  confirmation unless the server is explicitly trusted
 - **Observability** — comprehensive audit trail, TUI dashboard (pending actions, tasks, channel health, alerts), and `doctor` diagnostics
 
 ## Status
 
-This repo is public and still pre-alpha. The latest published stable line is
-`v0.8.2`. The `v0.8.0b1` beta checkpoint remains available for users who need
-the prerelease structured-authorization checkpoint.
+ShisaD is public and under heavy development. The latest published release is
+`v0.8.2.1`.
 
 | Version | Focus |
 |---------|-------|
 | v0.8.2 | Guided onboarding, reliable startup, session-scoped chat and Discord progress, data recovery, audit verification, and channel administration |
-| v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
+| v0.8.1 | Installation and configuration improvements, restart-safe action tracking, safer filesystem and process boundaries, and restart recovery for delivery and approvals across four messaging channels |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
-| v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
+| v0.6 | COMMAND/TASK orchestration, credential controls, web tools, and initial browser automation |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
 | v0.3 | Provider routing, channels, assistant tools, destructive command protection |
@@ -86,14 +136,19 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for current direction and
 
 ## Getting Started
 
-> `shisad` is currently **PRE-ALPHA** software and probably won't do what you think it will if you're not a developer. The easiest way to get setup is to point Claude Code, OpenAI Codex, or some other strong coding agent to install. When it's more baked, the installation procedure will be better.
+> ShisaD is under heavy development and currently intended for developers. The
+> easiest installation path is to ask Claude Code, OpenAI Codex, or another
+> capable coding agent to follow the deployment guide.
 
-Users and agents looking to set up ShisaD on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack, Matrix), and troubleshooting. ShisaD is designed to run on a dedicated instance or container, not inside your development environment.
+For complete installation and deployment instructions—including preparing the
+host, configuring a model provider, connecting messaging channels, and
+troubleshooting—see [`docs/DEPLOY.md`](docs/DEPLOY.md). Run ShisaD on a
+dedicated instance or container rather than inside your development
+environment.
 
 ### Quick Start
 
-For `v0.8.2` artifacts, install the complete assistant runtime rather than a
-source checkout:
+For a normal `v0.8.2.1` installation, install the `assistant` package extra:
 
 ```bash
 uv tool install 'shisad[assistant]'
@@ -101,17 +156,16 @@ shisad --help
 shisad doctor check --component all
 ```
 
-Run bare `shisad` for a read-only readiness check, then use
+Run `shisad` with no arguments for a read-only readiness check, then use
 `shisad setup wizard` for guided interactive setup. Automated deployments can
 use `shisad setup apply --selection FILE`; it writes only when `--write` is
 provided. See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the complete setup flow.
 
-The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
-Telegram, and Slack client runtimes. It does not enable channels or add
-credentials; those remain explicit configuration. PromptGuard also remains a
-separate opt-in, so install `shisad[assistant,promptguard]` only when that local
-model runtime is wanted. The latest currently published package is `v0.8.2`;
-the `assistant` extra is the complete consumer installation profile.
+The `assistant` extra installs the terminal interface and client libraries for
+MCP, Matrix end-to-end encryption (E2EE), Discord, Telegram, and Slack. It does
+not enable channels or add credentials; configure those explicitly.
+PromptGuard remains optional, so install `shisad[assistant,promptguard]` only
+if you want its local model-based checks.
 
 This repository also contains a tested Linux/amd64 Dockerfile candidate. No
 registry image is published or signed from this tree yet; build it locally and
@@ -144,7 +198,7 @@ sets are project optional extras; `assistant` is the complete consumer profile,
 while `chat` remains the smaller Textual-only profile.
 
 Memory retrieval prefers Python's `sqlite3` runtime to have SQLite FTS5
-enabled. shisad falls back when FTS5 is unavailable, but you should verify the
+enabled. ShisaD falls back when FTS5 is unavailable, but you should verify the
 preferred path with `uv run shisad doctor check --component storage`; see
 [`docs/runbooks/SQLITE.md`](docs/runbooks/SQLITE.md) for install guidance.
 
@@ -152,7 +206,7 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.2 CLI can create and inspect configuration without starting the
+The v0.8.2.1 CLI can create and inspect configuration without starting the
 daemon:
 
 ```bash
@@ -171,9 +225,11 @@ shisad env --format human
 `~/.config/shisad/config.toml`) and refuses an existing or symlink destination.
 It is deliberately not a setup wizard: it does not copy ambient secrets,
 configure a provider or policy, create daemon state, or start the daemon. Use
-root `--config FILE` to select another path. Effective precedence remains
-command-line override, environment, TOML, then typed default; show, diff, env,
-and validation output redact secret-bearing fields.
+the global `--config FILE` option to select another path. ShisaD resolves
+settings in this order, from highest to lowest priority: command-line options,
+environment variables, TOML configuration, and built-in defaults.
+Configuration display, comparison, environment, and validation output redact
+fields that may contain secrets.
 
 Guided setup is available through `shisad setup wizard`. It displays the
 selected provider, policy, and channels before writing configuration. After
@@ -184,19 +240,17 @@ Chat, the one-shot terminal dashboard, and the static web snapshot share the
 three built-in palettes `shisa-dark`, `shisa-light`, and
 `shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional
 motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
-`NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
-selection is not a supported configuration surface. `shisad web-ui` writes a
-local static investigation/export artifact; it is not the planned live
-operator web application. The artifact embeds session, pending-action, alert,
-and egress-review data, so keep it private and remove it when the investigation
-is complete.
+`NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme files
+are not supported. `shisad web-ui` creates a static local snapshot for
+investigation or export; it is not a live web application. The snapshot can
+contain session data, pending actions, alerts, and network-review details, so
+keep it private and remove it when the investigation is complete.
 
-Expected CLI failures use exit status 1 for command/user-state errors, 2 for
-daemon-connect/RPC errors (and Click usage compatibility), and 3 for invalid or
-unsafe configuration; success is 0. `doctor` remains read-only and has no
-automatic `--fix` mode. Root help advertises the canonical `reality-check`
-spelling while the legacy `realitycheck` spelling remains a hidden
-compatibility alias.
+The `shisad` CLI returns exit status 0 for success, 1 for command or user-state
+errors, 2 for daemon connection or command-line usage errors, and 3 for invalid
+or unsafe configuration. `shisad doctor` is read-only and has no automatic
+repair mode. Help uses the `reality-check` spelling; the older `realitycheck`
+spelling remains available as a hidden compatibility alias.
 
 **Recommended: use the runner harness** for local development. It handles env isolation, secret loading, and policy bootstrapping:
 
@@ -422,7 +476,7 @@ uv run shisad channel pairing-propose --workspace <provider-workspace> --limit 5
 
 ## Security Model
 
-shisad assumes prompt injection will succeed and builds enforcement outside the
+ShisaD assumes prompt injection will succeed and builds enforcement outside the
 model. On the shared planner path, the LLM is a planner, not an executor: it
 proposes tool calls, while runtime enforcement decides whether each call
 proceeds, requires confirmation, or is blocked. Those enforcement decisions do
@@ -430,29 +484,49 @@ not come from the model. Authenticated local operator convenience RPCs do not
 claim the same PEP/control-plane path; their exact route-local boundaries are
 listed in [`docs/AUTHORITY-MAP.md`](docs/AUTHORITY-MAP.md).
 
-**The problem**: any agent with access to private data (files, email), exposure to untrusted content (web pages, API responses), and the ability to take consequential actions (send messages, write files) is exploitable. This is the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). shisad has all three by design — it's meant to be a useful assistant, not a sandboxed demo.
+**The problem**: any agent with access to private data (files, email), exposure to untrusted content (web pages, API responses), and the ability to take consequential actions (send messages, write files) is exploitable. This is the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). ShisaD has all three by design — it's meant to be a useful assistant, not a sandboxed demo.
 
-**The approach**: instead of removing capabilities until the agent is safe (at which point you've rebuilt ChatGPT with extra steps), shisad keeps all capabilities available and enforces safety per-call:
+**The approach**: instead of removing capabilities until the agent is safe (at which point you've rebuilt ChatGPT with extra steps), ShisaD keeps all capabilities available and enforces safety per-call:
 
-- **8-layer PEP pipeline** on every shared planner / `tool.execute` action: registry check, schema validation, capability check, DLP (secret pattern detection), resource authorization, egress allowlisting, credential host-scoping, taint sink enforcement
-- **Taint tracking**: content firewalls tag untrusted input on ingress and enforce provenance-aware restrictions on egress — the runtime knows *who asked for* each action (user vs. injected content vs. model hallucination)
-- **Confirmation gates**: user-requested actions proceed; actions with ambiguous or tainted provenance route to user confirmation with context; only genuine anomalies trigger lockdown
-- **Approval surface parity**: routine channel-originated approvals stay on supported command surfaces with explicit approve/reject affordances or typed channel fallbacks; stronger method-specific proofs route truthfully to browser, helper, or external signer surfaces
-- **Behavioral anomaly detection**: control plane consensus (5 independent voters) catches patterns that individual call-level checks miss
-- **Destructive command protection**: under the supported containment profile,
-  command policy is enforced before execution rather than by LLM judgment;
-  unavailable required isolation fails closed. The separately selected
-  `expert_host_fallback` posture does not carry that containment claim.
+- **Eight checks before execution** — every action from the shared planner or
+  `tool.execute` is checked for tool registration, valid arguments,
+  permissions, exposed secrets, resource access, approved destinations,
+  credential scope, and restrictions on tainted content
+- **Track untrusted content** — ingress controls label untrusted content as
+  tainted and record its source. Those labels remain attached while the content
+  is processed and stored, and egress controls use that provenance to
+  distinguish actions arising from the user's intent, untrusted content, or
+  unsupported model output
+- **Require confirmation when provenance is unclear** — actions matching the
+  user's intent can proceed when policy allows. Actions arising from ambiguous
+  or tainted content require confirmation with context. Lockdown is reserved
+  for behavior that the anomaly monitors identify as a threat
+- **Approvals stay where users can complete them** — routine approvals remain
+  in the supported interface where the request originated, using Approve/Reject
+  controls or clear fallback instructions. When an approval requires stronger
+  proof, ShisaD directs the user to the appropriate browser, local helper, or
+  external signing device instead of claiming the current interface can
+  complete it
+- **Behavioral anomaly detection** — five independent monitors combine their
+  signals to identify suspicious behavior that a single action check might miss
+- **Destructive command protection** — under the supported containment profile,
+  ShisaD checks commands against policy before execution; the model does not
+  make this decision. A command does not run if required isolation is
+  unavailable. Operators can explicitly choose `expert_host_fallback` to run
+  without supported isolation, but that mode does not provide the same
+  containment
 
-**Default posture**: built-in tools are not globally removed by a restrictive
-policy, but configuration-dependent tools remain unavailable until their local
-or external dependencies and credentials are configured. Operators who need a
-more restrictive posture deploy an explicit policy via `SHISAD_POLICY_PATH`.
+**Security controls preserve tool access** — ShisaD's default policy keeps every
+built-in tool available and applies the required confirmation, isolation,
+credential, and audit checks when it runs. Tools that depend on external
+services, local software, or credentials become usable once those requirements
+are configured. Operators can define additional limits through a policy file
+selected with `SHISAD_POLICY_PATH`.
 
-**Shared-path egress model**: allowlists auto-approve known-good destinations.
-Explicit user requests proceed subject to the active policy. Destinations
-suggested only by untrusted content route through confirmation with warning;
-unattributed/hallucinated drift is blocked.
+**Egress controls** — known destinations can be approved in advance. A
+destination explicitly requested by the user can proceed when policy allows
+it. A destination suggested only by untrusted content requires confirmation,
+while one with no connection to the user's intent is blocked.
 
 See `docs/SECURITY.md` for the full security architecture and `docs/DESIGN-PHILOSOPHY.md` for the governing principles.
 
