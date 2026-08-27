@@ -11,13 +11,11 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
-## 0.8.2 Release Content - 2026-08-24
+## [0.8.2] - 2026-08-27
 
 This release completes the guided onboarding path and strengthens response
 grounding, channel interaction, data recovery, schema migration, audit
-verification, and operator diagnostics. It is release-prepared content; the
-latest published package remains `v0.8.1` until the explicit tag and publish
-steps complete.
+verification, and administrative diagnostics.
 
 ### Added
 
@@ -57,8 +55,8 @@ steps complete.
   config-section change. Status and tests do not claim inbound round-trip
   verification.
 
-- **Durable delivery attempts are inspectable after uncertainty.** Operators
-  can list, inspect, and resolve locally retained channel-delivery attempts.
+- **Durable delivery attempts are inspectable after uncertainty.** You can
+  list, inspect, and resolve locally retained channel-delivery attempts.
   Current adapters truthfully report that authoritative provider lookup is
   unavailable, so the command does not infer delivery or silently replay an
   uncertain send.
@@ -81,7 +79,7 @@ steps complete.
 
 - **Runtime failures use bounded user-facing envelopes.** Chat and channel
   responses omit internal route identifiers and technical detail from their
-  primary message while retaining structured operator diagnostics and clear
+  primary message while retaining structured technical diagnostics and clear
   next actions.
   ([#101](https://github.com/shisa-ai/shisad/issues/101),
   [#104](https://github.com/shisa-ai/shisad/issues/104))
@@ -118,6 +116,10 @@ steps complete.
   [#106](https://github.com/shisa-ai/shisad/issues/106))
 
 ### Security
+
+- **Routine provider request URLs stay out of daemon logs.** Default logging
+  suppresses routine HTTP client traces that can embed provider credentials,
+  while retaining dependency warnings and shisad-owned application logs.
 
 - **Recovery paths bind filesystem authority to verified roots.** Backup,
   restore, cleanup, publication, and lifecycle locking use rooted operations
@@ -1448,6 +1450,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.2]: https://github.com/shisa-ai/shisad/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/shisa-ai/shisad/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/shisa-ai/shisad/compare/v0.8.0b1...v0.8.0
 [0.8.0b1]: https://github.com/shisa-ai/shisad/compare/v0.8.0b0...v0.8.0b1

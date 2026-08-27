@@ -61,12 +61,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published stable line is
-`v0.8.1`. The `v0.8.0b1` beta checkpoint remains available for users who need
+`v0.8.2`. The `v0.8.0b1` beta checkpoint remains available for users who need
 the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.2 (release prepared) | Reliability fixes, a read-only bare-command preflight, credential references, bounded provider/channel checks, explicit setup publication, bounded background first-start/health, a deterministic guided tour, session-scoped pending confirmations, opt-in Discord thread identity, and bounded redacted action progress in chat/Discord |
+| v0.8.2 | Reliability fixes, guided onboarding, session-scoped chat/Discord progress, versioned state, data-root recovery, retained audit verification, delivery inspection, and channel administration |
 | v0.8.1 | Package/config UX plus durable action attempts, restart-safe finite state, containment boundaries, and four-channel delivery/approval continuity |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
@@ -91,7 +91,7 @@ Users and agents looking to set up ShisaD on their own system should see [`docs/
 
 ### Quick Start
 
-For `v0.8.1` artifacts, install the complete assistant runtime rather than a
+For `v0.8.2` artifacts, install the complete assistant runtime rather than a
 source checkout:
 
 ```bash
@@ -100,7 +100,7 @@ shisad --help
 shisad doctor check --component all
 ```
 
-The v0.8.2 release candidate can prepare one channel at a time or explicitly
+The v0.8.2 release can prepare one channel at a time or explicitly
 publish a combined provider/policy/channel selection. Enroll logical credential
 references first, then use `shisad setup wizard` on an interactive unmanaged
 terminal or `shisad setup apply --selection FILE` for deterministic automation.
@@ -111,7 +111,7 @@ The `assistant` extra contains the Textual UI plus MCP, Matrix E2EE, Discord,
 Telegram, and Slack client runtimes. It does not enable channels or add
 credentials; those remain explicit configuration. PromptGuard also remains a
 separate opt-in, so install `shisad[assistant,promptguard]` only when that local
-model runtime is wanted. The latest currently published package is `v0.8.1`,
+model runtime is wanted. The latest currently published package is `v0.8.2`,
 where the `assistant` extra is the complete consumer install surface.
 
 This repository also contains a tested Linux/amd64 Dockerfile candidate. No
@@ -161,7 +161,7 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.2 release-candidate CLI can inspect the environment and create or
+The v0.8.2 CLI can inspect the environment and create or
 inspect the typed TOML surface without starting the daemon:
 
 ```bash
@@ -349,15 +349,15 @@ three built-in palettes `shisa-dark`, `shisa-light`, and
 `shisa-high-contrast`. Select one with `SHISAD_UI_THEME`, disable optional
 motion with `SHISAD_REDUCE_MOTION=true`, and suppress palette color with
 `NO_COLOR` or a root flag such as `shisad --no-color tui`. Custom theme-file
-selection is not a supported configuration surface. In the v0.8.2 release
-candidate, chat also polls the daemon's canonical `action.pending` state for the
+selection is not a supported configuration surface. In the v0.8.2 release,
+chat also polls the daemon's canonical `action.pending` state for the
 current session and keeps a bounded confirmation panel updated without another
 prompt. The panel shows only confirmation IDs plus bounded tool, risk, and
 approval posture, and points to `shisad action confirm` or
 `shisad action reject` for an explicit decision without deciding anything
 itself. Pending-state RPC or persistence degradation leaves chat input usable
 and displays a retrying unavailable state instead of treating an unlisted
-action as resolved. The v0.8.2 release candidate also projects typed action
+action as resolved. The v0.8.2 release also projects typed action
 events into a bounded live-progress panel for the exact chat session and one
 edited Discord message per target/turn. Progress contains only bounded tool
 identity plus finite lifecycle state—never arguments, values, results, paths,

@@ -24,7 +24,7 @@ filesystem root was the source checkout. The direct-RPC probe is deliberately
 fast; later safe tools can therefore appear as `GATED` when the behavioral
 sequence control sees the synthetic burst.
 
-In the v0.8.2 release candidate, typed `web.*`, `realitycheck.*`, `email.*`,
+In the v0.8.2 release, typed `web.*`, `realitycheck.*`, `email.*`,
 `fs.*`, and `git.*` convenience probes enter the shared PEP, control-plane,
 durable approved-action, audit, taint, and output-sanitization path through a
 short-lived direct session. This note updates route semantics only; it does not
@@ -42,11 +42,11 @@ profile and provide the required backend instead.
 
 Note:
 
-- The `v0.8.1` `assistant` package extra installs Textual plus MCP and the four
+- The `v0.8.2` `assistant` package extra installs Textual plus MCP and the four
   channel client families. Installation alone does not enable a channel,
   authenticate a remote service, or turn a configuration-gated row into
   `WORKS`; the snapshot remains environment-specific.
-- The v0.8.1 config/help/UI commands do not add or enable assistant tools, so
+- The v0.8.2 config/help/UI commands do not add or enable assistant tools, so
   they do not change the generated rows below. `shisad init`, config/env
   inspection, built-in theme/accessibility controls, and the local static
   `web-ui` export are operator CLI surfaces. `doctor` remains read-only, custom

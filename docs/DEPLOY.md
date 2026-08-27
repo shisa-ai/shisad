@@ -599,7 +599,7 @@ shisad supports Discord, Telegram, Slack, and Matrix as messaging channels. Each
 channel uses default-deny identity allowlisting — only explicitly allowed user IDs
 can interact with the daemon.
 
-On the v0.8.2 release candidate, prefer logical channel token references over
+In the v0.8.2 release, prefer logical channel token references over
 raw `SHISAD_*_TOKEN` config values. Register each reference with
 `shisad credential set` (environment, optional keyring, or owner-only local
 file), then use `shisad setup channel --channel <name> ...`. The command validates and
@@ -1051,7 +1051,7 @@ personal operational context.
 
 ### Audit lifecycle
 
-The v0.8.2 release candidate verifies the retained main and control-plane audit
+The v0.8.2 release verifies the retained main and control-plane audit
 chains before their owning runtime begins serving work. Each stream rotates
 before its active segment would exceed 32 MiB and normally retains four linked
 archives plus the active segment. A retention deletion failure preserves the

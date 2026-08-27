@@ -95,7 +95,7 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   is published or signed, and this work does not claim the later setup wizard,
   live operator web application, universal secret normalization, universal
   SSRF prevention, DNS pinning, or connection-time peer verification.
-- `v0.8.2` is release-prepared but not yet tagged or published. The candidate
+- `v0.8.2` is published. The release
   closes the post-`v0.8.1` reliability issues, composes bounded first-run setup
   and guided operation, adds session-scoped chat/Discord progress surfaces,
   versions owned config/SQLite state, and provides integrity-checked data-root
@@ -420,7 +420,7 @@ TOTP entry remain deferred to `v0.8.0`.
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
   v0.9 work. Container registry publication remains future work
-- v0.8.2 release candidate starts with the post-v0.8.1 issue burn-down. Its
+- v0.8.2 shipped the post-v0.8.1 issue burn-down. Its
   reliability lane includes bounded optional-channel startup: a connector
   timeout degrades that connector and preserves the core daemon when cleanup
   succeeds, while unsafe cleanup failure stops startup and releases data-root
@@ -481,8 +481,8 @@ TOTP entry remain deferred to `v0.8.0`.
   help grouping, exit statuses, and naming compatibility
 - Onboarding — the bounded environment/preflight welcome, generic model
   credential-reference lifecycle, explicit provider/model verification, and
-  generated capability-preserving policy profiles are present on the v0.8.2
-  release candidate. Reference-only four-channel setup now emits validated
+  generated capability-preserving policy profiles are present in v0.8.2.
+  Reference-only four-channel setup now emits validated
   fragments, runs at most one bounded connector start, and sends a test notice
   only with explicit effect and target authority. Combined setup can now
   publish selected reference-only config and policy artifacts after explicit
@@ -542,6 +542,7 @@ TOTP entry remain deferred to `v0.8.0`.
 | Open-threads UX + procedural memory pilot + timeline search | v0.7.3 (shipped) |
 | UX overhaul foundation | v0.8.0 (shipped) |
 | Reliable-foundation patch line | v0.8.1 (shipped) |
+| Guided-operation and recovery patch line | v0.8.2 (shipped) |
 | Live operator web UI | Later operator UX |
 | Security infrastructure consolidation | v0.9 (planned) |
 | Multitenant support | v0.10 (planned) |
@@ -562,8 +563,9 @@ TOTP entry remain deferred to `v0.8.0`.
 12. Open threads + procedural memory pilot + timeline search (`v0.7.3`)
 13. UX overhaul foundation (`v0.8.0`); live operator web UI remains later work
 14. Reliable-foundation patch line (`v0.8.1`, shipped)
-15. Security infrastructure consolidation (`v0.9`, planned)
-16. Multi-tenant support (`v0.10`, planned)
+15. Guided-operation and recovery patch line (`v0.8.2`, shipped)
+16. Security infrastructure consolidation (`v0.9`, planned)
+17. Multi-tenant support (`v0.10`, planned)
 
 ## Public Announcement Criteria
 

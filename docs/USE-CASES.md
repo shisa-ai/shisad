@@ -1081,6 +1081,7 @@ Based on the article and OpenClaw's architecture:
 | **v0.7** | Structured long-term-memory surfaces, provenance-gated writes, retrieval/evaluation foundations, thread/timeline/procedure follow-ons, and configured local email-read groundwork; not email send or calendar |
 | **v0.8.0** | Command-channel routine approval parity and operator UX foundation |
 | **v0.8.1** | Package/config UX, durable action/restart containment, finite-state/data-root integrity, managed-root containment, and four-channel scoped delivery/approval continuity |
+| **v0.8.2** | Guided onboarding, session-scoped chat/Discord progress, versioned state, data-root recovery, retained audit verification, delivery inspection, and channel administration |
 | **Future connector work** | Email send, calendar, STT/OCR, music, smart home, commerce, social, telephony, Google Workspace, and turnkey bulk-ingestion/PKB workflows |
 | **Later operator UX** | Live operator Web UI and richer progress/status surfaces; the current `web-ui` remains a static snapshot |
 

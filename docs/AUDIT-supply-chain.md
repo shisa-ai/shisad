@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-08-24 (v0.8.2 ReleaseClose dependency remediation)*
+*Updated: 2026-08-27 (v0.8.2 release)*
 *Status: In Progress*  
-*Snapshot basis: published code/dependency and workflow state starts at the v0.8.1 release from 2026-07-28; the current risk summary and package inventory include the pre-tag v0.8.2 release candidate with the O0 dependency refresh, O2A optional-keyring intake, and 2026-08-24 ReleaseClose audit remediation. Historical v0.7.0-v0.8.0 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This working-candidate snapshot includes no registry image.*
+*Snapshot basis: the published v0.8.2 code/dependency and workflow state, including the O0 dependency refresh, O2A optional-keyring intake, and 2026-08-24 ReleaseClose audit remediation. Historical v0.7.0-v0.8.1 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This release snapshot includes no registry image.*
 
 ## Scope and Intent
 
