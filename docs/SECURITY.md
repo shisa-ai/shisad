@@ -510,6 +510,12 @@ shisad's defense is **preventive write gating** — making poisoned entries hard
 - **Append-only corrections**: updates create new records referencing what they supersede, preserving full history for audit and rollback. No silent overwrites.
 - **Tiered storage**: different memory types (episodes, facts, task state, constraints, procedures) have different trust semantics and write postures. Procedural/experience memory — the highest-risk tier for instruction mimicking — is isolated with strict firewall and quarantine defaults.
 
+### Scoped Personal Recall
+
+Personal recall in the `user_curated` collection is scoped at recall time by the active session's `(user_id, workspace_id)`. Session-derived retrieval rows, including conversation summaries stored under `tool_outputs`, are also owner-scoped so one operator/workspace's prior session evidence does not become another operator's `DATA EVIDENCE`. Plain unowned public or collection-level content such as `project_docs`, `external_web`, and generic unowned `tool_outputs` can flow across sessions because those records are not owner-private personal memory.
+
+Same-scope clean personal recall retains the framing `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`. A taint-free row with canonical `user_confirmed` provenance may be placed in semi-trusted context for direct factual recall; it is context, never an instruction or authorization for actions. Other same-scope rows, including `user_asserted` rows, remain spotlighted as `DATA EVIDENCE` and propagate `UNTRUSTED` into the server-side policy context even when their trust band is elevated, so a content-classifier miss cannot promote a stale instruction or leave PEP evaluating a clean context. Direct retrieval without a complete owner tuple still returns public/unowned collection rows, but it does not return owner-private rows. Records that carry an injection taint label also stay in the untrusted-data framing regardless of owner scope, and pre-migration owner-private rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers with an explicit owner tuple.
+
 ---
 
 ## Trust Boundaries

@@ -1,9 +1,12 @@
 # shisad - Development Guide
 
 This `AGENTS.md`/`CLAUDE.md` covers ground rules, development process, and behavior notes for AI coding agents.
-See `README.md` and `docs/` for project-specific details and reference material.
+Use [CONTRIBUTING.md](CONTRIBUTING.md) for the human contribution workflow and
+documentation standards; this guide adds agent-specific responsibilities.
+See `README.md` and `docs/` for product usage and reference material.
 
-Instruction precedence: if `AGENTS.md` conflicts with platform/system/developer instructions, follow platform/system/developer instructions.
+Follow platform, system, developer, and user instructions in their applicable
+order of precedence. Repository guidance does not override those instructions.
 
 ## First Principles — READ THIS FIRST
 
@@ -29,6 +32,12 @@ command.
 
 **If a security change breaks functionality, the security change is wrong — not the functionality.**
 
+Preserve supported, authorized journeys and mandatory enforcement together.
+If required enforcement is unavailable, fail the affected action clearly and
+provide its recovery/configuration path without disabling unrelated work.
+Product principles govern design; the approved task limits what may change.
+A conflict requires a design/scope decision, not unilateral scope expansion.
+
 ## Project Overview
 
 shisad is a security-first AI agent framework. The goal is to build a robust, production-quality system that lets users accomplish real tasks with AI agents while defending against the fundamental risks of autonomous agent deployment:
@@ -45,9 +54,14 @@ See `docs/DESIGN-PHILOSOPHY.md` for the full rationale. Summary:
 
 1. **Security enables functionality** - A broken product is not a secure product; never disable capabilities as a substitute for building safe enforcement
 2. **Default-grant, enforce-per-call** - Sessions have all capabilities by default; enforcement happens at execution time through the PEP pipeline
-3. **Auto-approve (no confirmation) > confirmation > denial > lockdown** - Normal user requests should just work; confirm only for first-time/unknown/risky actions; deny attacker-initiated or policy-forbidden actions; lockdown is for genuine anomalies only
-4. **Defense in depth** - Layer multiple defenses; assume any single layer can be bypassed; but redundant blocking is not depth, it's false positives
+3. **Auto-approve (no confirmation) > confirmation > denial > lockdown** - Normal user requests should work subject to per-call enforcement; confirm action-specific risk or ambiguous provenance; deny attacker-initiated or policy-forbidden actions and those that cannot safely proceed; lockdown is for genuine anomalies only
+4. **Defense in depth** - Preserve independent defenses for distinct properties; avoid duplicate blocking that disregards established authorization
 5. **Behavioral correctness is a hard requirement** - Code that passes unit tests but doesn't let users complete tasks is not done
+
+Apply the [engineering objective](docs/DESIGN-PHILOSOPHY.md#engineering-objective):
+one owner per shared rule or mutable state, narrow interfaces, and the smallest
+clear design for the accepted feature set. Simplicity does not authorize
+extra refactoring outside the approved scope.
 
 ## Key Directories
 
@@ -78,11 +92,11 @@ shisad/
 
 Every non-trivial feature follows this cycle:
 
-1. **Spec**: Define requirements in `docs/` before coding
-2. **Plan**: Create implementation plan with affected files tree
+1. **Spec**: Define behavior and limits before coding; publish an ADR only when useful to external readers
+2. **Plan**: Identify affected files and the user journey; keep execution planning in the issue/PR or external task tracker
 3. **Test**: Write tests BEFORE implementation
 4. **Implement**: Write minimal code to pass tests
-5. **Validate**: All tests must pass
+5. **Validate**: All tests required for the scope and phase must pass
 6. **Commit**: Atomic commits with passing tests only
 
 ### Security-First Development
@@ -131,19 +145,12 @@ outside this repository.
 
 ### Public documentation boundary
 
-All documentation committed here must be useful to a human reader: users,
-operators, external developers, security reviewers, contributors, or release
-maintainers. Appropriate documents include product and setup guides,
-configuration references, runbooks, ADRs, research analysis, contributor
-guidance, maintainer procedures, and release history.
-
-Do not commit private roadmaps, milestone plans, worklogs, punchlists,
-review-lane records, agent memory, resumption notes, or private process
-identifiers. Stable contributor instructions and developer tooling may remain
-here when they help external contributors, but they must not contain private
-execution history or session-specific instructions. Public issues and PRs may
-describe concrete public work; they are not a reason to copy an internal
-execution ledger into `README.md` or `docs/`.
+Follow the [public documentation boundary and style in CONTRIBUTING.md](CONTRIBUTING.md#public-documentation-boundary).
+Every document must help a human reader. Keep private plans, execution records,
+agent memory, and process identifiers out of this repository. Stable contributor
+instructions and tooling may remain when useful to external contributors;
+public issues and PRs do not authorize copying an internal execution ledger
+into product documentation.
 
 README is an overview and navigation surface. Put detailed setup in the
 canonical operator guide and link to it. Before release, compare changed docs
@@ -159,6 +166,11 @@ vocabulary. See `CONTRIBUTING.md` for the public documentation style.
 ## Roles (Planners / Coders / Reviewers)
 
 We use separate lanes for development work:
+
+Apply restrictions to the assigned role. A task owner explicitly asked to
+write an audit report may author that report; the word "review" alone does
+not assign an independent reviewer role. Independent reviewers inspect source
+and supplied validation evidence without editing files or running validation.
 
 - **Planner**: defines behavior and implementation sequencing outside public
   product documentation; authors a public ADR only when external readers need
@@ -216,6 +228,12 @@ Rules:
 - Update relevant docs
 - **Commit immediately** after validation passes — do not wait to be asked
 - When finishing a milestone or review-remediation scope, follow the closure checklist below and produce the closure commit in the same session
+
+For documentation-only work, use the
+[documentation checks in CONTRIBUTING.md](CONTRIBUTING.md#validation).
+Product tests, Python static checks, and live runs are not required by default
+when no executable behavior changes. This does not replace milestone or
+release acceptance evidence.
 
 ### Validation Cadence and Evidence Reuse
 
@@ -470,13 +488,19 @@ If you encounter:
 
 ### Claim Integrity (Done/Shipped/Complete)
 
-Any claim of “done”, “shipped”, “complete”, or “closed” must include evidence for all three:
+For product or tooling changes, any claim of “done”, “shipped”, “complete”,
+or “closed” must include evidence for all three:
 
 - **Runtime wiring evidence**: where the behavior is enforced in the live runtime path (not just a helper function).
 - **Test evidence**: exact validation command(s) + outcomes (include integration/adversarial when relevant).
 - **Docs parity evidence**: the issue/PR or external task record is current,
   and security analysis/non-claims are updated when behavior or guarantees
   change.
+
+For documentation-only work, identify the changed documents, source/claim and
+link checks with outcomes, and updated task record. Runtime wiring is
+inapplicable; cite existing runtime evidence when making a runtime claim.
+Completing a report does not establish that its proposed changes are shipped.
 
 For runtime-facing release claims, also include live runner evidence: exact
 `runner/harness.sh` (or direct control-client) commands + outcomes, or an

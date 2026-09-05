@@ -1,6 +1,10 @@
 # shisad — Design Philosophy
 
-*This document is the first-principles reference for all development on shisad. Every design decision, code change, and review should be evaluated against these principles. When AGENTS.md process rules conflict with these principles, these principles win.*
+*This document governs product and design decisions. Use AGENTS.md and
+CONTRIBUTING.md for development procedure. If an approved task conflicts with
+these principles, surface the design/scope decision before changing the task;
+the principles do not grant authority to expand it unilaterally. Platform,
+system, developer, and user instructions retain their applicable precedence.*
 
 ---
 
@@ -9,6 +13,20 @@
 shisad exists to let a user do everything they want with an AI agent, as safely as possible.
 
 Both halves matter equally. "Everything they want" is the product. "As safely as possible" is the method. Neither is optional. A framework that is secure but doesn't work is not a product. A framework that works but isn't secure is not shisad.
+
+### Engineering Objective
+
+Implement the accepted feature set with the smallest clear design that
+preserves its behavior, security properties, and supported environments.
+Give each shared policy and mutable state one owner. Keep interfaces narrow
+and dependencies explicit. Reuse an existing owner before introducing a new
+abstraction. Add an extension point when an accepted requirement needs it,
+and remove obsolete paths when their supported use has ended.
+
+Judge simplicity by clear ownership and the cost of maintaining supported
+behavior, not by line count alone. Preserve independent security properties
+and meaningful validation. Apply this objective within the approved scope;
+it does not authorize additional refactoring.
 
 ---
 
@@ -35,6 +53,11 @@ The correct response to a risky capability is never to remove it. It is to build
 - If egress is risky, build confirmation gates and audit trails — don't block all HTTP.
 - If shell execution is risky, build sandboxing and confirmation gates — don't block all commands.
 - If file writes are risky, build taint tracking and approval flows — don't make the filesystem read-only.
+
+This preserves supported, authorized journeys; it does not bypass explicit
+operator policy or mandatory enforcement. If required enforcement is
+unavailable, fail the affected action clearly, preserve unrelated work, and
+provide the documented recovery or configuration path.
 
 When a capability is disabled, the vulnerability is hidden, not fixed. The user routes around the limitation (using a different tool, a different agent, or no agent at all), and the security infrastructure never gets tested against real usage. Disabled capabilities are technical debt that masquerades as safety.
 
@@ -65,9 +88,13 @@ Routine denial of user-requested actions (when a confirmation gate would safely 
 
 ### Scoped Personal Recall
 
-Personal recall in the `user_curated` collection is scoped at recall time by the active session's `(user_id, workspace_id)`. Session-derived retrieval rows, including conversation summaries stored under `tool_outputs`, are also owner-scoped so one operator/workspace's prior session evidence does not become another operator's `DATA EVIDENCE`. Plain unowned public or collection-level content such as `project_docs`, `external_web`, and generic unowned `tool_outputs` can flow across sessions because those records are not owner-private personal memory.
+Personal memory and session-derived evidence stay scoped to their owner.
+Recall supplies facts and context, never authority for actions. Provenance and
+injection taint still constrain its use even when it belongs to the current
+user; elevated trust alone must not turn stored text into instructions.
 
-Same-scope clean personal recall retains the framing `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`. A taint-free row with canonical `user_confirmed` provenance may be placed in semi-trusted context for direct factual recall; it is context, never an instruction or authorization for actions. Other same-scope rows, including `user_asserted` rows, remain spotlighted as `DATA EVIDENCE` and propagate `UNTRUSTED` into the server-side policy context even when their trust band is elevated, so a content-classifier miss cannot promote a stale instruction or leave PEP evaluating a clean context. Direct retrieval without a complete owner tuple still returns public/unowned collection rows, but it does not return owner-private rows. Records that carry an injection taint label also stay in the untrusted-data framing regardless of owner scope, and pre-migration owner-private rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers with an explicit owner tuple.
+See [Scoped Personal Recall in the security reference](SECURITY.md#scoped-personal-recall)
+for the collection, framing, provenance, and legacy-record rules.
 
 ### The Chosen Channel Is the Product Surface
 
@@ -86,8 +113,8 @@ For any security mechanism, ask:
 ### Corollaries
 
 - **Default-grant, enforce-per-call.** Sessions should have all capabilities by default. Enforcement happens at execution time through the PEP pipeline, not by withholding capabilities.
-- **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Stage2 gating applies only to capabilities the session does NOT have.
-- **Auto-approve (no confirmation) > confirmation > denial > lockdown.** Normal user-requested actions should just work (no prompt). Confirmation is for first-time/unknown/risky actions and ambiguous provenance. Denial is for actions that are clearly not user-requested (attacker-initiated, hallucinated drift, operator-policy-forbidden). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
+- **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Per-call policy may still require confirmation for a particular risky action or ambiguous provenance; possessing a capability does not approve every use of it.
+- **Auto-approve (no confirmation) > confirmation > denial > lockdown.** Normal user-requested actions should just work (no prompt), subject to per-call enforcement. Confirmation resolves action-specific risk or ambiguous provenance; a destination being new is not enough to re-confirm an explicit user request. Denial is for attacker-initiated actions, unattributed plan drift, operator-policy-forbidden actions, or cases that cannot safely proceed even with confirmation. Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
 - **Deny the action, not the assistant.** When a specific action must be denied (attacker-initiated, known-bad destination, missing credentials), deny that action with a clear reason and keep the session healthy. Never cascade a single denial into session-wide lockdown. A denied action is not an anomaly.
 - **Lockdown is a last resort, not a default.** If normal usage routinely triggers lockdown, the lockdown threshold is wrong, not the usage.
 
@@ -115,11 +142,19 @@ When an action fails due to missing configuration (missing credentials, unconfig
 
 ### Milestone Gates
 
-Every milestone in the roadmap must pass the behavioral contract before it can close. This is not optional. The sequence is:
+Every runtime milestone in the roadmap must pass the behavioral contract before
+it can close. The acceptance requirements are:
 
 1. Behavioral tests pass (the product works)
 2. Security tests pass (the product is safe)
 3. Static checks pass (the code is clean)
+
+These are evidence obligations, not a required command order. Follow the
+validation cadence in [CONTRIBUTING.md](../CONTRIBUTING.md#validation) and the
+[maintainer release procedure](PUBLISH.md). A broader valid collection can
+supply its contained behavioral and security evidence without separate reruns.
+Documentation-only work uses the relevant document checks; completing it does
+not establish runtime milestone acceptance.
 
 If a security change breaks behavioral tests, the security change is wrong — not the behavioral tests.
 
@@ -138,7 +173,11 @@ The security architecture is layered specifically so that no single layer needs 
 | Output firewall (egress) | Prevent data exfiltration | Sensitive data in response |
 | Audit trail | Post-hoc detection | Undetected incident |
 
-Each layer assumes the layer above it has been bypassed. This is the correct model. But "defense in depth" means each layer handles its own failure gracefully — it does NOT mean every layer should independently block the same action "just to be safe." Redundant blocking is not defense in depth; it is a cascade of false positives.
+Each layer assumes the layer above it has been bypassed and handles its own
+failure gracefully. Keep independent defenses for different properties. Authorization
+and execution containment may both deny the same request; that overlap does
+not make either redundant. Avoid duplicate policy decisions that disregard
+established authorization or turn an ordinary denial into session lockdown.
 
 ### What This Means in Practice
 
@@ -164,7 +203,9 @@ Each layer assumes the layer above it has been bypassed. This is the correct mod
 
 ### The LOC Trap
 
-shisad is >50K lines. If a user sends "search for news" and gets a lockdown notice, those 50K lines are doing the wrong thing precisely and thoroughly. More code is not the answer. Correct code is.
+If a user sends "search for news" and gets a false lockdown, a larger security
+subsystem or a higher unit-test count does not make the product work. Measure
+the supported user outcome and the security property together.
 
 ---
 
@@ -172,9 +213,9 @@ shisad is >50K lines. If a user sends "search for news" and gets a lockdown noti
 
 The daemon does deterministic work: authenticate, authorize, enforce, audit, sandbox, taint-track, route. Natural-language judgment — intent, valence, topic, negation scope, reconciling a preliminary claim against new evidence — belongs in an LLM.
 
-When a decision in the daemon reduces to parsing free-form prose with regex or edit-distance heuristics, the decision is likely in the wrong layer. Carefully consider whether the input is a bounded vocabulary (a protocol, a schema, a known marker set) or unbounded natural language, sentiment, or classification. If it is the latter, relocate the judgment to an LLM (the COMMAND agent, the planner, the post-tool synthesizer, or a dedicated classifier prompt) and have the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) around it.
+When a decision in the daemon reduces to parsing free-form prose with regex or edit-distance heuristics, the decision is likely in the wrong layer. Ask whether the decision follows a specified machine grammar (a protocol, schema, or known marker set) or requires interpreting natural-language meaning. A size limit does not make language meaning a machine grammar. If meaning is required, relocate the judgment to an LLM (the COMMAND agent, the planner, the post-tool synthesizer, or a dedicated classifier prompt) and have the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) around it.
 
-If you encounter this pattern during coding or review, refer to `docs/adr/DESIGN-structural-vs-linguistic.md` for prior incidents, signals, and the bounded-vs-unbounded test in more detail.
+If you encounter this pattern during coding or review, refer to `docs/adr/DESIGN-structural-vs-linguistic.md` for prior incidents, signals, and the syntax-versus-meaning distinction in more detail.
 
 ---
 
@@ -201,4 +242,7 @@ This document is referenced by:
 - `README.md` (project overview and documentation map)
 - `docs/SECURITY.md` (public security architecture overview)
 
-When these documents conflict on philosophy, this document wins. When they add process detail that doesn't conflict, follow both.
+Use this document to resolve product/design questions and the contributor and
+development guides for procedure. Surface a conflicting accepted requirement
+for a design/scope decision; follow compatible process detail alongside these
+principles.

@@ -72,7 +72,11 @@ When this pattern appears, reopen the layer question before adding the next patc
 
 ## Where regex is the right tool
 
-The principle is not "no regex." Regex and lexical parsing are correct when the input space is finite and specified by a machine-side contract. Examples that fit:
+Regex and lexical parsing are appropriate when the decision is specified by a
+machine grammar, schema, or known marker set and does not require interpreting
+language meaning. The set of valid strings need not be a finite enumeration;
+a URL grammar, for example, can describe arbitrarily many strings. Use the
+appropriate parser for the grammar. Examples that fit:
 
 - URL parsing, scheme/host/path extraction, filesystem path redaction in diagnostics.
 - Code-fence extraction from known markdown containers; detecting structured tool-call syntax leaking into assistant text.
@@ -80,7 +84,9 @@ The principle is not "no regex." Regex and lexical parsing are correct when the 
 - JSON parsing, schema validation, known-prefix marker stripping.
 - Taint-label manipulation, header canonicalisation, env-var name validation.
 
-Common property: input produced by code, schema, or protocol; spec is closed.
+Common property: the decision follows an explicit syntactic specification.
+The input may come from an untrusted user or external source; matching its
+syntax does not establish trust or authorization.
 
 ## Where regex is the wrong tool
 
@@ -109,6 +115,10 @@ Connects to the first principle ("Who Asked For It?"). Provenance is a claim abo
 
 ## Practice
 
-Before adding a regex that decides something about natural-language prose, ask: is the input space finite and machine-defined, or is it natural language? If natural, the judgment belongs in an LLM and the daemon's role reduces to routing input in, taint-labelling what comes out, and enforcing structural consequences.
+Before adding a regex, ask whether the decision follows a specified machine
+grammar or requires interpreting natural-language meaning. Limiting the byte
+length or collecting example phrases does not make a meaning question a
+syntactic one. If meaning is required, route that judgment to an LLM; the daemon
+retains authentication, authorization, taint, and other structural enforcement.
 
 When this pattern comes up again, cite this doc and the two prior incidents in the implementation plan up front. That converts the review from "find the next phrase this regex misses" into "verify the structural invariant holds," which is the review that actually terminates.

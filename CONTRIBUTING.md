@@ -17,6 +17,11 @@ as possible. Security controls must preserve useful behavior:
 - enforcement belongs in runtime policy, provenance, sandbox, and audit layers,
   not in fragile natural-language heuristics.
 
+Use the [engineering objective](docs/DESIGN-PHILOSOPHY.md#engineering-objective)
+to keep the accepted feature set maintainable: clear ownership, narrow
+interfaces, and explicit dependencies. A simpler design must preserve supported
+behavior and independent security properties.
+
 ## Development setup
 
 Shisad uses Python 3.12 as its development and release-gating interpreter.
@@ -46,7 +51,7 @@ See [`runner/README.md`](runner/README.md) and
 
 ## How changes are developed
 
-For non-trivial work:
+For non-trivial product and tooling changes:
 
 1. Define the behavior and its limits.
 2. Identify the affected files and nearest user journey.
@@ -61,6 +66,13 @@ Changes that affect planner, tool, policy, channel, or runtime behavior should
 also exercise the nearest representative end-to-end journey.
 
 ## Validation
+
+For documentation-only changes, verify technical claims against their source,
+check affected links and anchors, and review formatting and the public/private
+boundary. Record those checks and outcomes with the task. Do not run product
+tests by default when executable behavior is unchanged; do not add a runtime
+wiring claim for a prose edit. Existing runtime claims still need supporting
+evidence.
 
 Use the smallest test selection that proves the change. A broader successful
 run replaces contained selections in the same environment; do not rerun them
