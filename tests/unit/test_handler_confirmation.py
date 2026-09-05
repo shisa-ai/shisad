@@ -161,12 +161,15 @@ async def test_confirmation_wrappers_validate_shapes() -> None:
     )
     result = await handlers.handle_action_pending(ActionPendingParams(limit=5), RequestContext())
     assert result.count == 1
+    assert result.actions[0].model_dump()["limit"] == 5
 
     purged = await handlers.handle_action_purge(
-        ActionPurgeParams(status="terminal"),
+        ActionPurgeParams(status="confirmed", dry_run=True),
         RequestContext(),
     )
     assert purged.purged == 1
+    assert purged.confirmation_ids == ["confirmed"]
+    assert purged.dry_run is True
 
 
 @pytest.mark.asyncio
@@ -180,6 +183,7 @@ async def test_confirmation_metrics_wrapper_returns_model() -> None:
         RequestContext(),
     )
     assert result.count == 1
+    assert result.metrics == [{"user_id": "alice", "window_seconds": 120}]
 
 
 @pytest.mark.asyncio
@@ -197,7 +201,9 @@ async def test_confirmation_decision_wrappers() -> None:
         RequestContext(),
     )
     assert confirm.confirmed is True
+    assert confirm.confirmation_id == "c1"
     assert reject.rejected is True
+    assert reject.confirmation_id == "c2"
 
 
 def _registry_for_evidence() -> ToolRegistry:

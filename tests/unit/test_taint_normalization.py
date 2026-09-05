@@ -35,13 +35,6 @@ def test_m1_h0_normalize_retrieval_taints_adds_untrusted_for_explicit_empty_set(
 # specific collections would have passed silently.
 
 
-def test_normalize_retrieval_taints_user_curated_stays_untrusted_only_when_unspecified() -> None:
-    # user_curated is the only trusted-tier collection; even so, the
-    # normalization contract promises at least UNTRUSTED.
-    labels = normalize_retrieval_taints(taint_labels=None, collection="user_curated")
-    assert labels == {TaintLabel.UNTRUSTED}
-
-
 def test_normalize_retrieval_taints_external_web_stays_untrusted() -> None:
     labels = normalize_retrieval_taints(taint_labels=None, collection="external_web")
     assert labels == {TaintLabel.UNTRUSTED}

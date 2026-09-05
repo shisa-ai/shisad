@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,19 +16,6 @@ from shisad.security.firewall import FirewallResult
 
 _CURRENT_TURN_TOOL_CALL_SOURCE = "planner:current_turn_tool_call"
 _STRUCTURED_SIMILAR_FILE_RECOVERY_SOURCE = "planner:structured_similar_file_recovery"
-_REMOVED_ENGINE_SYMBOLS = (
-    "_build_explicit_memory_intent_proposal",
-    "_build_explicit_multi_intent_proposals",
-    "_rewrite_explicit_memory_intent_planner_result",
-    "_rewrite_explicit_filesystem_intent_planner_failure",
-)
-_REMOVED_LINGUISTIC_SOURCES = (
-    "user_text:explicit_memory_intent",
-    "user_text:explicit_file_intent",
-    "user_text:explicit_reminder_intent",
-    "user_text:explicit_similar_file_recovery_intent",
-    "user_text:explicit_similar_file_read_intent",
-)
 
 
 def _validated_turn(
@@ -72,13 +58,6 @@ def _proposal(
         reasoning="Exercise the typed structural contract.",
         data_sources=sources,
     )
-
-
-def test_f13b_compatibility_engine_and_linguistic_sources_are_absent() -> None:
-    source = inspect.getsource(impl_session)
-
-    assert all(not hasattr(impl_session, name) for name in _REMOVED_ENGINE_SYMBOLS)
-    assert all(label not in source for label in _REMOVED_LINGUISTIC_SOURCES)
 
 
 @pytest.mark.parametrize(
@@ -184,7 +163,6 @@ def test_f13b_legacy_file_source_cannot_grant_authority() -> None:
 
     helper = impl_session._has_current_turn_local_filesystem_read_intent
 
-    assert "proposal" not in inspect.signature(helper).parameters
     assert (
         helper(
             tool_name=proposal.tool_name,
@@ -208,7 +186,6 @@ def test_f13b_legacy_reminder_source_cannot_grant_authority() -> None:
 
     helper = impl_session._has_current_turn_reminder_create_intent
 
-    assert "proposal" not in inspect.signature(helper).parameters
     assert (
         helper(
             tool_name=proposal.tool_name,

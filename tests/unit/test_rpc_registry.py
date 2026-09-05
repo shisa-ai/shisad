@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
+import json
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import get_type_hints
 
@@ -34,7 +35,6 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 
-_FROZEN_F11A_MANIFEST_SHA256 = "7f173e44844a6e380a52f646e263a805b431e85b84217ff5fe9f9ca3b31c46fe"
 _GROUP_TYPES = {
     RpcHandlerGroup.ADMIN: AdminHandlers,
     RpcHandlerGroup.ASSISTANT: AssistantHandlers,
@@ -63,45 +63,6 @@ _GROUP_ATTRIBUTES = {
 
 def _annotation_name(annotation: object) -> str:
     return annotation if isinstance(annotation, str) else str(getattr(annotation, "__name__", ""))
-
-
-def _manifest_digest() -> str:
-    rows = (
-        "|".join(
-            (
-                descriptor.name,
-                f"{descriptor.params_model.__module__}.{descriptor.params_model.__qualname__}",
-                descriptor.result_model.qualified_name,
-                str(int(descriptor.admin_only)),
-                descriptor.handler_group.value,
-                descriptor.handler_method,
-                descriptor.availability.value,
-                descriptor.readiness.value,
-            )
-        )
-        for descriptor in rpc_method_descriptors(test_mode=True)
-    )
-    return hashlib.sha256("\n".join(rows).encode()).hexdigest()
-
-
-def test_f11a_descriptor_manifest_matches_frozen_transport_contract() -> None:
-    production = rpc_method_descriptors(test_mode=False)
-    test_mode = rpc_method_descriptors(test_mode=True)
-
-    assert isinstance(production, tuple)
-    assert isinstance(test_mode, tuple)
-    assert len(production) == 129
-    assert len(test_mode) == 130
-    assert len({descriptor.name for descriptor in test_mode}) == 130
-    assert sum(descriptor.admin_only for descriptor in test_mode) == 86
-    assert _manifest_digest() == _FROZEN_F11A_MANIFEST_SHA256
-
-    production_names = [descriptor.name for descriptor in production]
-    test_names = [descriptor.name for descriptor in test_mode]
-    assert "daemon.reset" not in production_names
-    assert test_names.index("daemon.reset") == test_names.index("daemon.shutdown") + 1
-    reset = test_mode[test_names.index("daemon.reset")]
-    assert reset.availability is RpcAvailability.TEST_MODE
 
 
 def test_f12_assistant_route_lookup_is_descriptor_derived() -> None:
@@ -175,14 +136,6 @@ def test_f11b_control_graph_exposes_every_typed_group() -> None:
     assert {attribute: annotations.get(attribute) for attribute in _GROUP_ATTRIBUTES.values()} == {
         _GROUP_ATTRIBUTES[group]: owner_type for group, owner_type in _GROUP_TYPES.items()
     }
-
-
-def test_f11b_control_graph_has_no_rpc_forwarding_methods() -> None:
-    assert [
-        name
-        for name, member in vars(DaemonControlHandlers).items()
-        if name.startswith("handle_") and callable(member)
-    ] == []
 
 
 def test_f11_control_graph_binds_only_explicit_owned_groups() -> None:
@@ -318,3 +271,30 @@ def test_o4f_channel_admin_routes_are_typed_admin_only() -> None:
         assert descriptor.params_model.__name__ == params_name
         assert descriptor.result_model.name == result_name
         assert descriptor.handler_group is RpcHandlerGroup.ADMIN
+
+
+@pytest.mark.parametrize("test_mode", [False, True])
+def test_public_rpc_contract(test_mode: bool) -> None:
+    # Reviewable compatibility data: params type, result type, admin requirement,
+    # availability, and readiness. Internal owners and ordering may change.
+    frozen = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "rpc_contract.json").read_text(encoding="utf-8")
+    )
+    expected = {
+        name: fields
+        for name, fields in frozen.items()
+        if test_mode or fields[3] != RpcAvailability.TEST_MODE.value
+    }
+    descriptors = rpc_method_descriptors(test_mode=test_mode)
+    actual = {
+        d.name: [
+            d.params_model.__name__,
+            d.result_model.name,
+            d.admin_only,
+            d.availability.value,
+            d.readiness.value,
+        ]
+        for d in descriptors
+    }
+    assert len(actual) == len(descriptors), "duplicate RPC method registration"
+    assert actual == expected

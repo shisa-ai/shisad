@@ -9,7 +9,8 @@ import pytest
 
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
-from tests.behavioral.test_behavioral_contract import (
+from tests.helpers.behavioral import extract_tool_outputs
+from tests.helpers.contract import (
     ContractHarness,
     _confirm_pending_action,
     _create_session,
@@ -18,7 +19,6 @@ from tests.behavioral.test_behavioral_contract import (
     _tool_call,
     _wait_for_audit_event,
 )
-from tests.helpers.behavioral import extract_tool_outputs
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.first_principles]
 
@@ -92,11 +92,7 @@ async def _assert_core_product_gates(harness: ContractHarness) -> None:
     assert "web.search" in outputs
 
 
-async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
-    (harness.workspace_root / "todo.log").write_text(
-        "OPEN: verify confirmed result threading\n",
-        encoding="utf-8",
-    )
+async def _assert_similar_file_recovery_gate(harness: ContractHarness) -> None:
     sid = await _create_session(harness.client)
 
     first = await harness.client.call(
@@ -128,15 +124,13 @@ async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
     assert isinstance(pending_ids, list)
     assert pending_ids == []
 
-    confirmed = proposed
-    _assert_normal_reply(confirmed, executed_actions=2)
-    confirmed_outputs = extract_tool_outputs(confirmed)
-    assert "file.read" not in confirmed_outputs
-    assert "shell.exec" not in confirmed_outputs
-    confirmed_payload = _first_tool_payload(confirmed, "fs.list")
-    assert _first_tool_payload(confirmed, "fs.read").get("ok") is True
-    assert "todo.log" in json.dumps(confirmed_payload, ensure_ascii=True)
-    assert "todo.log" in str(confirmed.get("response", ""))
+    recovered_outputs = extract_tool_outputs(proposed)
+    assert "file.read" not in recovered_outputs
+    assert "shell.exec" not in recovered_outputs
+    listing_payload = _first_tool_payload(proposed, "fs.list")
+    assert _first_tool_payload(proposed, "fs.read").get("ok") is True
+    assert "todo.log" in json.dumps(listing_payload, ensure_ascii=True)
+    assert "todo.log" in str(proposed.get("response", ""))
 
     followup = await harness.client.call(
         "session.message",
@@ -241,10 +235,10 @@ async def test_first_principles_degraded_web_search_harness(
     assert payload.get("error") == "web_search_backend_unconfigured"
 
 
-async def test_first_principles_confirmation_recovery_gate(
-    confirmation_followup_harness: ContractHarness,
+async def test_first_principles_similar_file_recovery_gate(
+    similar_file_recovery_harness: ContractHarness,
 ) -> None:
-    await _assert_confirmation_recovery_gate(confirmation_followup_harness)
+    await _assert_similar_file_recovery_gate(similar_file_recovery_harness)
 
 
 async def test_first_principles_channel_originated_approval_not_cli_only_gate(

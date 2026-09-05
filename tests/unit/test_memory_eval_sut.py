@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import subprocess
@@ -11,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import shisad.memory.evaluation_sut as evaluation_sut
-from shisad.daemon import services as daemon_services
 from shisad.memory.evaluation_sut import EvaluationSutSession, run_sut_jsonl
 from shisad.memory.runtime_wiring import build_memory_runtime_components
 
@@ -1377,9 +1375,3 @@ def test_runtime_component_wiring_uses_daemon_memory_paths(tmp_path: Path) -> No
     assert components.legacy_storage_dir == tmp_path / "memory"
     assert components.ingestion.embedding_fingerprint.model_id == "shisad-deterministic-sha256"
     assert components.memory_manager is not None
-
-
-def test_daemon_and_sut_share_memory_runtime_builder() -> None:
-    build_source = inspect.getsource(daemon_services.DaemonServices._build_locked)
-
-    assert "build_memory_runtime_components(" in build_source

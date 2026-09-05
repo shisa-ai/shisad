@@ -234,26 +234,10 @@ def test_gh34_entropy_detector_redacts_lowercase_secret_like_source_suffix_path(
         "abc123def456_ghi789jkl012",
         "abc123def456-ghi789jkl012",
         "a12_b34_c56_d78_e90_f12",
+        "abcdefghijkl_mnopqrstuvwx_yzabcdefghi",
     ],
 )
 def test_gh34_entropy_detector_redacts_separated_secret_like_source_suffix_path(
-    stem: str,
-) -> None:
-    firewall = OutputFirewall(safe_domains=["api.good.com"])
-    token = f"/tmp/project/{stem}.py"
-
-    result = firewall.inspect(f"path {token}")
-
-    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
-    assert token not in result.sanitized_text
-    assert "high_entropy_secret" in result.secret_findings
-
-
-@pytest.mark.parametrize(
-    "stem",
-    ["abcdefghijkl_mnopqrstuvwx_yzabcdefghi"],
-)
-def test_gh34_entropy_detector_redacts_separated_alphabetic_secret_like_source_path(
     stem: str,
 ) -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
@@ -515,6 +499,18 @@ def test_gh34_entropy_detector_keeps_readable_rooted_technical_segment() -> None
         "src/playwright_runtime_diagnostics.py",
         "/playwright_runtime_diagnostics.py",
         "/src/playwright_runtime_diagnostics.py",
+        "/Users/Alice/MyDocs2025/Backup2024/notes.txt",
+        "/Users/Alice/Documents2025/Photos2024/img.jpg",
+        "/home/me/Project2025/MyApp2024/build/index.html",
+        "/home/ubuntu/shisad/tests/adversarial/test_local_fido2_approval.py",
+        "/home/ubuntu/shisad/tests/behavioral/test_v04_behavioral_extensions.py",
+        "/home/ubuntu/shisad/tests/behavioral/test_no_model_configured_behavioral.py",
+        "/home/ubuntu/shisad/tests/unit/test_provider_routing_s0.py",
+        "/home/ubuntu/shisad/tests/unit/test_s8_default_posture.py",
+        "/tmp/project/test_x509_certificate_validation.py",
+        "/tmp/project/test_sha256_digest_validation.py",
+        "/tmp/project/test_tls13_handshake.py",
+        "/tmp/project/test_utf16_decoder.py",
     ],
 )
 def test_gh34_entropy_detector_keeps_rooted_readable_source_paths(path: str) -> None:
@@ -535,45 +531,3 @@ def test_gh34_entropy_detector_redacts_secret_like_technical_prefix_final_segmen
     assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
     assert token not in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/Users/Alice/MyDocs2025/Backup2024/notes.txt",
-        "/Users/Alice/Documents2025/Photos2024/img.jpg",
-        "/home/me/Project2025/MyApp2024/build/index.html",
-    ],
-)
-def test_gh34_entropy_detector_keeps_camelcase_year_directory_paths(path: str) -> None:
-    firewall = OutputFirewall(safe_domains=["api.good.com"])
-
-    result = firewall.inspect(f"path {path}")
-
-    assert path in result.sanitized_text
-    assert "high_entropy_secret" not in result.secret_findings
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/home/ubuntu/shisad/tests/adversarial/test_local_fido2_approval.py",
-        "/home/ubuntu/shisad/tests/behavioral/test_v04_behavioral_extensions.py",
-        "/home/ubuntu/shisad/tests/behavioral/test_no_model_configured_behavioral.py",
-        "/home/ubuntu/shisad/tests/unit/test_provider_routing_s0.py",
-        "/home/ubuntu/shisad/tests/unit/test_s8_default_posture.py",
-        "/tmp/project/test_x509_certificate_validation.py",
-        "/tmp/project/test_sha256_digest_validation.py",
-        "/tmp/project/test_tls13_handshake.py",
-        "/tmp/project/test_utf16_decoder.py",
-    ],
-)
-def test_gh34_entropy_detector_keeps_digit_bearing_readable_source_paths(
-    path: str,
-) -> None:
-    firewall = OutputFirewall(safe_domains=["api.good.com"])
-
-    result = firewall.inspect(f"path {path}")
-
-    assert path in result.sanitized_text
-    assert "high_entropy_secret" not in result.secret_findings

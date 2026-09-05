@@ -2215,9 +2215,18 @@ async def test_gh41_untrusted_channel_confirm_is_intercepted_without_planner(
         "yes foo_bar",
         "yes v2",
         "yes backup-2025",
+        "no thanks",
+        "no i mean capabilities",
+        "no config.json",
+        "no config2.json",
+        "no report_2024",
+        "reject that idea",
+        "reject all pending?",
+        "confirmed that the file exists",
+        "rejected that idea",
     ],
 )
-async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planner(
+async def test_untrusted_channel_prose_neither_confirms_nor_rejects_pending_action(
     tmp_path,
     content: str,
 ) -> None:
@@ -2252,107 +2261,6 @@ async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planne
             sanitized_text=content,
             original_hash="0" * 64,
         ),
-    )
-
-    assert result is None
-    assert harness.confirm_calls == []
-    assert harness.reject_calls == []
-    assert harness._pending_actions["c-1"].status == "pending"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "content",
-    [
-        "no thanks",
-        "no i mean capabilities",
-        "no config.json",
-        "no config2.json",
-        "no report_2024",
-        "reject that idea",
-        "reject all pending?",
-    ],
-)
-async def test_gh41_untrusted_channel_rejection_prose_falls_through_to_planner(
-    tmp_path,
-    content: str,
-) -> None:
-    harness = _ChatConfirmationHarness(tmp_path)
-    pending = PendingAction(
-        confirmation_id="c-1",
-        decision_nonce="nonce-1",
-        session_id=SessionId("sess-chat"),
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        tool_name=ToolName("note.create"),
-        arguments={"key": "memory_preference", "content": "remember by default"},
-        reason="manual",
-        capabilities={Capability.MEMORY_WRITE},
-        created_at=datetime.now(UTC),
-    )
-    harness._pending_actions[pending.confirmation_id] = pending
-
-    result = await SessionImplMixin._maybe_handle_chat_confirmation(
-        harness,
-        sid=SessionId("sess-chat"),
-        channel="slack",
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        session_mode=SessionMode.DEFAULT,
-        trust_level="untrusted",
-        trusted_input=False,
-        is_internal_ingress=True,
-        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
-        content=content,
-        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
-    )
-
-    assert result is None
-    assert harness.confirm_calls == []
-    assert harness.reject_calls == []
-    assert harness._pending_actions["c-1"].status == "pending"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "content",
-    [
-        "confirmed that the file exists",
-        "rejected that idea",
-    ],
-)
-async def test_gh41_untrusted_channel_inflected_confirmation_prose_falls_through(
-    tmp_path,
-    content: str,
-) -> None:
-    harness = _ChatConfirmationHarness(tmp_path)
-    pending = PendingAction(
-        confirmation_id="c-1",
-        decision_nonce="nonce-1",
-        session_id=SessionId("sess-chat"),
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        tool_name=ToolName("note.create"),
-        arguments={"key": "memory_preference", "content": "remember by default"},
-        reason="manual",
-        capabilities={Capability.MEMORY_WRITE},
-        created_at=datetime.now(UTC),
-    )
-    harness._pending_actions[pending.confirmation_id] = pending
-
-    result = await SessionImplMixin._maybe_handle_chat_confirmation(
-        harness,
-        sid=SessionId("sess-chat"),
-        channel="slack",
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        session_mode=SessionMode.DEFAULT,
-        trust_level="untrusted",
-        trusted_input=False,
-        is_internal_ingress=True,
-        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
-        content=content,
-        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
     assert result is None
@@ -3925,49 +3833,6 @@ async def test_channel_chat_confirmation_rejects_confirm_index_without_proof(
         "Review all pending: shisad action list",
         "Review all pending: shisactl action list",
         "c-1",
-    ],
-)
-async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval(
-    tmp_path,
-    content: str,
-) -> None:
-    harness = _ChatConfirmationHarness(tmp_path)
-    pending = PendingAction(
-        confirmation_id="c-1",
-        decision_nonce="nonce-1",
-        session_id=SessionId("sess-chat"),
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        tool_name=ToolName("web.search"),
-        arguments={"query": "hello"},
-        reason="manual",
-        capabilities={Capability.HTTP_REQUEST},
-        created_at=datetime.now(UTC),
-    )
-    harness._pending_actions[pending.confirmation_id] = pending
-
-    result = await SessionImplMixin._maybe_handle_chat_confirmation(
-        harness,
-        sid=SessionId("sess-chat"),
-        channel="cli",
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws-1"),
-        session_mode=SessionMode.DEFAULT,
-        trust_level="trusted",
-        trusted_input=True,
-        is_internal_ingress=False,
-        content=content,
-        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
-    )
-
-    assert result is None
-    assert harness._pending_actions["c-1"].status == "pending"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "content",
-    [
         'What does "shisad action list" show?',
         'Should I run "shisad action reject c-1" now?',
         "shisad action reject c-1 now?",
@@ -3977,7 +3842,7 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
         "`shisad action list --session sess-chat` what does this show?",
     ],
 )
-async def test_h1_chat_confirmation_cli_command_mentions_still_reach_planner(
+async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval(
     tmp_path,
     content: str,
 ) -> None:

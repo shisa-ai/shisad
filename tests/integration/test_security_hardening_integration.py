@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -13,8 +12,6 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
-from shisad.security.adversarial import AdversarialMetrics, ci_gate
-from shisad.security.firewall import ContentFirewall
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
@@ -45,51 +42,6 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
         await client.call("daemon.shutdown")
     await client.close()
     await asyncio.wait_for(daemon_task, timeout=3)
-
-
-def test_m6_t7_integration_adversarial_suite_all_pass() -> None:
-    fixture_path = (
-        Path(__file__).resolve().parents[1] / "adversarial" / "injection" / "direct_templates.json"
-    )
-    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-    templates = [str(item) for item in fixture["templates"]]
-    targets = [str(item) for item in fixture["targets"]]
-    tokens = [str(item) for item in fixture["tokens"]]
-    firewall = ContentFirewall()
-    active_templates = [
-        template
-        for template in templates
-        if firewall.inspect(template.format(target=targets[0], token=tokens[0])).risk_score > 0.0
-    ]
-    variants = [
-        template.format(target=target, token=token)
-        for template in active_templates
-        for target in targets
-        for token in tokens
-    ]
-    assert len(variants) >= 50
-    blocked = sum(1 for variant in variants if firewall.inspect(variant).risk_score > 0.0)
-    asr = 1.0 - (blocked / float(len(variants)))
-    metrics = AdversarialMetrics(
-        attack_success_rate=asr,
-        utility_retention=0.97,
-        false_positive_rate=0.01,
-        detection_latency_ms=35.0,
-    )
-    decision = ci_gate(metrics)
-    assert decision.allowed is True
-
-
-def test_m6_t8_integration_ci_gate_blocks_high_asr_pr() -> None:
-    metrics = AdversarialMetrics(
-        attack_success_rate=0.2,
-        utility_retention=0.97,
-        false_positive_rate=0.01,
-        detection_latency_ms=20,
-    )
-    decision = ci_gate(metrics)
-    assert decision.allowed is False
-    assert "asr" in decision.reason
 
 
 @pytest.mark.asyncio

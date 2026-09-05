@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -414,7 +413,6 @@ async def test_channel_receive_pump_delegates_replay_admission_to_common_handler
         handlers=handler,  # type: ignore[arg-type]
     )
 
-    assert "state_store" not in inspect.signature(channel_receive_pump).parameters
     assert len(handler.calls) == 1
     assert handler.calls[0][0]["message"]["message_id"] == "m-1"
     assert handler.calls[0][1] is True

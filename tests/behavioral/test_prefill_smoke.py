@@ -13,7 +13,7 @@ from tests.behavioral._prefill import (
     prefill_pending_actions,
     prefill_transcript,
 )
-from tests.behavioral.test_behavioral_contract import ContractHarness, _create_session
+from tests.helpers.contract import ContractHarness, _create_session
 
 pytestmark = pytest.mark.asyncio
 
@@ -58,23 +58,23 @@ async def test_prefill_transcript_smoke(clean_harness: ContractHarness) -> None:
 
 
 async def test_prefill_pending_actions_smoke(
-    confirmation_followup_harness: ContractHarness,
+    similar_file_recovery_harness: ContractHarness,
 ) -> None:
     profile = _profile("light_user")
-    sid = await _create_session(confirmation_followup_harness.client)
-    first = await confirmation_followup_harness.client.call(
+    sid = await _create_session(similar_file_recovery_harness.client)
+    first = await similar_file_recovery_harness.client.call(
         "session.message",
         {"session_id": sid, "content": "review TODO.LOG and list only open items"},
     )
     assert first.get("lockdown_level") == "normal"
 
     pending_ids = await prefill_pending_actions(
-        confirmation_followup_harness.client,
+        similar_file_recovery_harness.client,
         session_id=sid,
         queued=profile["pending_actions"],
     )
     assert pending_ids == []
-    pending = await confirmation_followup_harness.client.call(
+    pending = await similar_file_recovery_harness.client.call(
         "action.pending",
         {"session_id": sid, "status": "pending", "limit": 20},
     )

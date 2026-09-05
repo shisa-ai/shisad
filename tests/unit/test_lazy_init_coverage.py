@@ -1,31 +1,23 @@
-"""Cover lazy-import __getattr__ in assistant and executors __init__."""
+"""Public lazy exports resolve to the canonical implementation objects."""
 
-from __future__ import annotations
+from importlib import import_module
 
 import pytest
 
 
-class TestAssistantLazyInit:
-    def test_lazy_import_resolves_known_name(self) -> None:
-        from shisad.assistant import FsGitToolkit
+@pytest.mark.parametrize(
+    ("package", "name", "implementation"),
+    [
+        ("shisad.assistant", "FsGitToolkit", "shisad.assistant.fs_git"),
+        ("shisad.executors", "SandboxType", "shisad.executors.sandbox.models"),
+    ],
+)
+def test_public_lazy_export_identity(package: str, name: str, implementation: str) -> None:
+    exported = getattr(import_module(package), name)
+    assert exported is getattr(import_module(implementation), name)
 
-        assert FsGitToolkit is not None
 
-    def test_lazy_import_raises_on_unknown(self) -> None:
-        import shisad.assistant as mod
-
-        with pytest.raises(AttributeError, match="has no attribute"):
-            mod.__getattr__("NoSuchThing")
-
-
-class TestExecutorsLazyInit:
-    def test_lazy_import_resolves_known_name(self) -> None:
-        from shisad.executors import SandboxType
-
-        assert SandboxType is not None
-
-    def test_lazy_import_raises_on_unknown(self) -> None:
-        import shisad.executors as mod
-
-        with pytest.raises(AttributeError, match="has no attribute"):
-            mod.__getattr__("NoSuchThing")
+@pytest.mark.parametrize("package", ["shisad.assistant", "shisad.executors"])
+def test_unknown_public_export_raises(package: str) -> None:
+    with pytest.raises(AttributeError, match="NoSuchThing"):
+        _ = import_module(package).NoSuchThing

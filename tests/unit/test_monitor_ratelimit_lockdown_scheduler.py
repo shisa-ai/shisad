@@ -629,7 +629,7 @@ def test_gh55_action_monitor_still_flags_http_for_non_browser_tools() -> None:
     assert "http.request:suspicious_destination" in decision.flags
 
 
-def test_m2_t10_rate_limiter_blocks_burst() -> None:
+def test_rate_limiter_confirms_near_limit_and_blocks_excess() -> None:
     limiter = RateLimiter(
         RateLimitConfig(
             window_seconds=60,
@@ -643,7 +643,9 @@ def test_m2_t10_rate_limiter_blocks_burst() -> None:
     decision_2 = limiter.evaluate(session_id="s1", user_id="u1", tool_name="http_request")
     decision_3 = limiter.evaluate(session_id="s1", user_id="u1", tool_name="http_request")
     assert decision_1.block is False
-    assert decision_2.require_confirmation is True or decision_2.block is False
+    assert decision_2.require_confirmation is True
+    assert decision_2.block is False
+    assert decision_3.reason == "tool_limit_exceeded"
     assert decision_3.block is True
 
 

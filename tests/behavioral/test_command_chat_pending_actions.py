@@ -13,7 +13,7 @@ from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.memory.ingestion import IngestionPipeline
-from tests.behavioral.test_behavioral_contract import (
+from tests.helpers.contract import (
     _contract_harness_context,
     _create_session,
     _stub_complete,

@@ -1,9 +1,10 @@
-"""M2 runner structure guardrails."""
+"""Control method registration preserves schemas, authority, and bound handlers."""
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from shisad.core.api.schema import (
     AdminSoulReadParams,
@@ -27,81 +28,8 @@ from shisad.core.api.schema import (
     SessionTerminateParams,
     TaskStatusSnapshotParams,
 )
+from shisad.daemon import runner
 from shisad.daemon.runner import _method_specs
-
-
-def test_run_daemon_is_orchestration_only() -> None:
-    tree = ast.parse(Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8"))
-    run = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_daemon"
-    )
-    length = (run.end_lineno or run.lineno) - run.lineno + 1
-    assert length <= 200
-
-    nested = [
-        node
-        for node in ast.walk(run)
-        if node is not run
-        and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    ]
-    assert nested == []
-
-
-def test_runner_has_no_private_provider_classes() -> None:
-    tree = ast.parse(Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8"))
-    private_classes = [
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name.startswith("_")
-    ]
-    assert private_classes == []
-
-
-def test_f9_single_live_handler_constructor_is_services_owned() -> None:
-    services_source = Path("src/shisad/daemon/services.py").read_text(encoding="utf-8")
-    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
-    services_tree = ast.parse(services_source)
-    runner_tree = ast.parse(runner_source)
-
-    def _handler_constructions(tree: ast.AST) -> list[ast.Call]:
-        return [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "DaemonControlHandlers"
-        ]
-
-    assert len(_handler_constructions(services_tree)) == 1
-    assert _handler_constructions(runner_tree) == []
-    assert "services.control_handlers = DaemonControlHandlers(services=services)" in services_source
-    assert "handlers = services.control_handlers" in runner_source
-
-
-def test_f11a_runner_method_registration_is_registry_derived() -> None:
-    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
-    tree = ast.parse(runner_source)
-    method_specs = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_method_specs"
-    )
-    method_source = ast.get_source_segment(runner_source, method_specs) or ""
-
-    assert "rpc_method_descriptors(" in method_source
-    assert '("session.create"' not in method_source
-    assert "SessionCreateParams" not in method_source
-
-
-def test_f11b_live_internal_consumers_bind_typed_groups() -> None:
-    services_source = Path("src/shisad/daemon/services.py").read_text(encoding="utf-8")
-    runner_source = Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8")
-
-    assert "session_create=handlers.session.handle_session_create" in services_source
-    assert "session_message=handlers.session.handle_session_message" in services_source
-    assert "handlers=handlers.admin" in runner_source
 
 
 def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods() -> None:
@@ -157,4 +85,35 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     test_mode_specs = _method_specs(_HandlerStub(), test_mode=True)
     test_mode_methods = [name for name, _handler, _admin_only, _params_model in test_mode_specs]
     assert "daemon.reset" in test_mode_methods
-    assert test_mode_methods.index("daemon.reset") == test_mode_methods.index("daemon.shutdown") + 1
+
+
+@pytest.mark.parametrize("test_mode", [False, True])
+def test_runner_registers_descriptor_handler_schema_and_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    test_mode: bool,
+) -> None:
+    async def handler(params, ctx):
+        return params
+
+    descriptor = SimpleNamespace(
+        name="example.operation",
+        admin_only=True,
+        params_model=DoctorCheckParams,
+    )
+    requested_modes = []
+    bound = []
+
+    def descriptors(*, test_mode):
+        requested_modes.append(test_mode)
+        return (descriptor,)
+
+    def bind(item):
+        bound.append(item)
+        return handler
+
+    monkeypatch.setattr(runner, "rpc_method_descriptors", descriptors)
+    specs = _method_specs(SimpleNamespace(bind_rpc_handler=bind), test_mode=test_mode)
+
+    assert specs == [("example.operation", handler, True, DoctorCheckParams)]
+    assert bound == [descriptor]
+    assert requested_modes == [test_mode]

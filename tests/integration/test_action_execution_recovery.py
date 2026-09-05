@@ -2721,6 +2721,10 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
     [
         ("mutating_get", {"url": "https://mutating-get.example.test"}),
         (
+            "post_effect_crash",
+            {"url": "https://uncertain-effect.example.test", "snapshot": True},
+        ),
+        (
             "single_use_get",
             {"url": "https://single-use.example.test", "snapshot": False},
         ),
@@ -3031,19 +3035,6 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
         assert recovery_audits[0].get("data", {}).get("details", {}).get("outcome_unknown") is True
     finally:
         await restarted.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_replay(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    await test_arbitrary_web_fetch_crash_never_auto_retries(
-        tmp_path,
-        monkeypatch,
-        "post_effect_crash",
-        {"url": "https://uncertain-effect.example.test", "snapshot": True},
-    )
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from tests.behavioral.test_behavioral_contract import ContractHarness
+from tests.helpers.contract import ContractHarness
 
 pytestmark = [pytest.mark.asyncio]
 

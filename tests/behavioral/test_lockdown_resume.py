@@ -23,12 +23,12 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.security.spotlight import datamark_text
-from tests.behavioral.test_behavioral_contract import (
+from tests.helpers.behavioral import extract_tool_outputs
+from tests.helpers.contract import (
     ContractHarness,
     _create_session,
     _tool_call,
 )
-from tests.helpers.behavioral import extract_tool_outputs
 
 pytestmark = [pytest.mark.asyncio]
 

@@ -364,9 +364,21 @@ async def test_daemon_services_builds_with_local_provider(
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
     )
+    built_memory = []
+    build_memory = services_module.build_memory_runtime_components
+
+    def track_memory(*args, **kwargs):
+        components = build_memory(*args, **kwargs)
+        built_memory.append(components)
+        return components
+
+    monkeypatch.setattr(services_module, "build_memory_runtime_components", track_memory)
     services = await DaemonServices.build(config)
     try:
         assert isinstance(services.provider, LocalPlannerProvider)
+        assert len(built_memory) == 1
+        assert services.memory_manager is built_memory[0].memory_manager
+        assert services.ingestion is built_memory[0].ingestion
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None

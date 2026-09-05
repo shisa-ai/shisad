@@ -1,8 +1,8 @@
 """Shared fixtures for behavioral tests.
 
 Behavioral tests validate the product contract: can the user do X?
-They use the control plane directly (no live daemon) with specific
-capability sets to verify that authorized actions are not blocked.
+Component fixtures exercise the control plane directly. Contract fixtures run
+an isolated daemon through its control socket with deterministic providers.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from shisad.core.types import Capability
 from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import Origin
 from tests.behavioral._prefill import prefill_accumulated_tool_output
-from tests.behavioral.test_behavioral_contract import (
+from tests.helpers.contract import (
     ContractHarness,
     _contract_harness_context,
 )
@@ -116,8 +116,8 @@ async def degraded_runtime_harness(contract_harness_factory: Any) -> ContractHar
 
 
 @pytest.fixture
-async def confirmation_followup_harness(contract_harness_factory: Any) -> ContractHarness:
-    async with contract_harness_factory(name="confirmation-followup") as harness:
+async def similar_file_recovery_harness(contract_harness_factory: Any) -> ContractHarness:
+    async with contract_harness_factory(name="similar-file-recovery") as harness:
         (harness.workspace_root / "todo.log").write_text(
             "OPEN: verify confirmed result threading\n",
             encoding="utf-8",
@@ -131,4 +131,10 @@ async def require_confirmation_harness(contract_harness_factory: Any) -> Contrac
         name="require-confirmation",
         default_require_confirmation=True,
     ) as harness:
+        yield harness
+
+
+@pytest.fixture
+async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ContractHarness:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
         yield harness

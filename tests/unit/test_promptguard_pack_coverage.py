@@ -1,4 +1,4 @@
-"""Cover missing branches in promptguard_pack for the coverage gate."""
+"""Signed model packs reject invalid artifacts and preserve manifest identity."""
 
 from __future__ import annotations
 
@@ -121,10 +121,17 @@ class TestManifestValidators:
 
     def test_digest_is_stable(self) -> None:
         m = PromptGuardModelPackManifest(
-            name="test", version="v1", created_at="2026-01-01T00:00:00Z"
+            name="test",
+            version="v1",
+            created_at="2026-01-01T00:00:00Z",
+            runtime={"provider": "test", "context_window": 4096},
         )
-        assert m.digest() == m.digest()
-        assert len(m.digest()) == 64
+        reordered = PromptGuardModelPackManifest.model_validate(
+            {**m.model_dump(mode="json"), "runtime": dict(reversed(list(m.runtime.items())))}
+        )
+        assert reordered.digest() == m.digest()
+        assert m.model_copy(update={"version": "v2"}).digest() != m.digest()
+        assert len(bytes.fromhex(m.digest())) == 32
 
 
 # --- build_promptguard_model_pack error branches ---

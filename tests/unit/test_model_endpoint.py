@@ -6,7 +6,6 @@ import pytest
 
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
-from shisad.daemon import runner as daemon_runner
 from shisad.daemon.services import validate_model_endpoints
 
 
@@ -24,11 +23,8 @@ def test_model_endpoint_validation_rejects_remote_http(
 
 
 def test_model_endpoint_validation_accepts_https_routes() -> None:
-    # P1-U1: prior version called `_validate_model_endpoints` without any
-    # explicit assertion — relied on the "no exception raised ⇒ pass"
-    # pytest convention, which would also silently pass if the function
-    # became a no-op. Pin the contract: the function returns None on
-    # success.
+    # The success case catches accidental rejection; invalid-input cases catch
+    # missing validation. Returning None alone cannot detect a no-op.
     config = ModelConfig(base_url="https://api.example.com/v1")
     router = ModelRouter(config)
 
@@ -78,7 +74,3 @@ def test_model_endpoint_validation_enforces_configured_allowlist() -> None:
 
     with pytest.raises(ValueError):
         validate_model_endpoints(config, router)
-
-
-def test_rf_2026_011_runner_endpoint_validator_shim_is_deleted() -> None:
-    assert not hasattr(daemon_runner, "_validate_model_endpoints")

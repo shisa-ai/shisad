@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 
@@ -50,7 +51,19 @@ def test_f10a_record_schema_preserves_former_optional_positional_slots() -> None
 
 
 def test_f10c_core_record_has_no_daemon_type_dependency() -> None:
-    assert "shisad.daemon" not in inspect.getsource(pending_action_module)
+    tree = ast.parse(inspect.getsource(pending_action_module))
+    imports = [
+        name
+        for node in ast.walk(tree)
+        for name in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+    ]
+    assert not any(name == "shisad.daemon" or name.startswith("shisad.daemon.") for name in imports)
 
 
 def test_f10a_current_record_round_trips_with_index_parity(tmp_path) -> None:

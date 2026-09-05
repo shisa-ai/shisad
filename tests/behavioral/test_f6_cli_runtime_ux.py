@@ -31,8 +31,8 @@ from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.policy import PolicyLoader
 from shisad.ui import chat as chat_ui
-from tests.behavioral.test_behavioral_contract import ContractHarness
 from tests.helpers.behavioral import extract_tool_outputs
+from tests.helpers.contract import ContractHarness
 
 pytestmark = pytest.mark.first_principles
 
