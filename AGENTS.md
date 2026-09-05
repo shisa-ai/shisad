@@ -183,7 +183,13 @@ Rules:
 - Reviewers provide findings + rationale + suggested fixes, but do not change the repo.
 - Coders translate reviewer findings into tracked issue/PR or external-task
   entries before implementing fixes.
-- Coders must triage all reviewer feedback, including notes labeled non-blocking or informational. If the feedback is valid, fix it in the active remediation loop or record an explicit no-change/defer rationale approved by the human lead; severity affects priority, not whether valid feedback can be ignored.
+- Coders must triage all valid reviewer feedback, including non-blocking notes.
+  Fix accepted-scope failures. For an unambiguous out-of-scope observation,
+  record its requirement reference, rationale, risk, and executable destination
+  with lead concurrence pending release review; do not request serial milestone
+  approval. Ambiguous scope/risk and acceptance of a current requirement failure
+  still require a lead decision. Every carried disposition is reviewed before
+  release closure; coder triage does not change the recorded reviewer result.
 - Reviewer follow-up is confirmation-only (resolved / unresolved with rationale), not code changes.
 - For closure purposes, reviewer "green" means no remaining valid open findings for the reviewed scope. "Not a blocker" by itself is not enough if the reviewer also raised a valid issue that remains unfixed and undeferred.
 
@@ -210,11 +216,11 @@ Rules:
 - Keep commits atomic and focused
 - Document security-relevant decisions
 - For planner/provider/tool/scheduler/channel/runtime-security changes, identify the nearest deterministic user journey. Plan an isolated live verification pass only for milestone/release close or when the change materially alters live interaction in a way deterministic tests cannot represent.
-- **Opportunistic cleanup on file touch**: when editing a file for milestone
-  work, remove dead code, stale imports, unused helper methods, and superseded
-  approaches in the same file. This is normal hygiene, not scope expansion.
-  Document significant removals in the issue/PR or external task notes. If a
-  cleanup requires touching files outside the active scope, defer it there.
+- **Opportunistic cleanup on file touch**: remove dead code, stale imports,
+  unused helpers, and superseded approaches within approved scope before the
+  stable candidate. After freeze, cleanup must be required by the named proven
+  requirement failure. Document removals and defer other cleanup in the issue/PR
+  or external task notes; sharing a file does not grant new authority.
 - **Refactor backlog**: if the touched area already has a backlog or TODO doc, review it at the start of the task. Otherwise use same-file-touch opportunistic cleanup only.
 
 ### After Changes (commit on completion)
@@ -392,7 +398,12 @@ When asked to close a milestone, review remediation, or release-readiness pass:
    interaction in a way deterministic tests cannot represent. Record the
    reason, exact commands, and outcomes. Ordinary remediation does not trigger
    this lane.
-0d. **Valid review feedback closed**: every valid reviewer issue, including non-blocking notes, is either fixed and re-reviewed or explicitly rejected/deferred with rationale approved by the human lead before marking the milestone closeable.
+0d. **Valid review feedback accounted for**: required fixes are confirmed;
+    unambiguous out-of-scope dispositions have a requirement reference,
+    rationale, risk, and executable destination. Pending release concurrence
+    does not prevent milestone advancement or change the recorded review
+    result. Ambiguous decisions and unresolved current requirements still stop.
+    Review all carried dispositions with the lead before release closure.
 1. Stage only explicit task files: `git add <file> ...`
 2. Verify staged file set: `git diff --staged --name-only`
 3. Review staged patch: `git diff --staged`
@@ -481,7 +492,9 @@ If you encounter:
 
 - Keep execution checklists, pre-analysis, and milestone state in the issue/PR
   or an external maintainer tracker, never in public product documentation.
-- Fix doc↔code drift immediately (especially around security guarantees and runtime enforcement semantics).
+- Correct doc↔code drift within approved scope, especially security guarantees
+  and runtime enforcement semantics. Record other corrections and their
+  destination; a parity checklist does not widen frozen authority.
 - During release-close, explicitly include `README.md` and the top-level public docs under `docs/` in docs-parity review. If dependency resolutions or workflow/action trust anchors changed, include `docs/AUDIT-supply-chain.md` in the same parity pass.
 - When writing release stats or quoting numbers (tests, churn, LOC), scope calculations to a specific tag/commit and include the exact commands used.
 - **Address end-users as "user" or "you", not "operator"**, in public-facing documentation (`README.md`, `CHANGELOG.md`, `docs/2FA.md`, `docs/USE-CASES.md`, user-facing parts of `docs/SECURITY.md` and `docs/ENV-VARS.md`). "Operator" reads as jargon and makes the reader wonder whether you mean them or a separate software role. It is still appropriate in deployment/admin/runbook docs (`docs/DEPLOY.md`, `runner/RUNBOOK.md`, `docs/runbooks/`) and in threat-model / design docs (`docs/DESIGN-PHILOSOPHY.md`, `docs/adr/`, `docs/analysis/`) where it names a distinct policy-author role separate from the end user. See `docs/PUBLISH.md` CHANGELOG style principle 3 for the long form.
