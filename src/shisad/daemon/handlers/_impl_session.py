@@ -172,6 +172,7 @@ from shisad.security.control_plane.sidecar import (
 from shisad.security.control_plane.trace import trace_reason_requires_confirmation
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
+from shisad.security.incident_review import CONTAINMENT_MESSAGE, IncidentReviewResult
 from shisad.security.intent_matching import (
     has_follow_on_command_verb,
     normalize_intent_text,
@@ -654,6 +655,8 @@ class SessionMessagePlannerDispatchResult:
     trace_t0: float
     delegation_advisory: TaskDelegationRecommendation
     trace_tool_calls: list[TraceToolCall] = field(default_factory=list)
+    incident_review: IncidentReviewResult | None = None
+    proposal_operations: tuple[ActionOperationIdentity, ...] = ()
 
 
 @dataclass(slots=True)
@@ -11820,6 +11823,8 @@ class SessionImplMixin(HandlerMixinBase):
     async def _dispatch_to_planner(
         self,
         planner_context: SessionMessagePlannerContextResult,
+        *,
+        _allow_alarm_continuation: bool = True,
     ) -> SessionMessagePlannerDispatchResult:
         validated = planner_context.validated
         trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
@@ -11948,6 +11953,64 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             )
 
+        proposal_operations = tuple(
+            mint_action_operation_identity(
+                origin_turn_id=_validated_origin_turn_id(
+                    validated,
+                    fallback_action_id=str(item.proposal.action_id),
+                ),
+            )
+            for item in planner_result.evaluated
+        )
+        incident_review = None
+        alarms = [
+            item
+            for item in planner_result.evaluated
+            if canonical_tool_name(str(item.proposal.tool_name)) == "report_anomaly"
+        ]
+        if alarms:
+            incident_review = await self._review_alarm(
+                sid=validated.sid,
+                user_request=validated.firewall_result.sanitized_text,
+                context=planner_context.planner_input,
+                report={"reports": [item.proposal.arguments for item in alarms]},
+                action_refs=tuple(operation.action_id for operation in proposal_operations),
+            )
+            if (
+                _allow_alarm_continuation
+                and incident_review.decision.verdict == "benign"
+                and len(alarms) == len(planner_result.evaluated)
+            ):
+                # One fresh plan for the original task. Only fixed runtime text is
+                # promoted to guidance; never the reviewer reason or report content.
+                continuation = await self._dispatch_to_planner(
+                    replace(
+                        planner_context,
+                        planner_input=planner_context.planner_input
+                        + (
+                            "\nRUNTIME GUIDANCE: Independent incident review found no security "
+                            "violation in the reported context. Complete the original USER REQUEST "
+                            "using available tools and evidence. Keep all provenance and policy "
+                            "constraints. Do not repeat the same report without new evidence."
+                        ),
+                    ),
+                    _allow_alarm_continuation=False,
+                )
+                combined = list(alarms) + continuation.planner_result.evaluated
+                proposal_operations += continuation.proposal_operations
+                planner_result = replace(
+                    continuation.planner_result,
+                    evaluated=combined,
+                    output=continuation.planner_result.output.model_copy(
+                        update={
+                            "actions": [item.proposal for item in combined],
+                        }
+                    ),
+                )
+                planner_failure_code = continuation.planner_failure_code
+                if continuation.incident_review is not None:
+                    incident_review = continuation.incident_review
+
         return SessionMessagePlannerDispatchResult(
             planner_context=planner_context,
             planner_result=planner_result,
@@ -11955,6 +12018,8 @@ class SessionImplMixin(HandlerMixinBase):
             trace_t0=trace_t0,
             delegation_advisory=delegation_advisory,
             trace_tool_calls=[],
+            incident_review=incident_review,
+            proposal_operations=proposal_operations,
         )
 
     def _resolve_planner_action_resolve_targets(
@@ -12792,13 +12857,17 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 )
 
-        for evaluated in planner_result.evaluated:
+        for proposal_index, evaluated in enumerate(planner_result.evaluated):
             proposal = evaluated.proposal
-            proposal_operation_identity = mint_action_operation_identity(
-                origin_turn_id=_validated_origin_turn_id(
-                    validated,
-                    fallback_action_id=str(proposal.action_id),
-                ),
+            proposal_operation_identity = (
+                planner_dispatch.proposal_operations[proposal_index]
+                if planner_dispatch.proposal_operations
+                else mint_action_operation_identity(
+                    origin_turn_id=_validated_origin_turn_id(
+                        validated,
+                        fallback_action_id=str(proposal.action_id),
+                    ),
+                )
             )
             proposal_event_identity_fields = _validated_tool_event_identity_fields(
                 validated,
@@ -12819,8 +12888,23 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             )
             final_reason = ""
-            if proposal_tool_name.startswith("browser.") and (
-                self._registry.get_tool(canonical_proposal_tool) is None
+            if (
+                planner_dispatch.incident_review is not None
+                and planner_dispatch.incident_review.contain
+                and proposal_tool_name != "report_anomaly"
+            ):
+                final_reason = (
+                    CONTAINMENT_MESSAGE
+                    if planner_dispatch.incident_review.decision.verdict == "unresolved"
+                    else (
+                        "incident_review_caution: This proposal batch was withheld "
+                        "for security review."
+                    )
+                )
+            if (
+                not final_reason
+                and proposal_tool_name.startswith("browser.")
+                and (self._registry.get_tool(canonical_proposal_tool) is None)
             ):
                 final_reason = _browser_runtime_unavailable_rejection_reason(
                     getattr(self._services, "browser_status", {}),
@@ -12849,9 +12933,9 @@ class SessionImplMixin(HandlerMixinBase):
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
                             arguments=dict(public_arguments),
-                            pep_decision="skipped:unregistered_browser_tool",
-                            monitor_decision="skipped:unregistered_browser_tool",
-                            control_plane_decision="skipped:unregistered_browser_tool",
+                            pep_decision="skipped:pre_execution_rejection",
+                            monitor_decision="skipped:pre_execution_rejection",
+                            control_plane_decision="skipped:pre_execution_rejection",
                             final_decision="reject",
                             executed=False,
                             execution_success=False,
@@ -13702,6 +13786,7 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities=planner_context.effective_caps,
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
+                incident_review=planner_dispatch.incident_review,
                 user_confirmed=current_turn_memory_write_authority,
                 persist_attempt_before_effect=True,
                 memory_ingress_context=(
@@ -15660,6 +15745,12 @@ class SessionImplMixin(HandlerMixinBase):
                 protected_tool_output_start=protected_tool_output_start,
                 protected_tool_output_end=protected_tool_output_end,
             )
+
+        if (
+            planner_dispatch.incident_review is not None
+            and planner_dispatch.incident_review.decision.verdict == "unresolved"
+        ):
+            response_text = f"{response_text}\n\n{CONTAINMENT_MESSAGE}".strip()
 
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:

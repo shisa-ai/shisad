@@ -343,6 +343,18 @@ class AnomalyReported(BaseEvent):
     recommended_action: str = ""
 
 
+class IncidentReviewed(BaseEvent):
+    """Filtered incident review and the exact proposal batch it governs."""
+
+    verdict: str
+    escalation: str
+    packet_hash: str
+    action_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    reason: str = ""
+    failure_code: str = ""
+
+
 class CredentialAccessed(BaseEvent):
     """A credential reference was used (never logs raw values)."""
 
@@ -782,6 +794,7 @@ type AnyEvent = (
     | ToolExecuted
     | BrowserNavigationURLSelected
     | AnomalyReported
+    | IncidentReviewed
     | CredentialAccessed
     | MonitorEvaluated
     | LockdownChanged
@@ -843,6 +856,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "ToolExecuted": ToolExecuted,
     "BrowserNavigationURLSelected": BrowserNavigationURLSelected,
     "AnomalyReported": AnomalyReported,
+    "IncidentReviewed": IncidentReviewed,
     "CredentialAccessed": CredentialAccessed,
     "MonitorEvaluated": MonitorEvaluated,
     "LockdownChanged": LockdownChanged,

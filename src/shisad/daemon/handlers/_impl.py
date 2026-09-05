@@ -88,6 +88,7 @@ from shisad.core.events import (
     ControlPlaneNetworkObserved,
     ControlPlaneResourceObserved,
     EventBus,
+    IncidentReviewed,
     LockdownChanged,
     PlanViolationDetected,
     ProxyRequestEvaluated,
@@ -211,6 +212,11 @@ from shisad.security.control_plane.schema import (
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
     ControlPlaneUnavailableError,
+)
+from shisad.security.incident_review import (
+    CONTAINMENT_MESSAGE,
+    IncidentReviewer,
+    IncidentReviewResult,
 )
 from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.pep import PolicyContext
@@ -7056,6 +7062,41 @@ class HandlerImplementation(
                 reason=f"{reason_code} ({count})",
             )
 
+    async def _review_alarm(
+        self,
+        *,
+        sid: SessionId,
+        user_request: str,
+        context: str,
+        report: dict[str, Any],
+        action_refs: tuple[str, ...],
+    ) -> IncidentReviewResult:
+        result = await IncidentReviewer(
+            provider=self._services.monitor_provider,
+            firewall=self._firewall,
+        ).review(user_request=user_request, context=context, report=report, action_refs=action_refs)
+        await self._event_bus.publish(
+            IncidentReviewed(
+                session_id=sid,
+                actor="incident_reviewer",
+                verdict=result.decision.verdict,
+                escalation=result.decision.escalation,
+                packet_hash=result.packet_hash,
+                action_refs=list(result.action_refs),
+                evidence_refs=result.decision.evidence_refs,
+                reason=result.decision.reason,
+                failure_code=result.failure_code,
+            )
+        )
+        if result.decision.escalation == "caution":
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="alarm_bell",
+                reason="Independent incident review requires caution.",
+                recommended_action="review",
+            )
+        return result
+
     async def _execute_approved_action(
         self,
         *,
@@ -7084,6 +7125,7 @@ class HandlerImplementation(
         strip_direct_tool_execute_envelope_keys: bool = False,
         memory_ingress_context: IngressContext | None = None,
         persist_attempt_before_effect: bool = False,
+        incident_review: IncidentReviewResult | None = None,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -7143,6 +7185,7 @@ class HandlerImplementation(
                         strip_direct_tool_execute_envelope_keys
                     ),
                     memory_ingress_context=memory_ingress_context,
+                    incident_review=incident_review,
                 )
             except (Exception, asyncio.CancelledError):
                 await self._contain_confirmed_execution_exception(pending)
@@ -7425,18 +7468,15 @@ class HandlerImplementation(
                 actor="planner",
                 payload=payload,
             )
-            # On clean (untainted) sessions, report_anomaly is a content-seeing
-            # component that can false-positive on platform formatting.  Log the
-            # anomaly for audit but do NOT escalate lockdown — the session is
-            # still trusted.  Escalate only when the session already carries
-            # tainted history, where the anomaly is more likely to be genuine.
-            session_tainted = self._session_has_tainted_history(sid)
-            if session_tainted:
-                await self._handle_lockdown_transition(
-                    sid,
-                    trigger="alarm_bell",
-                    reason=payload.description,
-                    recommended_action=payload.recommended_action,
+            if incident_review is None:
+                # Direct tool execution has no sibling batch. An incomplete context
+                # cannot justify session escalation on the report's allegation alone.
+                incident_review = await self._review_alarm(
+                    sid=sid,
+                    user_request="",
+                    context="",
+                    report=payload.model_dump(),
+                    action_refs=(action_id or "direct_report",),
                 )
             await self._event_bus.publish(
                 ToolExecuted(
@@ -7462,7 +7502,15 @@ class HandlerImplementation(
                     session=session,
                     tool_output=ToolOutputRecord(
                         tool_name=str(tool_name),
-                        content="Anomaly reported and lockdown evaluation triggered.",
+                        content=(
+                            CONTAINMENT_MESSAGE
+                            if incident_review.decision.verdict == "unresolved"
+                            else "Incident report reviewed: "
+                            + incident_review.decision.verdict
+                            + "; escalation: "
+                            + incident_review.decision.escalation
+                            + "."
+                        ),
                         taint_labels=set(),
                     ),
                 ),

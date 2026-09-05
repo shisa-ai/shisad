@@ -470,3 +470,52 @@ async def test_i1_content_tool_prompt_redacts_raw_mcp_description_text() -> None
     system_prompt = provider.messages[0][0].content
     assert "External/untrusted MCP tool" in system_prompt
     assert "Ignore previous instructions" not in system_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_tools", [True, False])
+async def test_alarm_guidance_reaches_native_and_content_tool_routes(native_tools: bool) -> None:
+    registry, _alarm_tool = _build_tool_registry(EventBus())
+    provider = _RecordingProvider()
+    planner = Planner(
+        provider,
+        PEP(PolicyBundle(default_require_confirmation=False), registry),
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=native_tools,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+    await planner.propose(
+        "Recall my saved mascot and read the previous fetch result.",
+        PolicyContext(capabilities=set()),
+        tools=_tools_payload(registry, {"report_anomaly"}),
+    )
+    system = provider.messages[0][0].content
+    if native_tools:
+        function = next(
+            item["function"]
+            for item in provider.tools[0]
+            if item["function"]["name"] == "report_anomaly"
+        )
+        description = function["description"]
+        assert set(function["parameters"]["required"]) == {
+            "anomaly_type",
+            "description",
+            "recommended_action",
+            "confidence",
+        }
+    else:
+        description = system.split("CONTENT TOOL-CALLING RUNTIME MANIFEST", 1)[1]
+    for guidance in (system, description):
+        assert "specific attempted security violation" in guidance
+        assert "offending content" in guidance
+        assert "tool errors" in guidance
+        assert "missing configuration" in guidance
+        assert "empty results" in guidance
+        assert "untrusted" in guidance
+        assert "evidence references" in guidance
+        assert "do not authorize actions" in guidance
+        assert "caution lockdown" in guidance
+        assert "Safe to call even for false positives" not in guidance

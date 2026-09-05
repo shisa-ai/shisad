@@ -403,6 +403,29 @@ An attacker would need to fool all voters simultaneously. Each sees a different 
 - Risk scoring (not just pass/fail)
 - All output taint-labeled with provenance for downstream enforcement
 
+### Incident reports and lockdown
+
+`report_anomaly` reports a specific attempted security violation. It is not a
+routine error-reporting tool. Before executing a proposal batch containing a
+report, the runtime asks the configured monitor model to review the report and
+planner context in a separate request with no tools. TextGuard normalizes and
+inspects that content, and secrets are redacted. The reviewer receives content
+as evidence; it cannot authorize actions or clear taint.
+
+The validated response distinguishes an attempted attack from a need for caution
+lockdown. A benign finding preserves normal per-action enforcement. A confirmed
+incident can be contained without lockdown, or require caution. Review decisions,
+evidence hashes, and bound action IDs are recorded as `IncidentReviewed` events.
+A benign report that replaced the entire task permits one planner continuation;
+this is bounded and does not guarantee model correctness.
+
+If the monitor is unavailable, times out, or returns an invalid response, the
+runtime withholds the other proposals in that batch without queuing them for
+approval. The session remains available for a fresh request. Retry in a new
+message; if review remains unavailable, check the monitor provider configuration.
+Review does not clear an existing lockdown or disable other security controls.
+Filtered content and a second model call do not guarantee correct classification.
+
 ### Context Builder (spotlighting)
 
 Three-tier prompt layout: trusted instructions, internal state, untrusted content. Uses random delimiters and datamarking to make it structurally harder for the model to treat data as instructions. Based on the [Microsoft Spotlighting](https://arxiv.org/abs/2403.14720) approach.
