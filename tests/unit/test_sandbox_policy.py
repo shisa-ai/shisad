@@ -46,6 +46,20 @@ def test_escape_signal_detects_executable(command: list[str]) -> None:
     assert SandboxPolicyEvaluator().escape_signal_reason(command) == "escape_signal:mount"
 
 
+@pytest.mark.parametrize(
+    ("payload", "destructive"),
+    [
+        ("rm -rf /workspace/out", True),
+        ("git clean -fdx", True),
+        ("truncate -s 0 notes.txt", True),
+        ("echo hello", False),
+        ("git status", False),
+    ],
+)
+def test_shell_payload_uses_destructive_command_rules(payload: str, destructive: bool) -> None:
+    assert SandboxPolicyEvaluator().is_destructive(["bash", "-lc", payload]) is destructive
+
+
 def test_m3_policy_select_backend_routes_network_to_container() -> None:
     evaluator = SandboxPolicyEvaluator()
     backend = evaluator.select_backend(

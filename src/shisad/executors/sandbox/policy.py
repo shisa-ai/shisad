@@ -26,6 +26,21 @@ _ESCAPE_SIGNAL_TOKENS = {
 _SHELL_REDIRECT_RE = re.compile(r"(^|[^>])>([^>]|$)")
 
 
+def _shell_payload_words(command: list[str]) -> list[str] | None:
+    """Read a literal shell -c payload; do not evaluate shell expansions."""
+    for index, option in enumerate(command[1:], start=1):
+        if not option.startswith("-") or option == "--":
+            break
+        if not option.startswith("--") and "c" in option and index + 1 < len(command):
+            try:
+                words = shlex.shlex(command[index + 1], posix=True, punctuation_chars=True)
+                words.whitespace_split = True
+                return list(words)
+            except ValueError:
+                return None
+    return None
+
+
 class SandboxPolicyComponent(Protocol):
     """Protocol for sandbox policy evaluation and input sanitization."""
 
@@ -116,6 +131,18 @@ class SandboxPolicyEvaluator:
         return sanitized, None, dropped_keys
 
     def is_destructive(self, command: list[str]) -> bool:
+        for _ in range(16):
+            if not command or Path(command[0]).name not in {"sh", "bash", "zsh"}:
+                break
+            if any(_SHELL_REDIRECT_RE.search(token) for token in command[1:]):
+                return True
+            payload = _shell_payload_words(command)
+            if payload is None:
+                return False
+            command = payload
+        else:
+            # An extra checkpoint is preferable to unbounded shell unwrapping.
+            return True
         if not command:
             return False
         executable = Path(command[0]).name
@@ -147,26 +174,16 @@ class SandboxPolicyEvaluator:
                 for arg in command[2:]
             ):
                 return True
-        return executable in {"sh", "bash", "zsh"} and any(
-            _SHELL_REDIRECT_RE.search(token) for token in command[1:]
-        )
+        return False
 
     def escape_signal_reason(self, command: list[str]) -> str | None:
         if not command:
             return None
         executable = Path(command[0]).name
         if executable in {"sh", "bash", "zsh"}:
-            for index, option in enumerate(command[1:], start=1):
-                if not option.startswith("-") or option == "--":
-                    break
-                if not option.startswith("--") and "c" in option and index + 1 < len(command):
-                    try:
-                        words = shlex.shlex(command[index + 1], posix=True, punctuation_chars=True)
-                        words.whitespace_split = True
-                        executable = Path(next(iter(words), "")).name
-                    except ValueError:
-                        return None
-                    break
+            payload = _shell_payload_words(command)
+            if payload:
+                executable = Path(payload[0]).name
         if executable in _ESCAPE_SIGNAL_TOKENS:
             return f"escape_signal:{executable}"
         return None

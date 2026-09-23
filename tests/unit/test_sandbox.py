@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from shisad.core.session import CheckpointStore, SessionManager
 from shisad.core.types import CredentialRef
+from shisad.daemon.handlers._impl import HandlerImplementation
 from shisad.executors.mounts import FilesystemPolicy, MountRule
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
@@ -123,6 +125,36 @@ def test_m3_sandbox_creates_checkpoint_for_destructive_commands(tmp_path: Path) 
     assert result.allowed is True
     assert bool(result.checkpoint_id)
     assert not target.exists()
+
+
+def test_shell_wrapped_delete_creates_recoverable_checkpoint_and_event(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoints")
+    session = SessionManager().create(channel="cli")
+    target = tmp_path / "notes.txt"
+    target.write_text("recover me", encoding="utf-8")
+    events: list[dict[str, object]] = []
+    result = SandboxOrchestrator(
+        proxy=EgressProxy(resolver=_resolver), checkpoint_store=store, audit_hook=events.append
+    ).execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=["sh", "-c", shlex.join(["rm", "-f", str(target)])],
+            write_paths=[str(target)],
+            filesystem=FilesystemPolicy(mounts=[MountRule(path=f"{tmp_path}/**", mode="rw")]),
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        ),
+        session=session,
+    )
+    assert result.allowed and result.exit_code == 0
+    assert result.checkpoint_id
+    assert not target.exists()
+    assert any(event.get("action") == "sandbox.pre_checkpoint" for event in events)
+    checkpoint = store.restore(result.checkpoint_id)
+    assert checkpoint is not None
+    assert HandlerImplementation._restore_filesystem_from_checkpoint(checkpoint.state) == (1, 0, [])
+    assert target.read_text(encoding="utf-8") == "recover me"
 
 
 def test_m3_sandbox_blocks_escape_signals_and_network_disabled_commands() -> None:
