@@ -18,7 +18,8 @@ default_deny: false
 #   However, when the trusted CLI/TUI operator's current-turn natural-language
 #   intent deterministically names the action (see
 #   `test_action_monitor_allows_explicit_todo_create_with_follow_on_commands`
-#   and the `action_monitor:trusted_cli_current_turn_intent` reason code), the
+#   and the `action_monitor:clean_operator_cli_intent` /
+#   `action_monitor:current_turn_anchored` reason codes), the
 #   ActionMonitor intentionally allows the tool call in the same turn without
 #   re-queueing a confirmation. This is the *operator owns intent* principle
 #   from `docs/DESIGN-PHILOSOPHY.md`: an authenticated operator typing their
