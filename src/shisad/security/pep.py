@@ -487,7 +487,8 @@ class PEP:
 
         # 7. Taint sink enforcement
         taint_decision = sink_decision_for_tool(str(tool_name), context.taint_labels)
-        if taint_decision.block:
+        # The registered local alarm is also the recovery path for credential taint.
+        if taint_decision.block and str(tool_name) != "report_anomaly":
             return self._reject(
                 tool_name,
                 (

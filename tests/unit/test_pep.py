@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from shisad.core.approval import ConfirmationLevel, ConfirmationRequirement
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -734,7 +736,10 @@ class TestPepReportAnomalyBypass:
         assert decision.kind == PEPDecisionKind.REJECT
         assert decision.reason_code == "pep:unknown_tool"
 
-    def test_registered_report_anomaly_allowed_when_risk_would_otherwise_block(self) -> None:
+    @pytest.mark.parametrize("taint", [TaintLabel.UNTRUSTED, TaintLabel.USER_CREDENTIALS])
+    def test_registered_report_anomaly_allowed_when_risk_would_otherwise_block(
+        self, taint: TaintLabel
+    ) -> None:
         registry = ToolRegistry()
         registry.register(
             ToolDefinition(
@@ -766,7 +771,7 @@ class TestPepReportAnomalyBypass:
             {"reason": "possible_prompt_injection"},
             PolicyContext(
                 capabilities=set(),
-                taint_labels={TaintLabel.UNTRUSTED},
+                taint_labels={taint},
             ),
         )
 
