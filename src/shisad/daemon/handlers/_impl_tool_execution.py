@@ -379,6 +379,30 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 "use explicit host allowlists"
             )
 
+        rate_decision = self._rate_limiter.evaluate(
+            session_id=str(sid),
+            user_id=str(session.user_id),
+            tool_name=str(tool_name),
+            consume=False,
+        )
+        if rate_decision.block:
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="rate_limit",
+                reason=rate_decision.reason,
+            )
+            reason = f"rate_limit:{rate_decision.reason}"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=reason,
+                    **direct_event_fields,
+                )
+            )
+            return SandboxResult(allowed=False, reason=reason).model_dump(mode="json")
+
         operator_origin = self._origin_for(
             session=session,
             actor="control_api",
@@ -476,12 +500,18 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 origin=cp_eval.action.origin.model_dump(mode="json"),
             ).model_dump(mode="json")
 
+        rate_confirmation_required = (
+            rate_decision.require_confirmation and cp_eval.decision == ControlDecision.ALLOW
+        )
         if (
             trace_only_confirmation_block
             or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
             or operator_confirmation_requirement is not None
+            or rate_confirmation_required
         ):
             reason_codes = list(cp_eval.reason_codes)
+            if rate_confirmation_required:
+                reason_codes.append(f"rate_limit:{rate_decision.reason}")
             trace_reason = cp_eval.trace_result.reason_code
             if trace_only_confirmation_block and trace_reason not in reason_codes:
                 reason_codes.append(trace_reason)
@@ -495,6 +525,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             if (
                 trace_only_confirmation_block
                 or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+                or rate_confirmation_required
             ):
                 requirements = [legacy_software_confirmation_requirement()]
                 if operator_confirmation_requirement is not None:

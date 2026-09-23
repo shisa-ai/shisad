@@ -37,6 +37,7 @@ from shisad.security.control_plane.schema import ActionKind, ControlDecision, Ri
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.lockdown import LockdownManager
+from shisad.security.ratelimit import RateLimitConfig, RateLimiter
 from tests.helpers.mcp import reserve_local_port, running_http_mcp_server, write_mock_mcp_server
 
 
@@ -46,11 +47,6 @@ class _EventCollector:
 
     async def publish(self, event: object) -> None:
         self.events.append(event)
-
-
-class _NoopRateLimiter:
-    def consume(self, *, session_id: str, user_id: str, tool_name: str) -> None:
-        _ = (session_id, user_id, tool_name)
 
 
 class _McpManagerStub:
@@ -210,7 +206,7 @@ class _McpHarness:
             checkpoint_trigger="never",
             mcp_trusted_servers=list(trusted_servers or []),
         )
-        self._rate_limiter = _NoopRateLimiter()
+        self._rate_limiter = RateLimiter(RateLimitConfig(per_tool=1000))
         self._mcp_manager = _McpManagerStub(payload, startup_errors=startup_errors)
         self._firewall = ContentFirewall()
         self._memory_ingress_registry = IngressContextRegistry()
@@ -246,6 +242,9 @@ class _McpHarness:
             decision=control_decision,
             reason_codes=control_reason_codes,
         )
+
+    async def _handle_lockdown_transition(self, sid: SessionId, trigger: str, reason: str) -> None:
+        await HandlerImplementation._handle_lockdown_transition(self, sid, trigger, reason)
 
     @property
     def session_id(self) -> SessionId:
@@ -2338,3 +2337,52 @@ async def test_tool_execute_obeys_session_lockdown(level: str) -> None:
         )
         assert not harness._mcp_manager.calls
         assert not harness._control_plane.evaluations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumed,control_block", [(0, False), (3, False), (5, False), (3, True)])
+async def test_tool_execute_checks_rate_before_effect(consumed: int, control_block: bool) -> None:
+    from shisad.security.ratelimit import RateLimitConfig, RateLimiter
+
+    harness = _McpHarness(
+        payload={"ok": True},
+        trusted_servers=["docs"],
+        control_decision=ControlDecision.BLOCK if control_block else ControlDecision.ALLOW,
+    )
+    limiter = RateLimiter(RateLimitConfig(per_tool=5, burst_multiplier=100))
+    harness._rate_limiter = limiter
+    identity = {
+        "session_id": str(harness.session_id),
+        "user_id": str(harness._session.user_id),
+        "tool_name": "mcp.docs.lookup-doc",
+    }
+    for _ in range(consumed):
+        limiter.consume(**identity)
+    result = await HandlerImplementation.do_tool_execute(
+        harness,
+        {  # type: ignore[arg-type]
+            "session_id": str(harness.session_id),
+            "tool_name": identity["tool_name"],
+            "command": ["mcp"],
+            "arguments": {"query": "hello"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+    if consumed == 0:
+        assert result["allowed"] is True
+        assert len(limiter._by_session[str(harness.session_id)]) == 1
+        assert len(harness._mcp_manager.calls) == 1
+    else:
+        assert result["allowed"] is False
+        assert not harness._mcp_manager.calls
+        assert len(limiter._by_session[str(harness.session_id)]) == consumed
+        if consumed == 5:
+            assert result["reason"] == "rate_limit:tool_limit_exceeded"
+            assert not harness._control_plane.evaluations
+            assert harness._lockdown_manager.state_for(harness.session_id).trigger == "rate_limit"
+        elif not control_block:
+            assert result["confirmation_required"] is True
+            assert result["confirmation_id"]
+        else:
+            assert not harness.queued_pending_actions
