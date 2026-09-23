@@ -1,7 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
+import { SignerEthBuilder } from "@ledgerhq/device-signer-kit-ethereum";
 
-import { blindSignDetectedForModel, reviewSurfaceForModel } from "../src/device";
+import { blindSignDetectedForModel, reviewSurfaceForModel, buildEthSigner } from "../src/device";
 
 describe("Ledger model review-surface mapping", () => {
   it("treats Stax and Flex as trusted-display devices", () => {
@@ -17,4 +18,26 @@ describe("Ledger model review-surface mapping", () => {
       assert.equal(blindSignDetectedForModel(model), true);
     }
   });
+});
+
+
+it("forwards the configured origin token to the Ledger SDK", async () => {
+  const previous = process.env.SHISAD_LEDGER_ORIGIN_TOKEN;
+  const tokens: unknown[] = [];
+  // Inspect the SDK builder before it constructs a device/context module.
+  const stub = mock.method(SignerEthBuilder.prototype, "build", function (this: { _originToken?: string }) {
+    tokens.push(this._originToken);
+    return {};
+  });
+  try {
+    process.env.SHISAD_LEDGER_ORIGIN_TOKEN = " test-origin ";
+    buildEthSigner({} as never, "session-1");
+    delete process.env.SHISAD_LEDGER_ORIGIN_TOKEN;
+    buildEthSigner({} as never, "session-1");
+    assert.deepEqual(tokens, ["test-origin", undefined]);
+  } finally {
+    stub.mock.restore();
+    if (previous === undefined) delete process.env.SHISAD_LEDGER_ORIGIN_TOKEN;
+    else process.env.SHISAD_LEDGER_ORIGIN_TOKEN = previous;
+  }
 });

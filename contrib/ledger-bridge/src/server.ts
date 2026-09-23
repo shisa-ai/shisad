@@ -5,7 +5,7 @@
  * backend.  Receives an IntentEnvelope from the shisad daemon, builds
  * an EIP-712 typed-data payload, pushes it to a connected Ledger device
  * via DMK's Ethereum signTypedData, and returns the signature.
- * The device renders structured labeled fields with Clear Signing support.
+ * Warning-free Clear Signing requires matching Ledger metadata.
  *
  * Usage:
  *   npx tsx src/server.ts [--port 9090] [--derivation-path "44'/60'/0'/0/0"]

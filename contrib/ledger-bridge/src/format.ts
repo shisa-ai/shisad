@@ -2,7 +2,7 @@
  * Format an IntentEnvelope for signing on a Ledger device.
  *
  * - buildTypedData() produces an EIP-712 typed-data structure for signTypedData.
- *   The device renders labeled fields with Clear Signing support.
+ *   Warning-free Clear Signing requires matching Ledger metadata.
  * - formatForDevice() produces a plain-text summary for logging/debug.
  */
 

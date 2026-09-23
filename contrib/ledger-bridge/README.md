@@ -18,7 +18,7 @@ shisad's KMS backend. When the daemon needs a Ledger-backed signature:
 1. The daemon POSTs an `IntentEnvelope` plus its canonical `intent_envelope_hash` to the bridge
 2. The bridge builds EIP-712 typed data with readable action fields and the full-intent hash
 3. The reference bridge connects to the Ledger over USB HID and calls `signTypedData`
-4. If the device path exposes readable review metadata, the user reviews the action on the device display and confirms; if the device reports an opaque or blind-signing path, shisad records that lower-trust evidence instead of treating it as L4
+4. The user reviews the typed fields and confirms on the device. Generic EIP-712 review can still show a blind-signing warning, including on Stax. The current bridge classifies review metadata by model; it does not detect that warning per signing request.
 5. The bridge returns the ECDSA signature to the daemon
 
 ## Setup
@@ -143,3 +143,39 @@ approval below L4.
 The reference bridge currently uses Ledger's Node HID transport
 (`@ledgerhq/device-transport-kit-node-hid`). Bluetooth is not
 implemented in this bridge today.
+
+## Clear-signing metadata
+
+The [ERC-7730 descriptor](clear-signing/eip712-shisad.json) describes the existing
+EIP-712 domain and all signed leaf fields, including the full canonical intent
+hash and nonce. It is a submission candidate, not installed device metadata.
+Adding this file locally does not remove a blind-signing warning. It passes the
+upstream JSON schema, but the current `erc7730 lint` tool requires a deployment
+list that this off-chain domain does not have. Ledger must resolve that
+compatibility question before registry submission.
+
+The Ethereum signer can use a Ledger partner origin token through
+`SHISAD_LEDGER_ORIGIN_TOKEN`. Set it in the bridge process environment and keep
+it out of version control. It is separate from the bridge HTTP bearer token.
+The SDK's default context module resolves Ledger-provided metadata; the bridge
+does not inject or trust arbitrary local descriptor files.
+
+Before claiming warning-free Clear Signing:
+
+1. Confirm with Ledger that the off-chain `shisad` domain (version `1`, chain
+   ID `0`, no verifying contract) is supported. The installed SDK substitutes
+   the zero address when looking up metadata for a missing verifying contract.
+   Do not invent a deployed contract or change the signed domain to satisfy a
+   registry entry.
+2. Validate the descriptor with `erc7730 lint`, then follow Ledger's
+   [submission procedure](https://developers.ledger.com/docs/clear-signing/for-dapps/validate-submit)
+   and obtain the required origin token through its
+   [integration program](https://developers.ledger.com/docs/clear-signing/for-wallets).
+3. After the matching signed metadata is available to the SDK, verify on a
+   physical device that every action field is readable, no blind-signing warning
+   appears, and approval/rejection still binds the canonical intent.
+
+The existing `trusted_device_display` / `blind_sign_detected` values for Stax
+and Flex are model-based classifications, not evidence that ERC-7730 metadata
+was used. Do not use them to claim warning-free signing. Descriptor publication,
+Ledger support for this off-chain domain, and device validation remain required.

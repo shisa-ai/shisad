@@ -164,7 +164,11 @@ export function buildEthSigner(
   dmk: DeviceManagementKit,
   sessionId: string,
 ): SignerEth {
-  return new SignerEthBuilder({ dmk, sessionId }).build();
+  return new SignerEthBuilder({
+    dmk,
+    sessionId,
+    originToken: process.env.SHISAD_LEDGER_ORIGIN_TOKEN?.trim() || undefined,
+  }).build();
 }
 
 /**

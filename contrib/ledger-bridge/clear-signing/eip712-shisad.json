@@ -1,0 +1,142 @@
+{
+  "$schema": "https://eips.ethereum.org/assets/eip-7730/erc7730-v1.schema.json",
+  "context": {
+    "eip712": {
+      "domain": {
+        "name": "shisad",
+        "version": "1",
+        "chainId": 0
+      },
+      "schemas": [
+        {
+          "primaryType": "IntentEnvelope",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              }
+            ],
+            "IntentAction": [
+              {
+                "name": "tool",
+                "type": "string"
+              },
+              {
+                "name": "summary",
+                "type": "string"
+              },
+              {
+                "name": "destinations",
+                "type": "string"
+              }
+            ],
+            "PolicyContext": [
+              {
+                "name": "level",
+                "type": "string"
+              },
+              {
+                "name": "digest",
+                "type": "string"
+              }
+            ],
+            "IntentEnvelope": [
+              {
+                "name": "intentId",
+                "type": "string"
+              },
+              {
+                "name": "action",
+                "type": "IntentAction"
+              },
+              {
+                "name": "policy",
+                "type": "PolicyContext"
+              },
+              {
+                "name": "fullIntentHash",
+                "type": "string"
+              },
+              {
+                "name": "nonce",
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "metadata": {
+    "owner": "shisad"
+  },
+  "display": {
+    "formats": {
+      "IntentEnvelope": {
+        "intent": "Approve agent action",
+        "fields": [
+          {
+            "path": "intentId",
+            "label": "Intent",
+            "format": "raw"
+          },
+          {
+            "path": "action.tool",
+            "label": "Tool",
+            "format": "raw"
+          },
+          {
+            "path": "action.summary",
+            "label": "Action",
+            "format": "raw"
+          },
+          {
+            "path": "action.destinations",
+            "label": "Destinations",
+            "format": "raw"
+          },
+          {
+            "path": "policy.level",
+            "label": "Approval level",
+            "format": "raw"
+          },
+          {
+            "path": "policy.digest",
+            "label": "Action digest",
+            "format": "raw"
+          },
+          {
+            "path": "fullIntentHash",
+            "label": "Full intent hash",
+            "format": "raw"
+          },
+          {
+            "path": "nonce",
+            "label": "Nonce",
+            "format": "raw"
+          }
+        ],
+        "required": [
+          "intentId",
+          "action.tool",
+          "action.summary",
+          "action.destinations",
+          "policy.level",
+          "policy.digest",
+          "fullIntentHash",
+          "nonce"
+        ],
+        "excluded": []
+      }
+    }
+  }
+}

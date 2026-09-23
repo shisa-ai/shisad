@@ -54,7 +54,7 @@ least this much proof."
 | L1 | `reauthenticated` | User presented a registered secret (proves presence) | TOTP code from authenticator app |
 | L2 | `bound_approval` | User approved *this specific pending action* (cryptographically bound) | Passkey / YubiKey tap in browser |
 | L3 | `signed_authorization` | Registered credential signed a canonical description of the action (independently verifiable) | Enterprise KMS with approval workflow |
-| L4 | `trusted_display_authorization` | Same as L3, plus the user reviewed the action on an independent hardware display | Ledger Stax/Flex clear-signing when the local bridge is configured |
+| L4 | `trusted_display_authorization` | Same as L3, plus the user reviewed the action on an independent hardware display | Ledger Stax/Flex with a verified readable review path |
 
 **Higher is not automatically better.** L1 (TOTP) is simple and covers the most
 common risk — someone else using your open session. L2 (passkey) is stronger
@@ -1074,3 +1074,13 @@ still requires the existing hardware signature and policy checks.
 Older pending actions, remote channels, tainted context, task actions and
 software fallback routes retain manual confirmation. A failed device review
 is reported without an automatic retry; inspect pending actions before retrying.
+
+### Ledger clear-signing status
+
+Generic EIP-712 review can still show a blind-signing warning on Stax/Flex.
+The reference bridge currently classifies review metadata by device model;
+that classification does not establish that a particular request used
+warning-free Clear Signing. The bridge includes a candidate ERC-7730 descriptor
+and accepts `SHISAD_LEDGER_ORIGIN_TOKEN`, but requires matching Ledger-provided
+metadata and device validation before making that claim. See the bridge's
+[clear-signing setup](../contrib/ledger-bridge/README.md#clear-signing-metadata).

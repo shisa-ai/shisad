@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { buildTypedData, formatForDevice, type IntentEnvelope } from "../src/format";
 
@@ -57,4 +58,22 @@ describe("EIP-712 typed-data formatting", () => {
     assert.match(rendered, /Intent: intent-ledger-1/);
     assert.match(rendered, /Intent Hash: sha256:94f0e3e648c007a6069c42ca5df7f2386a9621b5264aac70f4228ea51a4276b7/);
   });
+});
+
+
+it("clear-signing descriptor matches the signed domain, types and all leaf fields", () => {
+  const descriptor = JSON.parse(readFileSync(new URL("../clear-signing/eip712-shisad.json", import.meta.url), "utf8"));
+  const typed = buildTypedData(referenceEnvelope(), "sha256:canonical-intent");
+  assert.deepEqual(descriptor.context.eip712.domain, typed.domain);
+  assert.deepEqual(descriptor.context.eip712.schemas, [{primaryType: typed.primaryType, types: typed.types}]);
+  const format = descriptor.display.formats.IntentEnvelope;
+  const leaves = (obj: Record<string, unknown>, prefix = ""): string[] =>
+    Object.entries(obj).flatMap(([key, value]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      return typeof value === "object" && value !== null
+        ? leaves(value as Record<string, unknown>, path) : [path];
+    });
+  assert.deepEqual(format.fields.map((field: {path: string}) => field.path).sort(), leaves(typed.message).sort());
+  assert.deepEqual([...format.required].sort(), leaves(typed.message).sort());
+  assert.deepEqual(format.excluded, []);
 });
