@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -18,7 +19,7 @@ class PIIDetector:
 
     _PATTERNS: ClassVar[list[tuple[str, re.Pattern[str]]]] = [
         ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-        ("credit_card", re.compile(r"\b(?:\d[ -]?){13,19}\b")),
+        ("credit_card", re.compile(r"\b\d(?:[ -]?\d){12,18}\b")),
         ("phone", re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")),
         ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
         (
@@ -28,20 +29,35 @@ class PIIDetector:
     ]
 
     def inspect(self, text: str) -> list[PIIFinding]:
-        findings: list[PIIFinding] = []
+        return [PIIFinding(kind=kind, value=match.group(0)) for kind, match in self._matches(text)]
+
+    def _matches(self, text: str) -> Iterator[tuple[str, re.Match[str]]]:
         for kind, pattern in self._PATTERNS:
-            for match in pattern.findall(text):
-                findings.append(PIIFinding(kind=kind, value=str(match)))
-        return findings
+            for match in pattern.finditer(text):
+                if kind == "credit_card" and not self._valid_card_checksum(match.group(0)):
+                    continue
+                yield kind, match
+
+    @staticmethod
+    def _valid_card_checksum(value: str) -> bool:
+        """Validate the Luhn checksum of a structurally matched card candidate."""
+        digits = [int(char) for char in value if char.isdecimal()]
+        total = 0
+        for index, digit in enumerate(reversed(digits)):
+            if index % 2:
+                digit *= 2
+                if digit > 9:
+                    digit -= 9
+            total += digit
+        return total % 10 == 0
 
     def redact(self, text: str) -> tuple[str, list[PIIFinding]]:
         findings: list[PIIFinding] = []
         replacements: list[tuple[int, int, str]] = []
-        for kind, pattern in self._PATTERNS:
-            for match in pattern.finditer(text):
-                value = match.group(0)
-                findings.append(PIIFinding(kind=kind, value=value))
-                replacements.append((match.start(), match.end(), f"[REDACTED:{kind}]"))
+        for kind, match in self._matches(text):
+            value = match.group(0)
+            findings.append(PIIFinding(kind=kind, value=value))
+            replacements.append((match.start(), match.end(), f"[REDACTED:{kind}]"))
         redacted = self._replace_spans(text, replacements) if replacements else text
         deduped: dict[tuple[str, str], PIIFinding] = {}
         for finding in findings:

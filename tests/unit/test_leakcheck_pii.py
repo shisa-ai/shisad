@@ -2,8 +2,40 @@
 
 from __future__ import annotations
 
+import pytest
+
 from shisad.security.firewall.pii import PIIDetector
 from shisad.security.leakcheck import CrossThreadLeakDetector
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        "1758342000000",
+        "1758342000000000000",
+        "1234567890123456",
+        "4242424242424243",
+        "42424242424242424242424242",
+    ],
+)
+def test_pii_preserves_non_card_numbers(number: str) -> None:
+    text = f"Value {number} was recorded."
+    detector = PIIDetector()
+    assert detector.inspect(text) == []
+    assert detector.redact(text) == (text, [])
+
+
+@pytest.mark.parametrize(
+    "number", ["4242 4242 4242 4242", "4242-4242-4242-4242", "4242424242424242"]
+)
+@pytest.mark.parametrize("suffix", [" was recorded.", "-suffix", ".", "\nnext"])
+def test_pii_card_redaction_preserves_following_text(number: str, suffix: str) -> None:
+    detector = PIIDetector()
+    text = f"Card {number}{suffix}"
+    redacted, findings = detector.redact(text)
+    assert redacted == f"Card [REDACTED:credit_card]{suffix}"
+    assert findings == detector.inspect(text)
+    assert [(finding.kind, finding.value) for finding in findings] == [("credit_card", number)]
 
 
 def test_m6_t12_cross_thread_high_overlap_requires_confirmation() -> None:

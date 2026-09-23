@@ -24,6 +24,15 @@ def test_output_firewall_preserves_reply_layout(text: str) -> None:
     assert not result.blocked
 
 
+def test_output_firewall_keeps_timestamp_and_redacts_valid_card() -> None:
+    result = OutputFirewall(safe_domains=[]).inspect(
+        "Build finished at 1758342000000 ms. Card 4242 4242 4242 4242 was removed."
+    )
+    assert result.sanitized_text == (
+        "Build finished at 1758342000000 ms. Card [REDACTED:credit_card] was removed."
+    )
+
+
 def test_m2_t5_output_firewall_redacts_aws_keys() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("Token: AKIAABCDEFGHIJKLMNOP")
