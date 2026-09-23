@@ -295,7 +295,7 @@ class SandboxProcessRunner:
                             method="bwrap",
                             reason="sandbox_child_pid_unavailable",
                         )
-                        return "connect_path_unavailable"
+                        return "runtime_isolation_unavailable"
                     pasta_error = self._attach_pasta_network(namespace_pid)
                     if pasta_error:
                         connect_path_degraded = True

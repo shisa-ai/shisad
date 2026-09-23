@@ -1458,3 +1458,42 @@ def test_host_fallback_timeout_does_not_wait_for_orphan_pipe(tmp_path: Path) -> 
         if child_pid.exists():
             with suppress(ProcessLookupError):
                 os.kill(int(child_pid.read_text()), signal.SIGKILL)
+
+
+def test_failed_bwrap_child_start_reports_runtime_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = SandboxProcessRunner(
+        connect_path_proxy=NoopConnectPathProxy(net_admin_available=True),
+        bwrap_binary="/test/bwrap",
+        pasta_binary="/test/pasta",
+        nsjail_binary="",
+    )
+
+    def failed_start(command, **kwargs):  # type: ignore[no-untyped-def]
+        for fd in kwargs["close_after_spawn_fds"]:
+            os.close(fd)
+        reason = kwargs["on_started"](0)
+        return "", "sandbox startup failed", 1, False, reason
+
+    monkeypatch.setattr(runner, "invoke", failed_start)
+    config = SandboxConfig(
+        tool_name="http_request",
+        command=["true"],
+        sandbox_type=SandboxType.CONTAINER,
+        containment_profile=ContainmentProfile.SUPPORTED,
+    )
+    config.network.allow_network = True
+    config.network.allowed_domains = ["api.example"]
+    result = runner.run_process(
+        config,
+        backend=runner.build_default_backends()[SandboxType.CONTAINER],
+        command=config.command,
+        env={},
+        connect_path_allowed_ips=["93.184.216.34"],
+        enforce_connect_path=True,
+    )
+    assert result.blocked_reason == "runtime_isolation_unavailable"
+    assert result.isolation_degraded is True
+    assert result.connect_path_degraded is True
+    assert result.host_fallback_used is False
+    assert result.connect_path_result is not None
+    assert result.connect_path_result.reason == "sandbox_child_pid_unavailable"

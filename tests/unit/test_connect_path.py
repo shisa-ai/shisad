@@ -18,6 +18,7 @@ from shisad.executors.sandbox import (
     SandboxConfig,
     SandboxEnforcement,
     SandboxOrchestrator,
+    SandboxProcessRunner,
     SandboxType,
 )
 from shisad.executors.sandbox.models import ContainmentProfile
@@ -79,6 +80,12 @@ def test_m5_rt12_supported_connect_path_never_uses_host_process_pid() -> None:
     orchestrator = SandboxOrchestrator(
         proxy=EgressProxy(resolver=_resolver),
         connect_path_proxy=proxy,
+        process_component=SandboxProcessRunner(
+            connect_path_proxy=proxy,
+            bwrap_binary="",
+            nsjail_binary="",
+            pasta_binary="",
+        ),
     )
     orchestrator._backends[SandboxType.CONTAINER] = SandboxBackend(
         backend=SandboxType.CONTAINER,
