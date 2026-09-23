@@ -8,7 +8,7 @@ This file is the "how to operate shisad locally" playbook intended for agentic c
 - `runner/policy.default.yaml`: bootstrap policy template; copied to `SHISAD_POLICY_PATH` when no policy file exists. Edit this template to change the default tool/capability posture for all new harness runs.
 - `runner/.env.example`: template for private overrides (copy to `runner/.env`, which is gitignored).
 - `.local/`: runtime artifacts (gitignored):
-  - `.local/shisad-dev/daemon.log`, `.local/shisad-dev/daemon.pid`
+  - `.local/shisad-dev/daemon.log`
   - `.local/policy.yaml` (auto-created from template if missing)
 
 ## Preconditions

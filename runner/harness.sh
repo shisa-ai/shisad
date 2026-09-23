@@ -14,7 +14,7 @@ Usage:
 
 Commands:
   start [--fg] [--no-debug]   Start daemon (default: background + --debug)
-  stop                        Stop daemon (RPC shutdown; falls back to PID kill)
+  stop                        Stop daemon (RPC shutdown; falls back to owned process-group termination)
   restart                     Stop then start
   status                      Show daemon status
   doctor [component]          Run doctor checks (default: all)
@@ -322,10 +322,6 @@ _daemon_log_path() {
   printf '%s\n' "$(_runner_data_dir)/daemon.log"
 }
 
-_daemon_pid_path() {
-  printf '%s\n' "$(_runner_data_dir)/daemon.pid"
-}
-
 _ensure_bootstrap_dirs() {
   mkdir -p "$(_runner_data_dir)"
   mkdir -p "$(dirname "$(_runner_policy_path)")"
@@ -528,7 +524,6 @@ SHISAD_CODING_REPO_ROOT=${coding_repo_root}
 SHISAD_ASSISTANT_FS_ROOTS=${assistant_fs_roots}
 
 DAEMON_LOG=$(_daemon_log_path)
-DAEMON_PID=$(_daemon_pid_path)
 EOF
 }
 
@@ -564,9 +559,8 @@ _cmd_start() {
   _ensure_policy_file
   _preflight_planner_credential
 
-  local log_path pid_path socket_path data_dir policy_path
+  local log_path socket_path data_dir policy_path
   log_path="$(_daemon_log_path)"
-  pid_path="$(_daemon_pid_path)"
   socket_path="$(_runner_socket_path)"
   data_dir="$(_runner_data_dir)"
   policy_path="$(_runner_policy_path)"
@@ -596,7 +590,6 @@ _cmd_start() {
   printf '%s\n' "  socket   : ${socket_path}"
   printf '%s\n' "  data dir : ${data_dir}"
 
-  rm -f "${pid_path}" || true
   rm -f "${log_path}" || true
 
   if ! command -v tmux >/dev/null 2>&1; then
@@ -650,27 +643,81 @@ _cmd_stop() {
   _runner_env
   _preflight_socket_parent false
 
-  local pid_path socket_path
-  pid_path="$(_daemon_pid_path)"
+  local socket_path session pane_pid
   socket_path="$(_runner_socket_path)"
-
-  uv --no-config run --frozen --python 3.12 shisad stop >/dev/null 2>&1 || true
-
-  if command -v tmux >/dev/null 2>&1; then
-    local session
-    session="$(_tmux_session_name)"
-    if _tmux has-session -t "${session}" >/dev/null 2>&1; then
-      _tmux kill-session -t "${session}" >/dev/null 2>&1 || true
-    fi
+  session="$(_tmux_session_name)"
+  pane_pid=0
+  if command -v tmux >/dev/null 2>&1 && _tmux has-session -t "${session}" >/dev/null 2>&1; then
+    pane_pid="$(_tmux display-message -p -t "${session}:0.0" '#{pane_pid}')"
   fi
 
-  rm -f "${pid_path}" || true
+  # Snapshot the live pane identity before RPC can cause its leader to exit.
+  python3 - "${pane_pid}" "${socket_path}" <<'PY_STOP'
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
 
-  if [[ -e "${socket_path}" ]]; then
-    rm -f "${socket_path}" || true
+pane_pid = int(sys.argv[1])
+socket = Path(sys.argv[2])
+owned_group = None
+if pane_pid > 1:
+    try:
+        if os.getpgid(pane_pid) == pane_pid and pane_pid != os.getpgrp():
+            owned_group = pane_pid
+    except ProcessLookupError:
+        pass
+
+rpc = subprocess.Popen(
+    ["uv", "--no-config", "run", "--frozen", "--python", "3.12", "shisad", "stop"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+)
+try:
+    rpc.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    os.killpg(rpc.pid, signal.SIGKILL)
+    rpc.wait()
+
+
+def group_alive():
+    # Zombies have released sockets/locks and cannot handle a signal.
+    result = subprocess.run(
+        ["ps", "-eo", "pgid=,stat="], capture_output=True, text=True, check=True,
+    )
+    return any(
+        fields[0] == str(owned_group) and not fields[1].startswith("Z")
+        for line in result.stdout.splitlines() if len(fields := line.split()) >= 2
+    )
+
+
+if owned_group is not None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not group_alive():
+            break
+        try:
+            os.killpg(owned_group, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.monotonic() + 2
+        while group_alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    if group_alive():
+        sys.exit("Daemon process group is still running; socket retained.")
+    socket.unlink(missing_ok=True)
+else:
+    deadline = time.monotonic() + 2
+    while socket.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if socket.exists():
+        sys.exit("Cannot verify daemon shutdown; socket retained. Stop the foreground daemon directly.")
+PY_STOP
+
+  if command -v tmux >/dev/null 2>&1 && _tmux has-session -t "${session}" >/dev/null 2>&1; then
+    _tmux kill-session -t "${session}" >/dev/null 2>&1 || true
   fi
-
-  printf '%s\n' "Daemon stop requested."
+  printf '%s\n' "Daemon stopped."
 }
 
 _cmd_restart() {
