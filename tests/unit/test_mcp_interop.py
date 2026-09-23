@@ -36,6 +36,7 @@ from shisad.memory.ingress import IngressContextRegistry
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
+from shisad.security.lockdown import LockdownManager
 from tests.helpers.mcp import reserve_local_port, running_http_mcp_server, write_mock_mcp_server
 
 
@@ -240,9 +241,7 @@ class _McpHarness:
                 ),
             )
         )
-        self._lockdown_manager = SimpleNamespace(
-            apply_capability_restrictions=lambda _sid, capabilities: capabilities
-        )
+        self._lockdown_manager = LockdownManager()
         self._control_plane = _ControlPlaneStub(
             decision=control_decision,
             reason_codes=control_reason_codes,
@@ -2301,3 +2300,41 @@ async def test_mcp_m9_http_manager_call_tool_returns_upstream_payload(tmp_path: 
             assert "roadmap" in result["content"][0]["text"]
         finally:
             await manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["normal", "quarantine", "full_lockdown", "caution"])
+async def test_tool_execute_obeys_session_lockdown(level: str) -> None:
+    from shisad.core.types import Capability
+    from shisad.security.lockdown import LockdownLevel, LockdownManager
+
+    harness = _McpHarness(payload={"ok": True}, trusted_servers=["docs"])
+    harness._lockdown_manager = LockdownManager()
+    harness._lockdown_manager.set_level(
+        harness.session_id, level=LockdownLevel(level), reason="test"
+    )
+    tool = harness._registry.get_tool(ToolName("mcp.docs.lookup-doc"))
+    assert tool is not None
+    harness._registry.unregister(tool.name)
+    harness._registry.register(
+        tool.model_copy(update={"capabilities_required": [Capability.FILE_WRITE]})
+    )
+    harness._session.capabilities = {Capability.FILE_WRITE}
+    result = await HandlerImplementation.do_tool_execute(
+        harness,
+        {  # type: ignore[arg-type]
+            "session_id": str(harness.session_id),
+            "tool_name": str(tool.name),
+            "command": ["mcp"],
+            "arguments": {"query": "hello"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+    assert result["allowed"] is (level == "normal")
+    if level != "normal":
+        assert result["reason"] == (
+            "session_in_lockdown" if level != "caution" else "lockdown_capability_restricted"
+        )
+        assert not harness._mcp_manager.calls
+        assert not harness._control_plane.evaluations

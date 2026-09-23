@@ -259,6 +259,31 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 reason=skill_identity_error,
             ).model_dump(mode="json")
 
+        effective_caps = self._lockdown_manager.apply_capability_restrictions(
+            sid,
+            session.capabilities,
+        )
+        required_caps = set(tool_def.capabilities_required)
+        lockdown_reason = ""
+        if self._lockdown_manager.should_block_all_actions(sid):
+            lockdown_reason = "session_in_lockdown"
+        elif required_caps - self._lockdown_manager.apply_capability_restrictions(
+            sid,
+            required_caps,
+        ):
+            lockdown_reason = "lockdown_capability_restricted"
+        if lockdown_reason:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=lockdown_reason,
+                    **direct_event_fields,
+                )
+            )
+            return SandboxResult(allowed=False, reason=lockdown_reason).model_dump(mode="json")
+
         patch_params = normalize_patch(dict(params))
         # Default direct admin execution posture to fail-closed when omitted.
         if (
@@ -369,7 +394,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             origin=operator_origin,
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
-            capabilities=session.capabilities,
+            capabilities=effective_caps,
         )
         if previous_plan_hash:
             await self._event_bus.publish(
@@ -466,10 +491,6 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             ):
                 reason_codes.append("policy:confirmation_required")
             reason = ",".join(reason_codes) or "control_plane_confirmation_required"
-            effective_caps = self._lockdown_manager.apply_capability_restrictions(
-                sid,
-                session.capabilities,
-            )
             confirmation_requirement = operator_confirmation_requirement
             if (
                 trace_only_confirmation_block
@@ -574,7 +595,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             user_id=session.user_id,
             tool_name=tool_name,
             arguments=dict(params),
-            capabilities=set(session.capabilities),
+            capabilities=effective_caps,
             approval_actor="control_api",
             execution_action=cp_eval.action,
             merged_policy=merged_policy,
