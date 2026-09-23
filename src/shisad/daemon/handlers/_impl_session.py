@@ -34,7 +34,11 @@ from shisad.core.action_state import (
     reminder_status_view_for_task,
     select_reminder_status_view,
 )
-from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
+from shisad.core.approval import (
+    ApprovalRoutingError,
+    ConfirmationLevel,
+    ConfirmationRequirement,
+)
 from shisad.core.clock import current_time_frontmatter_lines
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
@@ -15328,6 +15332,39 @@ class SessionImplMixin(HandlerMixinBase):
         )
         return True
 
+    def _hardware_review_ids(self, execution: SessionMessageExecutionResult) -> list[str]:
+        context = execution.planner_dispatch.planner_context
+        validated = context.validated
+        if (
+            not validated.trusted_input
+            or not _is_clean_direct_trusted_cli_turn(validated)
+            or validated.channel != "cli"
+            or validated.is_internal_ingress
+            or context.context.taint_labels
+            or context.transcript_context_taints
+            or context.memory_context_taints
+            or context.memory_context_tainted_for_amv
+            or self._session_has_tainted_user_history(validated.sid)
+        ):
+            return []
+        eligible = []
+        for confirmation_id in execution.pending_confirmation_ids:
+            pending = self._pending_actions.get(confirmation_id)
+            if (
+                pending is not None
+                and pending.status == "pending"
+                and pending.session_id == validated.sid
+                and pending.user_id == validated.user_id
+                and pending.workspace_id == validated.workspace_id
+                and pending.selected_backend_method == "ledger"
+                and pending.required_level == ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION
+                and not pending.fallback_used
+                and not pending.task_id
+                and (pending.pep_context is None or not pending.pep_context.taint_labels)
+            ):
+                eligible.append(confirmation_id)
+        return eligible
+
     async def _finalize_response(
         self,
         execution: SessionMessageExecutionResult,
@@ -16143,6 +16180,7 @@ class SessionImplMixin(HandlerMixinBase):
             ),
             "cleanroom_block_reasons": sorted(set(execution.cleanroom_block_reasons)),
             "pending_confirmation_ids": returned_pending_confirmation_ids,
+            "hardware_review_ids": self._hardware_review_ids(execution),
             "response_action_confirmation_ids": response_action_confirmation_ids,
             "delivery": {
                 "response_action_confirmation_parts": response_action_confirmation_parts,

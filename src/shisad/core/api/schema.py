@@ -221,6 +221,7 @@ class SessionMessageResult(BaseModel):
     proposals: list[dict[str, Any]] = Field(default_factory=list)
     cleanroom_block_reasons: list[str] = Field(default_factory=list)
     pending_confirmation_ids: list[str] = Field(default_factory=list)
+    hardware_review_ids: list[str] = Field(default_factory=list)
     response_action_confirmation_ids: list[str] = Field(default_factory=list)
     output_policy: dict[str, Any] = Field(default_factory=dict)
     planner_error: str = ""
@@ -2077,6 +2078,7 @@ class ActionPurgeParams(_StrictParams):
 
 
 class ActionDecisionParams(_StrictParams):
+    hardware_review_only: bool = False
     confirmation_id: str
     decision_nonce: str | None = None
     reason: str = ""

@@ -7791,3 +7791,24 @@ async def test_expected_address_is_ledger_only_and_crosses_rpc_schema(tmp_path: 
     result = await harness.do_signer_register(params.model_dump())
     assert result["reason"] == "expected_address_requires_ledger"
     assert harness._credential_store.get_signer_key("kms:test") is None
+
+
+@pytest.mark.asyncio
+async def test_automatic_hardware_review_cannot_confirm_software(tmp_path: Path) -> None:
+    from shisad.core.api.schema import ActionDecisionParams
+
+    harness = _AtomicConfirmationHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    params = ActionDecisionParams.model_validate(
+        {
+            "confirmation_id": pending.confirmation_id,
+            "decision_nonce": "expected",
+            "hardware_review_only": True,
+        }
+    )
+    result = await harness.do_action_confirm(params.model_dump())
+    assert result["confirmed"] is False
+    assert result["reason"] == "hardware_review_route_changed"
+    assert harness.effect_calls == 0
+    assert pending.status == "pending"

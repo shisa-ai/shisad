@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from textual.widgets import Markdown, Static, TextArea
@@ -2434,3 +2434,56 @@ async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
 
     app._send_message.assert_awaited_once()
     assert transcript_polls == ["poll"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_chat_starts_new_ledger_review_without_software_prompt(approved: bool) -> None:
+    app = ChatApp(socket_path=Path("/tmp/test.sock"), session_id="sess-1")
+    client = AsyncMock()
+    confirmed = []
+    app._append_history = Mock(wraps=app._append_history)
+
+    async def call(method: str, *, params: object) -> object:
+        if method == "session.message":
+            return {"response": "Pending shell.exec", "hardware_review_ids": ["c-1"]}
+        if method == "action.pending":
+            return {
+                "actions": [
+                    {
+                        "confirmation_id": "c-1",
+                        "session_id": "sess-1",
+                        "selected_backend_method": "ledger",
+                        "decision_nonce": "nonce-1",
+                        "required_level": "trusted_display_authorization",
+                        "status": "pending",
+                    }
+                ]
+            }
+        assert method == "action.confirm"
+        assert params == {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "hardware_review_only": True,
+        }
+        app._append_history.assert_any_call(
+            "Review this action on your Ledger device and approve or reject it there."
+        )
+        confirmed.append(params)
+        return {"confirmed": approved, "reason": "" if approved else "user_rejected"}
+
+    client.call = AsyncMock(side_effect=call)
+    app._connect = AsyncMock(return_value=client)
+    app._ensure_session = AsyncMock()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        field = app.query_one("#chat-input", TextArea)
+        field.focus()
+        field.load_text("test my Ledger")
+        await app.action_submit_prompt()
+        await pilot.pause()
+        assert len(confirmed) == 1
+        if not approved:
+            assert "user_rejected" in " ".join(
+                str(w.renderable) for w in app.query(Static) if hasattr(w, "renderable")
+            )

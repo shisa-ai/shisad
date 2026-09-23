@@ -588,9 +588,68 @@ class ChatApp(App[None]):
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
             )
             self._complete_progress_display()
+            await self._start_hardware_reviews(result)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
         self._append_history("")
+
+    async def _start_hardware_reviews(self, result: dict[str, Any]) -> None:
+        """Start only ceremonies explicitly offered for this submitted local turn."""
+        review_ids = result.get("hardware_review_ids")
+        if not isinstance(review_ids, list):
+            return
+        for confirmation_id in dict.fromkeys(item for item in review_ids if isinstance(item, str)):
+            client = await self._connect()
+            try:
+                pending = await client.call(
+                    "action.pending",
+                    params={
+                        "confirmation_id": confirmation_id,
+                        "session_id": self._active_session_id(),
+                    },
+                )
+                rows = pending.get("actions", []) if isinstance(pending, Mapping) else []
+                row = next(
+                    (
+                        row
+                        for row in rows
+                        if isinstance(row, Mapping)
+                        and row.get("confirmation_id") == confirmation_id
+                    ),
+                    None,
+                )
+                if (
+                    row is None
+                    or row.get("session_id") != self._active_session_id()
+                    or row.get("selected_backend_method") != "ledger"
+                    or row.get("required_level") != "trusted_display_authorization"
+                    or row.get("fallback_used", False)
+                    or row.get("status") != "pending"
+                    or not row.get("decision_nonce")
+                ):
+                    continue
+                self._append_history(
+                    "Review this action on your Ledger device and approve or reject it there."
+                )
+                decision = await client.call(
+                    "action.confirm",
+                    params={
+                        "confirmation_id": confirmation_id,
+                        "decision_nonce": row["decision_nonce"],
+                        "hardware_review_only": True,
+                    },
+                )
+                if isinstance(decision, Mapping) and decision.get("confirmed"):
+                    self._append_history(f"Ledger approved action {confirmation_id}.")
+                else:
+                    reason = (
+                        decision.get("reason", "unknown")
+                        if isinstance(decision, Mapping)
+                        else "invalid response"
+                    )
+                    self._append_history(f"Ledger review did not approve action: {reason}")
+            finally:
+                await client.close()
 
     async def _connect(self) -> Any:
         """Connect to the daemon control socket."""

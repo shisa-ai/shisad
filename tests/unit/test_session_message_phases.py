@@ -9293,3 +9293,60 @@ def test_filesystem_taint_exemption_requires_literal_local_path(
         )
         is expected
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "excluded",
+    [
+        "",
+        "remote",
+        "internal",
+        "untrusted",
+        "tainted",
+        "memory",
+        "history",
+        "old",
+        "software",
+        "fallback",
+        "task",
+    ],
+)
+async def test_new_clean_local_ledger_action_requests_hardware_review(excluded: str) -> None:
+    from shisad.core.approval import ConfirmationLevel
+
+    harness = _FinalizeEvidenceHarness()
+    harness._session_has_tainted_user_history = lambda _sid: excluded == "history"
+    harness._pending_actions["c-1"] = SimpleNamespace(
+        confirmation_id="c-1",
+        session_id=SessionId("sess-g1"),
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        created_at=1,
+        safe_preview="Review shell.exec",
+        reason="requires_confirmation",
+        decision_nonce="nonce-1",
+        status="pending",
+        pep_context=None,
+        selected_backend_method="ledger",
+        required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+        fallback_used=excluded == "fallback",
+        task_id="task-1" if excluded == "task" else "",
+    )
+    if excluded == "software":
+        harness._pending_actions["c-1"].selected_backend_method = "software"
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        pending_confirmation=1,
+        pending_confirmation_ids=[] if excluded == "old" else ["c-1"],
+    )
+    context = execution.planner_dispatch.planner_context
+    validated = context.validated
+    validated.operator_owned_cli_input = excluded != "remote"
+    validated.trusted_input = excluded != "untrusted"
+    validated.is_internal_ingress = excluded == "internal"
+    if excluded == "tainted":
+        context.context.taint_labels = {TaintLabel.UNTRUSTED}
+    context.memory_context_tainted_for_amv = excluded == "memory"
+    response = await harness._finalize_response(execution)
+    assert response["hardware_review_ids"] == ([] if excluded else ["c-1"])

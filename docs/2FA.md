@@ -1063,3 +1063,14 @@ the daemon stores in the audit trail. Key fields for signer backends:
 - [ENV-VARS.md](ENV-VARS.md) — complete environment variable reference
 - [SECURITY.md](SECURITY.md) — overall security architecture
 - [ROADMAP.md](ROADMAP.md) — release timeline and milestones
+
+### Ledger review in the chat TUI
+
+For a clean, trusted local turn, the chat TUI starts newly queued Ledger
+trusted-display reviews automatically. Follow the device prompt to approve or
+reject; an extra `confirm 1` is not needed to start the ceremony. The action
+still requires the existing hardware signature and policy checks.
+
+Older pending actions, remote channels, tainted context, task actions and
+software fallback routes retain manual confirmation. A failed device review
+is reported without an automatic retry; inspect pending actions before retrying.

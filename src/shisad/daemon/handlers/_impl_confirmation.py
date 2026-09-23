@@ -2635,6 +2635,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_method = (
             str(getattr(pending, "selected_backend_method", "") or "software").strip() or "software"
         )
+        if params.get("hardware_review_only") is True and (
+            confirmation_method != "ledger"
+            or pending.required_level != ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION
+            or pending.fallback_used
+            or self._requested_confirmation_method(params=params, pending=pending) != "ledger"
+        ):
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "hardware_review_route_changed",
+            }
         lockout = self._confirmation_method_lockout_response(
             pending,
             confirmation_id=confirmation_id,
