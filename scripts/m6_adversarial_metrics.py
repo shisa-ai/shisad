@@ -38,17 +38,12 @@ def _attack_variants(*, lane: str) -> list[str]:
     templates = [str(item) for item in fixture["templates"]]
     targets = [str(item) for item in fixture["targets"]]
     tokens = [str(item) for item in fixture["tokens"]]
-    firewall = ContentFirewall()
-    active_templates = [
-        template
-        for template in templates
-        if firewall.inspect(template.format(target=targets[0], token=tokens[0])).risk_score > 0.0
-    ]
     _ = lane
-    template_pool = active_templates
+    # Select the corpus independently of the detector being measured: misses
+    # must remain in the denominator and count as attack successes.
     variants = [
         template.format(target=target, token=token)
-        for template in template_pool
+        for template in templates
         for target in targets
         for token in tokens
     ]
