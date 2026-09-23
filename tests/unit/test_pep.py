@@ -35,6 +35,25 @@ def _make_pep() -> tuple[PEP, ToolRegistry]:
     return PEP(policy, registry), registry
 
 
+def test_policy_can_add_but_not_remove_tool_capability_requirements() -> None:
+    pep, _ = _make_pep()
+    pep._policy.tools[ToolName("test_tool")] = ToolPolicy(
+        capabilities_required=[Capability.FILE_READ]
+    )
+    for capabilities in ({Capability.HTTP_REQUEST}, {Capability.FILE_READ}):
+        decision = pep.evaluate(
+            ToolName("test_tool"), {"query": "hello"}, PolicyContext(capabilities=capabilities)
+        )
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert decision.reason_code == "pep:missing_capabilities"
+    decision = pep.evaluate(
+        ToolName("test_tool"),
+        {"query": "hello"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST, Capability.FILE_READ}),
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
 class TestPepRejectsUnknownTools:
     """M0.T4: PEP rejects unknown tools."""
 

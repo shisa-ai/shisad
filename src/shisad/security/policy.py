@@ -124,10 +124,10 @@ class RateLimitPolicy(BaseModel):
 class ControlPlaneSequencePolicy(BaseModel):
     """Behavioral sequence analyzer policy controls."""
 
-    rapid_fire_window_seconds: int = 1
-    exfil_after_read_window_actions: int = 5
-    env_then_egress_window_actions: int = 3
-    mass_enum_window_actions: int = 10
+    rapid_fire_window_seconds: int = Field(default=1, ge=1)
+    exfil_after_read_window_actions: int = Field(default=5, ge=1)
+    env_then_egress_window_actions: int = Field(default=3, ge=1)
+    mass_enum_window_actions: int = Field(default=10, ge=1)
     phantom_deny_threshold: int = 3
     phantom_deny_window_seconds: int = 120
 
@@ -135,9 +135,9 @@ class ControlPlaneSequencePolicy(BaseModel):
 class ControlPlaneResourcePolicy(BaseModel):
     """Resource monitor policy controls."""
 
-    enumeration_resource_threshold: int = 20
-    enumeration_directory_threshold: int = 10
-    enumeration_window_seconds: int = 60
+    enumeration_resource_threshold: int = Field(default=20, ge=1)
+    enumeration_directory_threshold: int = Field(default=10, ge=1)
+    enumeration_window_seconds: int = Field(default=60, ge=1)
 
 
 class ControlPlaneNetworkPolicy(BaseModel):
@@ -148,7 +148,16 @@ class ControlPlaneNetworkPolicy(BaseModel):
     baseline_learning_rate: float = 0.1
     low_medium_timeout_action: str = "FLAG"
     high_critical_timeout_action: str = "BLOCK"
-    ingress_metadata_scope: str = "defer_to_m6"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unsupported_scope(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "ingress_metadata_scope" in value:
+            raise ValueError(
+                "ingress_metadata_scope is unsupported; remove this field. "
+                "Control-plane ingress uses its fixed metadata-only schema."
+            )
+        return value
 
 
 class ControlPlaneConsensusPolicy(BaseModel):
@@ -271,10 +280,19 @@ class SkillPolicy(BaseModel):
 
     require_review_on_update: bool = True
     require_signature_for_auto_install: bool = True
-    trusted_key_ids: list[str] = Field(default_factory=list)
     dependency_source_allowlist: list[str] = Field(
         default_factory=lambda: ["shisa-registry", "local"]
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unsupported_trusted_keys(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "trusted_key_ids" in value:
+            raise ValueError(
+                "trusted_key_ids is unsupported; remove this field. "
+                "Skill signatures require keys registered with the skill keyring."
+            )
+        return value
 
 
 class ContentFirewallSemanticClassifierPolicy(BaseModel):

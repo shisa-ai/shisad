@@ -53,11 +53,13 @@ from shisad.security.control_plane.schema import (
     sanitize_metadata_payload,
 )
 from shisad.security.control_plane.sequence import (
+    DEFAULT_SEQUENCE_PATTERNS,
     BehavioralSequenceAnalyzer,
     PhantomDenyRule,
     SequenceFinding,
 )
 from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
+from shisad.security.policy import ControlPlaneResourcePolicy, ControlPlaneSequencePolicy
 
 
 class ControlPlaneEvaluation(BaseModel, frozen=True):
@@ -154,6 +156,8 @@ class ControlPlaneEngine:
         trace_max_actions: int = 10,
         phantom_deny_threshold: int = 3,
         phantom_deny_window_seconds: int = 120,
+        sequence_policy: ControlPlaneSequencePolicy | None = None,
+        resource_policy: ControlPlaneResourcePolicy | None = None,
         consensus_policy: ConsensusPolicy | None = None,
         workspace_roots: list[Path] | None = None,
     ) -> ControlPlaneEngine:
@@ -165,9 +169,24 @@ class ControlPlaneEngine:
             default_max_actions=trace_max_actions,
             workspace_roots=workspace_roots,
         )
-        threshold = max(2, int(phantom_deny_threshold))
-        window_seconds = max(1, int(phantom_deny_window_seconds))
+        sequence = sequence_policy or ControlPlaneSequencePolicy(
+            phantom_deny_threshold=phantom_deny_threshold,
+            phantom_deny_window_seconds=phantom_deny_window_seconds,
+        )
+        resource = resource_policy or ControlPlaneResourcePolicy()
+        threshold = max(2, int(sequence.phantom_deny_threshold))
+        window_seconds = max(1, int(sequence.phantom_deny_window_seconds))
+        pattern_overrides = {
+            "rapid_fire": {"window_seconds": sequence.rapid_fire_window_seconds},
+            "exfil_after_read": {"window_actions": sequence.exfil_after_read_window_actions},
+            "env_then_egress": {"window_actions": sequence.env_then_egress_window_actions},
+            "mass_enum": {"window_actions": sequence.mass_enum_window_actions},
+        }
         sequence_analyzer = BehavioralSequenceAnalyzer(
+            patterns=[
+                pattern.model_copy(update=pattern_overrides.get(pattern.name, {}))
+                for pattern in DEFAULT_SEQUENCE_PATTERNS
+            ],
             phantom_rules=[
                 PhantomDenyRule(
                     name="phantom_capability_probe",
@@ -197,7 +216,12 @@ class ControlPlaneEngine:
                 ),
             ]
         )
-        resource_monitor = ResourceAccessMonitor(workspace_roots=workspace_roots)
+        resource_monitor = ResourceAccessMonitor(
+            workspace_roots=workspace_roots,
+            enum_resource_threshold=resource.enumeration_resource_threshold,
+            enum_directory_threshold=resource.enumeration_directory_threshold,
+            enum_window_seconds=resource.enumeration_window_seconds,
+        )
         baseline_db = BaselineDatabase(
             storage_path=str(control_plane_dir / "network_baseline.json"),
             learning_rate=baseline_learning_rate,

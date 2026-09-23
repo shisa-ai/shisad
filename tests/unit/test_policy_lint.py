@@ -8,6 +8,18 @@ from pydantic import ValidationError
 from shisad.security.policy import PolicyBundle
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"skills": {"trusted_key_ids": ["org-main"]}},
+        {"control_plane": {"network": {"ingress_metadata_scope": "all"}}},
+    ],
+)
+def test_unsupported_policy_fields_are_rejected(policy: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="unsupported"):
+        PolicyBundle.model_validate(policy)
+
+
 def test_m5_cf_v0353_rejects_global_wildcard_egress_host_pattern() -> None:
     with pytest.raises(
         ValidationError,

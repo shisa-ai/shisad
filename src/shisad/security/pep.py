@@ -245,7 +245,10 @@ class PEP:
             )
 
         # 3. Capability check
-        missing = set(tool.capabilities_required) - context.capabilities
+        required = set(tool.capabilities_required)
+        if tool_policy is not None:
+            required.update(tool_policy.capabilities_required)
+        missing = required - context.capabilities
         if missing:
             return self._reject(
                 tool_name,
