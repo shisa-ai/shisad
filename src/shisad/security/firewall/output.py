@@ -371,7 +371,38 @@ class OutputFirewall:
         redacted = text
         findings: list[str] = []
         replacements: list[tuple[int, int, str]] = []
+        url_spans: list[tuple[int, int]] = []
+
+        def redact_component(component: str) -> str:
+            def replace(match: re.Match[str]) -> str:
+                if cls._shannon_entropy(match.group(0)) < 4.0:
+                    return match.group(0)
+                findings.append("high_entropy_secret")
+                return "[REDACTED:high_entropy_secret]"
+
+            return cls._HIGH_ENTROPY_TOKEN_RE.sub(replace, component)
+
+        for url_match in _URL_RE.finditer(text):
+            token = url_match.group(0)
+            parsed = safe_urlparse(token)
+            if parsed is None or not safe_parsed_hostname(parsed):
+                continue
+            url_spans.append((url_match.start(), url_match.end()))
+            userinfo, separator, host = parsed.netloc.rpartition("@")
+            netloc = redact_component(userinfo) + separator + host if separator else parsed.netloc
+            updated = parsed._replace(
+                netloc=netloc,
+                path="/".join(redact_component(part) for part in parsed.path.split("/")),
+                params=redact_component(parsed.params),
+                query="".join(redact_component(part) for part in re.split(r"([&=])", parsed.query)),
+                fragment="/".join(redact_component(part) for part in parsed.fragment.split("/")),
+            )
+            if updated != parsed:
+                replacements.append((url_match.start(), url_match.end(), urlunparse(updated)))
+
         for match in cls._HIGH_ENTROPY_TOKEN_RE.finditer(text):
+            if any(start < match.end() and match.start() < end for start, end in url_spans):
+                continue
             token = match.group(0)
             if token.startswith("http"):
                 continue

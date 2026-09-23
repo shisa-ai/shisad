@@ -554,3 +554,36 @@ def test_gh34_entropy_detector_redacts_secret_like_technical_prefix_final_segmen
     assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
     assert token not in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        (
+            "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdef/edit",
+            "https://docs.google.com/document/d/[REDACTED:high_entropy_secret]/edit",
+        ),
+        (
+            "https://github.com/org/repo/commit/a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuV",
+            "https://github.com/org/repo/commit/[REDACTED:high_entropy_secret]",
+        ),
+    ],
+)
+def test_entropy_redaction_preserves_url_authority_and_path_structure(
+    url: str, expected: str
+) -> None:
+    firewall = OutputFirewall(safe_domains=["docs.google.com", "github.com"])
+    result = firewall.inspect(f"See {url}")
+    assert result.sanitized_text == f"See {expected}"
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_url_entropy_redaction_keeps_component_delimiters() -> None:
+    secret = "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuV"
+    marker = "[REDACTED:high_entropy_secret]"
+    url = f"https://user:{secret}@example.com/file?signature={secret}&page=1#{secret}"
+    sanitized, findings = OutputFirewall._redact_high_entropy_tokens(url)
+    assert sanitized == f"https://user:{marker}@example.com/file?signature={marker}&page=1#{marker}"
+    assert len(findings) == 3
+    ordinary = "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?view=1"
+    assert OutputFirewall._redact_high_entropy_tokens(ordinary) == (ordinary, [])
