@@ -86,3 +86,16 @@ def test_u41_provider_doctor_live_flag_requests_bounded_probe(
 
     assert result.exit_code == 0, result.output
     assert captured == [{"component": "provider", "live": True, "timeout_seconds": 1.5}]
+
+
+def test_provider_doctor_explains_missing_unix_transport(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    config = DaemonConfig(data_dir=tmp_path / "data", socket_path=tmp_path / "control.sock")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.delattr(asyncio, "open_unix_connection")
+    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--component", "provider"])
+    assert result.exit_code == 2
+    assert "WSL2" in result.output
+    assert "Traceback" not in result.output
+    assert "AttributeError" not in result.output

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -672,8 +673,18 @@ class ControlClient:
 
     async def connect(self) -> None:
         """Connect to the daemon."""
+        connector = getattr(asyncio, "open_unix_connection", None)
+        guidance = (
+            "Unix control-socket transport is unavailable. Run both the daemon and CLI "
+            "on Linux/macOS, or inside WSL2 on Windows."
+        )
+        if sys.platform == "win32" or not callable(connector):
+            raise OSError(errno.EAFNOSUPPORT, guidance)
         _validate_socket_parent(self._socket_path)
-        self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+        try:
+            self._reader, self._writer = await connector(str(self._socket_path))
+        except NotImplementedError as exc:
+            raise OSError(errno.EAFNOSUPPORT, guidance) from exc
 
     async def close(self) -> None:
         """Close the connection."""

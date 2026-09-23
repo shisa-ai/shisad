@@ -112,3 +112,19 @@ async def test_gh50_control_client_rejects_world_writable_default_tmp_socket_par
     with pytest.raises(PermissionError, match="mode 0777"):
         await client.connect()
     assert stat.S_IMODE(socket_parent.lstat().st_mode) == 0o777
+
+
+@pytest.mark.asyncio
+async def test_client_reports_event_loop_without_unix_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import errno
+
+    async def unsupported(*args, **kwargs):
+        raise NotImplementedError
+
+    monkeypatch.setattr(transport.asyncio, "open_unix_connection", unsupported)
+    with pytest.raises(OSError) as raised:
+        await ControlClient(tmp_path / "control.sock").connect()
+    assert raised.value.errno == errno.EAFNOSUPPORT
+    assert "WSL2" in str(raised.value)

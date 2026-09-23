@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from typing import Any, overload
@@ -47,6 +48,18 @@ def run_async[T](coro: Coroutine[Any, Any, T]) -> T:
 
 
 def _connection_error(config: DaemonConfig, exc: OSError) -> DaemonCliError:
+    if exc.errno == errno.EAFNOSUPPORT:
+        return DaemonCliError(
+            CliErrorEnvelope(
+                error_type="daemon",
+                exit_code=DaemonCliError.exit_code,
+                what_failed="The daemon connection requires Unix control-socket transport.",
+                what_still_works="config, help, and offline inspection commands.",
+                likely_cause="this platform or event loop does not support the required transport.",
+                next_action="Run both daemon and CLI on Linux/macOS, or inside WSL2 on Windows.",
+                technical_details=safe_error_detail(exc),
+            )
+        )
     return daemon_cli_error(
         what_failed=f"Could not connect to the shisad daemon at {config.socket_path}.",
         exc=exc,
