@@ -7,6 +7,21 @@ import pytest
 from scripts import promptguard_artifacts as artifacts
 
 
+def test_tokenizer_save_rejects_chat_template_path_traversal(tmp_path: Path) -> None:
+    transformers = pytest.importorskip("transformers", reason="requires security-runtime")
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+
+    tokenizer = transformers.PreTrainedTokenizerFast(
+        tokenizer_object=Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")),
+        unk_token="[UNK]",
+        chat_template={"default": "safe", "../../escaped": "untrusted template"},
+    )
+    with pytest.raises(ValueError, match="Invalid chat template name"):
+        tokenizer.save_pretrained(tmp_path / "output")
+    assert not (tmp_path / "escaped.jinja").exists()
+
+
 def test_export_dispatches_local_classifier_and_copies_tokenizer(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -68,6 +68,10 @@ markers = [
 ]
 
 [tool.uv]
+constraint-dependencies = [
+    "anyio>=4.14.2",
+    "transformers>=5.10.4",
+]
 environments = [
     "sys_platform == 'darwin'",
     "sys_platform == 'linux' and platform_machine != 's390x'",
