@@ -163,7 +163,13 @@ uv --no-config sync --frozen --group coverage            # pytest-cov
 ```
 
 `security-build` is only needed for PromptGuard model export/download/build
-workflows. It is heavier than `security-runtime` and includes PyTorch. Daemon
+workflows. It is heavier than `security-runtime` and includes PyTorch.
+`python scripts/promptguard_artifacts.py export-onnx --source-dir CHECKPOINT --output-dir ONNX`
+exports a local PyTorch sequence-classification checkpoint through
+`torch.onnx.export`; it does not use the removed `transformers.onnx` module.
+The exporter loads local files only and preserves tokenizer/configuration files.
+
+Daemon
 operation with `security-runtime` alone should have PromptGuard's
 `onnxruntime` and `transformers` dependencies available through
 `textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was

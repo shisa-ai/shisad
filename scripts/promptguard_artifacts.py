@@ -8,10 +8,9 @@ import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import cast
 
 from shisad.security.firewall.classifier import (
     PromptGuardComparisonCase,
@@ -79,7 +78,7 @@ def _resolve_hf_token() -> str | None:
         if value:
             return value
     try:
-        from huggingface_hub import get_token  # type: ignore
+        from huggingface_hub import get_token
     except ImportError:
         return None
     return get_token()
@@ -107,43 +106,71 @@ def _cmd_download(args: argparse.Namespace) -> int:
 
     _reset_output_dir(args.output_dir, force=args.force)
 
-    from huggingface_hub import snapshot_download  # type: ignore
+    from huggingface_hub import snapshot_download
 
     snapshot_download(
         repo_id=args.model_id,
         local_dir=str(args.output_dir),
-        local_dir_use_symlinks=False,
         token=token,
-        resume_download=True,
     )
     return 0
 
 
-def _cmd_export_onnx(args: argparse.Namespace) -> int:
-    _reset_output_dir(args.output_dir, force=args.force)
+def _export_sequence_classifier(source_dir: Path, output_dir: Path) -> None:
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    from transformers import AutoConfig  # type: ignore
-
-    command = [
-        sys.executable,
-        "-m",
-        "transformers.onnx",
-        "-m",
-        str(args.source_dir),
-        "--feature",
-        args.feature,
-        "--framework",
-        args.framework,
-        "--export_with_transformers",
-    ]
-    command.append(str(args.output_dir))
-    subprocess.run(command, check=True)
-
-    AutoConfig.from_pretrained(
-        str(args.source_dir),
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(source_dir),
         local_files_only=True,
         trust_remote_code=False,
-    ).save_pretrained(str(args.output_dir))
+    )
+    model = (
+        AutoModelForSequenceClassification.from_pretrained(
+            str(source_dir),
+            local_files_only=True,
+            trust_remote_code=False,
+        )
+        .eval()
+        .cpu()
+    )
+    encoded = tokenizer("This is a local model export sample.", return_tensors="pt")
+    names = list(encoded)
+
+    class LogitsOnly(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.classifier = model
+
+        def forward(self, *values: torch.Tensor) -> torch.Tensor:
+            return cast(
+                torch.Tensor, self.classifier(**dict(zip(names, values, strict=True))).logits
+            )
+
+    with torch.no_grad():
+        torch.onnx.export(
+            LogitsOnly().eval(),
+            tuple(encoded[name] for name in names),
+            str(output_dir / "model.onnx"),
+            input_names=names,
+            output_names=["logits"],
+            dynamic_axes={
+                **{name: {0: "batch", 1: "sequence"} for name in names},
+                "logits": {0: "batch"},
+            },
+            opset_version=18,
+            dynamo=False,
+            external_data=False,
+        )
+    model.config.save_pretrained(str(output_dir))
+    tokenizer.save_pretrained(str(output_dir))
+
+
+def _cmd_export_onnx(args: argparse.Namespace) -> int:
+    if args.framework != "pt" or args.feature != "sequence-classification":
+        raise ValueError("PromptGuard export supports PyTorch sequence-classification checkpoints.")
+    _reset_output_dir(args.output_dir, force=args.force)
+    _export_sequence_classifier(args.source_dir, args.output_dir)
     _copy_if_present(
         args.source_dir,
         args.output_dir,
@@ -280,7 +307,8 @@ def _add_export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     parser = subparsers.add_parser(
         "export-onnx",
         help=(
-            "Export a local PromptGuard checkpoint directory into a local ONNX artifact directory."
+            "Export a local PromptGuard sequence classifier with torch.onnx.export "
+            "(security-build group)."
         ),
     )
     parser.add_argument(
@@ -298,13 +326,13 @@ def _add_export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     parser.add_argument(
         "--feature",
         default="sequence-classification",
-        help="Transformers ONNX export feature. Defaults to sequence-classification.",
+        help="Export task; only sequence-classification is supported.",
     )
     parser.add_argument(
         "--framework",
         choices=("pt", "tf"),
         default="pt",
-        help="Framework to use for the ONNX export.",
+        help="Export framework; only pt (PyTorch) is supported.",
     )
     parser.add_argument(
         "--force",
