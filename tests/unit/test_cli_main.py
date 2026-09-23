@@ -7447,3 +7447,45 @@ def test_o4e_delivery_commands_share_typed_safe_projection(
         ("delivery.inspect", {"delivery_id": delivery_id}),
         ("delivery.resolve", {"delivery_id": delivery_id}),
     ]
+
+
+def test_signer_register_passes_and_reports_expected_address(tmp_path: Path, monkeypatch) -> None:
+    from shisad.core.api.schema import SignerRegisterResult
+
+    address = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+    public_key = tmp_path / "public.pem"
+    public_key.write_text("public key fixture")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: _config(tmp_path))
+
+    def register(config, method, params, *, response_model):
+        assert method == "signer.register"
+        assert params["expected_address"] == address
+        return SignerRegisterResult(
+            registered=True,
+            credential_id="ledger:test",
+            user_id="alice",
+            verification_method="expected_address",
+            verified_address=address,
+        )
+
+    monkeypatch.setattr(cli_main, "rpc_call", register)
+    result = CliRunner().invoke(
+        cli_main.cli,
+        [
+            "signer",
+            "register",
+            "--backend",
+            "ledger",
+            "--user",
+            "alice",
+            "--key-id",
+            "ledger:test",
+            "--public-key",
+            str(public_key),
+            "--expected-address",
+            address,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert address in result.output
+    assert "matched" in result.output.lower()

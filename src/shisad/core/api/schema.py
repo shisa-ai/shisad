@@ -2302,6 +2302,7 @@ class SignerRegisterParams(_StrictParams):
     algorithm: str = "ed25519"
     device_type: str = "ledger-enterprise"
     public_key_pem: str
+    expected_address: str = ""
 
 
 class SignerRegisterResult(BaseModel):
@@ -2313,6 +2314,8 @@ class SignerRegisterResult(BaseModel):
     algorithm: str = ""
     device_type: str = ""
     reason: str = ""
+    verification_method: Literal["", "pem_only", "expected_address"] = ""
+    verified_address: str = ""
 
 
 class SignerListParams(_StrictParams):

@@ -7734,3 +7734,60 @@ async def test_m4_promote_confirmation_fails_closed_when_transcript_snapshot_rea
     endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
     assert endorsed is not None
     assert endorsed.endorsement_state == ArtifactEndorsementState.UNENDORSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expected,reason",
+    [
+        ("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", ""),
+        ("0x0000000000000000000000000000000000000000", "signer_address_mismatch"),
+        ("not-an-address", "invalid_expected_address"),
+        ("", ""),
+    ],
+)
+async def test_ledger_enrollment_checks_expected_account_before_storage(
+    tmp_path: Path,
+    expected: str,
+    reason: str,
+) -> None:
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    harness = _ConfirmationImplHarness(tmp_path)
+    key = ec.derive_private_key(1, ec.SECP256K1())
+    result = await harness.do_signer_register(
+        {
+            "backend": "ledger",
+            "user_id": "alice",
+            "key_id": "ledger:account",
+            "public_key_pem": public_key_pem(key),
+            "expected_address": expected,
+        }
+    )
+    assert result["registered"] is (not bool(reason))
+    if reason:
+        assert result["reason"] == reason
+        assert harness._credential_store.get_signer_key("ledger:account") is None
+    else:
+        assert result["verification_method"] == ("expected_address" if expected else "pem_only")
+        assert result["verified_address"] == expected
+        event = harness.published_events[-1]
+        assert event.verification_method == result["verification_method"]
+
+
+@pytest.mark.asyncio
+async def test_expected_address_is_ledger_only_and_crosses_rpc_schema(tmp_path: Path) -> None:
+    from shisad.core.api.schema import SignerRegisterParams
+    from tests.helpers.signer import generate_ed25519_private_key
+
+    harness = _ConfirmationImplHarness(tmp_path)
+    params = SignerRegisterParams(
+        backend="kms",
+        user_id="alice",
+        key_id="kms:test",
+        public_key_pem=public_key_pem(generate_ed25519_private_key()),
+        expected_address="0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+    )
+    result = await harness.do_signer_register(params.model_dump())
+    assert result["reason"] == "expected_address_requires_ledger"
+    assert harness._credential_store.get_signer_key("kms:test") is None

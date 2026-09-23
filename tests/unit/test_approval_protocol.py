@@ -1680,3 +1680,10 @@ def test_signer_http_timeout_respects_hardware_budget(
     assert captured == [(expected, expected)]
     assert result.status == "expired"
     assert result.reason == "signer_backend_timeout"
+
+
+def test_ethereum_address_derivation_rejects_non_secp256k1_keys() -> None:
+    with pytest.raises(ValueError, match="secp256k1"):
+        approval_module.ethereum_address_from_public_key(
+            public_key_pem(generate_ed25519_private_key())
+        )

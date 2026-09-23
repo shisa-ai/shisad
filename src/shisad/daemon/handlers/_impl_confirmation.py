@@ -35,6 +35,7 @@ from shisad.core.approval import (
     confirmation_evidence_has_backend_proof,
     confirmation_evidence_is_canonical,
     confirmation_evidence_satisfies_requirement,
+    ethereum_address_from_public_key,
     generate_recovery_codes,
     generate_totp_secret,
     hash_recovery_code,
@@ -1981,6 +1982,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
         public_key_error = _validate_signer_public_key(public_key_pem, algorithm=algorithm)
         if public_key_error:
             return {"registered": False, "reason": public_key_error}
+        expected_address = str(params.get("expected_address") or "").strip().lower()
+        verification_method = "pem_only"
+        verified_address = ""
+        if expected_address:
+            if backend != "ledger":
+                return {"registered": False, "reason": "expected_address_requires_ledger"}
+            if (
+                len(expected_address) != 42
+                or not expected_address.startswith("0x")
+                or any(char not in "0123456789abcdef" for char in expected_address[2:])
+            ):
+                return {"registered": False, "reason": "invalid_expected_address"}
+            verified_address = ethereum_address_from_public_key(public_key_pem)
+            if verified_address != expected_address:
+                return {"registered": False, "reason": "signer_address_mismatch"}
+            verification_method = "expected_address"
         existing = self._credential_store.get_signer_key(key_id)
         if existing is not None:
             return {
@@ -2011,6 +2028,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 principal_id=principal_id,
                 algorithm=algorithm,
                 device_type=device_type,
+                verification_method=verification_method,
+                verified_address=verified_address,
             )
         )
         return {
@@ -2022,6 +2041,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "algorithm": algorithm,
             "device_type": device_type,
             "reason": "",
+            "verification_method": verification_method,
+            "verified_address": verified_address,
         }
 
     async def do_signer_list(self, params: Mapping[str, Any]) -> dict[str, Any]:

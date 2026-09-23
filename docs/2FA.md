@@ -475,6 +475,23 @@ The public key must be PEM-encoded Ed25519 or ECDSA secp256k1. The daemon
 verifies returned signatures against this key — the KMS can deny service but
 cannot forge approvals without the matching private key.
 
+For Ledger enrollment, first run the bridge's `extract-key` command and verify
+the account address on the device screen. Then supply that independently
+checked address when registering its exported PEM:
+
+```bash
+shisad signer register --backend ledger --user alice --key-id ledger:stax-1 \
+  --public-key pubkey.pem --expected-address '<address verified on the device>'
+```
+
+Replace the placeholder with the complete `0x` address. A mismatch or malformed
+address prevents registration. The result and registration audit event report
+`expected_address` verification and the matched address. This compares the key
+with the account you selected; it is not device attestation or a fresh proof of
+private-key possession. Without `--expected-address`, manual/offline enrollment
+remains available and reports `pem_only`: the key's format and algorithm were
+validated, but account ownership was not checked.
+
 ### Manage signer keys
 
 ```bash

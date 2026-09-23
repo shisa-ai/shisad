@@ -42,12 +42,19 @@ interactive package-manager prompts can corrupt the PEM output.
 
 ### 2. Register the key with shisad
 
+Replace the address placeholder below with the full address you verified on
+the Ledger screen during extraction. The daemon compares it with the address
+derived from the PEM and refuses a mismatch before saving the signer. This is
+account matching, not device attestation. Omitting the option retains manual
+PEM-only enrollment and reports that ownership was not checked.
+
 ```bash
 shisad signer register \
   --backend ledger \
   --user alice \
   --key-id ledger:stax-1 \
-  --public-key pubkey.pem
+  --public-key pubkey.pem \
+  --expected-address '<address verified on the device>'
 ```
 
 ### 3. Start the bridge

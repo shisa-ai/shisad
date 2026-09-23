@@ -322,6 +322,8 @@ class SignerKeyRegistered(BaseEvent):
     principal_id: str = ""
     algorithm: str = ""
     device_type: str = ""
+    verification_method: str = ""
+    verified_address: str = ""
 
 
 class SignerKeyRevoked(BaseEvent):

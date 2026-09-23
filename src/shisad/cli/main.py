@@ -3502,6 +3502,11 @@ def signer() -> None:
     required=True,
     help="PEM-encoded public key for signature verification.",
 )
+@click.option(
+    "--expected-address",
+    default="",
+    help="Ledger address verified on the device; mismatch prevents registration.",
+)
 def signer_register(
     backend: str,
     user_id: str,
@@ -3510,6 +3515,7 @@ def signer_register(
     algorithm: str | None,
     device_type: str,
     public_key_path: Path,
+    expected_address: str,
 ) -> None:
     """Register a signer key for approval policies."""
     if algorithm is None:
@@ -3532,6 +3538,7 @@ def signer_register(
             "algorithm": algorithm,
             "device_type": device_type.strip(),
             "public_key_pem": public_key_path.read_text(encoding="utf-8"),
+            "expected_address": expected_address.strip(),
         },
         response_model=SignerRegisterResult,
     )
@@ -3541,6 +3548,10 @@ def signer_register(
         f"Registered signer key {result.credential_id} "
         f"({result.algorithm}, {result.device_type}) for {result.user_id}"
     )
+    if result.verification_method == "expected_address":
+        click.echo(f"Public key matched the expected account address: {result.verified_address}")
+    else:
+        click.echo("PEM key shape validated; account ownership was not checked.")
 
 
 @signer.command("list")

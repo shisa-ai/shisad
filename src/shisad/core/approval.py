@@ -1336,6 +1336,19 @@ def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     )
 
 
+def ethereum_address_from_public_key(public_key_pem: str) -> str:
+    """Derive an Ethereum account address from a secp256k1 public key."""
+    from shisad.core._keccak import keccak_256
+
+    key = serialization.load_pem_public_key(public_key_pem.encode())
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256K1):
+        raise ValueError("secp256k1 public key required")
+    point = key.public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    return "0x" + keccak_256(point[1:])[-20:].hex()
+
+
 class _HttpSignerBackend:
     """Base class for HTTP-based signer backends (KMS, Ledger bridge, etc.)."""
 
