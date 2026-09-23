@@ -14,6 +14,7 @@ from shisad.core.events import (
     BaseEvent,
     CapabilityGranted,
     CredentialAccessed,
+    EgressPolicyEvaluated,
     EventBus,
     LockdownChanged,
     MemoryEntryDeleted,
@@ -33,7 +34,7 @@ from shisad.core.events import (
 from shisad.core.types import SessionId, ToolName
 from shisad.daemon.context import RequestContext
 from shisad.security.lockdown import LockdownManager
-from shisad.security.pep import CredentialUseAttempt
+from shisad.security.pep import CredentialUseAttempt, EgressAttempt
 from shisad.security.ratelimit import RateLimitEvent
 
 if TYPE_CHECKING:
@@ -218,6 +219,20 @@ class DaemonEventWiring:
                 imported_session_id=str(data.get("imported_session_id", "")),
                 transcript_entries=int(data.get("transcript_entries", 0) or 0),
                 checkpoint_count=int(data.get("checkpoint_count", 0) or 0),
+            )
+        )
+
+    def audit_egress_attempt(self, attempt: EgressAttempt) -> None:
+        self.publish_async(
+            EgressPolicyEvaluated(
+                session_id=None,
+                actor="pep",
+                tool_name=attempt.tool_name,
+                destination_host=attempt.host,
+                destination_port=attempt.port,
+                protocol=attempt.protocol,
+                allowed=attempt.allowed,
+                reason=attempt.reason,
             )
         )
 

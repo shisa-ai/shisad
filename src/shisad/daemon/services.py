@@ -1266,6 +1266,7 @@ class DaemonServices:
                 evidence_store=evidence_store,
                 credential_store=credential_store,
                 credential_audit_hook=event_wiring.audit_credential_use,
+                egress_audit_hook=event_wiring.audit_egress_attempt,
                 mcp_trusted_servers=set(config.mcp_trusted_servers),
             )
             planner_route = router.route_for(ModelComponent.PLANNER)

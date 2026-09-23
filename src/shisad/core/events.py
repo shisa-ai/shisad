@@ -654,6 +654,17 @@ class SandboxEscapeDetected(BaseEvent):
     reason: str = ""
 
 
+class EgressPolicyEvaluated(BaseEvent):
+    """PEP evaluated a proposed destination before tool execution."""
+
+    tool_name: ToolName
+    destination_host: str
+    destination_port: int | None = None
+    protocol: str | None = None
+    allowed: bool
+    reason: str
+
+
 class ProxyRequestEvaluated(BaseEvent):
     """Egress proxy evaluated an outbound request."""
 

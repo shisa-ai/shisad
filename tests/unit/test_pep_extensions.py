@@ -308,3 +308,49 @@ def test_sec_m3_egress_allowlist_allows_correct_protocol_and_port_combo() -> Non
     assert latest.reason == "allowlisted"
     assert latest.protocol == "https"
     assert latest.port == 443
+
+
+def test_pep_egress_history_is_bounded_and_audit_survives_policy_reload() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    attempts = []
+    pep = PEP(PolicyBundle(), registry, egress_audit_hook=attempts.append)
+    for number in range(200):
+        evaluator = pep if number < 100 else pep.for_policy(PolicyBundle())
+        evaluator.evaluate(
+            ToolName("http_request"),
+            {"url": f"https://host{number}.example"},
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+    assert len(attempts) == 200
+    assert len(pep.egress_attempts) == 128
+    assert pep.egress_attempts[-1].host == "host199.example"
+    assert pep.egress_attempts[0].host == "host72.example"
+
+
+def test_pep_credential_history_is_bounded_without_dropping_audit() -> None:
+    from shisad.core.types import CredentialRef
+    from shisad.security.pep import CredentialUseAttempt
+
+    attempts = []
+    pep = PEP(PolicyBundle(), ToolRegistry(), credential_audit_hook=attempts.append)
+    for number in range(200):
+        pep._record_credential_attempt(
+            CredentialUseAttempt(
+                tool_name=ToolName("http_request"),
+                credential_ref=CredentialRef(str(number)),
+                destination_host="api.example",
+                allowed=False,
+                reason="test",
+            )
+        )
+    assert len(attempts) == 200
+    assert len(pep.credential_attempts) == 128
+    assert pep.for_policy(PolicyBundle()).credential_attempts is pep.credential_attempts

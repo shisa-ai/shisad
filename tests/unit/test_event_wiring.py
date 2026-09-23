@@ -452,3 +452,27 @@ def test_publish_async_same_loop_closed_is_swallowed(
 
     wiring.publish_async(SessionCreated(session_id=SessionId("s1"), actor="tester", user_id="u1"))
     assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_egress_policy_attempt_is_published_to_audit() -> None:
+    from shisad.security.pep import EgressAttempt
+
+    bus = _RecordingEventBus()
+    wiring = DaemonEventWiring(event_bus=bus, server=_RecordingServer())  # type: ignore[arg-type]
+    wiring.audit_egress_attempt(
+        EgressAttempt(
+            tool_name=ToolName("http_request"),
+            host="api.example",
+            protocol="https",
+            port=443,
+            allowed=False,
+            reason="destination_unattributed",
+        )
+    )
+    await asyncio.sleep(0)
+    event = bus.events[-1]
+    assert type(event).__name__ == "EgressPolicyEvaluated"
+    assert event.destination_host == "api.example"
+    assert event.allowed is False
+    assert event.reason == "destination_unattributed"

@@ -6,6 +6,7 @@ The PEP is the sole authority for approving proposed tool calls.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,6 +162,7 @@ class PEP:
         evidence_store: ArtifactLedger | None = None,
         credential_store: CredentialStore | None = None,
         credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
+        egress_audit_hook: Callable[[EgressAttempt], None] | None = None,
         mcp_trusted_servers: Iterable[str] | None = None,
     ) -> None:
         self._policy = policy
@@ -168,9 +170,11 @@ class PEP:
         self._evidence_store = evidence_store
         self._credential_store = credential_store
         self._credential_audit_hook = credential_audit_hook
+        self._egress_audit_hook = egress_audit_hook
         self._mcp_trusted_servers = _normalize_mcp_server_ids(mcp_trusted_servers)
-        self.egress_attempts: list[EgressAttempt] = []
-        self.credential_attempts: list[CredentialUseAttempt] = []
+        # Recent diagnostic views for callers/tests; the audit hooks own full history.
+        self.egress_attempts: deque[EgressAttempt] = deque(maxlen=128)
+        self.credential_attempts: deque[CredentialUseAttempt] = deque(maxlen=128)
 
     def for_policy(self, policy: PolicyBundle) -> PEP:
         """Return an equivalent evaluator bound to the supplied live policy."""
@@ -183,6 +187,7 @@ class PEP:
             evidence_store=self._evidence_store,
             credential_store=self._credential_store,
             credential_audit_hook=self._credential_audit_hook,
+            egress_audit_hook=self._egress_audit_hook,
             mcp_trusted_servers=self._mcp_trusted_servers,
         )
         evaluator.egress_attempts = self.egress_attempts
@@ -317,7 +322,7 @@ class PEP:
                 tool=tool,
             )
             if destination.protocol and destination.protocol not in {"http", "https"}:
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -351,7 +356,7 @@ class PEP:
             )
 
             if is_ip_literal(destination.host) and not allowlisted:
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -370,7 +375,7 @@ class PEP:
                     reason_code="pep:ip_literal_not_allowlisted",
                 )
             if is_local_hostname(destination.host) and not allowlisted:
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -392,7 +397,7 @@ class PEP:
 
             if tool_declared_destination:
                 destination_authorized = True
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -404,7 +409,7 @@ class PEP:
                 )
             elif allowlisted:
                 destination_authorized = True
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -416,7 +421,7 @@ class PEP:
                 )
             elif user_requested:
                 destination_authorized = True
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -428,7 +433,7 @@ class PEP:
                 )
             elif same_session_user_requested:
                 destination_authorized = True
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -441,7 +446,7 @@ class PEP:
             elif context_confirmation_required:
                 egress_requires_confirmation = True
                 egress_reason = "context_destination_requires_confirmation"
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -454,7 +459,7 @@ class PEP:
             elif untrusted_suggested:
                 egress_requires_confirmation = True
                 egress_reason = "untrusted_suggested_destination"
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -465,7 +470,7 @@ class PEP:
                     )
                 )
             else:
-                self.egress_attempts.append(
+                self._record_egress_attempt(
                     EgressAttempt(
                         tool_name=tool_name,
                         host=destination.host,
@@ -1030,6 +1035,11 @@ class PEP:
             ):
                 refs.append(CredentialRef(value))
         return refs
+
+    def _record_egress_attempt(self, attempt: EgressAttempt) -> None:
+        self.egress_attempts.append(attempt)
+        if self._egress_audit_hook is not None:
+            self._egress_audit_hook(attempt)
 
     def _record_credential_attempt(self, attempt: CredentialUseAttempt) -> None:
         self.credential_attempts.append(attempt)
