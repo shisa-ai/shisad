@@ -60,16 +60,19 @@ class RateLimiter:
         tool_name: str,
         now: datetime | None = None,
     ) -> RateLimitDecision:
-        """Evaluate whether the next action would exceed limits (no mutation)."""
+        """Evaluate admission without consuming quota; discard expired windows."""
         timestamp = (now or datetime.now(UTC)).timestamp()
+        self._prune(timestamp)
         window = self._config.window_seconds
         burst_window = self._burst_window_seconds()
 
         counts = {
-            "tool": self._count(self._by_tool[tool_name], timestamp, window),
-            "user": self._count(self._by_user[user_id], timestamp, window),
-            "session": self._count(self._by_session[session_id], timestamp, window),
-            "burst_tool": self._count(self._by_tool_burst[tool_name], timestamp, burst_window),
+            "tool": self._count(self._by_tool.get(tool_name, deque()), timestamp, window),
+            "user": self._count(self._by_user.get(user_id, deque()), timestamp, window),
+            "session": self._count(self._by_session.get(session_id, deque()), timestamp, window),
+            "burst_tool": self._count(
+                self._by_tool_burst.get(tool_name, deque()), timestamp, burst_window
+            ),
         }
         projected = {name: value + 1 for name, value in counts.items()}
 
@@ -137,6 +140,7 @@ class RateLimiter:
     ) -> None:
         """Record an executed action after admission checks pass."""
         timestamp = (now or datetime.now(UTC)).timestamp()
+        self._prune(timestamp)
         self._append(self._by_tool[tool_name], timestamp, self._config.window_seconds)
         self._append(self._by_user[user_id], timestamp, self._config.window_seconds)
         self._append(self._by_session[session_id], timestamp, self._config.window_seconds)
@@ -169,6 +173,21 @@ class RateLimiter:
                 now=now,
             )
         return decision
+
+    def _prune(self, timestamp: float) -> None:
+        for buckets, window in (
+            (self._by_tool, self._config.window_seconds),
+            (self._by_user, self._config.window_seconds),
+            (self._by_session, self._config.window_seconds),
+            (self._by_tool_burst, self._burst_window_seconds()),
+        ):
+            expired = [
+                key
+                for key, bucket in buckets.items()
+                if self._count(bucket, timestamp, window) == 0
+            ]
+            for key in expired:
+                del buckets[key]
 
     @staticmethod
     def _count(bucket: deque[float], timestamp: float, window_seconds: int) -> int:

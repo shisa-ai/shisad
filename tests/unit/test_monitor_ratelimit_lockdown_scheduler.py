@@ -1662,3 +1662,34 @@ def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     assert policy.version == "v2"
     assert round(policy.thresholds.auto_approve_threshold, 3) == 0.45
     assert round(policy.thresholds.block_threshold, 3) == 0.75
+
+
+def test_rate_checks_do_not_retain_unconsumed_identities() -> None:
+    limiter = RateLimiter(RateLimitConfig())
+    for number in range(1000):
+        limiter.check(session_id=str(number), user_id=str(number), tool_name=str(number))
+    assert not limiter._by_session
+    assert not limiter._by_user
+    assert not limiter._by_tool
+    assert not limiter._by_tool_burst
+
+
+@pytest.mark.parametrize("operation", ["check", "consume"])
+def test_rate_activity_evicts_expired_other_identities(operation: str) -> None:
+    limiter = RateLimiter(RateLimitConfig())
+    base = datetime.now(UTC)
+    limiter.consume(session_id="old", user_id="old", tool_name="old", now=base)
+    limiter.consume(
+        session_id="live", user_id="live", tool_name="live", now=base + timedelta(seconds=55)
+    )
+    getattr(limiter, operation)(
+        session_id="new", user_id="new", tool_name="new", now=base + timedelta(seconds=61)
+    )
+    for buckets in (
+        limiter._by_session,
+        limiter._by_user,
+        limiter._by_tool,
+        limiter._by_tool_burst,
+    ):
+        assert "old" not in buckets
+        assert len(buckets["live"]) == 1
