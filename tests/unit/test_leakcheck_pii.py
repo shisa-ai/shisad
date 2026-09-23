@@ -9,6 +9,40 @@ from shisad.security.leakcheck import CrossThreadLeakDetector
 
 
 @pytest.mark.parametrize(
+    ("outbound", "source"),
+    [
+        (
+            "The garden flowers bloom beside the old stone wall.",
+            "Compile the package and upload the release archive.",
+        ),
+        (
+            "Tomorrow we will paint the kitchen blue.",
+            "A database index speeds up record retrieval.",
+        ),
+        ("Please bring fresh oranges for breakfast.", "The lunar rover crossed a rocky crater."),
+    ],
+)
+def test_default_leak_check_does_not_flag_unrelated_text(outbound: str, source: str) -> None:
+    result = CrossThreadLeakDetector().evaluate(
+        outbound_text=outbound, source_text_by_id={"other": source}
+    )
+    assert not result.detected
+    assert not result.requires_confirmation
+    assert result.matched_source_ids == []
+
+
+def test_default_leak_check_detects_reused_words_and_respects_source_authorization() -> None:
+    detector = CrossThreadLeakDetector()
+    kwargs = {
+        "outbound_text": "alpha bravo charlie delta ledger report",
+        "source_text_by_id": {"other": "confidential ledger alpha bravo charlie delta report"},
+    }
+    result = detector.evaluate(**kwargs)
+    assert result.detected and result.requires_confirmation
+    assert not detector.evaluate(**kwargs, allowed_source_ids={"other"}).detected
+
+
+@pytest.mark.parametrize(
     "number",
     [
         "1758342000000",

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+DETECTOR_VERSION = "m6-leakcheck-v2"
 
 
 def _tokens(text: str) -> list[str]:
@@ -20,27 +19,6 @@ def _ngrams(tokens: list[str], n: int) -> set[str]:
     return {" ".join(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
 
 
-def _simhash(tokens: Iterable[str]) -> int:
-    vector = [0] * 64
-    for token in tokens:
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        value = int.from_bytes(digest[:8], "big")
-        for bit in range(64):
-            if value & (1 << bit):
-                vector[bit] += 1
-            else:
-                vector[bit] -= 1
-    output = 0
-    for bit, weight in enumerate(vector):
-        if weight >= 0:
-            output |= 1 << bit
-    return output
-
-
-def _hamming_distance(left: int, right: int) -> int:
-    return (left ^ right).bit_count()
-
-
 @dataclass(slots=True)
 class LeakCheckResult:
     detected: bool
@@ -48,7 +26,7 @@ class LeakCheckResult:
     matched_source_ids: list[str] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
     requires_confirmation: bool = False
-    detector_version: str = "m6-leakcheck-v1"
+    detector_version: str = DETECTOR_VERSION
 
 
 class CrossThreadLeakDetector:
@@ -82,7 +60,7 @@ class CrossThreadLeakDetector:
             return LeakCheckResult(detected=False, overlap_score=0.0)
 
         outbound_ngrams = _ngrams(outbound_tokens, self._exact_ngram_size)
-        outbound_hash = _simhash(outbound_tokens)
+        outbound_token_set = set(outbound_tokens)
         highest = 0.0
         matched: list[str] = []
         reason_codes: list[str] = []
@@ -101,9 +79,12 @@ class CrossThreadLeakDetector:
                 if union > 0:
                     exact_overlap = intersection / union
 
-            source_hash = _simhash(source_tokens)
-            approx_similarity = 1.0 - (_hamming_distance(outbound_hash, source_hash) / 64.0)
-            score = max(exact_overlap, approx_similarity * 0.5)
+            # Measure actual lexical reuse, not chance agreement between hash bits.
+            source_token_set = set(source_tokens)
+            token_overlap = len(outbound_token_set & source_token_set) / len(
+                outbound_token_set | source_token_set
+            )
+            score = max(exact_overlap, token_overlap * 0.5)
             if score >= self._warning_threshold:
                 matched.append(source_id)
                 highest = max(highest, score)
@@ -111,7 +92,7 @@ class CrossThreadLeakDetector:
                 if exact_overlap >= self._warning_threshold:
                     reason_codes.append("leakcheck:exact_overlap")
                 else:
-                    reason_codes.append("leakcheck:approx_overlap")
+                    reason_codes.append("leakcheck:token_overlap")
 
         if not matched:
             return LeakCheckResult(detected=False, overlap_score=0.0)

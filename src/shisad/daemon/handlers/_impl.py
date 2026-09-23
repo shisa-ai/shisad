@@ -218,7 +218,7 @@ from shisad.security.incident_review import (
     IncidentReviewer,
     IncidentReviewResult,
 )
-from shisad.security.leakcheck import CrossThreadLeakDetector
+from shisad.security.leakcheck import DETECTOR_VERSION, CrossThreadLeakDetector
 from shisad.security.pep import PolicyContext
 from shisad.security.reputation import ReputationScorer
 from shisad.security.taint import label_tool_output, normalize_retrieval_taints
@@ -4383,7 +4383,7 @@ class HandlerImplementation(
                 "matched_source_ids": [],
                 "reason_codes": ["leakcheck:trusted_current_turn_reminder_create"],
                 "requires_confirmation": False,
-                "detector_version": "m6-leakcheck-v1",
+                "detector_version": DETECTOR_VERSION,
             }
         elif outbound_text:
             leak_result = self._leak_detector.evaluate(
