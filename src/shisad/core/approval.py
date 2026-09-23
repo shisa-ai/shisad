@@ -1550,6 +1550,8 @@ class EnterpriseKmsSignerBackend(_HttpSignerBackend):
             review_surface=ReviewSurface.PROVIDER_UI,
             capabilities=ConfirmationCapabilities(
                 principal_binding=True,
+                action_digest_binding=True,
+                approval_binding=True,
                 full_intent_signature=True,
                 third_party_verifiable=True,
             ),
@@ -1584,6 +1586,8 @@ class LedgerSignerBackend(_HttpSignerBackend):
             review_surface=ReviewSurface.TRUSTED_DEVICE_DISPLAY,
             capabilities=ConfirmationCapabilities(
                 principal_binding=True,
+                action_digest_binding=True,
+                approval_binding=True,
                 full_intent_signature=True,
                 third_party_verifiable=True,
                 trusted_display=True,
@@ -2183,6 +2187,7 @@ class WebAuthnBackend:
         self.capabilities = ConfirmationCapabilities(
             principal_binding=True,
             approval_binding=True,
+            action_digest_binding=True,
         )
         self.third_party_verifiable = False
         self._credential_store = credential_store

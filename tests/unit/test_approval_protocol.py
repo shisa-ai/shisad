@@ -1117,6 +1117,16 @@ def test_webauthn_backend_registers_and_verifies_bound_approval(tmp_path) -> Non
         response_payload=registration_payload,
     )
     store.register_approval_factor(factor)
+    registry = ConfirmationBackendRegistry()
+    registry.register(backend)
+    resolved = registry.resolve(
+        ConfirmationRequirement(
+            level=ConfirmationLevel.BOUND_APPROVAL,
+            require_capabilities=ConfirmationCapabilities(action_digest_binding=True),
+        ),
+        user_id="alice",
+    )
+    assert resolved is not None and resolved.backend is backend
 
     pending = _pending_action(
         confirmation_id="c-1",
@@ -1600,3 +1610,33 @@ def test_confirmation_recipient_is_an_opaque_handle(recipient: str) -> None:
         tool_definition=ToolDefinition(name=ToolName("example"), description="Example"),
         arguments={"recipient": recipient},
     ) == [recipient]
+
+
+@pytest.mark.parametrize(
+    "backend_type", [EnterpriseKmsSignerBackend, approval_module.LedgerSignerBackend]
+)
+def test_signer_backends_advertise_existing_digest_and_approval_binding(backend_type) -> None:
+    backend = backend_type(
+        credential_store=InMemoryCredentialStore(), endpoint_url="http://127.0.0.1:9/sign"
+    )
+    assert backend.capabilities.covers(
+        ConfirmationCapabilities(
+            action_digest_binding=True,
+            approval_binding=True,
+        )
+    )
+
+
+def test_software_backend_cannot_route_digest_binding_requirement() -> None:
+    registry = ConfirmationBackendRegistry()
+    registry.register(SoftwareConfirmationBackend())
+    assert (
+        registry.resolve(
+            ConfirmationRequirement(
+                level=ConfirmationLevel.SOFTWARE,
+                require_capabilities=ConfirmationCapabilities(action_digest_binding=True),
+            ),
+            user_id="alice",
+        )
+        is None
+    )
