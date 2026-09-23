@@ -1041,7 +1041,7 @@ class SandboxProcessRunner:
                         stdout, stderr = completed.communicate(timeout=1)
                     except subprocess.TimeoutExpired:
                         SandboxProcessRunner._kill_process_tree(completed)
-                        stdout, stderr = completed.communicate()
+                        stdout, stderr = SandboxProcessRunner._collect_after_kill(completed)
                     exit_code = completed.returncode
                     if not isinstance(exc, Exception):
                         raise
@@ -1055,7 +1055,7 @@ class SandboxProcessRunner:
                         stdout, stderr = completed.communicate(timeout=1)
                     except subprocess.TimeoutExpired:
                         SandboxProcessRunner._kill_process_tree(completed)
-                        stdout, stderr = completed.communicate()
+                        stdout, stderr = SandboxProcessRunner._collect_after_kill(completed)
                     exit_code = completed.returncode
                     return stdout, stderr, exit_code, timed_out, blocked_reason
 
@@ -1107,7 +1107,7 @@ class SandboxProcessRunner:
                         stdout, stderr = process.communicate(timeout=1)
                     except subprocess.TimeoutExpired:
                         SandboxProcessRunner._kill_process_tree(process)
-                        stdout, stderr = process.communicate()
+                        stdout, stderr = SandboxProcessRunner._collect_after_kill(process)
                     stderr = SandboxProcessRunner._append_stderr_line(
                         stderr,
                         f"[shisad sandbox] resource limit exceeded: memory_mb={memory_mb}",
@@ -1117,7 +1117,7 @@ class SandboxProcessRunner:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 SandboxProcessRunner._kill_process_tree(process)
-                stdout, stderr = process.communicate()
+                stdout, stderr = SandboxProcessRunner._collect_after_kill(process)
                 return stdout or "", stderr or "", None, True, None
             try:
                 poll_timeout = min(0.2, max(0.01, remaining))
@@ -1125,6 +1125,22 @@ class SandboxProcessRunner:
                 return stdout or "", stderr or "", process.returncode, False, None
             except subprocess.TimeoutExpired:
                 continue
+
+    @staticmethod
+    def _collect_after_kill(process: Any) -> tuple[str, str]:
+        """Bound cleanup even when a reparented child still holds the pipes."""
+        try:
+            stdout, stderr = process.communicate(timeout=0.5)
+            return stdout or "", stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            SandboxProcessRunner._kill_and_reap(process)
+            return (
+                SandboxProcessRunner.to_text(exc.stdout),
+                SandboxProcessRunner.to_text(exc.stderr),
+            )
 
     @staticmethod
     def _append_stderr_line(stderr: str | bytes | None, line: str) -> str:

@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1429,3 +1430,31 @@ def test_m6_process_detect_usable_bwrap_handles_probe_outcomes(
     assert "PATH" in captured_env
     assert "OPENAI_API_KEY" not in captured_env
     assert "BASH_FUNC_poison%%" not in captured_env
+
+
+def test_host_fallback_timeout_does_not_wait_for_orphan_pipe(tmp_path: Path) -> None:
+    import shlex
+    import time
+
+    child_pid = tmp_path / "child.pid"
+    started = time.monotonic()
+    try:
+        stdout, _stderr, _code, timed_out, blocked = SandboxProcessRunner.invoke(
+            [
+                "/bin/sh",
+                "-c",
+                f"sleep 4 & echo $! > {shlex.quote(str(child_pid))}; printf buffered",
+            ],
+            env=dict(os.environ),
+            cwd=str(tmp_path),
+            timeout_seconds=1,
+            preexec=None,
+        )
+        assert time.monotonic() - started < 3
+        assert timed_out is True
+        assert blocked is None
+        assert stdout == "buffered"
+    finally:
+        if child_pid.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(child_pid.read_text()), signal.SIGKILL)
