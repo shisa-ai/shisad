@@ -39,3 +39,27 @@ def test_m5_cf_v0353_rejects_tld_wildcard_egress_host_pattern() -> None:
 def test_m5_cf_v0353_allows_subdomain_wildcard_with_domain_depth() -> None:
     bundle = PolicyBundle.model_validate({"egress": [{"host": "*.example.com"}]})
     assert bundle.egress[0].host == "*.example.com"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://api.example.com",
+        "api.example.com:443",
+        "example.com/path",
+        "user@example.com",
+        "[::1]:443",
+        "[broken:address]",
+        "bad host",
+        "bad%host",
+    ],
+)
+def test_egress_host_rejects_url_or_port(host: str) -> None:
+    with pytest.raises(ValidationError, match="bare host"):
+        PolicyBundle.model_validate({"egress": [{"host": host}]})
+
+
+@pytest.mark.parametrize("host", ["api.example.com", "*.example.com", "127.0.0.1", "[::1]", "::1"])
+def test_egress_host_accepts_host_patterns_and_ip_literals(host: str) -> None:
+    bundle = PolicyBundle.model_validate({"egress": [{"host": host}]})
+    assert bundle.egress[0].host == host

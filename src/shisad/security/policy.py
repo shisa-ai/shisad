@@ -9,6 +9,7 @@ to detect tampering.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import signal
 from pathlib import Path
@@ -31,6 +32,7 @@ from shisad.core.approval import (
 )
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, ToolName
+from shisad.core.url_parsing import canonicalize_url_host
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,18 @@ class EgressRule(BaseModel):
         candidate = value.strip().lower()
         if not candidate:
             raise ValueError("Egress host pattern must not be empty")
+        canonical = canonicalize_url_host(candidate, allow_pattern=True)
+        invalid = not canonical
+        if ":" in canonical:
+            try:
+                ipaddress.IPv6Address(canonical)
+            except ValueError:
+                invalid = True
+        if invalid:
+            raise ValueError(
+                "Egress host must be a bare host or scoped host pattern. "
+                "Put schemes in protocols and port numbers in ports."
+            )
         if candidate == "*":
             raise ValueError(
                 "Egress host pattern '*' is too broad. "
