@@ -51,10 +51,10 @@ def test_m1_t5_firewall_strips_bidi_overrides() -> None:
         ("a\u200bb\u200cc\u200dd\ufeffe", "abcde"),
         ("a\u2060b\u206fc", "abc"),
         ("safe\u202ehidden\u202c", "safehidden"),
-        (" safe\x1b[31m   text ", "safe text"),
+        (" safe\x1b[31m   text ", " safe   text "),
     ],
 )
-def test_t2_egress_normalize_shim_preserves_legacy_outputs(
+def test_egress_normalize_preserves_layout_and_strips_control_codepoints(
     raw: str,
     expected: str,
 ) -> None:

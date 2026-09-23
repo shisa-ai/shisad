@@ -32,7 +32,7 @@ class DecodedText:
 
 
 def normalize_text(text: str) -> str:
-    """Preserve shisad's outbound normalization behavior via textguard."""
+    """Sanitize outbound codepoints without changing reply layout."""
     normalized = cast(
         str,
         _tg_normalize(
@@ -48,7 +48,7 @@ def normalize_text(text: str) -> str:
             max_combining_marks=None,
         ),
     )
-    return _strip_legacy_egress_codepoints_and_collapse_whitespace(normalized)
+    return _strip_legacy_egress_codepoints(normalized)
 
 
 def decode_text_layers(
@@ -80,20 +80,12 @@ def decode_text_layers(
     )
 
 
-def _strip_legacy_egress_codepoints_and_collapse_whitespace(text: str) -> str:
-    filtered_chars: list[str] = []
-    previous_was_space = False
-    for char in unicodedata.normalize("NFC", text):
-        if ord(char) in _LEGACY_EGRESS_STRIP_CODEPOINTS:
-            continue
-        if char.isspace():
-            if not previous_was_space:
-                filtered_chars.append(" ")
-            previous_was_space = True
-            continue
-        filtered_chars.append(char)
-        previous_was_space = False
-    return "".join(filtered_chars).strip()
+def _strip_legacy_egress_codepoints(text: str) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFC", text)
+        if ord(char) not in _LEGACY_EGRESS_STRIP_CODEPOINTS
+    )
 
 
 __all__ = ["DecodedText", "decode_text_layers", "normalize_text"]

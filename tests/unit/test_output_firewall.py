@@ -10,6 +10,20 @@ import pytest
 from shisad.security.firewall.output import OutputFirewall
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Steps:\n\n1. Build\n2. Test\n\nDone.\n",
+        "```python\nif ready:\n    run()\n\tfinish()\n```\n",
+        "First line  \nsecond line\r\n\r\nlast line",
+    ],
+)
+def test_output_firewall_preserves_reply_layout(text: str) -> None:
+    result = OutputFirewall(safe_domains=[]).inspect(text)
+    assert result.sanitized_text == text
+    assert not result.blocked
+
+
 def test_m2_t5_output_firewall_redacts_aws_keys() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("Token: AKIAABCDEFGHIJKLMNOP")
