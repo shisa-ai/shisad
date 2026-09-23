@@ -2209,6 +2209,10 @@ def _hidden_target_confirmation_command_text() -> str:
     )
 
 
+def _bulk_approval_allowed(*, pending_count: int, tainted_session: bool) -> bool:
+    return not tainted_session or pending_count <= 1
+
+
 def _resolve_chat_confirmation_indexes(
     *,
     intent: ChatConfirmationIntent,
@@ -2218,6 +2222,10 @@ def _resolve_chat_confirmation_indexes(
     if intent.action == "none" or pending_count <= 0:
         return []
     if intent.target == "all":
+        if intent.action == "confirm" and not _bulk_approval_allowed(
+            pending_count=pending_count, tainted_session=tainted_session
+        ):
+            return []
         return list(range(pending_count))
     if intent.target == "index":
         if intent.index is None or intent.index <= 0 or intent.index > pending_count:
@@ -9565,7 +9573,14 @@ class SessionImplMixin(HandlerMixinBase):
             lines.extend(_chat_recovery_code_guidance_lines(pending_rows=pending_rows))
         else:
             if allow_chat_approval:
-                if len(pending_rows) == 1:
+                if not _bulk_approval_allowed(
+                    pending_count=len(pending_rows), tainted_session=tainted_session
+                ):
+                    lines.append(
+                        "Confirm each action separately with 'confirm N'. "
+                        "Reply with 'reject N' or 'no to all' to deny pending items."
+                    )
+                elif len(pending_rows) == 1:
                     lines.append(
                         "Reply with 'confirm', 'confirm N', 'reject N', "
                         "'yes to all', or 'no to all'."
@@ -12069,6 +12084,14 @@ class SessionImplMixin(HandlerMixinBase):
         if scope == "all":
             if target.casefold() not in {"all", "*"}:
                 return [], "all_scope_requires_all_target"
+            if decision == "confirm" and not _bulk_approval_allowed(
+                pending_count=len(pending_rows),
+                tainted_session=(
+                    self._session_has_tainted_history(validated.sid)
+                    or validated.firewall_result.risk_score >= 0.7
+                ),
+            ):
+                return [], "tainted_session_requires_individual_approval"
             return list(pending_rows), ""
         if target.casefold() in {"all", "*"}:
             return [], "all_target_requires_all_scope"
@@ -12179,7 +12202,12 @@ class SessionImplMixin(HandlerMixinBase):
             return PlannerActionResolveResult(
                 rejected=1,
                 rejection_reasons=[target_error],
-                summary=f"action.resolve rejected: {target_error}",
+                summary=(
+                    "This session contains untrusted content. Confirm each pending action "
+                    "separately with 'confirm N', or reject them with 'no to all'."
+                    if target_error == "tainted_session_requires_individual_approval"
+                    else f"action.resolve rejected: {target_error}"
+                ),
             )
 
         effective_delivery_target = getattr(validated, "delivery_target", None)

@@ -540,6 +540,59 @@ def test_m6_crc_routing_allows_single_pending_even_when_tainted() -> None:
     ) == [1]
 
 
+@pytest.mark.parametrize("tainted", [False, True])
+@pytest.mark.parametrize("decision", ["confirm", "reject"])
+def test_bulk_chat_confirmation_respects_taint(tainted: bool, decision: str) -> None:
+    indexes = _resolve_chat_confirmation_indexes(
+        intent=ChatConfirmationIntent(action=decision, target="all", index=None),
+        pending_count=2,
+        tainted_session=tainted,
+    )
+    assert indexes == ([] if tainted and decision == "confirm" else [0, 1])
+
+
+@pytest.mark.parametrize("tainted", [False, True])
+@pytest.mark.parametrize("decision", ["confirm", "reject"])
+def test_planner_bulk_targets_respect_taint(tmp_path, tainted: bool, decision: str) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    harness._session_has_tainted_history = lambda _sid: tainted
+    for number in (1, 2):
+        pending = PendingAction(
+            confirmation_id=f"c-{number}",
+            decision_nonce=f"nonce-{number}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "hello"},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC),
+        )
+        harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        is_internal_ingress=False,
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+    rows, error = harness._resolve_planner_action_resolve_targets(
+        validated=validated,
+        arguments={"decision": decision, "scope": "all", "target": "all"},
+        pending_action_binding_ids=("c-1", "c-2"),
+    )
+    blocked = tainted and decision == "confirm"
+    assert len(rows) == (0 if blocked else 2)
+    assert error == ("tainted_session_requires_individual_approval" if blocked else "")
+    summary = harness._chat_pending_confirmation_summary(
+        pending_rows=list(harness._pending_actions.values()), tainted_session=tainted
+    )
+    assert ("yes to all" in summary) is not tainted
+    assert "no to all" in summary
+    assert "confirm N" in summary
+
+
 def test_chat_pending_confirmation_summary_retains_bulk_guidance() -> None:
     pending = PendingAction(
         confirmation_id="c-1",
