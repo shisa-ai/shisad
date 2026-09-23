@@ -1386,13 +1386,17 @@ class _HttpSignerBackend:
     ) -> SignatureResult:
         if not self._endpoint_url:
             return SignatureResult(status="error", reason="signer_backend_unconfigured")
+        timeout_seconds = max(
+            1.0,
+            min(timeout.total_seconds(), self._request_timeout.total_seconds()),
+        )
         payload = {
             "schema_version": "shisad.sign_request.v1",
             "backend": self.method,
             "signer_key_id": signer_key_id,
             "intent_envelope_hash": intent_envelope_hash(envelope),
             "intent_envelope": envelope.model_dump(mode="json"),
-            "timeout_seconds": max(1, int(timeout.total_seconds())),
+            "timeout_seconds": max(1, int(timeout_seconds)),
         }
         headers = {
             "Content-Type": "application/json",
@@ -1405,10 +1409,6 @@ class _HttpSignerBackend:
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
-        )
-        timeout_seconds = max(
-            1.0,
-            min(timeout.total_seconds(), self._request_timeout.total_seconds()),
         )
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
@@ -1579,7 +1579,9 @@ class LedgerSignerBackend(_HttpSignerBackend):
             credential_store=credential_store,
             endpoint_url=endpoint_url,
             bearer_token=bearer_token,
-            request_timeout=request_timeout,
+            request_timeout=request_timeout
+            if request_timeout is not None
+            else timedelta(seconds=300),
             backend_id="ledger.default",
             method="ledger",
             level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,

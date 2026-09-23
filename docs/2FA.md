@@ -913,6 +913,13 @@ A signer backend implements four methods:
 | `verify_signature(envelope, signature, signer_key)` → `bool` | Verify a signature against the registered public key |
 | `record_key_use(signer_key_id, when)` | Record that a key was used (for audit/rotation tracking) |
 
+Ledger hardware review has a five-minute default HTTP wait, bounded by the
+remaining approval lifetime. KMS retains a 30-second default. The sign request
+includes the effective budget in `timeout_seconds`. If the wait expires,
+`signer_backend_timeout` means no approval was accepted; cancel any outstanding
+device prompt and retry while the pending action is still valid, or request a
+new action after it expires. Unrelated tool and RPC timeouts are unchanged.
+
 ### KMS HTTP signing contract
 
 The built-in `EnterpriseKmsSignerBackend` uses a simple HTTP POST contract. If

@@ -1640,3 +1640,43 @@ def test_software_backend_cannot_route_digest_binding_requirement() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "backend_type,remaining,override,expected",
+    [
+        (approval_module.LedgerSignerBackend, 500, None, 300),
+        (approval_module.LedgerSignerBackend, 12, None, 12),
+        (approval_module.LedgerSignerBackend, 500, 7, 7),
+        (EnterpriseKmsSignerBackend, 500, None, 30),
+    ],
+)
+def test_signer_http_timeout_respects_hardware_budget(
+    backend_type,
+    remaining: int,
+    override: int | None,
+    expected: int,
+    monkeypatch,
+) -> None:
+    import json
+
+    captured = []
+
+    def timed_out(request, *, timeout):
+        captured.append((timeout, json.loads(request.data)["timeout_seconds"]))
+        raise TimeoutError
+
+    monkeypatch.setattr(approval_module, "urlopen", timed_out)
+    backend = backend_type(
+        credential_store=InMemoryCredentialStore(),
+        endpoint_url="http://127.0.0.1:9/sign",
+        request_timeout=timedelta(seconds=override) if override is not None else None,
+    )
+    result = backend.request_signature(
+        envelope=_ledger_reference_intent(),
+        signer_key_id="ledger:test",
+        timeout=timedelta(seconds=remaining),
+    )
+    assert captured == [(expected, expected)]
+    assert result.status == "expired"
+    assert result.reason == "signer_backend_timeout"
