@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ from shisad.core.session import CheckpointStore, Session
 from shisad.executors.sandbox.models import SandboxConfig
 
 _CHECKPOINT_FILE_SNAPSHOT_LIMIT = 1_000_000
+_CHECKPOINT_TOTAL_SNAPSHOT_LIMIT = 16_000_000
+_CHECKPOINT_ENTRY_LIMIT = 1024
 
 
 class SandboxCheckpointComponent(Protocol):
@@ -77,23 +80,49 @@ class SandboxCheckpointManager:
     def capture_filesystem_snapshot(self, paths: list[str]) -> list[dict[str, Any]]:
         snapshots: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for raw in paths:
-            candidate = Path(raw).expanduser()
+        pending = [Path(raw).expanduser().absolute() for raw in reversed(paths)]
+        total_bytes = 0
+        while pending:
+            candidate = pending.pop()
             normalized = str(candidate)
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
             entry: dict[str, Any] = {"path": normalized, "existed": candidate.exists()}
-            if candidate.exists() and candidate.is_file():
-                try:
-                    data = candidate.read_bytes()
-                    if len(data) > _CHECKPOINT_FILE_SNAPSHOT_LIMIT:
-                        entry["snapshot_skipped"] = "file_too_large"
+            snapshots.append(entry)
+            try:
+                if candidate.is_symlink() or any(
+                    parent.is_symlink() for parent in candidate.parents
+                ):
+                    entry["snapshot_skipped"] = "symlink"
+                elif len(snapshots) > _CHECKPOINT_ENTRY_LIMIT:
+                    entry["snapshot_skipped"] = "entry_limit"
+                elif candidate.is_dir():
+                    entry["kind"] = "directory"
+                    with os.scandir(candidate) as children:
+                        for child in children:
+                            if len(snapshots) + len(pending) >= _CHECKPOINT_ENTRY_LIMIT:
+                                entry["snapshot_skipped"] = "entry_limit"
+                                break
+                            pending.append(Path(child.path))
+                elif candidate.is_file():
+                    remaining = _CHECKPOINT_TOTAL_SNAPSHOT_LIMIT - total_bytes
+                    limit = min(_CHECKPOINT_FILE_SNAPSHOT_LIMIT, remaining)
+                    with candidate.open("rb") as stream:
+                        data = stream.read(limit + 1)
+                    if len(data) > limit:
+                        entry["snapshot_skipped"] = (
+                            "file_too_large"
+                            if limit == _CHECKPOINT_FILE_SNAPSHOT_LIMIT
+                            else "byte_limit"
+                        )
                     else:
                         entry["content_b64"] = base64.b64encode(data).decode("utf-8")
-                except OSError:
-                    entry["snapshot_skipped"] = "read_error"
-            snapshots.append(entry)
+                        total_bytes += len(data)
+                elif candidate.exists():
+                    entry["snapshot_skipped"] = "unsupported_file_type"
+            except OSError:
+                entry["snapshot_skipped"] = "read_error"
         return snapshots
 
 

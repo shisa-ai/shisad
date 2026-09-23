@@ -369,9 +369,11 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot_case", ["file", "directory", "large_file"])
 async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_session(
     model_env: None,
     tmp_path: Path,
+    snapshot_case: str,
 ) -> None:
     # Grant file.write but require confirmation so this exercises the
     # stage2 checkpoint/rollback path rather than a missing-capability deny.
@@ -394,7 +396,13 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         target = tmp_path / "danger.txt"
-        target.write_text("danger", encoding="utf-8")
+        contents = "danger" if snapshot_case != "large_file" else "x" * 1_000_100
+        target.write_text(contents, encoding="utf-8")
+        write_path = target
+        if snapshot_case == "directory":
+            write_path = tmp_path / "workspace"
+            write_path.mkdir()
+            target = target.rename(write_path / "danger.txt")
         created = await _create_cli_session(client)
         sid = created["session_id"]
 
@@ -403,8 +411,8 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
             {
                 "session_id": sid,
                 "tool_name": "file.write",
-                "command": ["rm", "-f", str(target)],
-                "write_paths": [str(target)],
+                "command": ["rm", "-rf", str(write_path)],
+                "write_paths": [str(write_path)],
                 "filesystem": {"mounts": [{"path": f"{tmp_path.as_posix()}/**", "mode": "rw"}]},
                 "degraded_mode": "fail_open",
                 "security_critical": False,
@@ -434,7 +442,14 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
         assert "http.request" in session_after_grant["capabilities"]
 
         rollback = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
+        if snapshot_case == "large_file":
+            assert rollback["rolled_back"] is False
+            assert rollback["reason"] == "filesystem_restore_incomplete"
+            assert rollback["restore_errors"] == [f"{target}:file_too_large"]
+            assert not target.exists()
+            return
         assert rollback["rolled_back"] is True
+        assert rollback["restore_errors"] == []
         assert rollback["files_restored"] >= 1
 
         listed_after_rollback = await client.call("session.list")

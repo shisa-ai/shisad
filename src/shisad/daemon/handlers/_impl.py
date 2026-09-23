@@ -8198,22 +8198,37 @@ class HandlerImplementation(
     ) -> tuple[int, int, list[str]]:
         snapshots = state.get("filesystem_snapshot", [])
         if not isinstance(snapshots, list):
-            return 0, 0, []
+            return 0, 0, ["invalid_filesystem_snapshot"]
         restored = 0
         deleted = 0
         errors: list[str] = []
         for item in snapshots:
             if not isinstance(item, dict):
+                errors.append("invalid_snapshot_entry")
                 continue
             path = str(item.get("path", "")).strip()
             if not path:
+                errors.append("missing_snapshot_path")
+                continue
+            skipped = item.get("snapshot_skipped")
+            if skipped:
+                errors.append(f"{path}:{skipped}")
                 continue
             candidate = Path(path).expanduser()
             existed = bool(item.get("existed", False))
             try:
+                if candidate.is_symlink() or any(
+                    parent.is_symlink() for parent in candidate.parents
+                ):
+                    errors.append(f"{path}:symlink")
+                    continue
                 if existed:
+                    if item.get("kind") == "directory":
+                        candidate.mkdir(parents=True, exist_ok=True)
+                        continue
                     encoded = item.get("content_b64")
                     if not isinstance(encoded, str):
+                        errors.append(f"{path}:content_unavailable")
                         continue
                     data = base64.b64decode(encoded.encode("utf-8"), validate=True)
                     candidate.parent.mkdir(parents=True, exist_ok=True)

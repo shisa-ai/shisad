@@ -18133,22 +18133,23 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=restored.id,
             state=checkpoint.state,
         )
-        await self._event_bus.publish(
-            SessionRolledBack(
-                session_id=restored.id,
-                actor="control_api",
-                checkpoint_id=checkpoint_id,
+        if not restore_errors:
+            await self._event_bus.publish(
+                SessionRolledBack(
+                    session_id=restored.id,
+                    actor="control_api",
+                    checkpoint_id=checkpoint_id,
+                )
             )
-        )
         return {
-            "rolled_back": True,
+            "rolled_back": not restore_errors,
             "checkpoint_id": checkpoint_id,
             "session_id": restored.id,
             "files_restored": files_restored,
             "files_deleted": files_deleted,
             "transcript_entries_removed": transcript_entries_removed,
             "restore_errors": restore_errors,
-            "reason": "",
+            "reason": "filesystem_restore_incomplete" if restore_errors else "",
         }
 
     async def do_session_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
