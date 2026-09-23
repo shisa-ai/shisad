@@ -40,6 +40,11 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.atomic_state import atomic_write_bytes
 from shisad.core.tools.schema import ToolDefinition
+from shisad.core.url_parsing import (
+    EGRESS_URL_ARGUMENT_FIELDS,
+    canonicalize_url_host,
+    safe_url_hostname,
+)
 from shisad.security.credentials import (
     ApprovalFactorRecord,
     ApprovalFactorStore,
@@ -655,8 +660,9 @@ def resolve_confirmation_destinations(
         text = candidate.strip()
         if not text:
             return
-        parsed = urlparse(text if "://" in text else f"https://{text}")
-        host = (parsed.hostname or "").strip().lower()
+        host = canonicalize_url_host(
+            safe_url_hostname(text if "://" in text else f"https://{text}")
+        )
         if not host:
             return
         resolved.add(host)
@@ -671,8 +677,14 @@ def resolve_confirmation_destinations(
 
     for key, value in arguments.items():
         if isinstance(value, str):
-            if key in {"url", "destination", "recipient"}:
+            if key in EGRESS_URL_ARGUMENT_FIELDS:
                 _add_url(value)
+            elif key == "host":
+                if host := canonicalize_url_host(value):
+                    resolved.add(host)
+            elif key == "recipient":
+                if recipient := value.strip():
+                    resolved.add(recipient)
             elif key == "credential_ref":
                 continue
             elif key == "path" or key.endswith("_path") or key in {"cwd", "repo"}:

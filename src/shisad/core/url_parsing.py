@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import ParseResult, urlparse
 
+EGRESS_URL_ARGUMENT_FIELDS = ("url", "endpoint", "destination", "webhook_url")
+
 
 @dataclass(frozen=True, slots=True)
 class URLDestination:

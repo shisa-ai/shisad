@@ -34,7 +34,11 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.core.url_parsing import canonicalize_url_host, safe_url_destination
+from shisad.core.url_parsing import (
+    EGRESS_URL_ARGUMENT_FIELDS,
+    canonicalize_url_host,
+    safe_url_destination,
+)
 from shisad.security.credentials import CredentialStore
 from shisad.security.network_address import is_ip_literal, is_local_hostname
 from shisad.security.policy import PolicyBundle
@@ -1055,8 +1059,7 @@ class PEP:
             self._credential_audit_hook(attempt)
 
     def _extract_destination(self, arguments: dict[str, Any]) -> EgressDestination | None:
-        url_fields = ("url", "endpoint", "destination", "webhook_url")
-        for field in url_fields:
+        for field in EGRESS_URL_ARGUMENT_FIELDS:
             if field not in arguments:
                 continue
             value = arguments[field]

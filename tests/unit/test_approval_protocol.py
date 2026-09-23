@@ -1567,3 +1567,36 @@ def test_lockout_tracker_quarantines_malformed_state_file(tmp_path) -> None:
     assert not state_path.exists()
     quarantined = list(tmp_path.glob("confirmation_lockouts.json.corrupt.*"))
     assert len(quarantined) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"url": "https://api.example.com/upload"},
+        {"endpoint": "https://api.example.com/upload"},
+        {"endpoint": "https://API.EXAMPLE.COM./upload"},
+        {"webhook_url": "https://api.example.com/upload"},
+        {"destination": "https://api.example.com/upload"},
+        {"host": "API.EXAMPLE.COM", "protocol": "https", "port": 443},
+        {"host": "[::1]", "protocol": "http", "port": 8080},
+    ],
+)
+def test_confirmation_destination_fields_agree_with_pep(arguments: dict) -> None:
+    from shisad.core.tools.registry import ToolRegistry
+    from shisad.security.pep import PEP
+    from shisad.security.policy import PolicyBundle
+
+    destination = PEP(PolicyBundle(), ToolRegistry())._extract_destination(arguments)
+    assert destination is not None
+    assert approval_module.resolve_confirmation_destinations(
+        tool_definition=ToolDefinition(name=ToolName("example"), description="Example"),
+        arguments=arguments,
+    ) == [destination.host]
+
+
+@pytest.mark.parametrize("recipient", ["alice@example.com", "channel:#general", "RoomID:ABC"])
+def test_confirmation_recipient_is_an_opaque_handle(recipient: str) -> None:
+    assert approval_module.resolve_confirmation_destinations(
+        tool_definition=ToolDefinition(name=ToolName("example"), description="Example"),
+        arguments={"recipient": recipient},
+    ) == [recipient]
