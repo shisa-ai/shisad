@@ -416,14 +416,17 @@ def current_turn_value_is_structurally_anchored(
     value: Any,
     *,
     normalized_current_turn: str,
+    exact_text: bool = False,
 ) -> bool:
-    """Require a whole-token value occurrence in daemon-owned current-turn text."""
+    """Require a whole-token occurrence; exact_text preserves path case and spacing."""
     if not isinstance(value, str):
         return False
-    normalized = " ".join(value.split()).casefold()
+    normalized = value if exact_text else " ".join(value.split()).casefold()
     if not normalized:
         return False
-    current_turn = str(normalized_current_turn or "").casefold()
+    current_turn = str(normalized_current_turn or "")
+    if not exact_text:
+        current_turn = current_turn.casefold()
     start = 0
     while True:
         index = current_turn.find(normalized, start)

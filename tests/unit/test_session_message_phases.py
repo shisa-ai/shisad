@@ -3111,9 +3111,11 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_taint_warning() -> (
-    None
-):
+@pytest.mark.parametrize("path,expected_taint", [("docs", []), ("private", [TaintLabel.UNTRUSTED])])
+async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_taint_warning(
+    path: str,
+    expected_taint: list[TaintLabel],
+) -> None:
     harness = _TraceConfirmationRoutingHarness()
     sid = SessionId("sess-g1")
     validated = _validation_result(
@@ -3153,7 +3155,7 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
         action_id="a-gh51",
         tool_name=ToolName("fs.list"),
         arguments={
-            "path": "docs",
+            "path": path,
             "recursive": True,
             "limit": 25,
             "filesystem_intent": "current_turn_local_read",
@@ -3196,7 +3198,7 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
     assert result.pending_confirmation == 1
     assert harness.pending_action_calls
     pending_call = harness.pending_action_calls[-1]
-    assert pending_call["taint_labels"] == []
+    assert pending_call["taint_labels"] == expected_taint
     assert pending_call["continuation_user_goal"] == (
         "what are the top open claw use cases in our docs?"
     )
@@ -9258,3 +9260,36 @@ async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evi
 
     assert result.pending_confirmation == 1
     assert len(service.requests) == request_count
+
+
+@pytest.mark.parametrize(
+    "text,path,trusted,local,expected",
+    [
+        ("read docs", "docs", True, True, True),
+        ("read `docs/file.md`", "docs/file.md", True, True, True),
+        ("read docs", "secret", True, True, False),
+        ("read docs-other", "docs", True, True, False),
+        ("read Docs", "docs", True, True, False),
+        ("read docs", "docs", True, False, False),
+        ("read docs", "docs", False, True, False),
+        ("read 'a  b'", "a b", True, True, False),
+    ],
+)
+def test_filesystem_taint_exemption_requires_literal_local_path(
+    text: str,
+    path: str,
+    trusted: bool,
+    local: bool,
+    expected: bool,
+) -> None:
+    validated = _validation_result(params={"content": "untrusted raw text"}, sanitized_text=text)
+    validated.trusted_input = trusted
+    validated.operator_owned_cli_input = local
+    assert (
+        impl_session._has_current_turn_local_filesystem_read_intent(
+            tool_name="fs.read",
+            arguments={"path": path, "filesystem_intent": "current_turn_local_read"},
+            validated=validated,
+        )
+        is expected
+    )

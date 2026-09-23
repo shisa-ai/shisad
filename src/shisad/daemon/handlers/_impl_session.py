@@ -2552,11 +2552,16 @@ def _has_current_turn_local_filesystem_read_intent(
     canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
     if canonical_name not in _LOCAL_FILESYSTEM_READ_TOOL_NAMES:
         return False
-    if not _has_clean_trusted_turn_privileges(validated):
+    if not validated.trusted_input or not _is_clean_direct_trusted_cli_turn(validated):
         return False
     return (
         str(arguments.get("filesystem_intent", "")).strip()
         == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
+        and current_turn_value_is_structurally_anchored(
+            arguments.get("path"),
+            normalized_current_turn=validated.firewall_result.sanitized_text,
+            exact_text=True,
+        )
     )
 
 
