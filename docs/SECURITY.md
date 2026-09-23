@@ -345,15 +345,18 @@ These hold regardless of LLM behavior:
 
 ### Runtime route boundary
 
-The PEP list above applies to actions executed through the shared planner,
-administrative `tool.execute`, and typed operator convenience effect paths. It
-is not a universal claim about every callable daemon method.
+The PEP list above applies to actions executed through the shared planner and
+typed operator convenience effect paths. Administrative `tool.execute` is a
+trusted local operator route authorized by the control-plane contract and
+sandbox policy. It validates registered tools and arguments, enforces session
+lockdown and rate admission, and applies required confirmation. The planner
+PEP is not applied to these operator-issued calls, including at confirmation.
 
 | Route family | Authority and enforcement | Audit / observability |
 |---|---|---|
 | `session.message` from the local control socket or a trusted command channel | Authenticated ingress builds a session turn; planner-proposed actions enter shared policy, PEP, confirmation, control-plane, and tool-execution handling | Session, policy, confirmation, action, and execution events on the shared path |
 | Signed A2A `session.message` ingress | Fingerprint verification, replay protection, intent grants, and rate limits precede the same session/planner path; the remote principal's grants remain authoritative | A2A ingress evaluation plus shared-path events |
-| Administrative `tool.execute` | Local administrator RPC; invokes the shared PEP/control-plane/confirmation execution handler directly | Shared-path action and execution events |
+| Administrative `tool.execute` | Local administrator RPC; control-plane contract, sandbox policy, session lockdown, rate admission, and required confirmation; planner PEP is not reapplied | Shared-path action and execution events |
 | Convenience `web.*`, `realitycheck.*`, `email.*`, `fs.*`, and `git.*` RPCs | Authenticated local operator routes resolve descriptor/admin posture, create a short-lived direct session, and enter PEP, control-plane, durable approved-action execution, then toolkit-local checks; explicit higher-assurance policy still binds and `fs.write` retains its `confirm` gate | Shared session, plan, action, execution, taint, and sanitized-output evidence; stable typed readiness and boundary results |
 | `action.confirm` / `action.reject` | Exact pending-action identity, decision nonce, actor/surface binding, required proof, and durable lifecycle checks | Durable decision and execution correlation on the pending-action path |
 | Scheduler and command-channel delivery | Background work and channel ingress use shared handler execution and scoped delivery bindings; ambiguous external outcomes are contained rather than silently replayed | Scheduler, delivery-attempt, and pending-action state plus shared-path events |

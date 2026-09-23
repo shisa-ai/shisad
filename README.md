@@ -49,13 +49,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
   instructions from persisting in the long-lived COMMAND context. Each task
   also records its assigned scope and keeps approvals linked to the request
   that authorized them
-- **Every action is checked before execution** — each action proposed by the
-  planner or submitted through `tool.execute` passes through the Policy
-  Enforcement Point (PEP), rather than being checked only when the session
-  starts. It validates the tool and its arguments, checks permissions and
-  resource access, restricts network destinations and credential use, scans
-  for secrets, and applies additional rules when untrusted data reaches a
-  sensitive destination
+- **Actions are checked before execution** — planner actions pass through the
+  Policy Enforcement Point (PEP). It validates tools and arguments, checks
+  permissions and resource access, restricts network destinations and credential
+  use, scans for secrets, and applies rules for tainted content. Administrative
+  `tool.execute` calls use a separate control-plane and sandbox authorization
+  path, with session lockdown, rate limits, and required confirmation
 - **Ingress and egress content controls** — on ingress, ShisaD's content
   firewall scans untrusted input, marks it as tainted, and records where it
   came from. The system preserves those labels while content is processed and
@@ -488,10 +487,11 @@ listed in [`docs/AUTHORITY-MAP.md`](docs/AUTHORITY-MAP.md).
 
 **The approach**: instead of removing capabilities until the agent is safe (at which point you've rebuilt ChatGPT with extra steps), ShisaD keeps all capabilities available and enforces safety per-call:
 
-- **Eight checks before execution** — every action from the shared planner or
-  `tool.execute` is checked for tool registration, valid arguments,
-  permissions, exposed secrets, resource access, approved destinations,
-  credential scope, and restrictions on tainted content
+- **Planner checks before execution** — each planner action is checked for
+  tool registration, valid arguments, permissions, exposed secrets, resource
+  access, approved destinations, credential scope, and restrictions on tainted
+  content. Administrative `tool.execute` calls use the separate operator
+  authorization path described in [Security](docs/SECURITY.md#runtime-route-boundary)
 - **Track untrusted content** — ingress controls label untrusted content as
   tainted and record its source. Those labels remain attached while the content
   is processed and stored, and egress controls use that provenance to
