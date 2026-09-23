@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Protocol
 
@@ -151,10 +152,23 @@ class SandboxPolicyEvaluator:
         )
 
     def escape_signal_reason(self, command: list[str]) -> str | None:
-        lowered = " ".join(command).lower()
-        for token in _ESCAPE_SIGNAL_TOKENS:
-            if re.search(rf"\b{re.escape(token)}\b", lowered):
-                return f"escape_signal:{token}"
+        if not command:
+            return None
+        executable = Path(command[0]).name
+        if executable in {"sh", "bash", "zsh"}:
+            for index, option in enumerate(command[1:], start=1):
+                if not option.startswith("-") or option == "--":
+                    break
+                if not option.startswith("--") and "c" in option and index + 1 < len(command):
+                    try:
+                        words = shlex.shlex(command[index + 1], posix=True, punctuation_chars=True)
+                        words.whitespace_split = True
+                        executable = Path(next(iter(words), "")).name
+                    except ValueError:
+                        return None
+                    break
+        if executable in _ESCAPE_SIGNAL_TOKENS:
+            return f"escape_signal:{executable}"
         return None
 
 

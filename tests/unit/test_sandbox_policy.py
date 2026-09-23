@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
     EnvironmentPolicy,
@@ -12,6 +14,36 @@ from shisad.executors.sandbox import (
     SandboxPolicyEvaluator,
     SandboxType,
 )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["grep", "-rn", "mount", "docs/"],
+        ["git", "log", "--grep", "ptrace"],
+        ["cat", "/tmp/mount/notes"],
+        ["sh", "-c", "echo mount"],
+        ["bash", "-lc", "grep ptrace notes"],
+        ["sh", "script.sh", "mount"],
+        ["sh", "-c", "'mount"],
+        [],
+    ],
+)
+def test_escape_signal_ignores_argument_text(command: list[str]) -> None:
+    assert SandboxPolicyEvaluator().escape_signal_reason(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["mount", "-a"],
+        ["/usr/bin/mount", "-a"],
+        ["sh", "-c", "mount -a"],
+        ["bash", "-lc", "/usr/bin/mount -a"],
+    ],
+)
+def test_escape_signal_detects_executable(command: list[str]) -> None:
+    assert SandboxPolicyEvaluator().escape_signal_reason(command) == "escape_signal:mount"
 
 
 def test_m3_policy_select_backend_routes_network_to_container() -> None:

@@ -50,6 +50,22 @@ def test_sandbox_reads_bare_filename_with_network_disabled(
     assert result.stdout == "Project notes\n"
 
 
+def test_sandbox_allows_escape_word_as_data_without_escape_signal() -> None:
+    result = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver)).execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=["printf", "%s", "mount"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed, result.reason
+    assert result.exit_code == 0
+    assert result.stdout == "mount"
+    assert not result.escape_detected
+
+
 def test_m3_sandbox_timeout_and_output_truncation(tmp_path: Path) -> None:
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
     timeout_result = orchestrator.execute(
