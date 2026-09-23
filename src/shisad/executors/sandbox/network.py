@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Protocol
 
-from shisad.core.url_parsing import safe_parsed_hostname, safe_url_hostname, safe_urlparse
+from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.executors.proxy import EgressProxy, NetworkPolicy, ProxyDecision
 from shisad.security.credentials import is_placeholder
 
@@ -84,6 +84,7 @@ class SandboxNetworkManager:
 
     def extract_network_targets(self, command: list[str]) -> list[str]:
         targets: list[str] = []
+        network_executable = bool(command) and Path(command[0]).name in _NETWORK_EXECUTABLES
         for token in command:
             if token.startswith(("http://", "https://")):
                 targets.append(token)
@@ -99,12 +100,8 @@ class SandboxNetworkManager:
                 if rhs.startswith(("http://", "https://")):
                     targets.append(rhs)
                     continue
-            if _DOMAIN_TOKEN_RE.match(token):
-                host = token
-                if "://" in host:
-                    host = safe_url_hostname(host)
-                if host:
-                    targets.append(f"https://{host}/")
+            if network_executable and _DOMAIN_TOKEN_RE.match(token):
+                targets.append(f"https://{token}/")
         if command and Path(command[0]).name in {"nslookup", "dig", "host"} and len(command) >= 2:
             host = command[-1].strip()
             if host and "://" not in host:
@@ -125,7 +122,6 @@ class SandboxNetworkManager:
             return True
         return any(
             token.startswith(("http://", "https://", "ftp://", "ftps://"))
-            or _DOMAIN_TOKEN_RE.match(token)
             for token in command[1:]
         )
 

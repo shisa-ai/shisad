@@ -31,6 +31,25 @@ def _resolver(_hostname: str) -> list[str]:
     return ["93.184.216.34"]
 
 
+def test_sandbox_reads_bare_filename_with_network_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "README.md").write_text("Project notes\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver)).execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=["cat", "README.md"],
+            containment_profile=ContainmentProfile.EXPERT_HOST_FALLBACK,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed, result.reason
+    assert result.exit_code == 0
+    assert result.stdout == "Project notes\n"
+
+
 def test_m3_sandbox_timeout_and_output_truncation(tmp_path: Path) -> None:
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
     timeout_result = orchestrator.execute(

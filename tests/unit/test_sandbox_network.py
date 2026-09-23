@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from shisad.core.types import CredentialRef
 from shisad.executors.connect_path import IptablesConnectPathProxy, NoopConnectPathProxy
 from shisad.executors.proxy import EgressProxy, NetworkPolicy, ProxyDecision
@@ -20,7 +22,7 @@ def test_m3_network_extract_targets_and_detect_network_commands() -> None:
     targets = manager.extract_network_targets(
         [sys.executable, "-c", "print('ok')", "https://api.good.com/v1", "api.backup.com"]
     )
-    assert targets == ["https://api.good.com/v1", "https://api.backup.com/"]
+    assert targets == ["https://api.good.com/v1"]
     assert manager.command_attempts_network(["curl", "https://api.good.com/v1"]) is True
     assert manager.command_attempts_network([sys.executable, "-c", "print('ok')"]) is False
 
@@ -175,10 +177,27 @@ def test_m6_network_extract_targets_supports_flags_ftp_and_dns_tools() -> None:
     assert dns_targets == ["https://resolver.good.com/"]
 
 
-def test_m6_network_command_attempts_network_detects_domain_token() -> None:
+def test_network_command_does_not_infer_egress_from_arbitrary_domain_token() -> None:
     manager = SandboxNetworkManager(EgressProxy(resolver=_resolver))
     assert manager.command_attempts_network([]) is False
-    assert manager.command_attempts_network(["python", "-c", "print('ok')", "api.good.com"]) is True
+    assert not manager.command_attempts_network(["python", "-c", "print('ok')", "api.good.com"])
+
+
+@pytest.mark.parametrize(
+    "command", [["cat", "README.md"], ["python3", "script.py"], ["git", "add", "file.py"]]
+)
+def test_filename_arguments_are_not_network_destinations(command: list[str]) -> None:
+    manager = SandboxNetworkManager(EgressProxy(resolver=_resolver))
+    assert manager.extract_network_targets(command) == []
+    assert not manager.command_attempts_network(command)
+
+
+@pytest.mark.parametrize("executable", ["curl", "wget", "/usr/bin/curl"])
+def test_network_executable_bare_host_still_requires_authorization(executable: str) -> None:
+    manager = SandboxNetworkManager(EgressProxy(resolver=_resolver))
+    command = [executable, "api.good.com"]
+    assert manager.extract_network_targets(command) == ["https://api.good.com/"]
+    assert manager.command_attempts_network(command)
 
 
 def test_m6_network_revalidate_requests_propagates_revalidation_reason(monkeypatch) -> None:
