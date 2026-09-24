@@ -1536,6 +1536,79 @@ async def test_m1_structured_note_create_rejects_instruction_like_content_via_me
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "when", ["in ten minutes", "in half an hour", "tomorrow morning", "at 25:00"]
+)
+async def test_reminder_invalid_time_explains_format_without_creating_task(when: str) -> None:
+    class Handler:
+        async def do_task_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            pytest.fail("An invalid time must not create a scheduled task")
+
+    session = Session(
+        id=SessionId("reminder-time"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    result = await _structured_reminder_create(
+        Handler(),
+        {"message": "check results", "when": when},
+        StructuredToolContext(
+            session_id=session.id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            session=session,
+        ),
+    )
+    assert result["ok"] is False
+    assert result["error"] in {"reminder_time_unsupported", "reminder_time_invalid"}
+    assert "No reminder was created" in result["message"]
+    assert "in 10 minutes" in result["next_action"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "when,expected_seconds",
+    [
+        ("in 10 minutes", 600),
+        ("in 600 seconds", 600),
+        ("in 1800 seconds", 1800),
+        ("in 90 seconds", 90),
+    ],
+)
+async def test_reminder_normalized_durations_schedule_exactly_once(
+    when: str, expected_seconds: int
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    class Handler:
+        async def do_task_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.append(payload)
+            return {"id": "task-1"}
+
+    session = Session(
+        id=SessionId("reminder-time"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    result = await _structured_reminder_create(
+        Handler(),
+        {"message": "check results", "when": when},
+        StructuredToolContext(
+            session_id=session.id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            session=session,
+        ),
+    )
+    assert result["ok"] is True
+    assert len(captured) == 1
+    assert captured[0]["schedule"]["expression"] == f"{expected_seconds}s"
+    assert captured[0]["max_runs"] == 1
+
+
+@pytest.mark.asyncio
 async def test_m1_structured_reminder_create_tolerates_null_optional_name() -> None:
     captured: dict[str, Any] = {}
 

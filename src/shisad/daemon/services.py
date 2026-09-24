@@ -2677,7 +2677,12 @@ def _build_tool_registry(
             name=ToolName("reminder.create"),
             description=(
                 "Schedule a one-time reminder. Use this when the user asks to remind them later. "
-                "Use `when` like `in 2 minutes`, `in 30 seconds`, or `at 3pm`."
+                "Call only after the user has supplied a definite delivery time. If they say "
+                "only 'later' or otherwise leave the time unspecified, ask when and do not "
+                "call this tool yet. Never choose a default delay or reuse an unrelated "
+                "reminder's time. This tool creates one delivery, not a recurring schedule. "
+                "Interpret the user's requested time and normalize it into the supported "
+                "`when` format before calling this tool."
             ),
             parameters=[
                 ToolParameter(
@@ -2689,7 +2694,15 @@ def _build_tool_registry(
                 ToolParameter(
                     name="when",
                     type="string",
-                    description="Natural-language delivery time such as `in 2 minutes`.",
+                    description=(
+                        "Normalized delivery time: `in <positive integer> seconds`, "
+                        "`in <positive integer> minutes`, `in <positive integer> hours`, "
+                        "a UTC clock time such as `at 3pm`, or an ISO 8601 datetime. "
+                        "Convert written numbers and compound or fractional durations yourself: "
+                        "'ten minutes' becomes `in 10 minutes`; 'half an hour' becomes "
+                        "`in 1800 seconds`; 'one minute and thirty seconds' becomes "
+                        "`in 90 seconds`. Ask the user if the requested time is ambiguous."
+                    ),
                     required=True,
                 ),
                 ToolParameter(

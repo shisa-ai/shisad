@@ -1396,7 +1396,16 @@ async def _structured_reminder_create(
     try:
         delay_seconds = _parse_reminder_delay_seconds(when, now=datetime.now(UTC))
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "message": "The reminder time could not be parsed. No reminder was created.",
+            "next_action": (
+                "Normalize the requested time to a numeric duration such as `in 10 minutes` "
+                "or `in 90 seconds`, a UTC clock time such as `at 3pm`, or an ISO 8601 "
+                "datetime. Ask the user if the intended time is ambiguous."
+            ),
+        }
     delivery_target = _resolve_session_delivery_target(
         context.session,
         session_id=context.session_id,
