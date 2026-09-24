@@ -7948,6 +7948,27 @@ class HandlerImplementation(
         raw_output = "\n".join(
             segment for segment in [sandbox_result.stdout, sandbox_result.stderr] if segment
         ).strip()
+        error = ""
+        if not success:
+            error = sandbox_result.reason or (
+                "sandbox_execution_timed_out"
+                if sandbox_result.timed_out
+                else "sandbox_execution_failed"
+            )
+            # A failed command may have no stdout/stderr. Preserve its outcome as
+            # tool evidence so confirmation and subsequent conversation can use it.
+            raw_output = json.dumps(
+                {
+                    "error": error,
+                    "next_action": sandbox_result.next_action,
+                    "allowed": sandbox_result.allowed,
+                    "exit_code": sandbox_result.exit_code,
+                    "timed_out": sandbox_result.timed_out,
+                    "stdout": sandbox_result.stdout,
+                    "stderr": sandbox_result.stderr,
+                },
+                ensure_ascii=True,
+            )
         return ApprovedToolExecutionResult(
             success=success,
             checkpoint_id=checkpoint_id,
@@ -7964,6 +7985,7 @@ class HandlerImplementation(
             if raw_output
             else None,
             sandbox_result=sandbox_result,
+            error=error,
         )
 
     @staticmethod

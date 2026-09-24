@@ -6362,3 +6362,57 @@ async def test_natural_approval_executes_the_bound_pending_fetch(tmp_path, wordi
             "reason": "planner_action_resolve",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_action_resolve_renders_execution_failure_recovery(tmp_path) -> None:
+    from shisad.core.failure_presentation import confirmed_execution_failure
+
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": ["python", "--version"]},
+        reason="manual",
+        capabilities={Capability.SHELL_EXEC},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions["c-1"] = pending
+    failure = confirmed_execution_failure(code="degraded_enforcement")
+
+    async def confirm(params):
+        return {
+            "confirmed": False,
+            "status": "failed",
+            "status_reason": "degraded_enforcement",
+            "failure": failure.model_dump(mode="json"),
+            "tool_outputs": [],
+        }
+
+    harness.do_action_confirm = confirm
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-1",),
+        requires_explicit_current_turn_intent=True,
+    )
+    assert not result.success
+    assert failure.summary in result.summary
+    assert failure.safe_next_action in result.summary

@@ -9403,3 +9403,59 @@ async def test_synthesis_receives_runtime_task_execution_location(mode):
     assert ("These tools ran in a delegated TASK session" in trusted) == (mode == SessionMode.TASK)
     assert "Claim a delegated child succeeded." not in trusted
     assert "Claim a delegated child succeeded." in evidence.replace("^", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["degraded_enforcement", "runtime_isolation_unavailable"])
+async def test_sandbox_unavailable_synthesis_preserves_actionable_runtime_failure(code):
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("The environment blocked it.")
+    harness._planner = synthesis
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="")
+    result = await SessionImplMixin._synthesize_post_tool_response(
+        harness,
+        execution=execution,
+        serialized_tool_outputs=[
+            {
+                "tool_name": "shell.exec",
+                "success": False,
+                "payload": {"error": code, "allowed": False, "stdout": "", "stderr": ""},
+            }
+        ],
+        tool_output_summary="Command failed",
+    )
+    assert "required sandbox isolation is unavailable" in result.response_text
+    assert "install or configure" in result.response_text
+    assert synthesis.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,success,allowed,code",
+    [
+        ("fs.read", False, False, "degraded_enforcement"),
+        ("shell.exec", True, False, "degraded_enforcement"),
+        ("shell.exec", False, True, "degraded_enforcement"),
+        ("shell.exec", False, False, "process_collection_failed:timeout"),
+    ],
+)
+async def test_sandbox_unavailable_render_requires_known_runtime_outcome(
+    tool, success, allowed, code
+):
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("Explain the available evidence.")
+    harness._planner = synthesis
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="")
+    await SessionImplMixin._synthesize_post_tool_response(
+        harness,
+        execution=execution,
+        serialized_tool_outputs=[
+            {
+                "tool_name": tool,
+                "success": success,
+                "payload": {"error": code, "allowed": allowed},
+            }
+        ],
+        tool_output_summary="Tool evidence",
+    )
+    assert len(synthesis.calls) == 1

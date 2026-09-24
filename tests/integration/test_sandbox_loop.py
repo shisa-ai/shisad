@@ -654,6 +654,14 @@ async def test_m3_rt5_security_critical_fail_closed_path(model_env: None, tmp_pa
             if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
         ]
         assert "degraded_enforcement" in reasons
+        assert confirmed["status_reason"] == "degraded_enforcement"
+        assert confirmed["failure"]["code"] == "degraded_enforcement"
+        assert "sandbox" in confirmed["failure"]["safe_next_action"]
+        outputs = confirmed["tool_outputs"]
+        assert len(outputs) == 1
+        assert outputs[0]["success"] is False
+        assert outputs[0]["payload"]["error"] == "degraded_enforcement"
+        assert "configure" in outputs[0]["payload"]["next_action"]
     finally:
         await _shutdown(daemon_task, client)
 

@@ -157,6 +157,24 @@ def execution_failure(
             operator_diagnostics=operator_diagnostics or code,
         )
 
+    if code in {"degraded_enforcement", "runtime_isolation_unavailable"}:
+        subject = "the command" if approved_prefix else "The command"
+        return UserFacingFailure(
+            code=code,
+            summary=(
+                f"{approved_prefix}{subject} didn't run because required sandbox "
+                "isolation is unavailable."
+            ),
+            retryable=False,
+            safe_next_action=(
+                "Have the operator install or configure the requested sandbox backend, "
+                "then request another attempt."
+            ),
+            approval_outcome=approval_outcome,
+            execution_outcome="failed",
+            operator_diagnostics=operator_diagnostics or code,
+        )
+
     if code == "web_search_backend_unconfigured":
         subject = "web search" if approved_prefix else "Web search"
         return UserFacingFailure(

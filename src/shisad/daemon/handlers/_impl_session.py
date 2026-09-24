@@ -12376,6 +12376,13 @@ class SessionImplMixin(HandlerMixinBase):
                         or "failed"
                     ).strip()
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
+                if not confirmed and result.get("failure") is not None:
+                    try:
+                        failure = UserFacingFailure.model_validate(result["failure"])
+                    except ValidationError:
+                        logger.warning("Ignoring invalid action confirmation failure envelope")
+                    else:
+                        outcome_lines.append(render_user_facing_failure(failure))
             else:
                 allowed_channel_principals = list(pending.allowed_channel_principals)
                 if (
@@ -14879,6 +14886,24 @@ class SessionImplMixin(HandlerMixinBase):
         tool_output_summary: str,
         preliminary_prose: str = "",
     ) -> PostToolSynthesisResult:
+        # This finite sandbox outcome already has an authoritative user-facing
+        # explanation. Do not let a summarizer omit the cause or recovery path.
+        if len(serialized_tool_outputs) == 1 and not preliminary_prose.strip():
+            record = serialized_tool_outputs[0]
+            payload = record.get("payload")
+            if (
+                record.get("tool_name") == "shell.exec"
+                and record.get("success") is False
+                and isinstance(payload, Mapping)
+                and payload.get("allowed") is False
+                and payload.get("error")
+                in {"degraded_enforcement", "runtime_isolation_unavailable"}
+            ):
+                return PostToolSynthesisResult(
+                    response_text=render_user_facing_failure(
+                        execution_failure(code=str(payload["error"]))
+                    )
+                )
         planner_dispatch = execution.planner_dispatch
         planner_context = planner_dispatch.planner_context
         validated = planner_context.validated

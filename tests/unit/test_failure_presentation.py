@@ -143,3 +143,13 @@ def test_i4_renderer_supports_a_single_safe_summary() -> None:
     failure = UserFacingFailure(code="safe_summary_only", summary="Safe summary.")
 
     assert render_user_facing_failure(failure) == "Safe summary."
+
+
+def test_sandbox_failure_explains_missing_enforcement_without_inviting_retry() -> None:
+    failure = confirmed_execution_failure(code="degraded_enforcement")
+    assert failure.code == "degraded_enforcement"
+    assert failure.retryable is False
+    assert failure.approval_outcome == "accepted"
+    assert "didn't run" in failure.summary
+    assert "sandbox" in failure.summary
+    assert "configure" in failure.safe_next_action
