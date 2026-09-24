@@ -17,9 +17,10 @@ class AuthMode(StrEnum):
 
 
 class EndpointFamily(StrEnum):
-    """Supported OpenAI-compatible endpoint families in v0.3.4."""
+    """Supported provider endpoint families."""
 
     CHAT_COMPLETIONS = "chat_completions"
+    RESPONSES = "responses"
     EMBEDDINGS = "embeddings"
 
 

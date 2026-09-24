@@ -9,11 +9,20 @@ from urllib.parse import urlparse
 from shisad.core.providers.capabilities import EndpointFamily, RequestParameters
 
 PROFILE_OPENAI_CHAT_GENERAL = "openai_chat_general"
+PROFILE_OPENAI_RESPONSES = "openai_responses"
 PROFILE_OPENROUTER_CHAT = "openrouter_chat"
 PROFILE_GOOGLE_OPENAI_CHAT = "google_openai_chat"
 PROFILE_VLLM_CHAT = "vllm_chat"
 
 _PROFILE_ALLOWED_FIELDS: dict[str, set[str]] = {
+    PROFILE_OPENAI_RESPONSES: {
+        "temperature",
+        "max_tokens",
+        "max_completion_tokens",
+        "top_p",
+        "reasoning_effort",
+        "reasoning",
+    },
     PROFILE_OPENAI_CHAT_GENERAL: {
         "temperature",
         "max_tokens",
@@ -85,6 +94,9 @@ def apply_request_profile(
             raise RequestProfileError("embeddings endpoint does not accept chat request parameters")
         return RequestProfileEvaluation(payload={}, mapped_fields=[], rejected_fields=[])
 
+    if (endpoint_family == EndpointFamily.RESPONSES) != (profile_name == PROFILE_OPENAI_RESPONSES):
+        raise RequestProfileError("responses endpoint requires the openai_responses profile")
+
     allowed = _PROFILE_ALLOWED_FIELDS.get(profile_name)
     if allowed is None:
         raise RequestProfileError(f"unknown request-parameter profile: {profile_name}")
@@ -92,6 +104,23 @@ def apply_request_profile(
     for key in payload:
         if key not in allowed:
             raise RequestProfileError(f"field '{key}' is not allowed for profile '{profile_name}'")
+
+    if profile_name == PROFILE_OPENAI_RESPONSES:
+        limits = [payload[key] for key in ("max_tokens", "max_completion_tokens") if key in payload]
+        if len(set(limits)) > 1:
+            raise RequestProfileError("fields 'max_tokens' and 'max_completion_tokens' conflict")
+        for key in ("max_tokens", "max_completion_tokens"):
+            if key in payload:
+                payload["max_output_tokens"] = payload.pop(key)
+                mapped_fields.append(f"{key}->max_output_tokens")
+        reasoning = dict(payload.get("reasoning", {}))
+        if "budget_tokens" in reasoning:
+            raise RequestProfileError("Responses does not support reasoning.budget_tokens")
+        if "reasoning_effort" in payload:
+            reasoning["effort"] = payload.pop("reasoning_effort")
+            mapped_fields.append("reasoning_effort->reasoning.effort")
+        if reasoning:
+            payload["reasoning"] = reasoning
 
     if profile_name == PROFILE_OPENAI_CHAT_GENERAL and "max_tokens" in payload:
         legacy_max_tokens = payload["max_tokens"]
@@ -147,6 +176,12 @@ def auto_select_request_profile(
             profile_name=explicit_profile,
             source="route_override",
             reason="explicit route profile",
+        )
+    if endpoint_family == EndpointFamily.RESPONSES:
+        return ProfileSelection(
+            profile_name=PROFILE_OPENAI_RESPONSES,
+            source="endpoint_family_fallback",
+            reason="Responses endpoint",
         )
     if preset_default_profile:
         return ProfileSelection(

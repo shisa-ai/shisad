@@ -16,6 +16,7 @@ from shisad.core.providers.base import (
 )
 from shisad.core.providers.capabilities import AuthMode, EndpointFamily
 from shisad.core.providers.local_planner import LocalPlannerProvider
+from shisad.core.providers.responses import OpenAIResponsesProvider
 from shisad.core.providers.routing import ModelComponent, ModelRoute, ModelRouter
 from shisad.core.readiness import (
     ReadinessStatus,
@@ -145,12 +146,16 @@ class RoutedOpenAIProvider:
         if not route.remote_enabled:
             return None
 
-        if (
-            route.component in {ModelComponent.PLANNER, ModelComponent.MONITOR}
-            and route.endpoint_family != EndpointFamily.CHAT_COMPLETIONS
-        ):
+        if route.component in {
+            ModelComponent.PLANNER,
+            ModelComponent.MONITOR,
+        } and route.endpoint_family not in {
+            EndpointFamily.CHAT_COMPLETIONS,
+            EndpointFamily.RESPONSES,
+        }:
             raise ValueError(
-                f"{route.component.value} route endpoint_family must be chat_completions"
+                f"{route.component.value} route endpoint_family must be "
+                "chat_completions or responses"
             )
         if (
             route.component == ModelComponent.EMBEDDINGS
@@ -177,7 +182,12 @@ class RoutedOpenAIProvider:
                 return None
             headers[route.auth_header_name] = resolved_key
 
-        return OpenAICompatibleProvider(
+        provider_class = (
+            OpenAIResponsesProvider
+            if route.endpoint_family == EndpointFamily.RESPONSES
+            else OpenAICompatibleProvider
+        )
+        return provider_class(
             base_url=route.base_url,
             model_id=route.model_id,
             headers=headers,

@@ -653,6 +653,10 @@ Monitor route:
 Notes:
 
 - `*_EXTRA_HEADERS`, `*_CAPABILITIES`, and `*_REQUEST_PARAMETERS` are JSON-object fields.
+- Planner and monitor `*_ENDPOINT_FAMILY` accept `chat_completions` (the default)
+  or `responses`. Embeddings use `embeddings`. Selecting `responses` automatically
+  selects the `openai_responses` parameter profile unless an explicit profile is
+  configured; incompatible profiles fail configuration validation.
 - `*_CAPABILITIES` accepts `context_window_tokens` when the route's total
   context capacity is known and `output_reserve_tokens` (default `1024`). The
   exact remote `shisa_default` planner endpoint/model resolves to a
@@ -685,6 +689,43 @@ Notes:
   evidence only; a present key is `configured`, not authenticated or verified.
   Run `shisad doctor check --component provider --live` for the opt-in bounded
   planner probe. Use `--timeout` to select a value from 0.1 to 10 seconds.
+
+### Responses API
+
+Use the Responses endpoint when your model requires it for function tools.
+For example, GPT-6 Luna with reasoning enabled requires Responses for tool
+calling; see the [model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna).
+With `OPENAI_API_KEY` configured, the corresponding TOML settings are:
+
+```toml
+[model]
+planner_provider_preset = "openai_default"
+planner_model_id = "gpt-6-luna"
+planner_endpoint_family = "responses"
+monitor_provider_preset = "openai_default"
+monitor_model_id = "gpt-6-luna"
+monitor_endpoint_family = "responses"
+
+[model.planner_request_parameters]
+reasoning_effort = "medium"
+
+[model.monitor_request_parameters]
+reasoning_effort = "medium"
+```
+
+The adapter supports text and Shisad's function tools. Tool execution still
+passes through Shisad's normal policy and approval checks. Requests use
+`store=false` and send the context supplied by Shisad; they do not use
+provider-side conversation IDs or retain reasoning items between calls.
+Streaming and provider-hosted tools are not supported by this adapter.
+
+`reasoning_effort` maps to `reasoning.effort`; `max_tokens` or
+`max_completion_tokens` maps to `max_output_tokens` (including reasoning tokens).
+Conflicting limits, frequency/presence penalties, and `reasoning.budget_tokens`
+are rejected for this endpoint. Model-specific restrictions on otherwise
+supported parameters still apply. The monitor's JSON mode uses `text.format`.
+Incomplete or failed responses cannot supply executable tool calls. Existing
+authentication, endpoint restrictions, and provider-failure handling apply.
 
 ## Direct Env Reads Outside `BaseSettings`
 

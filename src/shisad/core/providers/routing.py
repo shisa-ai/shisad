@@ -444,9 +444,9 @@ class ModelRouter:
         endpoint_family: EndpointFamily,
     ) -> None:
         if component in {ModelComponent.PLANNER, ModelComponent.MONITOR}:
-            if endpoint_family != EndpointFamily.CHAT_COMPLETIONS:
+            if endpoint_family not in {EndpointFamily.CHAT_COMPLETIONS, EndpointFamily.RESPONSES}:
                 raise ValueError(
-                    f"{component.value}_endpoint_family must be chat_completions in v0.3.4"
+                    f"{component.value}_endpoint_family must be chat_completions or responses"
                 )
             return
         if endpoint_family != EndpointFamily.EMBEDDINGS:
