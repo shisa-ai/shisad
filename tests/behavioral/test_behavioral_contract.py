@@ -6831,7 +6831,15 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
 @pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from shisad.core.reminder_time_review import ReminderTimeDecision, ReminderTimeReviewer
+
+    async def review_time(self, **kwargs):
+        assert "in 1 second" in kwargs["user_request"]
+        return ReminderTimeDecision(status="specified", source="user_request", quote="in 1 second")
+
+    monkeypatch.setattr(ReminderTimeReviewer, "review", review_time)
     sid = await _create_session(contract_harness.client)
 
     created = await contract_harness.client.call(

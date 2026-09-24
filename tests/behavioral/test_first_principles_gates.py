@@ -340,6 +340,13 @@ async def test_current_turn_reminder_create_uses_structural_authority(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    from shisad.core.reminder_time_review import ReminderTimeDecision, ReminderTimeReviewer
+
+    async def review_time(self, **kwargs):
+        assert kwargs["user_request"] in reminder_arguments
+        return ReminderTimeDecision(status="specified", source="user_request", quote="in 2 min")
+
+    monkeypatch.setattr(ReminderTimeReviewer, "review", review_time)
     monkeypatch.setattr(LocalPlannerProvider, "complete", _current_turn_complete, raising=True)
     sid = await _create_session(clean_harness.client)
     for index in range(4):

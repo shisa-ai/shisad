@@ -96,6 +96,15 @@ from shisad.core.planner import (
     PlannerResult,
 )
 from shisad.core.providers.base import ProviderContextCapacityError
+from shisad.core.reminder_time_review import (
+    CLARIFICATION as REMINDER_TIME_CLARIFICATION,
+)
+from shisad.core.reminder_time_review import (
+    UNAVAILABLE as REMINDER_TIME_UNAVAILABLE,
+)
+from shisad.core.reminder_time_review import (
+    ReminderTimeReviewer,
+)
 from shisad.core.session import Session, SessionRehydrateError
 from shisad.core.session_archive import SessionArchiveError
 from shisad.core.tools.names import (
@@ -12952,6 +12961,17 @@ class SessionImplMixin(HandlerMixinBase):
                     getattr(self._services, "browser_status", {}),
                     tool_name=proposal_tool_name,
                 )
+            if not final_reason and proposal_tool_name == "reminder.create":
+                time_decision = await ReminderTimeReviewer(
+                    provider=self._services.monitor_provider,
+                    firewall=self._firewall,
+                ).review(
+                    user_request=validated.firewall_result.sanitized_text,
+                    user_context=planner_context.trusted_same_session_user_context,
+                    arguments=proposal.arguments,
+                )
+                if time_decision.status != "specified":
+                    final_reason = f"reminder_time_{time_decision.status}"
             if final_reason:
                 rejected += 1
                 _record_rejected_tool_name(proposal_tool_name)
@@ -15838,6 +15858,22 @@ class SessionImplMixin(HandlerMixinBase):
             and planner_dispatch.incident_review.decision.verdict == "unresolved"
         ):
             response_text = f"{response_text}\n\n{CONTAINMENT_MESSAGE}".strip()
+
+        reminder_time_feedback = ""
+        if any(
+            reason in {"reminder_time_missing", "reminder_time_ambiguous"}
+            for reason in execution.rejection_reasons_for_user
+        ):
+            reminder_time_feedback = REMINDER_TIME_CLARIFICATION
+        elif "reminder_time_unresolved" in execution.rejection_reasons_for_user:
+            reminder_time_feedback = REMINDER_TIME_UNAVAILABLE
+        if reminder_time_feedback:
+            if not execution.executed_tool_outputs and not execution.pending_confirmation:
+                response_text = reminder_time_feedback
+                protected_tool_output_start = None
+                protected_tool_output_end = None
+            else:
+                response_text = f"{response_text}\n\n{reminder_time_feedback}"
 
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:

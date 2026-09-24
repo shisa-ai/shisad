@@ -727,6 +727,14 @@ async def test_reminder_current_turn_integration_uses_structural_taint_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from shisad.core.reminder_time_review import ReminderTimeDecision, ReminderTimeReviewer
+
+    async def review_time(self, **kwargs):
+        assert "archive credentials" not in kwargs["user_context"]
+        # Even an incorrect semantic verdict must not authorize an unbound action.
+        return ReminderTimeDecision(status="specified", source="user_request", quote="in 2 minutes")
+
+    monkeypatch.setattr(ReminderTimeReviewer, "review", review_time)
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")

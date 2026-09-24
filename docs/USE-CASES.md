@@ -208,7 +208,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Aspect | Status |
 |--------|--------|
 | **shisad support** | Present: planner-visible `reminder.create` + scheduler pump + scoped channel delivery path |
-| **Gap** | None for basic reminders. Natural language time parsing works via LLM. |
+| **Timing** | The planner normalizes natural-language times. Before a chat proposal proceeds, a separate tool-free MONITOR call checks its time against the user request and available authenticated same-session user context. Missing or ambiguous times require clarification; a follow-up can supply the time. An explicit user default can apply, but an unrelated earlier reminder does not establish one. |
+| **Availability** | Reminder time review requires a configured, working MONITOR provider. If review fails, the reminder is withheld with retry/configuration guidance; the session remains usable. Prior-user context currently uses the clean CLI transcript path; other channels may need the full timing request repeated. |
 | **Security notes** | Reminders execute under capability snapshot captured at creation time. No post-schedule privilege escalation. |
 
 #### 4.2 Create Reminders for Other People
