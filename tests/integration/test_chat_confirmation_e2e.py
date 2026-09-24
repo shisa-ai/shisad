@@ -269,6 +269,7 @@ def _resolve_arguments_for_chat_confirmation(content: str) -> dict[str, str] | N
         "go ahead",
         "confirm 1",
         "confirm 1 please",
+        "please approve the pending retrieval of the project roadmap.",
         "1",
     }:
         return {"decision": "confirm", "target": "1", "scope": "one"}
@@ -525,9 +526,13 @@ async def test_lt2_session_message_confirmation_commands_use_planner_action_reso
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wording", ["yes", "Please approve the pending retrieval of the project roadmap."]
+)
 async def test_m6_crc_chat_yes_resolves_pending_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    wording: str,
 ) -> None:
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
@@ -535,6 +540,30 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
     planner_calls: list[str] = []
     _install_retrieve_action_resolve_planner(monkeypatch, planner_calls=planner_calls)
+
+    from shisad.core.providers.base import Message, ProviderResponse
+    from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
+
+    async def review_intent(self, messages, tools=None):
+        assert tools is None
+        packet = json.loads(messages[1].content)
+        assert packet["user_request"] == wording
+        assert len(packet["pending"]) == 1
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=json.dumps(
+                    {
+                        "decision": "confirm",
+                        "scope": "one",
+                        "quote": wording,
+                        "target": packet["pending"][0]["confirmation_id"],
+                    }
+                ),
+            )
+        )
+
+    monkeypatch.setattr(MonitorProviderAdapter, "complete", review_intent)
 
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(
@@ -596,7 +625,7 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "yes",
+                "content": wording,
             },
         )
         assert "control api" not in str(second.get("response", "")).lower()

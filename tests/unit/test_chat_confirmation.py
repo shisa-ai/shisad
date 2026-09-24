@@ -6263,3 +6263,102 @@ async def test_u9_chat_totp_confirm_id_code_rejects_unknown_confirmation_id(tmp_
     assert "c-2" in response
     assert harness.confirm_calls == []
     assert result["pending_confirmation_ids"] == ["c-1", "c-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wording, rotate_nonce",
+    [
+        ("confirm 1", False),
+        ("Approve the pending fetch of https://www.iana.org/help/example-domains.", False),
+        ("Approve the pending fetch of https://www.iana.org/help/example-domains.", True),
+    ],
+)
+async def test_natural_approval_executes_the_bound_pending_fetch(tmp_path, wording, rotate_nonce):
+    from shisad.core.providers.base import Message, ProviderResponse
+    from shisad.security.firewall import ContentFirewall
+
+    class IntentProvider:
+        async def complete(self, messages, tools=None):
+            assert tools is None
+            packet = json.loads(messages[1].content)
+            assert packet["user_request"] == wording
+            assert len(packet["pending"]) == 1
+            assert packet["pending"][0]["confirmation_id"] == "c-fetch"
+            if rotate_nonce:
+                harness._pending_actions["c-fetch"].decision_nonce = "replacement-nonce"
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=json.dumps(
+                        {
+                            "decision": "confirm",
+                            "target": "c-fetch",
+                            "scope": "one",
+                            "quote": wording,
+                        }
+                    ),
+                )
+            )
+
+    harness = _ChatConfirmationHarness(tmp_path)
+    harness._services = SimpleNamespace(monitor_provider=IntentProvider())
+    harness._firewall = ContentFirewall()
+    harness._pending_actions["c-fetch"] = PendingAction(
+        confirmation_id="c-fetch",
+        decision_nonce="nonce-fetch",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://www.iana.org/help/example-domains"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    # Neither another owner's action nor an action absent from the frozen snapshot
+    # may enter the reviewer packet, even if the planner proposes it.
+    for cid, owner in (("c-foreign", "bob"), ("c-later", "alice")):
+        harness._pending_actions[cid] = PendingAction(
+            confirmation_id=cid,
+            decision_nonce="other-nonce",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId(owner),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": "https://example.com"},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC),
+        )
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text=wording, original_hash="0" * 64),
+    )
+    result = await harness._execute_planner_action_resolve(
+        validated=validated,
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-fetch",),
+        requires_explicit_current_turn_intent=True,
+    )
+    if rotate_nonce:
+        assert not result.success
+        assert harness.confirm_calls == []
+        assert result.rejection_reasons == ["action_resolve_pending_snapshot_changed"]
+        return
+    assert result.success, result.rejection_reasons
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-fetch",
+            "decision_nonce": "nonce-fetch",
+            "reason": "planner_action_resolve",
+        }
+    ]

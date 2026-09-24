@@ -72,6 +72,14 @@ audit trails. Use the level that matches the risk of the action.
 5. The daemon verifies your proof, records it in the audit trail, and executes
    the action.
 
+In trusted command chat, you can name the pending action in ordinary language,
+for example “Approve the pending fetch of https://example.com.” Natural wording
+uses the configured monitor model to check the current message against the
+visible pending actions. If the request is ambiguous or that check is unavailable,
+the action stays pending. Use `confirm N` or `reject N` with the displayed number
+to use exact command syntax without this additional interpretation step. Required
+approval proofs, expiry, and policy checks still apply to either form.
+
 If you do not respond before the timeout, the action is denied (fail-closed).
 The supported pending-action lifetime is 1 hour by default. A policy may set a
 shorter or longer `timeout_seconds`, but the effective lifetime is capped at 24

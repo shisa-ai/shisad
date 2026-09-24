@@ -39,6 +39,7 @@ from shisad.core.approval import (
     ConfirmationLevel,
     ConfirmationRequirement,
 )
+from shisad.core.approval_intent import ApprovalIntentReviewer, parse_approval_command
 from shisad.core.clock import current_time_frontmatter_lines
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
@@ -12165,56 +12166,50 @@ class SessionImplMixin(HandlerMixinBase):
         decision = str(arguments.get("decision", "")).strip().lower()
         scope = str(arguments.get("scope", "one") or "one").strip().lower()
         target = str(arguments.get("target", "")).strip()
+        reviewed_nonces: dict[str, str] | None = None
         if requires_explicit_current_turn_intent:
-            intent, explicit_target_id = _classify_action_resolve_current_turn_intent(
-                validated.firewall_result.sanitized_text
-            )
-            if intent.action == "none":
+            user_request = validated.firewall_result.sanitized_text
+            intent = parse_approval_command(user_request, pending_action_binding_ids)
+            if intent is None:
+                visible = _visible_pending_rows_for_validated_turn(
+                    pending_rows=self._pending_confirmations_for_binding(
+                        session_id=validated.sid,
+                        user_id=validated.user_id,
+                        workspace_id=validated.workspace_id,
+                    ),
+                    validated=validated,
+                )
+                by_id = {str(row.confirmation_id): row for row in visible}
+                reviewed_nonces = {
+                    cid: str(by_id[cid].decision_nonce)
+                    for cid in pending_action_binding_ids
+                    if cid in by_id
+                }
+                pending = [
+                    {
+                        "confirmation_id": cid,
+                        "index": index,
+                        "tool_name": str(by_id[cid].tool_name),
+                        "arguments": dict(by_id[cid].arguments),
+                    }
+                    for index, cid in enumerate(pending_action_binding_ids, 1)
+                    if cid in by_id
+                ]
+                intent = await ApprovalIntentReviewer(
+                    provider=getattr(getattr(self, "_services", None), "monitor_provider", None),
+                    firewall=self._firewall,
+                ).review(user_request=user_request, pending=pending)
+            if intent.decision not in {"confirm", "reject"}:
                 return PlannerActionResolveResult(
                     rejected=1,
                     rejection_reasons=["action_resolve_requires_explicit_current_turn_intent"],
                     summary=(
-                        "action.resolve rejected: explicit current-turn confirmation "
-                        "intent required"
+                        "I couldn't verify which pending action you want to approve or reject. "
+                        "Nothing was approved or rejected. Please specify the action, or use "
+                        "'confirm N' or 'reject N'. If this persists, check the monitor provider."
                     ),
                 )
-            if intent.target == "all":
-                decision = intent.action
-                scope = "all"
-                target = "all"
-            elif intent.target == "index":
-                decision = intent.action
-                scope = "one"
-                target = str(intent.index)
-            elif intent.target == "id":
-                if not explicit_target_id:
-                    return PlannerActionResolveResult(
-                        rejected=1,
-                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
-                        summary="action.resolve rejected: current-turn target mismatch",
-                    )
-                decision = intent.action
-                scope = "one"
-                target = explicit_target_id
-            elif intent.target == "single":
-                if len([item for item in pending_action_binding_ids if str(item).strip()]) != 1:
-                    return PlannerActionResolveResult(
-                        rejected=1,
-                        rejection_reasons=["action_resolve_ambiguous_current_turn_intent"],
-                        summary="action.resolve rejected: ambiguous current-turn intent",
-                    )
-                decision = intent.action
-                scope = "one"
-                target = str(pending_action_binding_ids[0]).strip()
-            else:
-                return PlannerActionResolveResult(
-                    rejected=1,
-                    rejection_reasons=["action_resolve_requires_explicit_current_turn_intent"],
-                    summary=(
-                        "action.resolve rejected: explicit current-turn confirmation "
-                        "intent required"
-                    ),
-                )
+            decision, scope, target = intent.decision, intent.scope, intent.target
             arguments = {**dict(arguments), "decision": decision, "scope": scope, "target": target}
         selected_rows, target_error = self._resolve_planner_action_resolve_targets(
             validated=validated,
@@ -12231,6 +12226,16 @@ class SessionImplMixin(HandlerMixinBase):
                     if target_error == "tainted_session_requires_individual_approval"
                     else f"action.resolve rejected: {target_error}"
                 ),
+            )
+
+        if reviewed_nonces is not None and any(
+            reviewed_nonces.get(str(row.confirmation_id)) != str(row.decision_nonce)
+            for row in selected_rows
+        ):
+            return PlannerActionResolveResult(
+                rejected=1,
+                rejection_reasons=["action_resolve_pending_snapshot_changed"],
+                summary="The pending action changed during review. Please review it again.",
             )
 
         effective_delivery_target = getattr(validated, "delivery_target", None)
@@ -12289,7 +12294,11 @@ class SessionImplMixin(HandlerMixinBase):
 
             payload = {
                 "confirmation_id": confirmation_id,
-                "decision_nonce": str(getattr(pending, "decision_nonce", "")).strip(),
+                "decision_nonce": (
+                    reviewed_nonces[confirmation_id]
+                    if reviewed_nonces is not None
+                    else str(getattr(pending, "decision_nonce", "")).strip()
+                ),
                 "reason": "planner_action_resolve",
             }
             if decision == "confirm":
