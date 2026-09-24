@@ -2967,9 +2967,17 @@ def _normalize_reported_task_path(raw: Any) -> str | None:
     return value
 
 
+_TASK_FILE_WRITE_TOOLS = frozenset({"file.write", "fs.write", "coding_agent.write"})
+
+
 def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) -> tuple[str, ...]:
     files: list[str] = []
     for record in records:
+        if (
+            record.get("success") is not True
+            or str(record.get("tool_name", "")).strip() not in _TASK_FILE_WRITE_TOOLS
+        ):
+            continue
         payload = record.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -3003,7 +3011,7 @@ def _task_write_activity_count(
     write_tool_outputs = 0
     for record in serialized_tool_outputs:
         tool_name = str(record.get("tool_name", "")).strip()
-        if tool_name in {"file.write", "fs.write", "coding_agent.write"}:
+        if tool_name in _TASK_FILE_WRITE_TOOLS:
             write_tool_outputs += 1
     return max(reported, write_tool_outputs)
 
@@ -14884,14 +14892,23 @@ class SessionImplMixin(HandlerMixinBase):
             preliminary_prose=preliminary_prose,
         )
         has_preliminary_prose = bool(str(preliminary_prose or "").strip())
+        execution_location = (
+            "These tools ran in a delegated TASK session created by the runtime. "
+            "This establishes delegated execution, not successful completion or further delegation."
+            if validated.session_mode == SessionMode.TASK
+            else "These tools ran in the current session; their results do not establish "
+            "execution in a separate delegated task."
+        )
         synthesis_input = build_planner_input_v2(
             trusted_instructions=(
                 "POST-TOOL SYNTHESIS PASS\n"
                 "Runtime signals: "
+                f"execution_session_mode={validated.session_mode.value}; "
                 f"tool_output_count={len(serialized_tool_outputs)}; "
                 "tool_execution_phase=completed; "
                 "initial_assistant_response_present="
                 f"{'yes' if has_preliminary_prose else 'no'}.\n"
+                f"{execution_location}\n"
                 "The previous planner step executed tools. Produce the final assistant "
                 "answer now.\n"
                 "Use the authenticated USER REQUEST plus the DATA EVIDENCE from this same "
@@ -16709,7 +16726,9 @@ class SessionImplMixin(HandlerMixinBase):
             ),
             user_goal="Assess whether the delegated task completed the original request.",
             untrusted_content=evidence_text,
-            encode_untrusted=True,
+            # The tool-free reviewer needs readable evidence. Spotlight boundaries,
+            # escaping and untrusted labels carry provenance; base64 is not authority.
+            encode_untrusted=False,
             trusted_context=(
                 "=== TASK RUNTIME SIGNALS (TRUSTED) ===\n"
                 "Runtime-derived metadata about the delegated task artifacts:\n"

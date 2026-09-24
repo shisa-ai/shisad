@@ -377,6 +377,7 @@ async def test_i2_post_tool_synthesis_projects_capacity_error() -> None:
         sid=SessionId("s-i2"),
         workspace_id=WorkspaceId("w-i2"),
         user_id=UserId("u-i2"),
+        session_mode=SessionMode.DEFAULT,
         trust_level="trusted",
     )
     harness = SimpleNamespace(
@@ -387,6 +388,9 @@ async def test_i2_post_tool_synthesis_projects_capacity_error() -> None:
         planner_dispatch=SimpleNamespace(
             planner_context=SimpleNamespace(
                 validated=validated,
+                trusted_same_session_user_context="",
+                conversation_context="",
+                memory_context="",
                 assistant_tone_override=None,
             )
         )
