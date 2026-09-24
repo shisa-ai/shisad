@@ -419,8 +419,10 @@ The validated response distinguishes an attempted attack from a need for caution
 lockdown. A benign finding preserves normal per-action enforcement. A confirmed
 incident can be contained without lockdown, or require caution. Review decisions,
 evidence hashes, and bound action IDs are recorded as `IncidentReviewed` events.
-A benign report that replaced the entire task permits one planner continuation;
-this is bounded and does not guarantee model correctness.
+When a report replaced the entire task, an explicit `continue` decision permits
+one planner continuation, including for a contained incident. The original
+request and context remain available, and every proposed action still passes
+through normal enforcement. This does not guarantee model correctness.
 
 If the monitor is unavailable, times out, or returns an invalid response, the
 runtime withholds the other proposals in that batch without queuing them for

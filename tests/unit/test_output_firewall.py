@@ -536,13 +536,31 @@ def test_gh34_entropy_detector_keeps_readable_rooted_technical_segment() -> None
         "/tmp/project/test_utf16_decoder.py",
     ],
 )
-def test_gh34_entropy_detector_keeps_rooted_readable_source_paths(path: str) -> None:
+@pytest.mark.parametrize("delimiter", ["", "`", "``", "```\n"])
+def test_gh34_entropy_detector_keeps_rooted_readable_source_paths(
+    path: str, delimiter: str
+) -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
 
-    result = firewall.inspect(f"path {path}")
+    result = firewall.inspect(f"path {delimiter}{path}{delimiter}")
 
     assert path in result.sanitized_text
     assert "high_entropy_secret" not in result.secret_findings
+
+
+@pytest.mark.parametrize("delimiter", ["`", "``", "```\n"])
+def test_markdown_path_delimiters_do_not_exempt_secrets(delimiter: str) -> None:
+    path = "/tmp/a1B2c3D4"
+    result = OutputFirewall(safe_domains=[]).inspect(f"{delimiter}{path}{delimiter}")
+    assert "a1B2c3D4" not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_markdown_readme_path_is_not_a_secret() -> None:
+    text = "I used **`/home/ubuntu/shisad/README.md`**."
+    result = OutputFirewall(safe_domains=[]).inspect(text)
+    assert result.sanitized_text == text
+    assert not result.secret_findings
 
 
 def test_gh34_entropy_detector_redacts_secret_like_technical_prefix_final_segment() -> None:

@@ -24,14 +24,18 @@ from tests.helpers.daemon import clear_remote_provider_env
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "verdict,escalation,report_only,already_caution",
+    "verdict,escalation,report_only,already_caution,deny_read",
     [
-        ("benign", "continue", False, False),
-        ("security_incident", "caution", False, False),
-        ("unavailable", "unresolved", False, False),
-        ("benign", "continue", True, False),
-        ("benign", "continue", False, True),
-        ("repeat", "unresolved", True, False),
+        ("benign", "continue", False, False, False),
+        ("security_incident", "caution", False, False, False),
+        ("unavailable", "unresolved", False, False, False),
+        ("benign", "continue", True, False, False),
+        ("security_incident", "continue", True, False, False),
+        ("security_incident", "continue", True, False, True),
+        ("benign", "continue", False, True, False),
+        ("repeat", "unresolved", True, False, False),
+        ("repeat_continue", "continue", True, False, False),
+        ("recall", "continue", True, False, False),
     ],
 )
 async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
@@ -41,13 +45,17 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
     escalation,
     report_only,
     already_caution,
+    deny_read,
 ):
     clear_remote_provider_env(monkeypatch)
     monkeypatch.setenv("SHISAD_ASSISTANT_FS_ROOTS", json.dumps([str(tmp_path)]))
     readme = tmp_path / "README.md"
     readme.write_text("Project: Coral Finch")
     policy = tmp_path / "policy.yaml"
-    policy.write_text('version: "1"\ndefault_require_confirmation: false\n')
+    policy.write_text(
+        'version: "1"\ndefault_require_confirmation: false\n'
+        + ("session_tool_allowlist: [report_anomaly]\n" if deny_read else "")
+    )
     services = await DaemonServices.build(
         DaemonConfig(
             data_dir=tmp_path / "data",
@@ -56,6 +64,14 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
         )
     )
     calls = 0
+    request = "What format do I prefer for reports?" if verdict == "recall" else "Read my README"
+    review_verdict = (
+        "benign"
+        if verdict.startswith("repeat")
+        else "security_incident"
+        if verdict == "recall"
+        else verdict
+    )
 
     class Reviewer:
         async def complete(self, messages, tools=None):
@@ -71,7 +87,7 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
                     content=json.dumps(
                         {
                             "version": 1,
-                            "verdict": "benign" if verdict == "repeat" else verdict,
+                            "verdict": review_verdict,
                             "escalation": "continue" if verdict == "repeat" else escalation,
                             "evidence_refs": ["context"],
                             "reason": "Evidence supports this decision.",
@@ -86,6 +102,20 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
     async def propose(self, user_content, context, **kwargs):
         nonlocal calls
         calls += 1
+        if "POST-TOOL SYNTHESIS PASS" in user_content:
+            assert "My report format is three concise bullet points" in user_content
+            if verdict == "recall":
+                return PlannerResult(
+                    output=PlannerOutput(
+                        actions=[],
+                        assistant_response="Three concise bullet points, from this conversation.",
+                    ),
+                    evaluated=[],
+                    attempts=1,
+                )
+        elif calls == 2 and report_only and verdict != "repeat":
+            assert request in user_content
+            assert "My report format is three concise bullet points" in user_content
         read = ActionProposal(
             action_id="read",
             tool_name=ToolName("fs.read"),
@@ -118,11 +148,19 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
         )
         if verdict == "repeat" and calls == 2:
             actions = [read, report]
+        if verdict == "repeat_continue" and calls >= 2:
+            assert calls == 2, "alarm recovery must stop after one continuation"
+            actions = [report]
+        if verdict == "recall" and calls == 2:
+            actions = []
         return PlannerResult(
-            output=PlannerOutput(actions=actions, assistant_response="ok"),
+            output=PlannerOutput(
+                actions=actions, assistant_response="" if verdict == "recall" else "ok"
+            ),
             evaluated=[
                 EvaluatedProposal(
-                    proposal=a, decision=PEPDecision(kind=PEPDecisionKind.ALLOW, reason="allowed")
+                    proposal=a,
+                    decision=PEPDecision(kind=PEPDecisionKind.ALLOW, reason="allowed"),
                 )
                 for a in actions
             ],
@@ -138,6 +176,12 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
             ctx,
         )
         sid = SessionId(created.session_id)
+        services.transcript_store.append(
+            sid,
+            role="user",
+            content="My report format is three concise bullet points",
+            metadata={"channel": "cli"},
+        )
         services.transcript_store.append(
             sid,
             role="assistant",
@@ -161,15 +205,27 @@ async def test_alarm_review_precedes_sibling_read_and_preserves_unrelated_turn(
             services.lockdown_manager.set_level(
                 sid, level=LockdownLevel.CAUTION, reason="existing incident"
             )
-        result = await send("Read my README")
+        result = await send(request)
+        if verdict == "recall":
+            assert result.response == "Three concise bullet points, from this conversation."
+            assert calls == 3  # Initial alarm, one continuation, final synthesis.
         reviews = services.audit_log.query(event_type="IncidentReviewed")
-        assert len(reviews) == (2 if verdict == "repeat" else 1)
+        assert len(reviews) == (2 if verdict.startswith("repeat") else 1)
         assert reviews[-1]["data"]["verdict"] == (
-            "unresolved" if verdict in {"unavailable", "repeat"} else verdict
+            "unresolved" if verdict in {"unavailable", "repeat"} else review_verdict
         )
         executions = services.audit_log.query(event_type="ToolExecuted")
         reads = [e for e in executions if e["data"]["tool_name"] == "fs.read"]
-        assert bool(reads) == (escalation == "continue")
+        assert bool(reads) == (
+            escalation == "continue"
+            and not deny_read
+            and verdict not in {"repeat_continue", "recall"}
+        )
+        if deny_read:
+            assert any(
+                e["data"]["tool_name"] == "fs.read"
+                for e in services.audit_log.query(event_type="ToolRejected")
+            )
         assert result.lockdown_level == (
             "caution" if escalation == "caution" or already_caution else "normal"
         )
