@@ -6439,8 +6439,6 @@ def _is_pending_confirmation_sibling_tool_output_entry(entry: TranscriptEntry) -
 def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntry) -> bool:
     if str(entry.role).strip().lower() != "user":
         return False
-    if entry.taint_labels:
-        return False
     if _transcript_entry_has_firewall_risk_metadata(entry):
         return False
     metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
@@ -6449,13 +6447,38 @@ def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntr
     channel = str(metadata.get("channel", "")).strip().lower()
     session_mode = str(metadata.get("session_mode", "")).strip().lower()
     trust_level = str(metadata.get("trust_level", "")).strip().lower()
-    if channel != "cli" or session_mode not in {"", SessionMode.DEFAULT.value}:
+    if session_mode not in {"", SessionMode.DEFAULT.value}:
         return False
-    if trust_level:
-        return _is_trusted_level(trust_level) or _is_trusted_cli_confirmation_level(trust_level)
-    # Older same-session transcript rows did not record trust_level. A clean CLI
-    # default-mode user row is still the authenticated user, not external data.
-    return True
+    if channel == "cli":
+        if entry.taint_labels:
+            return False
+        # Older clean CLI rows did not record trust_level.
+        return (
+            not trust_level
+            or _is_trusted_level(trust_level)
+            or _is_trusted_cli_confirmation_level(trust_level)
+        )
+    if channel not in {"telegram", "discord", "slack", "matrix"}:
+        return False
+    if not _is_trusted_level(trust_level) or metadata.get("trusted_input") is not True:
+        return False
+    target = metadata.get("delivery_target")
+    if not (
+        metadata.get("channel_message_id")
+        and isinstance(target, Mapping)
+        and target.get("channel") == channel
+        and target.get("recipient")
+    ):
+        return False
+    if not entry.taint_labels:
+        return True
+    # Before authenticated_channel_input was recorded, the session handler added
+    # UNTRUSTED to every channel turn, including clean verified-owner commands.
+    # Interpret only that legacy transport label; never rewrite stored evidence
+    # or remove labels emitted by the corrected ingress path.
+    return "authenticated_channel_input" not in metadata and set(entry.taint_labels) == {
+        TaintLabel.UNTRUSTED
+    }
 
 
 def _build_trusted_same_session_user_context(
@@ -11016,12 +11039,14 @@ class SessionImplMixin(HandlerMixinBase):
         else:
             firewall_result = self._firewall.inspect(
                 content,
-                trusted_input=False if is_internal_ingress else trusted_input,
+                trusted_input=trusted_input,
             )
         incoming_taint_labels = set(firewall_result.taint_labels)
         if operator_owned_cli_input and _trusted_cli_firewall_result_is_clean(firewall_result):
             incoming_taint_labels.discard(TaintLabel.UNTRUSTED)
-        if is_internal_ingress:
+        if is_internal_ingress and (
+            not trusted_input or not _trusted_cli_firewall_result_is_clean(firewall_result)
+        ):
             incoming_taint_labels.add(TaintLabel.UNTRUSTED)
 
         await self._event_bus.publish(
@@ -11154,6 +11179,11 @@ class SessionImplMixin(HandlerMixinBase):
             )
             user_transcript_metadata["trust_level"] = trust_level
             user_transcript_metadata["trusted_input"] = trusted_input
+            if is_internal_ingress:
+                user_transcript_metadata["authenticated_channel_input"] = True
+                provenance = params.get("_channel_provenance")
+                if isinstance(provenance, Mapping):
+                    user_transcript_metadata["channel_provenance"] = dict(provenance)
             user_transcript_metadata["operator_owned_cli_input"] = operator_owned_cli_input
             user_transcript_metadata.update(_transcript_metadata_for_firewall_risk(firewall_result))
             if channel_message_id:

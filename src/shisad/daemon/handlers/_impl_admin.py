@@ -3019,8 +3019,13 @@ class AdminImplMixin(HandlerMixinBase):
                 ),
             }
 
+        verified_sender = self._is_verified_channel_identity(
+            channel=message.channel,
+            external_user_id=message.external_user_id,
+        )
         public_policy_access = (
-            message.channel == "discord"
+            not verified_sender
+            and message.channel == "discord"
             and discord_decision.public_access
             and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
         )
@@ -3104,14 +3109,26 @@ class AdminImplMixin(HandlerMixinBase):
                 else {},
             }
 
+        # Room trust is scoped to the configured workspace and exact provider room.
+        # Admission and Discord denies/public restrictions have already been resolved.
+        source_room = discord_channel_id if message.channel == "discord" else message.reply_target
+        trusted_room = any(
+            rule.channel == message.channel
+            and rule.workspace_id == message.workspace_hint
+            and rule.room_id == source_room
+            for rule in getattr(self._config, "trusted_channel_rooms", ())
+        )
+        trust_source = "channel_default"
         declared_trust = self._identity_map.trust_for_channel(message.channel)
         if public_policy_access:
             declared_trust = discord_decision.trust_level
-        elif self._is_verified_channel_identity(
-            channel=message.channel,
-            external_user_id=message.external_user_id,
-        ):
+            trust_source = "public_policy"
+        elif verified_sender:
             declared_trust = "owner"
+            trust_source = "verified_sender"
+        elif trusted_room and allowed_by_identity:
+            declared_trust = "trusted"
+            trust_source = "trusted_room"
         if not declared_trust:
             declared_trust = "untrusted"
 
@@ -3311,6 +3328,15 @@ class AdminImplMixin(HandlerMixinBase):
             "_firewall_result": result.model_dump(mode="json"),
             "_delivery_target": delivery_target.model_dump(mode="json"),
             "_channel_message_id": message.message_id,
+            "_channel_provenance": {
+                "channel": message.channel,
+                "sender_id": message.external_user_id,
+                "workspace_id": message.workspace_hint,
+                "room_id": source_room,
+                "thread_id": message.thread_id,
+                "message_id": message.message_id,
+                "trust_source": trust_source,
+            },
             "_outbound_delivery_reservation_id": delivery_reservation.reservation_id,
         }
         approval_metadata = _approval_interaction_metadata(metadata)

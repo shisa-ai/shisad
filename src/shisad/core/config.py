@@ -240,6 +240,21 @@ McpServerConfig = Annotated[
 ]
 
 
+class TrustedChannelRoom(BaseModel):
+    """An exact provider room whose admitted participants may issue commands."""
+
+    channel: Literal["telegram", "discord", "slack", "matrix"]
+    workspace_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1)
+
+    @field_validator("workspace_id", "room_id")
+    @classmethod
+    def _exact_identifier(cls, value: str) -> str:
+        if value != value.strip() or "*" in value or any(ord(c) < 32 for c in value):
+            raise ValueError("Room trust requires exact nonblank provider identifiers")
+        return value
+
+
 class DaemonConfig(BaseSettings):
     """Daemon process configuration."""
 
@@ -331,6 +346,14 @@ class DaemonConfig(BaseSettings):
     matrix_room_workspace_map: dict[str, str] = Field(
         default_factory=dict,
         description="Map Matrix room ids to workspace ids.",
+    )
+
+    trusted_channel_rooms: list[TrustedChannelRoom] = Field(
+        default_factory=list,
+        description=(
+            "Exact provider/workspace/room grants for trusted commands from admitted users. "
+            "Does not enroll participants or expand public guest access."
+        ),
     )
 
     # Optional Discord runtime channel

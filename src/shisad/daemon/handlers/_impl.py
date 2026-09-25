@@ -136,6 +136,7 @@ from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     SessionMessageValidationResult,
     _browser_runtime_unavailable_rejection_reason,
+    _transcript_entry_is_trusted_same_session_user_context,
 )
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
@@ -3272,6 +3273,7 @@ class HandlerImplementation(
         return any(
             entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
             for entry in self._transcript_store.list_entries(session_id)
+            if not _transcript_entry_is_trusted_same_session_user_context(entry)
         )
 
     def _session_has_tainted_user_history(self, session_id: SessionId) -> bool:
@@ -3279,6 +3281,7 @@ class HandlerImplementation(
             entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
             for entry in self._transcript_store.list_entries(session_id)
             if str(entry.role).strip().lower() == "user"
+            and not _transcript_entry_is_trusted_same_session_user_context(entry)
         )
 
     def _doctor_dependencies_status(self) -> dict[str, Any]:

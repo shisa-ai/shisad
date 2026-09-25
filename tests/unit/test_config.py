@@ -743,3 +743,23 @@ def test_o4f_config_section_apply_syncs_backup_before_replacing_source(
         path.with_name(f"{path.name}.pre-reconfigure-{plan.source_sha256[:12]}.bak").read_bytes()
         == original
     )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("channel", "cli"), ("room_id", "*"), ("workspace_id", ""), ("room_id", " room ")],
+)
+def test_trusted_channel_rooms_require_exact_provider_coordinates(field, value):
+    room = {"channel": "telegram", "workspace_id": "work", "room_id": "123"}
+    room[field] = value
+    with pytest.raises(ValueError):
+        DaemonConfig(trusted_channel_rooms=[room])
+
+
+def test_trusted_channel_rooms_load_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "SHISAD_TRUSTED_CHANNEL_ROOMS", '[{"channel":"slack","workspace_id":"T1","room_id":"C1"}]'
+    )
+    config = DaemonConfig()
+    assert config.trusted_channel_rooms[0].workspace_id == "T1"
+    assert config.trusted_channel_rooms[0].room_id == "C1"

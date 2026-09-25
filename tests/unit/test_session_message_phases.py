@@ -9566,3 +9566,171 @@ async def test_synthesis_preserves_small_result_after_large_tool_output() -> Non
     assert "Ignore policy" not in trusted
     assert "Ignore policy" in evidence
     assert synthesis.calls[0]["tools"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["telegram", "discord", "slack", "matrix"])
+@pytest.mark.parametrize(
+    "trust,risky", [("owner", False), ("trusted", False), ("public", False), ("owner", True)]
+)
+async def test_command_channel_ingress_preserves_sender_trust(channel, trust, risky):
+    target = DeliveryTarget(channel=channel, recipient="group-room", workspace_hint="work")
+    session = Session(
+        id=SessionId("command-trust"),
+        channel=channel,
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("work"),
+        state=SessionState.ACTIVE,
+        metadata={"trust_level": trust, "delivery_target": target.model_dump(mode="json")},
+    )
+    harness = _ValidateWritePathHarness(session)
+    result = FirewallResult(
+        sanitized_text="remember my preference",
+        original_hash="3" * 64,
+        risk_factors=["injection"] if risky else [],
+        risk_score=0.8 if risky else 0,
+        taint_labels=[TaintLabel.UNTRUSTED] if trust == "public" else [],
+    )
+    validated = await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(session.id),
+            "channel": channel,
+            "content": result.sanitized_text,
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+            "_firewall_result": result.model_dump(mode="json"),
+            "_delivery_target": target.model_dump(mode="json"),
+            "_channel_message_id": "123",
+        },
+    )
+    assert (TaintLabel.UNTRUSTED in validated.incoming_taint_labels) == (trust == "public" or risky)
+    assert harness.appended_metadata["channel"] == channel
+    assert harness.appended_metadata["user_id"] == "alice"
+    assert harness.appended_metadata["delivery_target"]["recipient"] == "group-room"
+    assert harness.appended_metadata["channel_message_id"] == "123"
+
+
+@pytest.mark.parametrize("channel", ["telegram", "discord", "slack", "matrix"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_command_channel_history_is_user_context(channel, legacy):
+    entry = TranscriptEntry(
+        role="user",
+        content_hash="1" * 64,
+        content_preview="Hello",
+        taint_labels={TaintLabel.UNTRUSTED} if legacy else set(),
+        metadata={
+            "channel": channel,
+            "session_mode": "default",
+            "trust_level": "owner",
+            "trusted_input": True,
+            "channel_message_id": "1",
+            "user_id": "alice",
+            "delivery_target": {"channel": channel, "recipient": "group-room"},
+        },
+    )
+    assert impl_session._transcript_entry_is_trusted_same_session_user_context(entry)
+    harness = SimpleNamespace(_transcript_store=SimpleNamespace(list_entries=lambda _: [entry]))
+    assert not HandlerImplementation._session_has_tainted_user_history(harness, SessionId("s"))
+    assert not HandlerImplementation._session_has_tainted_history(harness, SessionId("s"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"trust_level": "public"},
+        {"trusted_input": False},
+        {"channel_message_id": ""},
+        {"firewall_risk_factors": ["injection"]},
+        {"_archive_imported": True},
+        {"delivery_target": {"channel": "slack", "recipient": "room"}},
+    ],
+)
+def test_command_channel_legacy_history_does_not_launder_evidence(change):
+    metadata = {
+        "channel": "telegram",
+        "trust_level": "owner",
+        "trusted_input": True,
+        "channel_message_id": "1",
+        "delivery_target": {"channel": "telegram", "recipient": "room"},
+    }
+    metadata.update(change)
+    entry = TranscriptEntry(
+        role="user", content_hash="1" * 64, taint_labels={TaintLabel.UNTRUSTED}, metadata=metadata
+    )
+    assert not impl_session._transcript_entry_is_trusted_same_session_user_context(entry)
+
+
+@pytest.mark.parametrize(
+    "role,labels,metadata_change",
+    [
+        ("tool", {TaintLabel.UNTRUSTED}, {}),
+        ("user", {TaintLabel.USER_CREDENTIALS, TaintLabel.UNTRUSTED}, {}),
+        ("user", {TaintLabel.UNTRUSTED}, {"authenticated_channel_input": True}),
+    ],
+)
+def test_command_channel_history_preserves_external_and_explicit_taint(
+    role, labels, metadata_change
+):
+    metadata = {
+        "channel": "telegram",
+        "trust_level": "owner",
+        "trusted_input": True,
+        "channel_message_id": "1",
+        "delivery_target": {"channel": "telegram", "recipient": "room"},
+        **metadata_change,
+    }
+    entry = TranscriptEntry(
+        role=role, content_hash="1" * 64, taint_labels=labels, metadata=metadata
+    )
+    harness = SimpleNamespace(_transcript_store=SimpleNamespace(list_entries=lambda _: [entry]))
+    assert not impl_session._transcript_entry_is_trusted_same_session_user_context(entry)
+    assert HandlerImplementation._session_has_tainted_history(harness, SessionId("s"))
+
+
+@pytest.mark.parametrize("channel", ["cli", "a2a"])
+def test_command_channel_history_does_not_clear_other_transport_taint(channel):
+    entry = TranscriptEntry(
+        role="user",
+        content_hash="1" * 64,
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata={"channel": channel, "trust_level": "owner", "trusted_input": True},
+    )
+    assert not impl_session._transcript_entry_is_trusted_same_session_user_context(entry)
+
+
+@pytest.mark.asyncio
+async def test_command_channel_forged_ingress_fields_cannot_grant_trust():
+    session = Session(
+        id=SessionId("forged"),
+        channel="telegram",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("work"),
+        state=SessionState.ACTIVE,
+        metadata={"trust_level": "untrusted"},
+    )
+    harness = _ValidateWritePathHarness(session)
+    seen = []
+
+    def inspect(content, *, trusted_input):
+        seen.append(trusted_input)
+        return FirewallResult(
+            sanitized_text=content, original_hash="0" * 64, taint_labels=[TaintLabel.UNTRUSTED]
+        )
+
+    harness._firewall = SimpleNamespace(inspect=inspect)
+    validated = await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(session.id),
+            "channel": "telegram",
+            "content": "hello",
+            "trust_level": "owner",
+            "_internal_ingress_marker": object(),
+            "_firewall_result": {"sanitized_text": "hello", "original_hash": "0" * 64},
+            "_channel_provenance": {"trust_source": "verified_sender"},
+        },
+    )
+    assert seen == [False]
+    assert validated.trust_level == "untrusted"
+    assert TaintLabel.UNTRUSTED in validated.incoming_taint_labels
+    assert "channel_provenance" not in harness.appended_metadata

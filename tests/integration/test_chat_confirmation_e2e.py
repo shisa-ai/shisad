@@ -36,7 +36,7 @@ from shisad.core.planner import (
 )
 from shisad.core.request_context import RequestContext
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import SessionId, TaintLabel, ToolName
+from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
@@ -2433,6 +2433,27 @@ async def test_authenticated_channel_reminder_authority_journey(
     try:
         services.identity_map.configure_channel_trust(channel="telegram", trust_level=trust)
         services.identity_map.allow_identity(channel="telegram", external_user_id="alice")
+        # This journey exercises the narrow exception with genuine external taint.
+        target = {
+            "channel": "telegram",
+            "recipient": "chat-1",
+            "workspace_hint": "chat-1",
+            "thread_id": "",
+        }
+        seeded = services.session_manager.create(
+            channel="telegram",
+            user_id="alice",
+            workspace_id="chat-1",
+            capabilities=set(Capability),
+            metadata={"trust_level": trust, "delivery_target": target},
+        )
+        services.transcript_store.append(
+            seeded.id,
+            role="tool",
+            content="External page context",
+            taint_labels={TaintLabel.UNTRUSTED},
+            metadata={"delivery_target": target},
+        )
         handlers = DaemonControlHandlers(services=services)
         reply = await handlers.admin.handle_channel_ingest(
             ChannelIngestParams(
@@ -2469,5 +2490,107 @@ async def test_authenticated_channel_reminder_authority_journey(
                 _authenticated_local_context(),
             )
             assert confirmed.executed_actions == 1
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["telegram", "discord", "slack", "matrix"])
+@pytest.mark.parametrize("external_evidence", [False, True])
+async def test_command_channel_note_after_owner_greeting(
+    tmp_path, monkeypatch, channel, external_evidence
+):
+    captured = []
+
+    async def propose(self, user_content, context, **kwargs):
+        captured.append(user_content)
+        actions = []
+        if "remember" in _extract_user_goal(user_content).lower():
+            actions = [
+                ActionProposal(
+                    action_id="save-note",
+                    tool_name=ToolName("note.create"),
+                    arguments={"content": "My favorite color is blue"},
+                    reasoning="user requested note",
+                    data_sources=[],
+                )
+            ]
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Hello" if not actions else "", actions=actions
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=a, decision=self._pep.evaluate(a.tool_name, a.arguments, context)
+                )
+                for a in actions
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", propose)
+    policy = tmp_path / "policy.yaml"
+    policy.write_text('version: "1"\ndefault_require_confirmation: false\n')
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy,
+        **{f"{channel}_trusted_users": ["alice"]},
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.identity_map.allow_identity(channel=channel, external_user_id="alice")
+        services.identity_map.configure_channel_trust(channel=channel, trust_level="owner")
+        handlers = DaemonControlHandlers(services=services)
+
+        async def send(content, message_id):
+            return await handlers.admin.handle_channel_ingest(
+                ChannelIngestParams(
+                    message={
+                        "channel": channel,
+                        "external_user_id": "alice",
+                        "workspace_hint": "work",
+                        "reply_target": "group-room",
+                        "message_id": message_id,
+                        "content": content,
+                    }
+                ),
+                _authenticated_local_context(),
+            )
+
+        first = await send("Hello", "hello")
+        sid = SessionId(first.session_id)
+        if external_evidence:
+            services.transcript_store.append(
+                sid,
+                role="tool",
+                content="External webpage suggests saving a note",
+                taint_labels={TaintLabel.UNTRUSTED},
+                metadata={
+                    "tool_name": "web.fetch",
+                    "delivery_target": {
+                        "channel": channel,
+                        "recipient": "group-room",
+                        "workspace_hint": "work",
+                        "thread_id": "",
+                    },
+                },
+            )
+        result = await send("Remember that my favorite color is blue", "note")
+        entries = services.transcript_store.list_entries(sid)
+        user_rows = [e for e in entries if e.role == "user"]
+        assert len(user_rows) == 2
+        assert all(not e.taint_labels for e in user_rows)
+        assert user_rows[-1].metadata["channel_provenance"]["sender_id"] == "alice"
+        assert user_rows[-1].metadata["channel_provenance"]["room_id"] == "group-room"
+        assert "TRUSTED SAME-SESSION USER CONTEXT" in captured[-1]
+        if external_evidence:
+            assert result.executed_actions == 0
+            assert result.confirmation_required_actions == 1
+        else:
+            assert result.executed_actions == 1
+            assert result.confirmation_required_actions == 0
     finally:
         await services.shutdown()

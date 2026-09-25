@@ -238,6 +238,34 @@ Discord public-channel rules:
   (`web.search`, `web.fetch`, `realitycheck.search`, `realitycheck.read`) when
   those tools are configured and available.
 
+Authenticated users listed in a provider's `*_TRUSTED_USERS` setting issue
+trusted commands in direct messages and group rooms. Transport alone does not
+mark those commands untrusted. Firewall findings and content labels still
+apply; external tool results and other participants retain their own trust.
+
+`SHISAD_TRUSTED_CHANNEL_ROOMS` accepts an explicit JSON list, for example:
+
+```json
+[{"channel":"slack","workspace_id":"T123","room_id":"C456"}]
+```
+
+The equivalent TOML field is `trusted_channel_rooms` under `[daemon]`.
+Supported providers are `telegram`, `discord`, `slack`, and `matrix`.
+`workspace_id` is the shisad workspace after configured workspace mapping;
+without a mapping, use the provider workspace identifier (Telegram chat ID,
+Matrix room ID, Discord guild ID, or Slack team ID). `room_id` is the exact
+provider chat/channel/room ID; Discord threads inherit their parent channel's
+room setting. Wildcards are not accepted. Restart the daemon after changing
+this setting.
+
+Room trust applies only to participants already admitted by identity policy.
+It does not enroll strangers, override explicit denies, or expand public and
+trusted-guest access. A verified owner retains command trust in a public room.
+Sender, provider, workspace, room, thread, message ID and the source of trust
+remain recorded separately from content taint. Prior user turns provide context,
+not new authorization. Historical assistant/external content keeps its recorded
+taint; configuring room trust does not retroactively clear it.
+
 ## Assistant, Web, Filesystem, Attachment, Reality Check, and Coding-Agent Settings
 
 Assistant/persona:

@@ -4182,3 +4182,161 @@ async def test_m3_channel_ingest_skips_keyed_state_when_canonical_pending_review
     assert pending_summary_entry is not None
     assert pending_summary_entry.confirmation_status == "pending_review"
     assert pending_summary_entry.superseded_by is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "room,workspace,expected",
+    [("room", "work", "trusted"), ("other", "work", "untrusted"), ("room", "other", "untrusted")],
+)
+async def test_explicit_room_trust_is_scoped_and_preserves_sender(
+    tmp_path, room, workspace, expected
+):
+    from shisad.core.config import DaemonConfig
+
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path, default_trust="untrusted")
+    harness._config.trusted_channel_rooms = DaemonConfig(
+        trusted_channel_rooms=[
+            {
+                "channel": "discord",
+                "workspace_id": "work",
+                "room_id": "room",
+            }
+        ]
+    ).trusted_channel_rooms
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": workspace,
+                "reply_target": room,
+                "message_id": f"{room}-{workspace}",
+                "content": "remember my preference",
+            }
+        }
+    )
+    payload = harness.message_payloads[-1]
+    assert payload["trust_level"] == expected
+    assert payload["user_id"] == "alice"
+    assert payload["_delivery_target"]["recipient"] == room
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verified", [True, False])
+async def test_group_public_policy_preserves_verified_sender_commands(tmp_path, verified):
+    from shisad.core.config import DaemonConfig
+
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path, default_trust="untrusted")
+    harness._config.discord_channel_rules = DaemonConfig(
+        discord_channel_rules=[
+            {
+                "guild_id": "work",
+                "channels": ["room"],
+                "public_enabled": True,
+            }
+        ]
+    ).discord_channel_rules
+    harness._is_verified_channel_identity = lambda **kwargs: verified
+    # A room grant must not promote the unverified public guest to owner context.
+    harness._config.trusted_channel_rooms = DaemonConfig(
+        trusted_channel_rooms=[
+            {
+                "channel": "discord",
+                "workspace_id": "work",
+                "room_id": "room",
+            }
+        ]
+    ).trusted_channel_rooms
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "work",
+                "reply_target": "room",
+                "message_id": "group",
+                "content": "hello",
+            }
+        }
+    )
+    assert harness.message_payloads[-1]["trust_level"] == ("owner" if verified else "public")
+
+
+@pytest.mark.asyncio
+async def test_room_trust_uses_configured_workspace_mapping(tmp_path):
+    from shisad.core.config import DaemonConfig
+
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path, default_trust="untrusted")
+    harness._discord_channel = SimpleNamespace(
+        workspace_for_guild=lambda _: "work",
+        policy_decision_for=lambda **kwargs: DiscordChannelPolicyDecision(),
+    )
+    harness._config.trusted_channel_rooms = DaemonConfig(
+        trusted_channel_rooms=[
+            {
+                "channel": "discord",
+                "workspace_id": "work",
+                "room_id": "room",
+            }
+        ]
+    ).trusted_channel_rooms
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-123",
+                "reply_target": "room",
+                "message_id": "mapped",
+                "content": "hello",
+            }
+        }
+    )
+    assert harness.message_payloads[-1]["trust_level"] == "trusted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denied", [False, True])
+async def test_room_trust_does_not_enroll_or_override_denies(tmp_path, denied):
+    from shisad.core.config import DaemonConfig
+
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path, default_trust="untrusted", allowlisted_users={"bob"}
+    )
+    harness._daemon_owner_uid = 1000
+    harness._record_pairing_request_artifact = lambda **kwargs: True
+    config = DaemonConfig(
+        trusted_channel_rooms=[
+            {
+                "channel": "discord",
+                "workspace_id": "work",
+                "room_id": "room",
+            }
+        ],
+        discord_channel_rules=[
+            {
+                "guild_id": "work",
+                "channels": ["room"],
+                "denied_users": ["alice"] if denied else [],
+            }
+        ],
+    )
+    harness._config.trusted_channel_rooms = config.trusted_channel_rooms
+    harness._config.discord_channel_rules = config.discord_channel_rules
+    result = await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "work",
+                "reply_target": "room",
+                "message_id": "unpaired",
+                "content": "hello",
+            }
+        }
+    )
+    assert not harness.message_payloads
+    assert result["delivery"]["reason"] == (
+        "channel_policy_denied" if denied else "identity_not_allowlisted"
+    )
