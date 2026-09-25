@@ -153,3 +153,12 @@ def test_sandbox_failure_explains_missing_enforcement_without_inviting_retry() -
     assert "didn't run" in failure.summary
     assert "sandbox" in failure.summary
     assert "configure" in failure.safe_next_action
+
+
+def test_disabled_inbox_failure_limits_setup_claims() -> None:
+    failure = confirmed_execution_failure(code="msgvault_disabled")
+    assert "disabled" in failure.summary
+    assert "No messages were retrieved" in failure.summary
+    assert "SHISAD_MSGVAULT_ENABLED=true" in failure.safe_next_action
+    assert "does not establish" in failure.safe_next_action
+    assert failure.retryable is False

@@ -4152,6 +4152,24 @@ def _build_post_tool_synthesis_untrusted_content(
         if synthesis_tool_outputs
         else ""
     )
+    if len(serialized_payload) > _POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS:
+        # Allocate a share to each result before truncation. Short results keep
+        # their full content and leave remaining space for larger results.
+        records = [
+            json.dumps(
+                {"tool_name": record.get("tool_name"), "success": record.get("success"), **record},
+                ensure_ascii=False,
+                indent=2,
+            )
+            for record in synthesis_tool_outputs
+        ]
+        excerpts = [""] * len(records)
+        remaining = _POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS - 2 * (len(records) - 1)
+        for offset, index in enumerate(sorted(range(len(records)), key=lambda i: len(records[i]))):
+            share = max(1, remaining // (len(records) - offset))
+            excerpts[index] = _truncate_close_gate_evidence_text(records[index], max_chars=share)
+            remaining -= len(excerpts[index])
+        serialized_payload = "\n\n".join(excerpts)
     evidence_blocks: list[str] = []
     if preliminary_prose.strip():
         evidence_blocks.extend(
@@ -5578,18 +5596,16 @@ def _discord_pending_guidance_lines(
 
 
 def _pending_action_lifetime_metadata(pending: Any) -> str:
-    """Render structural action lifetime/origin fields for confirmation cards."""
+    """Render the action lifetime needed to review a confirmation card."""
 
     state_view = pending_action_state_view(pending)
     fields = [
         f"status={state_view.lifecycle_state}",
         f"age_seconds={state_view.age_seconds()}",
-        f"created_at={state_view.created_at.isoformat()}",
+        f"created_at: {state_view.created_at.isoformat()}",
     ]
     if state_view.expires_at is not None:
-        fields.append(f"expires_at={state_view.expires_at.isoformat()}")
-    if state_view.identity.origin_turn_id:
-        fields.append(f"origin_turn={state_view.identity.origin_turn_id}")
+        fields.append(f"expires_at: {state_view.expires_at.isoformat()}")
     if state_view.status_reason:
         fields.append(f"state_reason={state_view.status_reason}")
     return " ".join(fields)
@@ -6006,6 +6022,17 @@ def _daemon_pending_confirmation_response_text(
             lines.extend(f"     {line}" for line in preview.splitlines())
         warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
         warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
+        # Deduplicate exact items from the machine-owned preview warning section;
+        # this is structural equality, not interpretation of warning prose.
+        preview_lines = preview.splitlines()
+        if (
+            preview_lines
+            and preview_lines[0] == "ACTION CONFIRMATION"
+            and "WARNINGS:" in preview_lines
+        ):
+            warning_section = preview_lines[preview_lines.index("WARNINGS:") + 1 :]
+            shown_warnings = {line[4:] for line in warning_section if line.startswith("  - ")}
+            warning_lines = [warning for warning in warning_lines if warning not in shown_warnings]
         if warning_lines:
             lines.append("   Warnings:")
             lines.extend(f"     - {warning}" for warning in warning_lines)
@@ -14896,8 +14923,8 @@ class SessionImplMixin(HandlerMixinBase):
         tool_output_summary: str,
         preliminary_prose: str = "",
     ) -> PostToolSynthesisResult:
-        # This finite sandbox outcome already has an authoritative user-facing
-        # explanation. Do not let a summarizer omit the cause or recovery path.
+        # These finite failures have canonical explanations. Keep their cause and
+        # recovery path intact rather than asking a summarizer to infer setup.
         if len(serialized_tool_outputs) == 1 and not preliminary_prose.strip():
             record = serialized_tool_outputs[0]
             payload = record.get("payload")
@@ -14912,6 +14939,18 @@ class SessionImplMixin(HandlerMixinBase):
                 return PostToolSynthesisResult(
                     response_text=render_user_facing_failure(
                         execution_failure(code=str(payload["error"]))
+                    )
+                )
+            if (
+                record.get("tool_name") in {"email.search", "email.read"}
+                and record.get("success") is False
+                and isinstance(payload, Mapping)
+                and payload.get("ok") is False
+                and payload.get("error") == "msgvault_disabled"
+            ):
+                return PostToolSynthesisResult(
+                    response_text=render_user_facing_failure(
+                        execution_failure(code="msgvault_disabled")
                     )
                 )
         planner_dispatch = execution.planner_dispatch

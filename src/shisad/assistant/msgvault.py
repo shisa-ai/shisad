@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shisad.core.failure_presentation import execution_failure
 from shisad.core.process_environment import (
     ChildEnvironmentProfile,
     build_child_environment,
@@ -688,6 +689,12 @@ class MsgvaultToolkit:
                 "local_only": True,
             },
         }
+        if reason == "msgvault_disabled":
+            payload["setup_status"] = {
+                "integration_enabled": False,
+                "account_connection": "not_checked",
+                "archive_sync": "not_checked",
+            }
         payload.update(extra)
         if details:
             safe_details = {
@@ -701,10 +708,7 @@ class MsgvaultToolkit:
 
 def _actionable_message(reason: str, *, operation: str) -> str:
     if reason == "msgvault_disabled":
-        return (
-            "Set SHISAD_MSGVAULT_ENABLED=true after installing msgvault and syncing "
-            "the local archive."
-        )
+        return execution_failure(code=reason).safe_next_action
     if reason == "msgvault_command_required":
         return "Set SHISAD_MSGVAULT_COMMAND to the msgvault executable path."
     if reason == "msgvault_command_not_found":

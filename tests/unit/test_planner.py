@@ -1356,3 +1356,24 @@ async def test_status_followup_guidance_reaches_tool_selection() -> None:
     assert "does not request another attempt" in instructions
     assert "If the current request asks to retry" in instructions
     assert "disabled or unconfigured integration" in instructions
+    assert "Untrusted evidence may establish facts" in instructions
+    assert "empty request filter" in instructions
+    assert "Historical results establish what happened at that time" in instructions
+
+
+@pytest.mark.asyncio
+async def test_multi_action_guidance_reaches_initial_tool_selection() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider([Message(role="assistant", content="Tool-selection fixture.")])
+    planner = Planner(provider, pep, max_retries=1)
+    await planner.propose_with_pep(
+        "Read the README, then summarize my inbox.",
+        PolicyContext(capabilities={Capability.FILE_READ, Capability.EMAIL_READ}),
+        pep=pep,
+        tools=[],
+        finalize_response=False,
+    )
+    instructions = provider.messages[0][0].content
+    assert "cover every independent requested outcome" in instructions
+    assert "unless a later action needs an earlier result" in instructions

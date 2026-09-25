@@ -772,6 +772,12 @@ def test_msgvault_disabled_and_missing_binary_return_actionable_errors(tmp_path:
     disabled_read_payload = disabled.read_message(message_id="msg-101")
     assert disabled_payload["ok"] is False
     assert disabled_payload["error"] == "msgvault_disabled"
+    assert disabled_payload["setup_status"] == {
+        "integration_enabled": False,
+        "account_connection": "not_checked",
+        "archive_sync": "not_checked",
+    }
+    assert disabled_payload["account"] == ""  # Filter, not an account inventory.
     assert "SHISAD_MSGVAULT_ENABLED" in disabled_payload["actionable"]
     assert disabled_payload["taint_labels"] == ["untrusted", "email"]
     assert disabled_read_payload["ok"] is False

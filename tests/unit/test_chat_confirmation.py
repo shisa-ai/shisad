@@ -129,7 +129,7 @@ def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthroug
 
 
 @pytest.mark.parametrize("delivery_channel", ["slack", "discord"])
-def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
+def test_pending_confirmation_preserves_lifetime_without_internal_origin(
     delivery_channel: str,
 ) -> None:
     created_at = datetime.now(UTC) - timedelta(seconds=90)
@@ -146,7 +146,7 @@ def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
         capabilities={Capability.HTTP_REQUEST},
         created_at=created_at,
         expires_at=expires_at,
-        origin_turn_id="turn-f2-lifetime",
+        origin_turn_id="tx-9300629a7f9d49f5b14d437aa7b57bfc",
         safe_preview="Fetch example.test",
     )
 
@@ -160,17 +160,28 @@ def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
     if delivery_channel == "discord":
         assert "age_seconds=" not in response
         assert expires_at.isoformat() not in response
-        assert "turn-f2-lifetime" not in response
+        assert pending.origin_turn_id not in response
     else:
         assert "age_seconds=" in response
         assert expires_at.isoformat() in response
-        assert "turn-f2-lifetime" in response
+        assert pending.origin_turn_id not in response
     assert "pending" in response.casefold()
+
+    from shisad.security.firewall.output import OutputFirewall
+
+    inspected = OutputFirewall(safe_domains=[]).inspect(response)
+    assert "[REDACTED:" not in inspected.sanitized_text
+    assert not inspected.secret_findings
+    if delivery_channel != "discord":
+        assert pending.confirmation_id in inspected.sanitized_text
+    assert pending.origin_turn_id == "tx-9300629a7f9d49f5b14d437aa7b57bfc"
 
 
 @pytest.mark.parametrize("delivery_channel", ["slack", "telegram", "matrix"])
+@pytest.mark.parametrize("preview_has_warnings", [False, True])
 def test_f7c_typed_channel_confirmation_card_has_separate_structural_sections(
     delivery_channel: str,
+    preview_has_warnings: bool,
 ) -> None:
     pending = PendingAction(
         confirmation_id="c-card",
@@ -201,6 +212,9 @@ def test_f7c_typed_channel_confirmation_card_has_separate_structural_sections(
         selected_backend_method="software",
     )
 
+    pending.warnings.append("Separate policy warning")
+    if preview_has_warnings:
+        pending.safe_preview += "\nWARNINGS:\n  - External destination"
     response = _daemon_pending_confirmation_response_text(
         pending_confirmation_ids=[pending.confirmation_id],
         pending_actions={pending.confirmation_id: pending},
@@ -224,7 +238,10 @@ def test_f7c_typed_channel_confirmation_card_has_separate_structural_sections(
     assert "   Instructions:\n     Approve: reply with 'confirm 1'" in response
     assert "     Reject: reply with 'reject 1'" in response
     assert ("   Review:\n     ACTION CONFIRMATION\n     Review: Read file: README.md") in response
-    assert "   Warnings:\n     - External destination" in response
+    assert response.count("External destination") == 1
+    assert response.count("Separate policy warning") == 1
+    if not preview_has_warnings:
+        assert "   Warnings:\n     - External destination" in response
     assert "_rpc_peer" not in response
     assert "internal-session" not in response
     assert "security_critical" not in response

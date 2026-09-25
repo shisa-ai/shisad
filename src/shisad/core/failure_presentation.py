@@ -157,6 +157,23 @@ def execution_failure(
             operator_diagnostics=operator_diagnostics or code,
         )
 
+    if code == "msgvault_disabled":
+        return UserFacingFailure(
+            code=code,
+            summary=(
+                f"{approved_prefix}{'the' if approved_prefix else 'The'} inbox lookup didn't run "
+                "because the local MsgVault "
+                "integration is disabled. No messages were retrieved."
+            ),
+            safe_next_action=(
+                "Set SHISAD_MSGVAULT_ENABLED=true to enable it. Ensure msgvault is installed "
+                "and the local mail archive is synced. This result does not establish "
+                "whether any mailbox account is connected or whether the archive is synced."
+            ),
+            approval_outcome=approval_outcome,
+            execution_outcome="not_started",
+            operator_diagnostics=operator_diagnostics or code,
+        )
     if code in {"degraded_enforcement", "runtime_isolation_unavailable"}:
         subject = "the command" if approved_prefix else "The command"
         return UserFacingFailure(
