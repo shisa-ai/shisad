@@ -9975,12 +9975,17 @@ class SessionImplMixin(HandlerMixinBase):
             ):
                 return False
             normalized_content = " ".join(content.strip().lower().split())
-            if not (
+            single_command = (
+                normalized_content in {"confirm", "approve"}
+                and intent.target == "single"
+                and len(displayed_pending_rows) == 1
+            )
+            if not single_command and not (
                 normalized_content.startswith("confirm ")
                 or normalized_content.startswith("approve ")
             ):
                 return False
-            if intent.target not in {"id", "index"}:
+            if not single_command and intent.target not in {"id", "index"}:
                 return False
             principal_id = str(user_id).strip()
             if not principal_id:
@@ -10362,7 +10367,16 @@ class SessionImplMixin(HandlerMixinBase):
                         else ""
                     )
                     if intent.action != "none" or visible_command_error_text:
-                        error_text = _internal_ingress_confirmation_approval_not_allowed_text()
+                        if (
+                            content.strip().lower() in {"confirm", "approve"}
+                            and len(displayed_pending_rows) > 1
+                        ):
+                            error_text = (
+                                "More than one action is pending. No action was taken. "
+                                "Reply with 'confirm N' to select one."
+                            )
+                        else:
+                            error_text = _internal_ingress_confirmation_approval_not_allowed_text()
                         if displayed_pending_rows:
                             error_text = (
                                 f"{error_text}\n\n"
@@ -13022,6 +13036,7 @@ class SessionImplMixin(HandlerMixinBase):
                     getattr(self._services, "browser_status", {}),
                     tool_name=proposal_tool_name,
                 )
+            authenticated_channel_reminder = False
             if not final_reason and proposal_tool_name == "reminder.create":
                 time_decision = await ReminderTimeReviewer(
                     provider=self._services.monitor_provider,
@@ -13033,6 +13048,20 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 if time_decision.status != "specified":
                     final_reason = f"reminder_time_{time_decision.status}"
+                authenticated_channel_reminder = bool(
+                    time_decision.current_request_authorized
+                    and validated.is_internal_ingress
+                    and validated.trusted_input
+                    and validated.session_mode == SessionMode.DEFAULT
+                    and validated.channel in {"telegram", "discord", "slack", "matrix"}
+                    and validated.delivery_target is not None
+                    and validated.delivery_target.channel == validated.channel
+                    and validated.delivery_target.recipient
+                    and _stored_delivery_target_from_session(validated.session)
+                    == validated.delivery_target
+                    and _trusted_cli_firewall_result_is_clean(validated.firewall_result)
+                    and set(proposal.arguments) <= {"message", "when", "name", "reminder_intent"}
+                )
             if final_reason:
                 rejected += 1
                 _record_rejected_tool_name(proposal_tool_name)
@@ -13459,6 +13488,7 @@ class SessionImplMixin(HandlerMixinBase):
                 trusted_input=control_plane_trusted_input,
                 operator_owned_cli_input=control_plane_operator_owned_cli_input,
                 raw_user_text=control_plane_user_text,
+                authenticated_channel_reminder=authenticated_channel_reminder,
             )
             blocking_voters = [
                 str(getattr(vote, "voter", ""))

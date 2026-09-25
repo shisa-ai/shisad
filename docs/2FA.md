@@ -80,6 +80,11 @@ the action stays pending. Use `confirm N` or `reject N` with the displayed numbe
 to use exact command syntax without this additional interpretation step. Required
 approval proofs, expiry, and policy checks still apply to either form.
 
+For a software approval delivered in a messaging channel, `confirm` or `approve`
+also selects the only live pending action visible in that conversation. If
+several actions are pending, use the displayed number. This shorthand does not
+replace TOTP, passkey, hardware, or other stronger approval requirements.
+
 If you do not respond before the timeout, the action is denied (fail-closed).
 The supported pending-action lifetime is 1 hour by default. A policy may set a
 shorter or longer `timeout_seconds`, but the effective lifetime is capped at 24

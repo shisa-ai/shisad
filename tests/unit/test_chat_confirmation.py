@@ -2782,11 +2782,15 @@ async def test_channel_chat_confirmation_proofless_confirm_does_not_execute_tool
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["confirm 1", "confirm", "approve"])
+@pytest.mark.parametrize("channel", ["discord", "telegram"])
 async def test_channel_chat_confirmation_bound_software_confirm_uses_typed_fallback(
     tmp_path,
+    content,
+    channel,
 ) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
-    target = DeliveryTarget(channel="discord", recipient="chan-1")
+    target = DeliveryTarget(channel=channel, recipient="chan-1")
     pending = PendingAction(
         confirmation_id="c-1",
         decision_nonce="nonce-1",
@@ -2806,7 +2810,7 @@ async def test_channel_chat_confirmation_bound_software_confirm_uses_typed_fallb
     result = await SessionImplMixin._maybe_handle_chat_confirmation(
         harness,
         sid=SessionId("sess-chat"),
-        channel="discord",
+        channel=channel,
         user_id=UserId("alice"),
         workspace_id=WorkspaceId("ws-1"),
         session_mode=SessionMode.DEFAULT,
@@ -2814,8 +2818,8 @@ async def test_channel_chat_confirmation_bound_software_confirm_uses_typed_fallb
         trusted_input=True,
         is_internal_ingress=True,
         delivery_target=target,
-        content="confirm 1",
-        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
     assert result is not None
@@ -6433,3 +6437,65 @@ async def test_action_resolve_renders_execution_failure_recovery(tmp_path) -> No
     assert not result.success
     assert failure.summary in result.summary
     assert failure.safe_next_action in result.summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "restriction", ["multiple", "expired", "other_target", "principal", "webauthn", "totp"]
+)
+async def test_channel_bare_confirm_preserves_selection_and_proof_restrictions(
+    tmp_path,
+    restriction,
+) -> None:
+    content, channel = "confirm", "telegram"
+    harness = _ChatConfirmationHarness(tmp_path)
+    target = DeliveryTarget(channel=channel, recipient="chan-1")
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "/tmp", "recursive": False},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=target,
+    )
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+    if restriction == "multiple":
+        from copy import deepcopy
+
+        second = deepcopy(pending)
+        second.confirmation_id = "c-2"
+        harness._pending_actions[second.confirmation_id] = second
+    elif restriction == "expired":
+        pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    elif restriction == "other_target":
+        pending.delivery_target = DeliveryTarget(channel=channel, recipient="other-chat")
+    elif restriction == "principal":
+        pending.allowed_channel_principals = ["bob"]
+    else:
+        pending.selected_backend_method = restriction
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel=channel,
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=target,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert harness.confirm_calls == []
+    assert pending.status == "pending"
+    if restriction == "multiple":
+        assert "More than one action" in result["response"]

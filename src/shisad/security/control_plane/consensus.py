@@ -617,6 +617,18 @@ class ActionMonitorVoter:
         action = data.action
 
         if (
+            action.action_kind == ActionKind.MEMORY_WRITE
+            and str(action.tool_name) == "reminder.create"
+            and data.metadata_payload.get("authenticated_channel_reminder") is True
+        ):
+            return VoterDecision(
+                voter="ActionMonitorVoter",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.LOW,
+                reason_codes=["action_monitor:authenticated_channel_reminder"],
+            )
+
+        if (
             operator_owned_cli_input
             and not session_tainted
             and action.action_kind in self._SIDE_EFFECT_KINDS

@@ -2357,3 +2357,117 @@ async def test_u9_chat_totp_reused_code_is_rejected_for_later_pending_action(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authorized,force_policy,extra,trust",
+    [
+        (True, False, {}, "owner"),
+        (False, False, {}, "owner"),
+        (True, True, {}, "owner"),
+        (True, False, {"recipient": "another-chat"}, "owner"),
+        (False, False, {"authenticated_channel_reminder": True}, "owner"),
+        (True, False, {}, "untrusted"),
+    ],
+)
+async def test_authenticated_channel_reminder_authority_journey(
+    tmp_path,
+    monkeypatch,
+    authorized,
+    force_policy,
+    extra,
+    trust,
+):
+    from shisad.core.reminder_time_review import ReminderTimeDecision, ReminderTimeReviewer
+
+    async def review(self, **kwargs):
+        # An incorrect semantic verdict cannot override structural scope or policy.
+        return ReminderTimeDecision(
+            status="specified",
+            source="user_request",
+            quote="two minutes",
+            current_request_authorized=authorized,
+            request_quote=kwargs["user_request"] if authorized else "",
+        )
+
+    async def propose(self, user_content, context, **kwargs):
+        action = ActionProposal(
+            action_id="channel-reminder",
+            tool_name=ToolName("reminder.create"),
+            arguments={"message": "Check the workflow results", "when": "in 2 minutes", **extra},
+            reasoning="requested reminder",
+            data_sources=[],
+        )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="", actions=[action]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=action,
+                    decision=self._pep.evaluate(action.tool_name, action.arguments, context),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(ReminderTimeReviewer, "review", review)
+    monkeypatch.setattr(Planner, "propose", propose)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'version: "1"\ndefault_require_confirmation: false\n'
+        + (
+            "tools:\n  reminder.create:\n    confirmation:\n      level: software\n"
+            if force_policy
+            else ""
+        )
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.identity_map.configure_channel_trust(channel="telegram", trust_level=trust)
+        services.identity_map.allow_identity(channel="telegram", external_user_id="alice")
+        handlers = DaemonControlHandlers(services=services)
+        reply = await handlers.admin.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "telegram",
+                    "external_user_id": "alice",
+                    "workspace_hint": "chat-1",
+                    "content": "Remind me here in two minutes to check the workflow results",
+                    "message_id": "reminder-1",
+                    "reply_target": "chat-1",
+                }
+            ),
+            _authenticated_local_context(),
+        )
+        if authorized and not force_policy and not extra and trust == "owner":
+            assert reply.executed_actions == 1
+            assert reply.confirmation_required_actions == 0
+            assert not reply.pending_confirmation_ids
+        else:
+            assert reply.executed_actions == 0
+        if force_policy:
+            assert len(reply.pending_confirmation_ids) == 1
+            confirmed = await handlers.admin.handle_channel_ingest(
+                ChannelIngestParams(
+                    message={
+                        "channel": "telegram",
+                        "external_user_id": "alice",
+                        "workspace_hint": "chat-1",
+                        "content": "confirm",
+                        "message_id": "reminder-2",
+                        "reply_target": "chat-1",
+                    }
+                ),
+                _authenticated_local_context(),
+            )
+            assert confirmed.executed_actions == 1
+    finally:
+        await services.shutdown()

@@ -98,6 +98,7 @@ class ControlPlaneGateway(Protocol):
         session_tainted: bool,
         trusted_input: bool,
         operator_owned_cli_input: bool = False,
+        authenticated_channel_reminder: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation: ...
 
@@ -203,6 +204,7 @@ class _EvaluateActionParams(BaseModel):
     session_tainted: bool = False
     trusted_input: bool = False
     operator_owned_cli_input: bool = False
+    authenticated_channel_reminder: bool = Field(default=False, strict=True)
     raw_user_text: str = ""
 
 
@@ -372,6 +374,7 @@ class _ControlPlaneSidecarHandlers:
             session_tainted=bool(params.session_tainted),
             trusted_input=bool(params.trusted_input),
             operator_owned_cli_input=bool(params.operator_owned_cli_input),
+            authenticated_channel_reminder=params.authenticated_channel_reminder,
             raw_user_text=params.raw_user_text,
         )
         # Return a raw dict so nested default-factory fields such as action.timestamp
@@ -549,6 +552,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         session_tainted: bool,
         trusted_input: bool,
         operator_owned_cli_input: bool = False,
+        authenticated_channel_reminder: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
         result = await self._call(
@@ -565,6 +569,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
                 session_tainted=session_tainted,
                 trusted_input=trusted_input,
                 operator_owned_cli_input=operator_owned_cli_input,
+                authenticated_channel_reminder=authenticated_channel_reminder,
                 raw_user_text=raw_user_text,
             ).model_dump(mode="json"),
             _EvaluateActionResult,

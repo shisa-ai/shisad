@@ -130,3 +130,51 @@ async def test_remote_packet_filters_secrets_and_keeps_proposal_out_of_system_pr
     assert result.status == "specified"
     assert secret not in provider.messages[1].content
     assert "check results" not in provider.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_current_request_authority_requires_separate_exact_user_quote():
+    provider = Provider(
+        {
+            **decision(),
+            "current_request_authorized": True,
+            "request_quote": "Remind me in ten minutes to check results",
+        }
+    )
+    result = await review(provider)
+    assert result.status == "specified"
+    assert result.current_request_authorized is True
+    assert result.request_quote == "Remind me in ten minutes to check results"
+    assert "quoted" in provider.messages[0].content.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {**decision(), "current_request_authorized": False, "request_quote": "Remind me"},
+        {
+            **decision(source="user_context", quote="prior instructions"),
+            "current_request_authorized": True,
+            "request_quote": "Remind me",
+        },
+        {**decision(), "current_request_authorized": True, "request_quote": ""},
+        {**decision(), "current_request_authorized": True, "request_quote": "prior instructions"},
+        {
+            **decision("missing", "none", ""),
+            "current_request_authorized": True,
+            "request_quote": "Remind me",
+        },
+    ],
+)
+async def test_invalid_current_request_authority_is_unresolved(payload):
+    result = await review(Provider(payload), user_context="prior instructions")
+    assert result.status == "unresolved"
+    assert result.current_request_authorized is False
+
+
+@pytest.mark.asyncio
+async def test_timing_alone_does_not_supply_action_authority():
+    result = await review(Provider(decision()))
+    assert result.status == "specified"
+    assert result.current_request_authorized is False

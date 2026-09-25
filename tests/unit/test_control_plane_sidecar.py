@@ -286,6 +286,7 @@ async def test_gh33_control_plane_sidecar_client_serializes_monitor_arguments(
         declared_domains=[],
         session_tainted=True,
         trusted_input=True,
+        authenticated_channel_reminder=True,
         raw_user_text="[sensitive text redacted]",
     )
 
@@ -293,6 +294,8 @@ async def test_gh33_control_plane_sidecar_client_serializes_monitor_arguments(
     assert captured["method"] == "control_plane.evaluate_action"
     assert captured["params"]["arguments"] == {"command": ["curl", "https://secret.example/upload"]}
     assert captured["params"]["monitor_arguments"] == {}
+
+    assert captured["params"]["authenticated_channel_reminder"] is True
 
 
 class _MonitorArgumentCaptureEngine:
@@ -343,6 +346,7 @@ async def test_gh33_control_plane_sidecar_handler_forwards_monitor_arguments() -
             declared_domains=[],
             session_tainted=True,
             trusted_input=True,
+            authenticated_channel_reminder=True,
             raw_user_text="[sensitive text redacted]",
         ),
         RequestContext(),
@@ -353,6 +357,8 @@ async def test_gh33_control_plane_sidecar_handler_forwards_monitor_arguments() -
     }
     assert engine.evaluate_kwargs["monitor_arguments"] == {}
     assert result["evaluation"]["action"]["network_hosts"] == ["secret.example"]
+
+    assert engine.evaluate_kwargs["authenticated_channel_reminder"] is True
 
 
 @pytest.mark.asyncio

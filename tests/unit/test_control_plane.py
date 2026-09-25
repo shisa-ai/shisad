@@ -3427,3 +3427,30 @@ def test_f2_unrelated_execution_does_not_reconcile_correlated_stage2_restart(
     )
 
     assert restarted.active_plan_hash(origin.session_id) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,proof,expected",
+    [
+        ("reminder.create", True, VoteKind.ALLOW),
+        ("reminder.create", False, VoteKind.FLAG),
+        ("reminder.create", "true", VoteKind.FLAG),
+        ("shell.exec", True, VoteKind.FLAG),
+        ("note.create", True, VoteKind.FLAG),
+    ],
+)
+async def test_action_monitor_authenticated_channel_reminder_is_narrow(tool_name, proof, expected):
+    action = build_action(tool_name=tool_name, arguments={}, origin=_origin("s-channel-reminder"))
+    result = await ActionMonitorVoter().cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": False,
+                "authenticated_channel_reminder": proof,
+            },
+        )
+    )
+    assert result.decision == expected

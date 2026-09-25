@@ -214,7 +214,7 @@ class ControlPlaneEngine:
                     threshold=threshold,
                     window_seconds=window_seconds,
                 ),
-            ]
+            ],
         )
         resource_monitor = ResourceAccessMonitor(
             workspace_roots=workspace_roots,
@@ -326,6 +326,7 @@ class ControlPlaneEngine:
         session_tainted: bool,
         trusted_input: bool,
         operator_owned_cli_input: bool = False,
+        authenticated_channel_reminder: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
         self._audit_log.ensure_available()
@@ -389,6 +390,14 @@ class ControlPlaneEngine:
                     "session_tainted": session_tainted,
                     "trusted_input": trusted_input,
                     "operator_owned_cli_input": operator_owned_cli_input,
+                    # Authority comes from the daemon's fresh review and channel binding,
+                    # never from planner-controlled action arguments.
+                    "authenticated_channel_reminder": (
+                        authenticated_channel_reminder is True
+                        and action.action_kind == ActionKind.MEMORY_WRITE
+                        and str(action.tool_name) == "reminder.create"
+                        and set(action_arguments) <= {"message", "when", "name", "reminder_intent"}
+                    ),
                     "filesystem_intent": filesystem_intent,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
