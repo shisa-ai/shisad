@@ -605,3 +605,44 @@ def test_url_entropy_redaction_keeps_component_delimiters() -> None:
     assert len(findings) == 3
     ordinary = "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?view=1"
     assert OutputFirewall._redact_high_entropy_tokens(ordinary) == (ordinary, [])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Set SHISAD_MSGVAULT_ENABLED=true after syncing the archive.",
+        "Set SHISAD_WEB_SEARCH_ENABLED=false.",
+        "Inspect SHISAD_MODEL_PLANNER_ENDPOINT_FAMILY.",
+    ],
+)
+def test_declared_configuration_names_are_not_secrets(text: str) -> None:
+    result = OutputFirewall(safe_domains=[]).inspect(text)
+    assert result.sanitized_text == text
+    assert not result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sk-abcdefghijklmnopqrstuvwxyz123456",
+        "aB3dE5gH7jK9mN2pQ4sT6vW8xY1zZ0cD",
+    ],
+)
+def test_configuration_assignment_still_redacts_secret_value(value: str) -> None:
+    result = OutputFirewall(safe_domains=[]).inspect(f"SHISAD_MSGVAULT_ENABLED={value}")
+    assert value not in result.sanitized_text
+    assert result.sanitized_text.startswith("SHISAD_MSGVAULT_ENABLED=")
+    assert result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "SHISAD_UNKNOWN_aB3dE5gH7jK9mN2pQ4sT6vW8xY1zZ0cD=true",
+        "https://docs.example.com/SHISAD_MSGVAULT_ENABLED=true",
+    ],
+)
+def test_configuration_name_exception_does_not_cover_unknown_names_or_urls(text: str) -> None:
+    result = OutputFirewall(safe_domains=["docs.example.com"]).inspect(text)
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert result.secret_findings

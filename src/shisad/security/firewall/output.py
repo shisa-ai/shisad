@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlunparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.config import DaemonConfig, ModelConfig, SecurityConfig
 from shisad.core.host_matching import host_matches
 from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.security.firewall.normalize import normalize_text
@@ -69,6 +70,13 @@ class OutputFirewall:
         "steal",
         "credential",
         "malware",
+    )
+    # Names are public schema identifiers, never credential values. Derive them
+    # without constructing settings or reading the process environment.
+    _CONFIG_ENV_NAMES: ClassVar[frozenset[str]] = frozenset(
+        f"{model.model_config['env_prefix']}{name}".upper()
+        for model in (DaemonConfig, ModelConfig, SecurityConfig)
+        for name in model.model_fields
     )
     _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
     _QUERY_BLOB_RE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/=_%-]{20,}")
@@ -405,6 +413,15 @@ class OutputFirewall:
             if any(start < match.end() and match.start() < end for start, end in url_spans):
                 continue
             token = match.group(0)
+            name, separator, value = token.partition("=")
+            if name in cls._CONFIG_ENV_NAMES:
+                if separator:
+                    sanitized_value = redact_component(value)
+                    if sanitized_value != value:
+                        replacements.append(
+                            (match.start(), match.end(), f"{name}={sanitized_value}")
+                        )
+                continue
             if token.startswith("http"):
                 continue
             if "." in token and "/" in token:

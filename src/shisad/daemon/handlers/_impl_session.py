@@ -247,6 +247,7 @@ _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_META
 _ACTION_RESOLVE_COOLDOWN_RETRY_MAX_SECONDS = 3.5
 _SENSITIVE_BROWSER_TEXT_REDACTION = "[sensitive text redacted]"
 _CONTEXT_ENTRY_MAX_CHARS = 280
+_RECENT_CONVERSATION_ENTRY_MAX_CHARS = 4096
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
 _CONTEXT_SUMMARY_SCAN_LIMIT = 24
@@ -6250,9 +6251,15 @@ def _transcript_entry_content(
     *,
     entry: TranscriptEntry,
     transcript_store: TranscriptStore | None = None,
+    full_content: bool = False,
 ) -> str:
-    # Use inlined transcript previews to avoid per-turn full-blob reads.
+    # Older summaries use previews; the recent conversation window requests full content.
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if full_content and transcript_store is not None:
+        content = transcript_store.entry_content(entry)
+        return _strip_lockdown_recovery_notice_from_content(
+            content if isinstance(content, str) else "", metadata, role=entry.role
+        )
     if metadata.get(_PENDING_SIBLING_TOOL_OUTPUT_METADATA_KEY) is True and entry.blob_ref:
         authenticated_content = (
             transcript_store.entry_content(entry) if transcript_store is not None else None
@@ -6337,11 +6344,13 @@ def _conversation_context_content_for_entry(
     index: int,
     transcript_store: TranscriptStore | None,
     active_pending_confirmation_ids: frozenset[str] | None = None,
+    full_content: bool = False,
 ) -> str:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     raw_content = _transcript_entry_content(
         entry=entry,
         transcript_store=transcript_store,
+        full_content=full_content,
     )
     if bool(metadata.get(_PENDING_SIBLING_RESULT_PERSISTED_METADATA_KEY)):
         return ""
@@ -6645,9 +6654,10 @@ def _build_planner_conversation_context(
             entries=entries,
             index=visible_start_index + offset,
             active_pending_confirmation_ids=active_pending_confirmation_ids,
+            full_content=True,
         )
         role = _transcript_entry_context_role(entry, content=raw_content)
-        compact = _compact_context_text(raw_content, max_chars=_CONTEXT_ENTRY_MAX_CHARS)
+        compact = _compact_context_text(raw_content, max_chars=_RECENT_CONVERSATION_ENTRY_MAX_CHARS)
         if compact:
             lines.append(f"- [{_relative_time_ago(entry.timestamp)}] {role}: {compact}")
 

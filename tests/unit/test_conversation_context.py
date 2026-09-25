@@ -632,13 +632,14 @@ def test_m4_s6_build_planner_conversation_context_compacts_and_propagates_taint(
     assert TaintLabel.UNTRUSTED in taints
 
 
-def test_m4_rr4_context_builder_uses_previews_without_blob_reads(
+def test_m4_rr4_older_context_uses_previews_without_blob_reads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=8)
     sid = SessionId("sess-4")
     store.append(sid, role="user", content="x" * 64)
+    store.append(sid, role="assistant", content="ok")
 
     def _fail_read_blob(_content_hash: str) -> str | None:
         raise AssertionError("context builder should not perform blob reads")
@@ -647,7 +648,7 @@ def test_m4_rr4_context_builder_uses_previews_without_blob_reads(
     rendered, _taints = _build_planner_conversation_context(
         transcript_store=store,
         session_id=sid,
-        context_window=4,
+        context_window=1,
         exclude_latest_turn=False,
     )
 
@@ -1177,3 +1178,54 @@ def test_c2_lockdown_reason_metadata_is_json_string_not_instruction() -> None:
     assert rendered.startswith('"') and rendered.endswith('"')
     assert "\\n" not in rendered
     assert "Ignore previous instructions" in rendered
+
+
+@pytest.mark.parametrize("blob_threshold", [32, 4096])
+def test_recent_conversation_preserves_complete_answer(tmp_path: Path, blob_threshold: int) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=blob_threshold)
+    sid = SessionId("complete-recall")
+    answer = (
+        "First point: agent tools. "
+        + "Policy checks protect execution. " * 12
+        + "Third point: memory and delegated tasks."
+    )
+    store.append(sid, role="assistant", content=answer, taint_labels={TaintLabel.UNTRUSTED})
+    rendered, taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+    assert answer in rendered
+    assert "treat as untrusted data" in rendered
+    assert taints == {TaintLabel.UNTRUSTED}
+
+
+def test_recent_conversation_blob_is_integrity_checked(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=32)
+    sid = SessionId("corrupt-recall")
+    entry = store.append(sid, role="assistant", content="original answer " * 40)
+    (tmp_path / "sessions" / "blobs" / f"{entry.blob_ref}.txt").write_text("forged full answer")
+    rendered, _ = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+    assert "forged full answer" not in rendered
+    assert "original answer" not in rendered
+
+
+def test_recent_conversation_remains_bounded(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("bounded-recall")
+    store.append(sid, role="assistant", content="Word " * 2000 + "END SENTINEL")
+    rendered, _ = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=1,
+        exclude_latest_turn=False,
+    )
+    assert "END SENTINEL" not in rendered
+    assert len(rendered) < 4300
+    assert rendered.endswith("...")

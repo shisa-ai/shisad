@@ -611,7 +611,7 @@ async def test_i3a_finalization_capacity_failure_is_terminal() -> None:
         system_prompt="short safety rule",
         capabilities=ProviderCapabilities(
             supports_tool_calls=True,
-            context_window_tokens=1024,
+            context_window_tokens=2048,
             output_reserve_tokens=128,
         ),
     )
@@ -1336,3 +1336,23 @@ async def test_o0_validation_tool_names_are_concurrency_local_and_reset() -> Non
 
     assert resolved == (["action.resolve"], frozenset())
     assert resumed == (["lockdown.resume"], frozenset())
+
+
+@pytest.mark.asyncio
+async def test_status_followup_guidance_reaches_tool_selection() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider([Message(role="assistant", content="The previous search failed.")])
+    planner = Planner(provider, pep, max_retries=1)
+    await planner.propose_with_pep(
+        "Did you actually find those sources, or is search unavailable?",
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        pep=pep,
+        tools=[],
+        finalize_response=False,
+    )
+    instructions = provider.messages[0][0].content
+    assert "A question about what happened" in instructions
+    assert "does not request another attempt" in instructions
+    assert "If the current request asks to retry" in instructions
+    assert "disabled or unconfigured integration" in instructions
