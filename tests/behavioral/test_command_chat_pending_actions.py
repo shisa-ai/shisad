@@ -16,6 +16,7 @@ from shisad.memory.ingestion import IngestionPipeline
 from tests.helpers.contract import (
     _contract_harness_context,
     _create_session,
+    _install_approval_response,
     _stub_complete,
     _tool_call,
 )
@@ -473,7 +474,8 @@ async def test_command_chat_action_resolve_rejects_clean_free_form_planner_misfi
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
+    assert "Nothing was approved or rejected" in str(reply.get("response", ""))
+    assert "confirm N" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids
 
@@ -485,10 +487,9 @@ async def test_command_chat_action_resolve_rejects_clean_free_form_planner_misfi
         ("confirm 1", "confirm", "1", "one", 1, 1),
         ("confirm 1 please", "confirm", "1", "one", 1, 1),
         ("reject 1", "reject", "1", "one", 1, 1),
-        # The two queued browser clicks share one page control; after the first
-        # confirm advances the page, the second pending action is resolved but
-        # cannot also execute successfully.
-        ("yes to all", "confirm", "all", "all", 0, 1),
+        # Browser content taints this session; even valid model interpretation
+        # cannot replace the requirement to confirm each pending action.
+        ("yes to all", "confirm", "all", "all", 2, 0),
         ("no to all", "reject", "all", "all", 0, 2),
     ],
 )
@@ -544,6 +545,13 @@ async def test_command_chat_explicit_resolution_uses_planner_action_resolve(
         await _open_browser_fixture_page(harness, sid)
         first_id = await _queue_browser_click_confirmation(harness, sid, label="one")
         second_id = await _queue_browser_click_confirmation(harness, sid, label="two")
+        _install_approval_response(
+            monkeypatch,
+            request=content,
+            decision=decision,
+            target=first_id if scope == "one" else "all",
+            scope=scope,
+        )
         if decision == "confirm":
             await asyncio.sleep(3.2)
         reply = await harness.client.call(
@@ -564,6 +572,10 @@ async def test_command_chat_explicit_resolution_uses_planner_action_resolve(
     assert len(remaining_ids) == expected_remaining
     if scope == "one":
         assert second_id in remaining_ids
+    elif decision == "confirm":
+        assert set(remaining_ids) == {first_id, second_id}
+        assert int(reply.get("blocked_actions", 0)) == 1
+        assert "Confirm each pending action" in str(reply.get("response", ""))
     else:
         assert remaining_ids == []
 
@@ -613,6 +625,12 @@ async def test_command_chat_action_resolve_accepts_polite_id_target(
         sid = await _create_session(harness.client)
         await _open_browser_fixture_page(harness, sid)
         pending_id = await _queue_browser_click_confirmation(harness, sid, label="polite-id")
+        _install_approval_response(
+            monkeypatch,
+            request=f"confirm {pending_id} please",
+            decision="confirm",
+            target=pending_id,
+        )
         await asyncio.sleep(3.2)
 
         reply = await harness.client.call(
@@ -803,6 +821,9 @@ async def test_command_chat_action_resolve_accepts_explicit_tainted_history_inte
         )
         if target_kind == "id":
             resolve_target = pending_id
+        _install_approval_response(
+            monkeypatch, request=content, decision="confirm", target=pending_id
+        )
         await asyncio.sleep(3.2)
 
         reply = await harness.client.call(
@@ -896,7 +917,8 @@ async def test_command_chat_action_resolve_rejects_transcript_taint_without_expl
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
+    assert "Nothing was approved or rejected" in str(reply.get("response", ""))
+    assert "confirm N" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids
 
@@ -960,7 +982,8 @@ async def test_command_chat_rejected_action_resolve_keeps_other_tool_result_head
     assert int(reply.get("blocked_actions", 0)) == 1
     assert "Confirmed action result:" in response_text
     assert "Tool results summary:" not in response_text
-    assert "action.resolve rejected:" in response_text
+    assert "Nothing was approved or rejected" in response_text
+    assert "confirm N" in response_text
     assert pending_id in remaining_ids
 
 
@@ -1016,6 +1039,12 @@ async def test_command_chat_action_resolve_summary_survives_new_confirmation(
         await _open_browser_fixture_page(harness, sid)
         rejected_id = await _queue_browser_click_confirmation(harness, sid, label="mixed")
         leftover_id = await _queue_browser_click_confirmation(harness, sid, label="leftover")
+        _install_approval_response(
+            monkeypatch,
+            request="reject 1 and then browser click the continue button",
+            decision="reject",
+            target=rejected_id,
+        )
 
         reply = await harness.client.call(
             "session.message",
@@ -1095,6 +1124,13 @@ async def test_command_chat_action_resolve_all_uses_surfaced_pending_snapshot(
         sid = await _create_session(harness.client)
         await _open_browser_fixture_page(harness, sid)
         surfaced_id = await _queue_browser_click_confirmation(harness, sid, label="snapshot")
+        _install_approval_response(
+            monkeypatch,
+            request="reject all pending and browser type text into the page",
+            decision="reject",
+            target="all",
+            scope="all",
+        )
 
         reply = await harness.client.call(
             "session.message",
@@ -1240,7 +1276,7 @@ async def test_command_chat_action_resolve_rejects_cross_session_target(
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "target_not_pending" in str(reply.get("response", ""))
+    assert "Nothing was approved or rejected" in str(reply.get("response", ""))
     assert current_pending_id in current_remaining_ids
     assert other_pending_id in other_remaining_ids
 
@@ -1440,6 +1476,7 @@ async def test_command_chat_action_resolve_rejects_tainted_history_without_expli
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
+    assert "Nothing was approved or rejected" in str(reply.get("response", ""))
+    assert "confirm N" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids

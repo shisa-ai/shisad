@@ -37,6 +37,40 @@ from shisad.security.intent_matching import (
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import daemon_harness
 
+
+def _install_approval_response(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    request: str,
+    decision: str,
+    target: str,
+    scope: str = "one",
+) -> None:
+    """Provide a fixed model judgment without bypassing reviewer validation."""
+    from shisad.core.approval_intent import ApprovalIntentReviewer
+    from shisad.daemon.handlers import _impl_session
+
+    class Provider:
+        async def complete(self, messages, tools=None):
+            assert tools is None
+            packet = json.loads(messages[1].content)
+            assert packet["user_request"] == request
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=json.dumps(
+                        {"decision": decision, "target": target, "scope": scope, "quote": request}
+                    ),
+                ),
+                usage={},
+            )
+
+    def reviewer(**kwargs):
+        return ApprovalIntentReviewer(provider=Provider(), firewall=kwargs["firewall"])
+
+    monkeypatch.setattr(_impl_session, "ApprovalIntentReviewer", reviewer)
+
+
 _USER_GOAL_RE = re.compile(
     (
         r"=== (?:USER GOAL|USER REQUEST) ===\n"

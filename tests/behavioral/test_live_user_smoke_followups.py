@@ -15,6 +15,7 @@ from tests.helpers.contract import (
     _contract_harness_context,
     _create_session,
     _extract_tool_outputs,
+    _install_approval_response,
     _stub_complete,
     _tool_call,
 )
@@ -140,6 +141,12 @@ async def test_lus_go_ahead_confirms_single_pending_action_in_tainted_recovery_f
         )
         assert int(proposed.get("confirmation_required_actions", 0)) >= 1
         assert proposed.get("pending_confirmation_ids")
+        _install_approval_response(
+            monkeypatch,
+            request="go ahead",
+            decision="confirm",
+            target=proposed["pending_confirmation_ids"][0],
+        )
 
         confirmed = await harness.client.call(
             "session.message",
