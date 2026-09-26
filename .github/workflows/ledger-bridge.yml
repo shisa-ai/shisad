@@ -26,7 +26,7 @@ jobs:
         working-directory: contrib/ledger-bridge
     env:
       # PRs exercise injection with a fixture, never the application credential.
-      SHISAD_LEDGER_ORIGIN_TOKEN: ${{ github.event_name == 'pull_request' && 'ci-fixture-not-for-signing' || secrets.SHISAD_LEDGER_ORIGIN_TOKEN }}
+      SHISAD_LEDGER_ORIGIN_TOKEN: ${{ github.event_name == 'pull_request' && 'ci-fixture-not-for-signing' || secrets.SHISAD_LEDGER_ORIGIN_TOKEN }} # zizmor: ignore[secrets-outside-env] Public application token intentionally embedded in distributed code, not a signing key or bearer credential.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

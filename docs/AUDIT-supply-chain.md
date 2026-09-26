@@ -18,6 +18,9 @@ builds and by ignored local build configuration for development. Pull requests
 use a nonproduction fixture. No token value is committed to source. The token
 is intentionally readable in distributed application code; it is not a signing
 key or the HTTP bridge bearer token.
+The workflow's inline `secrets-outside-env` exception applies only to this
+distributed application token; signing keys and bridge bearer credentials are
+not covered by that exception.
 
 The bridge's existing `tsx` loader is now a runtime dependency so installed
 compiled code can load the Ledger SDK. Its version and the rest of the bridge
