@@ -717,6 +717,24 @@ boundary above.
 
 ---
 
+## Measuring detector coverage
+
+Run `uv run python scripts/m6_adversarial_metrics.py --lane core --output metrics.json`
+to measure the default pattern detector and network checks. Add
+`--promptguard-model-path /path/to/model-pack` to include PromptGuard; a requested
+model must load successfully. Signed packs can use `--allowed-signers /path/to/allowed_signers`.
+The report records classifier posture and thresholds.
+
+A text sample counts as detected when the firewall emits a risk factor. This
+includes pattern findings and semantic scores reaching the configured warning
+tier; a positive score below that tier does not count. Benign samples use the
+same rule for false positives. Every attack sample remains in the denominator.
+
+The legacy `attack_success_rate` metric measures detector/check misses, not
+successful attacks against the daemon. It does not exercise planner behavior,
+per-action authorization, confirmations, or delivery. Evaluate those layers
+separately before drawing conclusions about end-to-end enforcement.
+
 ## Further Reading
 
 - `DESIGN-PHILOSOPHY.md` — governing first principles

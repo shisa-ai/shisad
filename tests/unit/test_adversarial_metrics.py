@@ -102,3 +102,130 @@ def test_m6_performance_gate_blocks_latency_and_memory_overrun() -> None:
     assert decision.allowed is False
     assert "latency" in decision.reason
     assert "memory" in decision.reason
+
+
+@pytest.mark.asyncio
+async def test_semantic_scores_below_warning_tier_are_misses_not_detections(monkeypatch):
+    from shisad.security.firewall import ContentFirewall
+    from shisad.security.firewall.classifier import (
+        InjectionClassification,
+        PromptGuardThresholds,
+    )
+
+    class Classifier:
+        def classify(self, text):
+            score = {"low": 0.015, "boundary": 0.35, "benign": 0.3}[text]
+            tier = PromptGuardThresholds().tier_for(score)
+            return InjectionClassification(
+                risk_score=score,
+                semantic_risk_score=score,
+                semantic_risk_tier=tier.value,
+                risk_factors=[] if tier.value == "none" else [f"promptguard:{tier.value}"],
+            )
+
+    async def no_network():
+        return 0, 0
+
+    monkeypatch.setattr(metrics_script, "_attack_variants", lambda **kwargs: ["low", "boundary"])
+    monkeypatch.setattr(metrics_script, "_benign_samples", lambda: ["benign"])
+    monkeypatch.setattr(metrics_script, "_network_exfil_checks", no_network)
+    monkeypatch.setattr(
+        metrics_script, "ContentFirewall", lambda: ContentFirewall(semantic_classifier=Classifier())
+    )
+    result = await metrics_script.compute_metrics(lane="core")
+    assert result.attack_success_rate == 0.5
+    assert result.false_positive_rate == 0.0
+    assert result.utility_retention == 1.0
+
+
+@pytest.mark.asyncio
+async def test_pattern_findings_use_same_detection_rule_for_attacks_and_benign(monkeypatch):
+    from shisad.security.firewall import FirewallResult
+
+    class Firewall:
+        def inspect(self, text):
+            return FirewallResult(
+                sanitized_text=text,
+                original_hash="fixture",
+                risk_score=0.2,
+                risk_factors=["command_chain"],
+            )
+
+    async def no_network():
+        return 0, 0
+
+    monkeypatch.setattr(metrics_script, "ContentFirewall", Firewall)
+    monkeypatch.setattr(metrics_script, "_attack_variants", lambda **kwargs: ["attack"])
+    monkeypatch.setattr(metrics_script, "_benign_samples", lambda: ["benign"])
+    monkeypatch.setattr(metrics_script, "_network_exfil_checks", no_network)
+    result = await metrics_script.compute_metrics(lane="core")
+    assert result.attack_success_rate == 0.0
+    assert result.false_positive_rate == 1.0
+    assert result.utility_retention == 0.0
+
+
+@pytest.mark.parametrize("check", ["_indirect_injection_checks", "_rag_poisoning_checks"])
+def test_secondary_text_checks_do_not_count_subthreshold_scores(monkeypatch, check):
+    from shisad.security.firewall import FirewallResult
+
+    class Firewall:
+        def inspect(self, text):
+            return FirewallResult(sanitized_text=text, original_hash="fixture", risk_score=0.015)
+
+    monkeypatch.setattr(
+        metrics_script, "_load_json", lambda path: [{"id": "case1", "content": "attack"}]
+    )
+    assert getattr(metrics_script, check)(firewall=Firewall()) == (0, 1)
+
+
+def test_metrics_cli_requires_requested_model_to_load(monkeypatch, tmp_path):
+    import sys
+
+    from shisad.security.firewall.classifier import PromptGuardLoadError
+
+    def unavailable(settings):
+        assert settings.posture == "required"
+        assert settings.model_path == str(tmp_path / "missing")
+        raise PromptGuardLoadError("model_path_missing")
+
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(metrics_script, "build_promptguard_classifier", unavailable, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["metrics", "--output", str(output), "--promptguard-model-path", str(tmp_path / "missing")],
+    )
+    with pytest.raises(PromptGuardLoadError, match="model_path_missing"):
+        metrics_script.main()
+    assert not output.exists()
+
+
+def test_metrics_cli_records_classifier_posture_and_measurement(monkeypatch, tmp_path):
+    import json
+    import sys
+
+    from shisad.security.firewall.classifier import PromptGuardRuntimeStatus
+
+    def build(settings):
+        assert settings.posture == "required"
+        return None, PromptGuardRuntimeStatus(posture="required", status="active")
+
+    async def compute(*, lane, firewall):
+        assert lane == "core"
+        assert firewall.status_snapshot()["semantic_classifier"]["status"] == "active"
+        return AdversarialMetrics(0.5, 1.0, 0.0, 1.0)
+
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(metrics_script, "build_promptguard_classifier", build, raising=False)
+    monkeypatch.setattr(metrics_script, "compute_metrics", compute)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["metrics", "--output", str(output), "--promptguard-model-path", str(tmp_path / "model")],
+    )
+    assert metrics_script.main() == 0
+    report = json.loads(output.read_text())
+    assert report["firewall"]["semantic_classifier"]["status"] == "active"
+    assert report["measurement"] == "detector_and_check_miss_rate"
+    assert report["detection_rule"] == "risk_factors_present"
+    assert report["metrics"]["attack_success_rate"] == 0.5

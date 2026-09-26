@@ -24,13 +24,19 @@ from shisad.security.control_plane.network import (
     extract_network_metadata,
 )
 from shisad.security.control_plane.schema import Origin, RiskTier, sanitize_metadata_payload
-from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall import ContentFirewall, FirewallResult
+from shisad.security.firewall.classifier import PromptGuardSettings, build_promptguard_classifier
 
 JST = timezone(timedelta(hours=9))
 
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _text_detected(result: FirewallResult) -> bool:
+    """Count emitted findings, not sub-threshold semantic probabilities."""
+    return bool(result.risk_factors)
 
 
 def _attack_variants(*, lane: str) -> list[str]:
@@ -133,7 +139,7 @@ def _indirect_injection_checks(*, firewall: ContentFirewall) -> tuple[int, int]:
         if not text:
             continue
         total += 1
-        if firewall.inspect(text).risk_score > 0.0:
+        if _text_detected(firewall.inspect(text)):
             detected += 1
     return detected, total
 
@@ -203,13 +209,16 @@ def _rag_poisoning_checks(*, firewall: ContentFirewall) -> tuple[int, int]:
         if not text:
             continue
         total += 1
-        if firewall.inspect(text).risk_score > 0.0:
+        if _text_detected(firewall.inspect(text)):
             detected += 1
     return detected, total
 
 
-async def compute_metrics(*, lane: str) -> AdversarialMetrics:
-    firewall = ContentFirewall()
+async def compute_metrics(
+    *, lane: str, firewall: ContentFirewall | None = None
+) -> AdversarialMetrics:
+    if firewall is None:
+        firewall = ContentFirewall()
     variants = _attack_variants(lane=lane)
     benign = _benign_samples()
     tracemalloc.start()
@@ -223,7 +232,7 @@ async def compute_metrics(*, lane: str) -> AdversarialMetrics:
         decode_depth_max = max(decode_depth_max, int(inspected.decode_depth))
         if inspected.decode_depth > 0:
             decode_depth_nonzero += 1
-        if inspected.risk_score > 0.0:
+        if _text_detected(inspected):
             detected_attacks += 1
 
     network_detected, network_total = await _network_exfil_checks()
@@ -239,7 +248,7 @@ async def compute_metrics(*, lane: str) -> AdversarialMetrics:
 
     benign_blocked = 0
     for sample in benign:
-        if firewall.inspect(sample).risk_score >= 0.25:
+        if _text_detected(firewall.inspect(sample)):
             benign_blocked += 1
 
     elapsed = max(time.perf_counter() - start, 1e-6)
@@ -276,10 +285,36 @@ def main() -> int:
         required=True,
         help="Output JSON path.",
     )
+    parser.add_argument(
+        "--promptguard-model-path",
+        type=Path,
+        help="Local PromptGuard ONNX directory or signed pack; required to load when selected.",
+    )
+    parser.add_argument(
+        "--allowed-signers",
+        type=Path,
+        help="Trusted SSH allowed_signers file for a signed PromptGuard pack.",
+    )
     args = parser.parse_args()
-    metrics = asyncio.run(compute_metrics(lane=args.lane))
+    firewall = ContentFirewall()
+    if args.promptguard_model_path is not None:
+        classifier, status = build_promptguard_classifier(
+            PromptGuardSettings(
+                posture="required",
+                model_path=str(args.promptguard_model_path),
+                allowed_signers_path=str(args.allowed_signers) if args.allowed_signers else "",
+            )
+        )
+        firewall = ContentFirewall(
+            semantic_classifier=classifier, semantic_classifier_status=status
+        )
+    metrics = asyncio.run(compute_metrics(lane=args.lane, firewall=firewall))
     payload = {
         "lane": args.lane,
+        "measurement": "detector_and_check_miss_rate",
+        "detection_rule": "risk_factors_present",
+        "firewall": firewall.status_snapshot(),
+        "promptguard_model_path": str(args.promptguard_model_path or ""),
         "generated_at": datetime.now(JST).isoformat(),
         "metrics": asdict(metrics),
     }
