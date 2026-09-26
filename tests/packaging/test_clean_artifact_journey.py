@@ -239,6 +239,16 @@ def _planner_response(payload: Mapping[str, Any]) -> dict[str, Any]:
         str(message.get("content", "")) for message in messages if isinstance(message, dict)
     )
     lowered_all = all_text.lower()
+    if messages and str(messages[0].get("content", "")).startswith(
+        "Judge only whether a proposed reminder's delivery time is supported"
+    ):
+        assert "tools" not in payload
+        packet = json.loads(messages[1]["content"])
+        assert packet["user_request"] == "create package reminder in 1 hour"
+        assert json.loads(packet["arguments"])["when"] == "in 1 hour"
+        return _openai_response(
+            json.dumps({"status": "specified", "source": "user_request", "quote": "in 1 hour"})
+        )
     if "tools" not in payload and "post-tool synthesis pass" in lowered_all:
         for request_text, tool_name in (
             ("write package approval", "fs.write"),
@@ -387,7 +397,10 @@ def _runtime_env(root: Path, server: _ArtifactServer, *, matrix: bool = False) -
     workspace.mkdir(parents=True)
     policy = root / "policy.yaml"
     _write_policy(policy)
+    config = root / "config.toml"
+    config.write_text("schema_version = 1\n", encoding="utf-8")
     values = {
+        "SHISAD_CONFIG_PATH": str(config),
         "SHISAD_DATA_DIR": str(data_dir),
         "SHISAD_SOCKET_PATH": str(runtime_dir / "control.sock"),
         "SHISAD_POLICY_PATH": str(policy),
@@ -401,7 +414,11 @@ def _runtime_env(root: Path, server: _ArtifactServer, *, matrix: bool = False) -
         "SHISAD_MODEL_PLANNER_API_KEY": "f5-placeholder-not-a-secret",
         "SHISAD_MODEL_PLANNER_REMOTE_ENABLED": "true",
         "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED": "false",
-        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED": "false",
+        "SHISAD_MODEL_MONITOR_PROVIDER_PRESET": "openai_default",
+        "SHISAD_MODEL_MONITOR_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        "SHISAD_MODEL_MONITOR_MODEL_ID": "f5-controlled",
+        "SHISAD_MODEL_MONITOR_API_KEY": "f5-placeholder-not-a-secret",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED": "true",
         "SHISAD_MODEL_ALLOW_HTTP_LOCALHOST": "true",
         "SHISAD_MODEL_BLOCK_PRIVATE_RANGES": "false",
     }
@@ -488,7 +505,7 @@ def _exercise_core_journey(
     assert RESPONSE_MARKERS["time.now"] in time_result.stdout, (
         f"{time_result.stdout}\n{(cli.cwd / 'daemon.log').read_text(encoding='utf-8')}"
     )
-    reminder_result = cli.run("session", "message", session_id, "create package reminder")
+    reminder_result = cli.run("session", "message", session_id, "create package reminder in 1 hour")
     assert RESPONSE_MARKERS["reminder.create"] in reminder_result.stdout, (
         reminder_result.stdout,
         server.provider_requests[-3:],
@@ -633,7 +650,11 @@ def test_official_container_clean_artifact_journey(
                 "SHISAD_MODEL_PLANNER_API_KEY": "f5-placeholder-not-a-secret",
                 "SHISAD_MODEL_PLANNER_REMOTE_ENABLED": "true",
                 "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED": "false",
-                "SHISAD_MODEL_MONITOR_REMOTE_ENABLED": "false",
+                "SHISAD_MODEL_MONITOR_PROVIDER_PRESET": "openai_default",
+                "SHISAD_MODEL_MONITOR_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                "SHISAD_MODEL_MONITOR_MODEL_ID": "f5-controlled",
+                "SHISAD_MODEL_MONITOR_API_KEY": "f5-placeholder-not-a-secret",
+                "SHISAD_MODEL_MONITOR_REMOTE_ENABLED": "true",
                 "SHISAD_MODEL_ALLOW_HTTP_LOCALHOST": "true",
                 "SHISAD_MODEL_BLOCK_PRIVATE_RANGES": "false",
             }

@@ -479,7 +479,7 @@ async def test_i2_long_session_compacts_optional_context_and_answers(
         "SHISAD_MODEL_PLANNER_CAPABILITIES",
         json.dumps(
             {
-                "context_window_tokens": 14_500,
+                "context_window_tokens": 15_500,
                 "output_reserve_tokens": 512,
             }
         ),
@@ -1252,6 +1252,7 @@ async def test_gh77_explicit_shell_command_sequence_reaches_clear_paths(
             if has_pending_actions and normalized_goal in {
                 "run pls",
                 "yes",
+                "confirm 1",
             }:
                 return ProviderResponse(
                     message=Message(
@@ -1339,8 +1340,9 @@ async def test_gh77_explicit_shell_command_sequence_reaches_clear_paths(
         assert "internal planner validation" not in confirmed_text
         assert "schema validation" not in confirmed_text
         if int(confirmed.get("blocked_actions", 0)):
-            assert "action.resolve rejected" in confirmed_text
-            assert "explicit current-turn confirmation intent required" in confirmed_text
+            assert "couldn't verify which pending action" in confirmed_text
+            assert "confirm n" in confirmed_text
+            assert "monitor provider" in confirmed_text
 
         yes = await harness.client.call(
             "session.message",
@@ -1348,9 +1350,18 @@ async def test_gh77_explicit_shell_command_sequence_reaches_clear_paths(
         )
         yes_text = str(yes.get("response", "")).lower()
         assert yes.get("lockdown_level") == "normal"
-        assert int(yes.get("blocked_actions", 0)) == 0
+        assert int(yes.get("blocked_actions", 0)) == 1
+        assert "monitor provider" in yes_text
         assert "internal planner validation" not in yes_text
         assert "schema validation" not in yes_text
+        still_pending = await harness.client.call(
+            "action.pending", {"confirmation_id": str(pending_ids[0])}
+        )
+        assert still_pending["actions"][0]["confirmation_id"] == pending_ids[0]
+        explicit = await harness.client.call(
+            "session.message", {"session_id": sid, "content": "confirm 1"}
+        )
+        assert int(explicit.get("blocked_actions", 0)) == 0
 
         bash_proposed = await harness.client.call(
             "session.message",
@@ -6903,10 +6914,42 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
     assert "every" not in str(listed_reminder.get("schedule_summary", "")).lower()
 
 
+@pytest.fixture
+def reminder_time_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply model evidence for these fixed reminder journeys, retaining review checks."""
+    from shisad.core.reminder_time_review import ReminderTimeReviewer
+    from shisad.daemon.handlers import _impl_session
+
+    class Provider:
+        async def complete(self, messages, tools=None):
+            assert tools is None
+            packet = json.loads(messages[1].content)
+            request = packet["user_request"]
+            expected = _extract_reminder_arguments(request)
+            arguments = json.loads(packet["arguments"])
+            assert expected is not None
+            assert arguments["when"] == expected[1]
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=json.dumps(
+                        {"status": "specified", "source": "user_request", "quote": request}
+                    ),
+                ),
+                usage={},
+            )
+
+    def reviewer(**kwargs):
+        return ReminderTimeReviewer(provider=Provider(), firewall=kwargs["firewall"])
+
+    monkeypatch.setattr(_impl_session, "ReminderTimeReviewer", reviewer)
+
+
 @pytest.mark.asyncio
 async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reminder_time_provider: None,
 ) -> None:
     current_reminder_ids: list[str] = []
 
@@ -7032,6 +7075,7 @@ async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
 async def test_f1_reminder_identity_survives_restart_and_cancel_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reminder_time_provider: None,
 ) -> None:
     async with _contract_harness_context(tmp_path, monkeypatch) as first:
         sid = await _create_session(first.client)
@@ -7074,6 +7118,7 @@ async def test_f1_reminder_identity_survives_restart_and_cancel_projection(
 @pytest.mark.asyncio
 async def test_contract_polite_set_reminder_clock_time_executes_without_lockdown(
     contract_harness: ContractHarness,
+    reminder_time_provider: None,
 ) -> None:
     sid = await _create_session(contract_harness.client)
 
@@ -7097,6 +7142,7 @@ async def test_contract_polite_set_reminder_clock_time_executes_without_lockdown
 @pytest.mark.asyncio
 async def test_contract_reminder_question_lists_without_policy_veto(
     contract_harness: ContractHarness,
+    reminder_time_provider: None,
 ) -> None:
     sid = await _create_session(contract_harness.client)
 

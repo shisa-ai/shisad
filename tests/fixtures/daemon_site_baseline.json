@@ -7,11 +7,13 @@
       "tests/behavioral/test_f7_channel_completion.py": 4,
       "tests/integration/test_a2a_ingress.py": 2,
       "tests/integration/test_action_execution_recovery.py": 48,
-      "tests/integration/test_chat_confirmation_e2e.py": 11,
+      "tests/integration/test_chat_confirmation_e2e.py": 13,
       "tests/integration/test_context_scaffold_degraded.py": 3,
       "tests/integration/test_daemon_data_lock.py": 3,
+      "tests/integration/test_incident_review.py": 1,
+      "tests/integration/test_reminder_time.py": 2,
       "tests/integration/test_skill_tool_execution.py": 7,
-      "tests/unit/test_daemon_services.py": 37,
+      "tests/unit/test_daemon_services.py": 36,
       "tests/unit/test_impl_tasks.py": 2,
       "tests/unit/test_session_memory_summarizer.py": 6
     },
@@ -33,7 +35,7 @@
       "tests/integration/test_cleanroom_workflow.py": 1,
       "tests/integration/test_coding_agent_tasks.py": 1,
       "tests/integration/test_control_plane_integration.py": 1,
-      "tests/integration/test_daemon_data_lock.py": 7,
+      "tests/integration/test_daemon_data_lock.py": 4,
       "tests/integration/test_daemon_runtime.py": 13,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
@@ -52,7 +54,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 128,
+    "DaemonServices.build": 133,
     "run_daemon": 114
   }
 }
