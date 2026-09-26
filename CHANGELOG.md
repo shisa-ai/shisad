@@ -11,6 +11,79 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## 0.8.3 - release prepared (unpublished)
+
+This maintenance release improves everyday chat, reminders, approvals, and
+recovery from tool failures, and adds Responses API model routes and Ledger
+bridge build integration.
+
+### Added
+
+- **Models can use the Responses API.** Configure a Responses route for
+  compatible providers, including models that do not support Chat Completions.
+- **Ledger enrollment can check the expected wallet address.** Local chat can
+  start a hardware review directly, and reviews have time for device approval.
+  Bridge builds include the application's origin token and clear-signing
+  metadata. Matching Ledger registration and device support are still required;
+  these changes do not establish warning-free signing on every device.
+
+### Fixed
+
+- **Authenticated command-channel messages retain their provenance.** Your
+  requests no longer become untrusted solely because they arrived through chat.
+  Group participants, configured channel trust, and external tool content remain
+  distinguishable when deciding whether an action needs approval.
+- **Simple reminders work in the conversation where you requested them.**
+  A clean, authorized request can schedule a same-conversation reminder without
+  an unnecessary confirmation. Missing, invented, or invalid times produce
+  clarification or an error before scheduling.
+- **Approvals follow the current request.** A single eligible pending action
+  accepts an unnumbered confirmation. Ambiguous requests, required proof, and
+  individual approval requirements for untrusted content remain enforced.
+  ([#127](https://github.com/shisa-ai/shisad/issues/127))
+- **Replies preserve the evidence needed to finish a task.** Recent context,
+  configuration guidance, multiple tool results, and delegated-task results
+  survive follow-up synthesis. Setup and sandbox failures explain the available
+  recovery path instead of claiming success.
+- **Suspicious-content review preserves ordinary conversation.** Alarm review
+  runs before related actions and can continue a benign request without losing
+  recall or disabling unrelated work.
+- **Replies retain their layout and usable links after redaction.** Card-number
+  checks validate checksums, and redaction preserves surrounding boundaries and
+  URL structure.
+  ([#115](https://github.com/shisa-ai/shisad/issues/115),
+  [#116](https://github.com/shisa-ai/shisad/issues/116))
+- **Sandbox checks distinguish commands from ordinary arguments.** Filenames
+  no longer create spurious network destinations, and escape checks target
+  executable positions. Timeout cleanup and runner shutdown are bounded.
+  ([#129](https://github.com/shisa-ai/shisad/issues/129),
+  [#130](https://github.com/shisa-ai/shisad/issues/130))
+- **Destructive-command recovery covers shell wrappers and directories.**
+  Directory contents are captured, and incomplete rollback is reported.
+  ([#131](https://github.com/shisa-ai/shisad/issues/131),
+  [#133](https://github.com/shisa-ai/shisad/issues/133))
+- **Policy settings have explicit effects or configuration errors.** Unsupported
+  settings no longer appear to be active. Approval destinations use the same
+  argument fields as policy checks.
+  ([#118](https://github.com/shisa-ai/shisad/issues/118))
+- **PromptGuard export uses the installed PyTorch tooling.** Daemon commands
+  also explain unsupported Unix-socket transport instead of failing obscurely.
+
+### Security
+
+- **Administrative tool calls respect lockdown and rate limits.** Diagnostic
+  histories and expired rate identities are bounded, malformed policy hosts
+  are rejected, and anomaly reporting remains available under credential taint.
+- **Trusted file reads stay tied to the path you requested.** Lexical-reuse
+  scoring no longer relies on accidental hash overlap, and adversarial metrics
+  include previously missed attack templates.
+  ([#123](https://github.com/shisa-ai/shisad/issues/123),
+  [#137](https://github.com/shisa-ai/shisad/issues/137))
+- **Networking and model dependencies receive security updates.** AnyIO,
+  Transformers, and the bridge's qs dependency are updated. Bridge release
+  artifacts retain their dependency lock and receive the application token
+  during the build; the token is intentionally readable in distributed code.
+
 ## [0.8.2.1] - 2026-08-27
 
 This documentation-only follow-up restores the public documentation as a

@@ -1,9 +1,36 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-08-27 (v0.8.2 release)*
+*Updated: 2026-09-26 (v0.8.3 release preparation)*
 *Status: In Progress*  
-*Snapshot basis: the published v0.8.2 code, dependencies, and workflow state, including the dependency refresh, optional keyring support, and 2026-08-24 release audit remediation. Historical v0.7.0-v0.8.1 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This release snapshot includes no registry image.*
+*Snapshot basis: the v0.8.3 candidate code, dependencies, and workflow state, including networking/model dependency updates and Ledger build-time application configuration. Historical v0.7.0-v0.8.1 evidence is retained where explicitly labeled, including `shisad@a16c15a` for the 2026-05-07 Ledger bridge remediation and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. This release snapshot includes no registry image.*
+
+## v0.8.3 build and release changes
+
+The Python lock updates `anyio` from `4.12.1` to `4.14.2` and `transformers`
+from `5.5.3` to `5.10.4`; uv constraints retain those minimum patched versions.
+The Ledger bridge updates its `qs` override to `6.16.0` and resolves
+`side-channel 1.1.1`. The other existing bridge override versions remain unchanged.
+
+The optional Ledger bridge embeds its application origin token in compiled
+artifacts. The value is supplied by the repository Actions secret for trusted
+builds and by ignored local build configuration for development. Pull requests
+use a nonproduction fixture. No token value is committed to source. The token
+is intentionally readable in distributed application code; it is not a signing
+key or the HTTP bridge bearer token.
+
+The bridge's existing `tsx` loader is now a runtime dependency so installed
+compiled code can load the Ledger SDK. Its version and the rest of the bridge
+lockfile resolutions are unchanged by that classification change. Packages
+include `npm-shrinkwrap.json` derived from `package-lock.json` so production-only
+consumer installs retain the pinned dependency tree.
+
+The separate Ledger workflow uses Node 22 through `actions/setup-node` at
+`49933ea5288caeca8642d1e84afbd3f7d6820020`. Checkout and artifact actions retain
+the existing pinned commits. The publish workflow requires the Ledger build
+and uploads a separate configured bridge artifact; Python wheels do not contain
+that application token or the Node bridge. Physical warning-free Clear Signing
+still requires matching signed metadata and device validation.
 
 ## Scope and Intent
 

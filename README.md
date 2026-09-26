@@ -110,11 +110,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-ShisaD is public and under heavy development. The latest published release is
-`v0.8.2.1`.
+ShisaD is public and under heavy development. This checkout prepares `v0.8.3`;
+the latest published release is `v0.8.2.1`.
 
 | Version | Focus |
 |---------|-------|
+| v0.8.3 (prepared) | Command-channel trust, reminder and approval fixes, Responses API support, and Ledger setup/build improvements |
 | v0.8.2 | Guided onboarding, reliable startup, session-scoped chat and Discord progress, data recovery, audit verification, and channel administration |
 | v0.8.1 | Installation and configuration improvements, restart-safe action tracking, safer filesystem and process boundaries, and restart recovery for delivery and approvals across four messaging channels |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
@@ -147,7 +148,7 @@ environment.
 
 ### Quick Start
 
-For a normal `v0.8.2.1` installation, install the `assistant` package extra:
+For a normal `v0.8.3` installation, install the `assistant` package extra:
 
 ```bash
 uv tool install 'shisad[assistant]'
@@ -205,7 +206,7 @@ preferred path with `uv run shisad doctor check --component storage`; see
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
 
-The v0.8.2.1 CLI can create and inspect configuration without starting the
+The v0.8.3 CLI can create and inspect configuration without starting the
 daemon:
 
 ```bash

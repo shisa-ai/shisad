@@ -418,6 +418,9 @@ TOTP entry remain deferred to `v0.8.0`.
   bounded absolute-URL/network-address facts for the five matching current
   consumers. Broader network-authorization and connection architecture remain
   v0.9 work. Container registry publication remains future work
+- v0.8.3 — maintenance release for command-channel trust, reminders and approvals,
+  response/context recovery, Responses API routing, and Ledger integration.
+  Calendar/email connector expansion remains planned separately.
 - v0.8.2 (shipped) — guided setup and a read-only first-run check; explicit
   provider, credential, policy, and channel configuration; background startup,
   status, recovery, and a guided tour; safer handling of optional channel and

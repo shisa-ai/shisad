@@ -169,8 +169,7 @@ exports a local PyTorch sequence-classification checkpoint through
 `torch.onnx.export`; it does not use the removed `transformers.onnx` module.
 The exporter loads local files only and preserves tokenizer/configuration files.
 
-Daemon
-operation with `security-runtime` alone should have PromptGuard's
+Daemon operation with `security-runtime` alone should have PromptGuard's
 `onnxruntime` and `transformers` dependencies available through
 `textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was
 not found" during startup in that profile, that warning is expected and does

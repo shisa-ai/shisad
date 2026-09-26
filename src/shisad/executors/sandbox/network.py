@@ -121,8 +121,7 @@ class SandboxNetworkManager:
         if executable in _NETWORK_EXECUTABLES:
             return True
         return any(
-            token.startswith(("http://", "https://", "ftp://", "ftps://"))
-            for token in command[1:]
+            token.startswith(("http://", "https://", "ftp://", "ftps://")) for token in command[1:]
         )
 
     def authorize_requests(

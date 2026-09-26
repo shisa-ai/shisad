@@ -1094,6 +1094,7 @@ Generic EIP-712 review can still show a blind-signing warning on Stax/Flex.
 The reference bridge currently classifies review metadata by device model;
 that classification does not establish that a particular request used
 warning-free Clear Signing. The bridge includes a candidate ERC-7730 descriptor
-and accepts `SHISAD_LEDGER_ORIGIN_TOKEN`, but requires matching Ledger-provided
-metadata and device validation before making that claim. See the bridge's
+and configured bridge packages embed the application origin token at build time.
+Matching Ledger-provided metadata and device validation are still required before
+making that claim. See the bridge's
 [clear-signing setup](../contrib/ledger-bridge/README.md#clear-signing-metadata).

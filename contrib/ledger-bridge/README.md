@@ -23,6 +23,9 @@ shisad's KMS backend. When the daemon needs a Ledger-backed signature:
 
 ## Setup
 
+Use Node.js 22 or newer. For a source build, first configure the application
+token as described under [clear-signing metadata](#clear-signing-metadata).
+
 ```bash
 cd contrib/ledger-bridge
 npm ci
@@ -156,8 +159,8 @@ compatibility question before registry submission.
 
 The bridge build embeds the Ledger application origin token. Configured bridge
 packages include it, so users do not need to obtain or export their own token.
-Unpack the bridge artifact, run `npm ci --omit=dev`, then `npm start`. The package includes an npm
-shrinkwrap file copied from the source lockfile.
+Unpack the bridge artifact, run `npm ci --omit=dev`, then `npm start`. The package
+includes an npm shrinkwrap file copied from the source lockfile.
 
 For a source checkout, provide `SHISAD_LEDGER_ORIGIN_TOKEN` in the build
 environment or this directory's ignored `.env.local` file before `npm run build`.

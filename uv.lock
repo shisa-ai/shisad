@@ -2445,7 +2445,7 @@ wheels = [
 
 [[package]]
 name = "shisad"
-version = "0.8.2.1"
+version = "0.8.3"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol", marker = "(platform_machine != 's390x' and sys_platform == 'linux') or sys_platform == 'darwin' or sys_platform == 'win32'" },

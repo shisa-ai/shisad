@@ -140,7 +140,8 @@ The `ledger` backend requires `algorithm=ecdsa-secp256k1` and
 npm run --silent extract-key -- --derivation-path "44'/60'/0'/0/0" > ledger-pubkey.pem
 ```
 
-For a source checkout, run `npm ci` and `npm run build` first. Avoid redirecting `npx tsx ...` directly into a PEM file;
+For a source checkout, run `npm ci` and `npm run build` first. Avoid redirecting
+`npx tsx ...` directly into a PEM file;
 interactive package-manager prompts can corrupt the public-key export.
 
 ## Health and Readiness Checks
