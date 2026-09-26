@@ -541,29 +541,7 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
     planner_calls: list[str] = []
     _install_retrieve_action_resolve_planner(monkeypatch, planner_calls=planner_calls)
 
-    from shisad.core.providers.base import Message, ProviderResponse
-    from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
-
-    async def review_intent(self, messages, tools=None):
-        assert tools is None
-        packet = json.loads(messages[1].content)
-        assert packet["user_request"] == wording
-        assert len(packet["pending"]) == 1
-        return ProviderResponse(
-            message=Message(
-                role="assistant",
-                content=json.dumps(
-                    {
-                        "decision": "confirm",
-                        "scope": "one",
-                        "quote": wording,
-                        "target": packet["pending"][0]["confirmation_id"],
-                    }
-                ),
-            )
-        )
-
-    monkeypatch.setattr(MonitorProviderAdapter, "complete", review_intent)
+    from tests.helpers.contract import _install_approval_response
 
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(
@@ -618,6 +596,12 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
         assert "yes to all" not in response_text
         assert "shisad action confirm" in response_text
 
+        _install_approval_response(
+            monkeypatch,
+            request=wording,
+            decision="confirm",
+            target=str(first["pending_confirmation_ids"][0]),
+        )
         second = await client.call(
             "session.message",
             {
@@ -634,7 +618,7 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
             "action.pending",
             {"session_id": sid, "status": "pending", "limit": 10},
         )
-        assert pending["count"] == 0
+        assert pending["count"] == 0, second
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

