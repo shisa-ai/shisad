@@ -110,12 +110,11 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-ShisaD is public and under heavy development. This checkout prepares `v0.8.3`;
-the latest published release is `v0.8.2.1`.
+ShisaD is public and under heavy development. The current release is `v0.8.3`.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.3 (prepared) | Command-channel trust, reminder and approval fixes, Responses API support, and Ledger setup/build improvements |
+| v0.8.3 | Command-channel trust, reminder and approval fixes, Responses API support, and Ledger setup/build improvements |
 | v0.8.2 | Guided onboarding, reliable startup, session-scoped chat and Discord progress, data recovery, audit verification, and channel administration |
 | v0.8.1 | Installation and configuration improvements, restart-safe action tracking, safer filesystem and process boundaries, and restart recovery for delivery and approvals across four messaging channels |
 | v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |

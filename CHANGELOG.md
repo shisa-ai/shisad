@@ -11,7 +11,7 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
-## 0.8.3 - release prepared (unpublished)
+## [0.8.3] - 2026-09-26
 
 This maintenance release improves everyday chat, reminders, approvals, and
 recovery from tool failures, and adds Responses API model routes and Ledger
@@ -83,6 +83,14 @@ bridge build integration.
   Transformers, and the bridge's qs dependency are updated. Bridge release
   artifacts retain their dependency lock and receive the application token
   during the build; the token is intentionally readable in distributed code.
+
+### Known limitations
+
+- The corrected core adversarial benchmark reports 23.3% detector misses,
+  exceeding its existing 5% gate. This release includes the measurement fix;
+  the detection gap remains open. This metric does not measure successful
+  attacks against the full daemon.
+  ([#137](https://github.com/shisa-ai/shisad/issues/137))
 
 ## [0.8.2.1] - 2026-08-27
 
@@ -1547,6 +1555,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.3]: https://github.com/shisa-ai/shisad/compare/v0.8.2.1...v0.8.3
 [0.8.2.1]: https://github.com/shisa-ai/shisad/compare/v0.8.2...v0.8.2.1
 [0.8.2]: https://github.com/shisa-ai/shisad/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/shisa-ai/shisad/compare/v0.8.0...v0.8.1
