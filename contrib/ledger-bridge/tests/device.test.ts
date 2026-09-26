@@ -1,3 +1,4 @@
+import { APPLICATION_ORIGIN_TOKEN } from "../src/generated/origin-token";
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { SignerEthBuilder } from "@ledgerhq/device-signer-kit-ethereum";
@@ -34,7 +35,8 @@ it("forwards the configured origin token to the Ledger SDK", async () => {
     buildEthSigner({} as never, "session-1");
     delete process.env.SHISAD_LEDGER_ORIGIN_TOKEN;
     buildEthSigner({} as never, "session-1");
-    assert.deepEqual(tokens, ["test-origin", undefined]);
+    assert.equal(tokens[0], "test-origin");
+    assert.ok(Boolean(APPLICATION_ORIGIN_TOKEN) && tokens[1] === APPLICATION_ORIGIN_TOKEN, "Built-in token must reach SDK when runtime override is absent");
   } finally {
     stub.mock.restore();
     if (previous === undefined) delete process.env.SHISAD_LEDGER_ORIGIN_TOKEN;

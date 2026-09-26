@@ -3,20 +3,24 @@
   "version": "0.1.0",
   "description": "Ledger DMK bridge service for shisad L4 trusted-display approval",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "extract-key": "tsx src/extract-key.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "start": "node --import tsx dist/server.js",
+    "extract-key": "node --import tsx dist/extract-key.js",
+    "test": "npm run build && node --import tsx --test tests/*.test.ts",
+    "build": "node scripts/inject-origin-token.mjs && tsc",
+    "prepack": "npm run build",
+    "dev": "npm run build && tsx src/server.ts",
+    "package": "npm run build && npm pack --ignore-scripts"
   },
   "dependencies": {
     "@ledgerhq/context-module": "1.16.0",
     "@ledgerhq/device-management-kit": "1.2.0",
     "@ledgerhq/device-signer-kit-ethereum": "1.14.0",
     "@ledgerhq/device-transport-kit-node-hid": "1.0.1",
-    "rxjs": "^7.8.0"
+    "rxjs": "^7.8.0",
+    "tsx": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   },
   "overrides": {
@@ -26,5 +30,11 @@
     "qs": "6.16.0",
     "ws": "8.21.0",
     "uuid": "11.1.1"
-  }
+  },
+  "files": [
+    "dist/",
+    "clear-signing/",
+    "README.md",
+    "npm-shrinkwrap.json"
+  ]
 }

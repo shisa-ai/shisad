@@ -20,6 +20,8 @@ import { nodeHidTransportFactory } from "@ledgerhq/device-transport-kit-node-hid
 import { SignerEthBuilder, type SignerEth } from "@ledgerhq/device-signer-kit-ethereum";
 import { firstValueFrom, filter, take, timeout } from "rxjs";
 
+import { APPLICATION_ORIGIN_TOKEN } from "./generated/origin-token";
+
 const CONNECT_TIMEOUT_MS = 60_000;
 
 let dmkInstance: DeviceManagementKit | null = null;
@@ -167,7 +169,7 @@ export function buildEthSigner(
   return new SignerEthBuilder({
     dmk,
     sessionId,
-    originToken: process.env.SHISAD_LEDGER_ORIGIN_TOKEN?.trim() || undefined,
+    originToken: process.env.SHISAD_LEDGER_ORIGIN_TOKEN?.trim() || APPLICATION_ORIGIN_TOKEN,
   }).build();
 }
 

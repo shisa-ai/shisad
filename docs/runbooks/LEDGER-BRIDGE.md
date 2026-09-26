@@ -49,9 +49,11 @@ On the workstation that has the Ledger plugged in:
 
 ```bash
 cd contrib/ledger-bridge
-npm install
+npm ci
+# Supply the application origin token as described in the bridge README.
+npm run build
 export SHISAD_LEDGER_BRIDGE_BEARER_TOKEN="$(openssl rand -hex 32)"
-npx tsx src/server.ts --port 9090
+npm start -- --port 9090
 ```
 
 The bridge prints:
@@ -64,13 +66,13 @@ Leave the bridge bound to loopback. If you need a different derivation path,
 pass it explicitly and use the same path when extracting the public key:
 
 ```bash
-npx tsx src/server.ts --port 9090 --derivation-path "44'/60'/0'/0/0"
+npm start -- --port 9090 --derivation-path "44'/60'/0'/0/0"
 ```
 
 You can also pass the token as a flag:
 
 ```bash
-npx tsx src/server.ts --port 9090 --bearer-token "$SHISAD_LEDGER_BRIDGE_BEARER_TOKEN"
+npm start -- --port 9090 --bearer-token "$SHISAD_LEDGER_BRIDGE_BEARER_TOKEN"
 ```
 
 ## Connect Remote shisad Safely
@@ -138,8 +140,7 @@ The `ledger` backend requires `algorithm=ecdsa-secp256k1` and
 npm run --silent extract-key -- --derivation-path "44'/60'/0'/0/0" > ledger-pubkey.pem
 ```
 
-Run `npm install` first so `tsx` resolves from the bridge package's local
-dependencies. Avoid redirecting `npx tsx ...` directly into a PEM file;
+For a source checkout, run `npm ci` and `npm run build` first. Avoid redirecting `npx tsx ...` directly into a PEM file;
 interactive package-manager prompts can corrupt the public-key export.
 
 ## Health and Readiness Checks

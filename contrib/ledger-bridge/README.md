@@ -25,7 +25,8 @@ shisad's KMS backend. When the daemon needs a Ledger-backed signature:
 
 ```bash
 cd contrib/ledger-bridge
-npm install
+npm ci
+npm run build
 ```
 
 ## Usage
@@ -36,8 +37,7 @@ npm install
 npm run --silent extract-key -- > pubkey.pem
 ```
 
-Run `npm install` first so `tsx` resolves from this package's local
-dependencies. Avoid redirecting `npx tsx ...` directly into `pubkey.pem`;
+Run `npm ci` and `npm run build` first for a source checkout. Avoid redirecting `npx tsx ...` directly into `pubkey.pem`;
 interactive package-manager prompts can corrupt the PEM output.
 
 ### 2. Register the key with shisad
@@ -61,7 +61,7 @@ shisad signer register \
 
 ```bash
 export SHISAD_LEDGER_BRIDGE_BEARER_TOKEN="$(openssl rand -hex 32)"
-npx tsx src/server.ts --port 9090
+npm start -- --port 9090
 ```
 
 ### 4. Configure shisad
@@ -154,11 +154,30 @@ upstream JSON schema, but the current `erc7730 lint` tool requires a deployment
 list that this off-chain domain does not have. Ledger must resolve that
 compatibility question before registry submission.
 
-The Ethereum signer can use a Ledger partner origin token through
-`SHISAD_LEDGER_ORIGIN_TOKEN`. Set it in the bridge process environment and keep
-it out of version control. It is separate from the bridge HTTP bearer token.
-The SDK's default context module resolves Ledger-provided metadata; the bridge
-does not inject or trust arbitrary local descriptor files.
+The bridge build embeds the Ledger application origin token. Configured bridge
+packages include it, so users do not need to obtain or export their own token.
+Unpack the bridge artifact, run `npm ci --omit=dev`, then `npm start`. The package includes an npm
+shrinkwrap file copied from the source lockfile.
+
+For a source checkout, provide `SHISAD_LEDGER_ORIGIN_TOKEN` in the build
+environment or this directory's ignored `.env.local` file before `npm run build`.
+The build writes an ignored generated module and compiles it into `dist`.
+`npm test` builds first, including when npm lifecycle hooks are disabled.
+`npm run package` builds and produces a configured tarball. A missing build token
+is an error, so tests and packages cannot silently use a tokenless signer.
+Node.js 22 or newer is required for these build commands.
+
+CI uses a fixture token for pull requests and the repository's
+`SHISAD_LEDGER_ORIGIN_TOKEN` Actions secret for trusted builds. The publish
+workflow requires that build and uploads a separate `ledger-bridge` artifact;
+the Python wheel does not include the Node bridge. The token is absent from
+tracked source and local input files are excluded from the package, but the
+application token is intentionally present in the distributed compiled code.
+
+A runtime `SHISAD_LEDGER_ORIGIN_TOKEN` overrides the embedded value when needed.
+It is separate from the bridge HTTP bearer token. The SDK's default context
+module resolves Ledger-provided metadata; the bridge does not inject or trust
+arbitrary local descriptor files.
 
 Before claiming warning-free Clear Signing:
 

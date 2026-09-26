@@ -130,8 +130,17 @@ jobs:
             dist/shisad-*.whl
             dist/shisad-*.tar.gz
 
+  ledger-bridge:
+    uses: ./.github/workflows/ledger-bridge.yml
+    with:
+      ref: refs/tags/${{ inputs.tag }}
+    secrets:
+      SHISAD_LEDGER_ORIGIN_TOKEN: ${{ secrets.SHISAD_LEDGER_ORIGIN_TOKEN }}
+    permissions:
+      contents: read
+
   publish:
-    needs: build
+    needs: [build, ledger-bridge]
     runs-on: ubuntu-latest
     environment: pypi-publish
     permissions:

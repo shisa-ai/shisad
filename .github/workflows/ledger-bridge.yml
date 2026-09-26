@@ -1,0 +1,51 @@
+name: Ledger bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+    secrets:
+      SHISAD_LEDGER_ORIGIN_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contrib/ledger-bridge
+    env:
+      # PRs exercise injection with a fixture, never the application credential.
+      SHISAD_LEDGER_ORIGIN_TOKEN: ${{ github.event_name == 'pull_request' && 'ci-fixture-not-for-signing' || secrets.SHISAD_LEDGER_ORIGIN_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: contrib/ledger-bridge/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Package configured bridge
+        if: github.event_name != 'pull_request'
+        run: npm pack --ignore-scripts
+      - name: Upload configured bridge
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ledger-bridge
+          path: contrib/ledger-bridge/shisad-ledger-bridge-*.tgz
+          if-no-files-found: error

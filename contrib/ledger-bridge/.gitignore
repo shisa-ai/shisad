@@ -1,0 +1,5 @@
+# Application token is injected into build output, not tracked source.
+.env.local
+src/generated/
+*.tgz
+npm-shrinkwrap.json
