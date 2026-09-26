@@ -3502,7 +3502,7 @@ async def test_behavioral_discord_public_channel_isolates_allowlisted_owner(
             },
         )
 
-        assert result["trust_level"] == "public"
+        assert result["trust_level"] == "owner"
         assert result["channel_policy"]["trust_level"] == "public"
         assert result["channel_policy"]["owner_private_context_excluded"] is True
         assert result["channel_policy"]["ephemeral_session"] is True

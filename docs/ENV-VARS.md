@@ -260,7 +260,8 @@ this setting.
 
 Room trust applies only to participants already admitted by identity policy.
 It does not enroll strangers, override explicit denies, or expand public and
-trusted-guest access. A verified owner retains command trust in a public room.
+trusted-guest access. A verified owner retains command trust in a public room. The room’s public-tool
+limits and private-context isolation still apply to that owner’s commands.
 Sender, provider, workspace, room, thread, message ID and the source of trust
 remain recorded separately from content taint. Prior user turns provide context,
 not new authorization. Historical assistant/external content keeps its recorded

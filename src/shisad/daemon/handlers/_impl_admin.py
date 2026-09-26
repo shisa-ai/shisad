@@ -3024,8 +3024,7 @@ class AdminImplMixin(HandlerMixinBase):
             external_user_id=message.external_user_id,
         )
         public_policy_access = (
-            not verified_sender
-            and message.channel == "discord"
+            message.channel == "discord"
             and discord_decision.public_access
             and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
         )
@@ -3120,12 +3119,12 @@ class AdminImplMixin(HandlerMixinBase):
         )
         trust_source = "channel_default"
         declared_trust = self._identity_map.trust_for_channel(message.channel)
-        if public_policy_access:
-            declared_trust = discord_decision.trust_level
-            trust_source = "public_policy"
-        elif verified_sender:
+        if verified_sender:
             declared_trust = "owner"
             trust_source = "verified_sender"
+        elif public_policy_access:
+            declared_trust = discord_decision.trust_level
+            trust_source = "public_policy"
         elif trusted_room and allowed_by_identity:
             declared_trust = "trusted"
             trust_source = "trusted_room"
@@ -3190,7 +3189,7 @@ class AdminImplMixin(HandlerMixinBase):
             workspace_hint=message.workspace_hint,
             thread_id=message.thread_id,
         )
-        public_session = _is_public_channel_trust(identity_trust_level)
+        public_session = public_policy_access or _is_public_channel_trust(identity_trust_level)
         effective_channel_tools = (
             self._effective_channel_tools(discord_decision.allowed_tools) if public_session else ()
         )

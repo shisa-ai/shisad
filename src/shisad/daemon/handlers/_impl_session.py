@@ -2430,8 +2430,12 @@ def _is_trusted_level(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"trusted", "verified", "internal", "owner"}
 
 
-def _is_public_channel_level(trust_level: str) -> bool:
-    return trust_level.strip().lower() in {"public", "trusted_guest"}
+def _requires_public_channel_isolation(trust_level: str, session: Session | None) -> bool:
+    metadata = getattr(session, "metadata", {})
+    policy = metadata.get("channel_policy") if isinstance(metadata, Mapping) else None
+    return trust_level.strip().lower() in {"public", "trusted_guest"} or (
+        isinstance(policy, Mapping) and policy.get("owner_private_context_excluded") is True
+    )
 
 
 def _public_channel_sensitive_taints(taint_labels: set[TaintLabel]) -> set[TaintLabel]:
@@ -9914,9 +9918,9 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=trust_level,
             is_internal_ingress=is_internal_ingress,
         ) and _trusted_cli_firewall_result_is_clean(firewall_result)
+        session_manager = getattr(self, "_session_manager", None)
+        session = session_manager.get(sid) if session_manager is not None else None
         if allow_direct_trusted_cli_confirmation:
-            session_manager = getattr(self, "_session_manager", None)
-            session = session_manager.get(sid) if session_manager is not None else None
             metadata = getattr(session, "metadata", {}) if session is not None else {}
             allow_direct_trusted_cli_confirmation = bool(
                 isinstance(metadata, Mapping) and metadata.get("operator_owned_cli") is True
@@ -10092,7 +10096,7 @@ class SessionImplMixin(HandlerMixinBase):
             response_taint_labels = _taint_labels_from_serialized_tool_outputs(tool_outputs or [])
             public_sensitive_taints = (
                 _public_channel_sensitive_taints(response_taint_labels)
-                if _is_public_channel_level(trust_level)
+                if _requires_public_channel_isolation(trust_level, session)
                 else set()
             )
             if public_sensitive_taints:
@@ -11281,7 +11285,7 @@ class SessionImplMixin(HandlerMixinBase):
         zero_context_session = validated.session_mode in {
             SessionMode.ADMIN_CLEANROOM,
             SessionMode.TASK,
-        } or _is_public_channel_level(validated.trust_level)
+        } or _requires_public_channel_isolation(validated.trust_level, validated.session)
 
         transcript_entries = self._transcript_store.list_entries(sid)
         current_turn_timestamp = (
@@ -11761,7 +11765,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "If status is ambiguous, ask which candidate the user means. If status is "
                 "insufficient or no_match, say what evidence is missing instead of guessing."
             )
-        if _is_public_channel_level(validated.trust_level):
+        if _requires_public_channel_isolation(validated.trust_level, validated.session):
             trusted_instructions = (
                 f"{trusted_instructions}\n\n"
                 "PUBLIC DISCORD CHANNEL POLICY\n"
@@ -14515,7 +14519,7 @@ class SessionImplMixin(HandlerMixinBase):
         response_taint_labels = set(taint_labels or set())
         public_sensitive_taints = (
             _public_channel_sensitive_taints(response_taint_labels)
-            if _is_public_channel_level(validated.trust_level)
+            if _requires_public_channel_isolation(validated.trust_level, validated.session)
             else set()
         )
         if public_sensitive_taints:
@@ -16072,7 +16076,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
         public_sensitive_taints = (
             _public_channel_sensitive_taints(response_taint_labels)
-            if _is_public_channel_level(validated.trust_level)
+            if _requires_public_channel_isolation(validated.trust_level, validated.session)
             else set()
         )
         if public_sensitive_taints:

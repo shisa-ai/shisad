@@ -4234,6 +4234,7 @@ async def test_group_public_policy_preserves_verified_sender_commands(tmp_path, 
                 "guild_id": "work",
                 "channels": ["room"],
                 "public_enabled": True,
+                "public_tools": [],
             }
         ]
     ).discord_channel_rules
@@ -4261,6 +4262,13 @@ async def test_group_public_policy_preserves_verified_sender_commands(tmp_path, 
         }
     )
     assert harness.message_payloads[-1]["trust_level"] == ("owner" if verified else "public")
+    created = harness.created_payloads[-1]
+    assert created["_tool_allowlist"] == []
+    assert created["_channel_policy"]["owner_private_context_excluded"] is True
+    assert created["_channel_policy"]["ephemeral_session"] is True
+    assert harness.message_payloads[-1]["_firewall_result"]["taint_labels"] == (
+        [] if verified else ["untrusted"]
+    )
 
 
 @pytest.mark.asyncio
