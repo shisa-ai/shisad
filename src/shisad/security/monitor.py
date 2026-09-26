@@ -89,6 +89,11 @@ class ActionMonitor:
 
         for action in actions:
             tool = canonical_tool_name(str(getattr(action, "tool_name", "")))
+            # The local alarm carries hostile text as evidence, not instructions.
+            # Registration, schema, policy and incident review remain independent;
+            # this exemption must not skip checks on other actions in the batch.
+            if tool == "report_anomaly":
+                continue
             argument_text = self._flatten_arguments(getattr(action, "arguments", {}))
             if any(token in argument_text for token in self._SUSPICIOUS_ARG_TOKENS):
                 reject_flags.append(f"{tool}:suspicious_argument_content")

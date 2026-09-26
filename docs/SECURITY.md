@@ -2,6 +2,9 @@
 
 This document describes shisad's security model at an architectural level. For the governing design principles, see [DESIGN-PHILOSOPHY.md](DESIGN-PHILOSOPHY.md). For the research literature behind these choices, see the [agentic-security](https://github.com/lhl/agentic-security) survey (78 papers, defense taxonomy, recommended defense-in-depth stack).
 
+For measured outcomes, detector misses, and the layers that stopped tested
+attacks, see [Security test status](SECURITY-STATUS.md).
+
 ---
 
 ## The Problem

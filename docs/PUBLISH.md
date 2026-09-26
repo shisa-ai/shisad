@@ -102,6 +102,10 @@ Version must be updated in both places:
 - [ ] Review top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
+- [ ] Refresh [Security test status](SECURITY-STATUS.md) with the evaluated
+      version, configuration, stopping layers, authorized controls and remaining
+      limits. Distinguish detector coverage from observed unauthorized effects;
+      do not present an untested or unavailable path as passing.
 - [ ] If release-close changes dependency resolutions or workflow/action pins,
       update `docs/AUDIT-supply-chain.md` in the same lane so the recorded
       package inventory and CI/release trust notes stay current. When any

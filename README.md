@@ -584,6 +584,7 @@ rules, and commit conventions.
 | `docs/DESIGN-PHILOSOPHY.md` | First-principles reference — read this first |
 | `docs/DEPLOY.md` | Public bring-up and deployment quickstart |
 | `docs/SECURITY.md` | Security architecture — threat model, enforcement layers, trust boundaries |
+| [Security test status](docs/SECURITY-STATUS.md) | Tested attacks, stopping layers, detector coverage, and remaining limits |
 | `docs/ROADMAP.md` | Public product roadmap and release direction |
 | `docs/USE-CASES.md` | Prioritized use cases and capability mapping |
 | `docs/ENV-VARS.md` | Environment variable reference |
